@@ -1,3 +1,15 @@
+# Node / build
+node_modules/
+dist/
+release/
+release.tar.gz
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+
 # AWS SAM
 .aws-sam/
 samconfig.toml

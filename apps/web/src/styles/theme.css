@@ -1,0 +1,59 @@
+/* Tek tema kaynagi: renk, bosluk, yazi ve kose degerleri burada tanimlanir.
+   Bilesenler deger yazmaz, bu degiskenleri kullanir. */
+:root {
+  color-scheme: light dark;
+
+  /* Renkler */
+  --color-bg: #f6f7f9;
+  --color-surface: #ffffff;
+  --color-text: #1b1f24;
+  --color-text-muted: #5b6470;
+  --color-border: #d5dae0;
+  --color-accent: #2f6fde;
+  --color-success: #1f8a4c;
+  --color-danger: #c62f3b;
+
+  /* Bosluk: 4px (0.25rem) tabani */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+  --space-12: 3rem;
+
+  /* Yazi */
+  --font-sans: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  --text-body-size: 1rem;
+  --text-body-line: 1.5;
+  --text-body-weight: 400;
+
+  --text-title-size: 2rem;
+  --text-title-line: 1.2;
+  --text-title-weight: 700;
+
+  --text-small-size: 0.875rem;
+  --text-small-line: 1.4;
+
+  /* Kose, cizgi ve boyut */
+  --border-width: 1px;
+  --radius-2: 0.5rem;
+  --radius-full: 999px;
+  --dot-size: 0.5rem;
+  --content-width: 40rem;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-bg: #0f1216;
+    --color-surface: #171b21;
+    --color-text: #e6e9ed;
+    --color-text-muted: #9aa3ae;
+    --color-border: #2f3640;
+    --color-accent: #6b9cf0;
+    --color-success: #4cc37f;
+    --color-danger: #f0707a;
+  }
+}
