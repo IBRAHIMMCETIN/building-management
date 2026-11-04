@@ -66,7 +66,10 @@ jobs:
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ vars.AWS_REGION || secrets.AWS_REGION || 'eu-central-1' }}
+          aws-region: ${{ vars.AWS_REGION || secrets.AWS_REGION || 'us-east-1' }}
+
+      - name: Detect project region
+        run: bash scripts/ci/detect-aws-region.sh
 
       - uses: hashicorp/setup-terraform@v4
         with:
