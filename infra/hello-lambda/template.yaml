@@ -1,0 +1,39 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  CI/CD smoke test. GitHub Actions bu stack'i deploy edip Lambda'yi cagirarak
+  pipeline'in uctan uca calistigini dogrular.
+
+Parameters:
+  GitSha:
+    Type: String
+    Default: local
+    Description: Deploy edilen commit. Lambda bunu cevabinda geri doner.
+
+Resources:
+  HelloLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/lambda/building-management-hello
+      RetentionInDays: 7
+
+  HelloFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: building-management-hello
+      Runtime: python3.13
+      Handler: app.handler
+      CodeUri: src/
+      Architectures:
+        - arm64
+      MemorySize: 128
+      Timeout: 10
+      LoggingConfig:
+        LogGroup: !Ref HelloLogGroup
+      Environment:
+        Variables:
+          GIT_SHA: !Ref GitSha
+
+Outputs:
+  FunctionName:
+    Value: !Ref HelloFunction

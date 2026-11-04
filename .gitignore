@@ -1,0 +1,14 @@
+# AWS SAM
+.aws-sam/
+samconfig.toml
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Secrets - asla commit'leme
+.env
+.env.*
+*accessKeys*.csv
+credentials
