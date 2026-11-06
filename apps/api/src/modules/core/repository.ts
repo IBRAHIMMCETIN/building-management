@@ -1,7 +1,8 @@
-import { GetCommand, PutCommand } from '@aws-sdk/lib-dynamodb';
+import { PutCommand } from '@aws-sdk/lib-dynamodb';
 import {
   getDynamo,
-  queryTenant,
+  getTenantItem,
+  queryTenantAll,
   skKey,
   tenantPk,
   toDataAccessError,
@@ -44,18 +45,6 @@ export type CoreRepository = {
   createUnit(unit: Unit): Promise<void>;
   updateUnit(unit: Unit, expectedVersion: number): Promise<void>;
 };
-
-async function getItem<T>(keys: TableKeys): Promise<T | undefined> {
-  const { client, tableName } = getDynamo();
-  try {
-    const out = await client.send(
-      new GetCommand({ TableName: tableName, Key: keys, ConsistentRead: true }),
-    );
-    return out.Item as T | undefined;
-  } catch (err) {
-    throw toDataAccessError(err);
-  }
-}
 
 function assertKeys(item: TableKeys, expected: TableKeys): void {
   if (item.PK !== expected.PK || item.SK !== expected.SK) {
@@ -101,39 +90,21 @@ async function putVersioned(
   }
 }
 
-/** Tenant'in bir varlik turundeki tum kayitlari (sayfalama dongusu ile). */
-async function listAll<T>(apartmentId: string, prefix: string): Promise<T[]> {
-  const items: T[] = [];
-  let startKey: Record<string, unknown> | undefined;
-
-  do {
-    const page = await queryTenant<T>(apartmentId, {
-      skPrefix: prefix,
-      ConsistentRead: true,
-      ...(startKey ? { ExclusiveStartKey: startKey } : {}),
-    });
-    items.push(...page.items);
-    startKey = page.lastKey;
-  } while (startKey);
-
-  return items;
-}
-
 export function createCoreRepository(): CoreRepository {
   return {
-    getSite: (apartmentId) => getItem<Site>(coreKeys.site(apartmentId)),
+    getSite: (apartmentId) => getTenantItem<Site>(coreKeys.site(apartmentId)),
     createSite: (site) => putNew(site, coreKeys.site(site.siteId)),
     updateSite: (site, expectedVersion) =>
       putVersioned(site, coreKeys.site(site.siteId), expectedVersion),
 
-    getBlock: (apartmentId, blockId) => getItem<Block>(coreKeys.block(apartmentId, blockId)),
-    listBlocks: (apartmentId) => listAll<Block>(apartmentId, BLOCK_PREFIX),
+    getBlock: (apartmentId, blockId) => getTenantItem<Block>(coreKeys.block(apartmentId, blockId)),
+    listBlocks: (apartmentId) => queryTenantAll<Block>(apartmentId, BLOCK_PREFIX, { ConsistentRead: true }),
     createBlock: (block) => putNew(block, coreKeys.block(block.siteId, block.blockId)),
     updateBlock: (block, expectedVersion) =>
       putVersioned(block, coreKeys.block(block.siteId, block.blockId), expectedVersion),
 
-    getUnit: (apartmentId, unitId) => getItem<Unit>(coreKeys.unit(apartmentId, unitId)),
-    listUnits: (apartmentId) => listAll<Unit>(apartmentId, UNIT_PREFIX),
+    getUnit: (apartmentId, unitId) => getTenantItem<Unit>(coreKeys.unit(apartmentId, unitId)),
+    listUnits: (apartmentId) => queryTenantAll<Unit>(apartmentId, UNIT_PREFIX, { ConsistentRead: true }),
     createUnit: (unit) => putNew(unit, coreKeys.unit(unit.siteId, unit.unitId)),
     updateUnit: (unit, expectedVersion) =>
       putVersioned(unit, coreKeys.unit(unit.siteId, unit.unitId), expectedVersion),

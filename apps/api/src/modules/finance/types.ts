@@ -1,0 +1,159 @@
+/**
+ * Faz 2 - Finans ve defter modeli (cift tarafli kayit).
+ *
+ * Kurallar:
+ *  - Tum tutarlar KURUS cinsinden pozitif tam sayidir (`Kurus`); yon `side` ile belirtilir.
+ *  - Defter append-only: Transaction ve LedgerEntry kayitlari yazildiktan sonra degismez,
+ *    hata duzeltmesi ters kayit (`kind: 'reversal'`) ile yapilir.
+ *  - Hesap bakiyesi = toplam borc - toplam alacak (isaretli). Pozitif/negatif anlami hesap
+ *    turune gore degisir (bkz. NORMAL_SIDE). Sakin carisinde pozitif = borc, negatif = avans.
+ *  - Tek bir Transaction'in borc ve alacak toplami her zaman esittir.
+ */
+import type {
+  AuditFields,
+  EntityStatus,
+  IsoDate,
+  IsoDateTime,
+  Kurus,
+  LiableParty,
+  TableKeys,
+} from '../core/types.js';
+
+export const ACCOUNT_TYPES = ['cash', 'bank', 'receivable', 'payable', 'income', 'expense'] as const;
+export type AccountType = (typeof ACCOUNT_TYPES)[number];
+
+export type EntrySide = 'debit' | 'credit';
+
+/** Hesabin normal (artti) tarafi: kasa/banka/alacak/gider borc, borc/gelir alacak. */
+export const NORMAL_SIDE: Record<AccountType, EntrySide> = {
+  cash: 'debit',
+  bank: 'debit',
+  receivable: 'debit',
+  expense: 'debit',
+  payable: 'credit',
+  income: 'credit',
+};
+
+/**
+ *   PK = `APT#<siteId>`, SK = `ACCT#<accountId>`
+ * Sakin carileri (`receivable`) daire + sorumlu taraf bazinda tutulur (alt cari):
+ * `recv-<unitId>-<owner|occupant>`.
+ */
+export type Account = TableKeys &
+  AuditFields & {
+    entityType: 'ACCOUNT';
+    accountId: string;
+    siteId: string;
+    type: AccountType;
+    name: string;
+    status: EntityStatus;
+    /** Sistem hesaplari pasife alinamaz. */
+    system?: boolean;
+    /** Borc - alacak (kurus, negatif olabilir). Her defter yazimiyla atomik guncellenir. */
+    balance: Kurus;
+    unitId?: string;
+    liableParty?: LiableParty;
+  };
+
+export type TransactionKind = 'dues_charge' | 'payment' | 'expense' | 'reversal';
+
+export type TransactionLine = {
+  accountId: string;
+  side: EntrySide;
+  amount: Kurus;
+  unitId?: string;
+  liableParty?: LiableParty;
+};
+
+/**
+ * Defter islemi (basligi). `lines` borc/alacak satirlarinin tek kaynagidir; LedgerEntry
+ * kayitlari bunlardan turetilir.
+ *   PK = `APT#<siteId>`, SK = `TX#<transactionId>`
+ * `transactionId` = `<YYYYMMDD>-<uuid>` (kronolojik siralanir).
+ */
+export type Transaction = TableKeys & {
+  entityType: 'TRANSACTION';
+  transactionId: string;
+  siteId: string;
+  kind: TransactionKind;
+  /** Muhasebe tarihi. */
+  date: IsoDate;
+  dueDate?: IsoDate;
+  description: string;
+  reference?: string;
+  batchId?: string;
+  reversalOf?: string;
+  reason?: string;
+  lines: TransactionLine[];
+  totalAmount: Kurus;
+  createdAt: IsoDateTime;
+  createdBy: string;
+};
+
+/**
+ * Hesap ekstresi icin satir bazli, degismez kayit.
+ *   PK = `APT#<siteId>`, SK = `LE#<accountId>#<transactionId>#<lineNo>`
+ */
+export type LedgerEntry = TableKeys & {
+  entityType: 'LEDGER_ENTRY';
+  entryId: string;
+  transactionId: string;
+  siteId: string;
+  accountId: string;
+  side: EntrySide;
+  amount: Kurus;
+  date: IsoDate;
+  lineNo: number;
+  unitId?: string;
+  liableParty?: LiableParty;
+  createdAt: IsoDateTime;
+  createdBy: string;
+};
+
+export const PAYMENT_METHODS = ['cash', 'bank_transfer', 'card'] as const;
+export type PaymentMethod = (typeof PAYMENT_METHODS)[number];
+
+/** Tahsilat makbuzu. SK = `PAY#<paymentId>` */
+export type Payment = TableKeys & {
+  entityType: 'PAYMENT';
+  paymentId: string;
+  siteId: string;
+  unitId: string;
+  liableParty: LiableParty;
+  method: PaymentMethod;
+  amount: Kurus;
+  depositAccountId: string;
+  /** Apartman bazinda ardisik makbuz no, ornegin "MKB-000012". */
+  receiptNumber: string;
+  transactionId: string;
+  paidAt: IsoDate;
+  payerName?: string;
+  note?: string;
+  createdAt: IsoDateTime;
+  createdBy: string;
+};
+
+/** Gider kaydi. SK = `EXP#<expenseId>` */
+export type Expense = TableKeys & {
+  entityType: 'EXPENSE';
+  expenseId: string;
+  siteId: string;
+  expenseAccountId: string;
+  /** Odemenin cikti hesap: kasa/banka (pesin) veya tedarikci borcu (vadeli). */
+  creditAccountId: string;
+  amount: Kurus;
+  date: IsoDate;
+  description: string;
+  supplier?: string;
+  invoiceNumber?: string;
+  transactionId: string;
+  createdAt: IsoDateTime;
+  createdBy: string;
+};
+
+export type IdempotencyRecord = {
+  transactionId: string;
+  recordId?: string;
+  /** Istek icerigi ozeti: ayni anahtarin farkli istekle kullanilmasini yakalar. */
+  fingerprint: string;
+};

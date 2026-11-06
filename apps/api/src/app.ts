@@ -2,6 +2,8 @@ import { Hono } from 'hono';
 import { type Authenticator, denyAll } from './auth/claims.js';
 import { coreRoutes } from './modules/core/routes.js';
 import { type CoreService, createCoreService } from './modules/core/service.js';
+import { financeRoutes } from './modules/finance/routes.js';
+import { type FinanceService, createFinanceService } from './modules/finance/service.js';
 import { healthRoutes } from './modules/health/routes.js';
 
 export type AppConfig = {
@@ -13,6 +15,7 @@ export type AppConfig = {
   authenticate?: Authenticator;
   /** Testlerde sahte repository ile servis enjekte etmek icin. */
   coreService?: CoreService;
+  financeService?: FinanceService;
 };
 
 // Runtime'dan bagimsiz API: bugun EC2'da Node sunucusu, ileride Lambda
@@ -27,6 +30,14 @@ export function createApp(config: AppConfig) {
     coreRoutes({
       authenticate: config.authenticate ?? denyAll,
       service: config.coreService ?? createCoreService(),
+    }),
+  );
+
+  app.route(
+    '/api/finance',
+    financeRoutes({
+      authenticate: config.authenticate ?? denyAll,
+      service: config.financeService ?? createFinanceService(),
     }),
   );
 

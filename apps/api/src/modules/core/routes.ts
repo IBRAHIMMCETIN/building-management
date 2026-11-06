@@ -1,12 +1,15 @@
 import { type Context, Hono, type MiddlewareHandler } from 'hono';
-import type { ContentfulStatusCode } from 'hono/utils/http-status';
-import type { AuthClaims, Authenticator, Role } from '../../auth/claims.js';
-import { DataAccessError } from '../../config/dynamodb.js';
-import { CoreError, type CoreService, type EntityStatusFilter } from './service.js';
-import type { TableKeys } from './types.js';
+import type { Authenticator, Role } from '../../auth/claims.js';
+import {
+  type Env,
+  authenticateWith,
+  handleError,
+  publicView,
+  readJson,
+  requireRole,
+} from '../../http/helpers.js';
+import type { CoreService, EntityStatusFilter } from './service.js';
 import { ValidationError, assertId, asObject, optEnum } from './validation.js';
-
-type Env = { Variables: { claims: AuthClaims } };
 
 export type CoreRoutesDeps = {
   authenticate: Authenticator;
@@ -26,29 +29,6 @@ const SITE_CREATE_ROLES: readonly Role[] = ['platform_admin', 'management_compan
 
 const STATUS_FILTERS = ['active', 'inactive', 'all'] as const;
 
-/** Istemciye ic DynamoDB anahtarlarini (PK/SK) gostermeyiz. */
-function publicView<T extends object>(item: T): Omit<T, 'PK' | 'SK'> {
-  const { PK: _pk, SK: _sk, ...rest } = item as T & Partial<TableKeys>;
-  return rest as Omit<T, 'PK' | 'SK'>;
-}
-
-async function readJson(c: Context): Promise<unknown> {
-  try {
-    return await c.req.json();
-  } catch {
-    throw new ValidationError('Gecersiz JSON govdesi');
-  }
-}
-
-function requireRole(roles: readonly Role[]): MiddlewareHandler<Env> {
-  return async (c, next) => {
-    if (!roles.includes(c.get('claims').role)) {
-      return c.json({ error: 'forbidden', message: 'Bu islem icin yetkiniz yok' }, 403);
-    }
-    await next();
-  };
-}
-
 /**
  * Tenant izolasyonu: URL'deki siteId yalnizca JWT'deki apartmentId ile
  * eslesiyorsa devam eder. Tum servis cagrilari claim'deki degeri kullanir.
@@ -66,32 +46,12 @@ function statusFilter(c: Context): EntityStatusFilter {
   return raw === undefined ? 'active' : optEnum({ status: raw }, 'status', STATUS_FILTERS) ?? 'active';
 }
 
-function handleError(err: Error, c: Context) {
-  if (err instanceof ValidationError) {
-    return c.json({ error: 'validation_error', message: err.message, field: err.field }, 400);
-  }
-  if (err instanceof CoreError) {
-    return c.json({ error: err.code, message: err.message }, err.httpStatus);
-  }
-  if (err instanceof DataAccessError) {
-    if (err.httpStatus >= 500) console.error(err);
-    return c.json({ error: err.code, message: err.message }, err.httpStatus as ContentfulStatusCode);
-  }
-  console.error(err);
-  return c.json({ error: 'internal_error' }, 500);
-}
-
 export function coreRoutes({ authenticate, service }: CoreRoutesDeps) {
   const r = new Hono<Env>();
 
   r.onError(handleError);
 
-  r.use('*', async (c, next) => {
-    const claims = await authenticate(c);
-    if (!claims) return c.json({ error: 'unauthorized' }, 401);
-    c.set('claims', claims);
-    await next();
-  });
+  r.use('*', authenticateWith(authenticate));
 
   r.use('/:siteId', siteGuard);
   r.use('/:siteId/*', siteGuard);

@@ -8,6 +8,7 @@ import {
 } from '@aws-sdk/client-dynamodb';
 import {
   DynamoDBDocumentClient,
+  GetCommand,
   QueryCommand,
   type QueryCommandInput,
   type QueryCommandOutput,
@@ -161,6 +162,41 @@ export async function queryTenant<T = Record<string, unknown>>(
       }),
     );
     return { items: (out.Items ?? []) as T[], lastKey: out.LastEvaluatedKey };
+  } catch (err) {
+    throw toDataAccessError(err);
+  }
+}
+
+/** Tenant'in bir sort-key on ekli tum kayitlari (sayfalama dongusu ile). */
+export async function queryTenantAll<T = Record<string, unknown>>(
+  apartmentId: string,
+  skPrefix: string,
+  options: Omit<TenantQueryOptions, 'skPrefix' | 'ExclusiveStartKey'> = {},
+): Promise<T[]> {
+  const items: T[] = [];
+  let startKey: QueryCommandOutput['LastEvaluatedKey'];
+
+  do {
+    const page = await queryTenant<T>(apartmentId, {
+      ...options,
+      skPrefix,
+      ...(startKey ? { ExclusiveStartKey: startKey } : {}),
+    });
+    items.push(...page.items);
+    startKey = page.lastKey;
+  } while (startKey);
+
+  return items;
+}
+
+/** Tek kaydi tutarli okuma ile getirir; yoksa undefined. */
+export async function getTenantItem<T>(keys: { PK: string; SK: string }): Promise<T | undefined> {
+  const { client, tableName } = getDynamo();
+  try {
+    const out = await client.send(
+      new GetCommand({ TableName: tableName, Key: keys, ConsistentRead: true }),
+    );
+    return out.Item as T | undefined;
   } catch (err) {
     throw toDataAccessError(err);
   }
