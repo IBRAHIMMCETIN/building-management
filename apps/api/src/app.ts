@@ -1,11 +1,15 @@
 import { Hono } from 'hono';
 import { type Authenticator, denyAll } from './auth/claims.js';
 import { type EventPublisher, createInMemoryEventPublisher } from './events/publisher.js';
+import { announcementRoutes } from './modules/announcements/routes.js';
+import { type AnnouncementService, createAnnouncementService } from './modules/announcements/service.js';
 import { coreRoutes } from './modules/core/routes.js';
 import { type CoreService, createCoreService } from './modules/core/service.js';
 import { financeRoutes } from './modules/finance/routes.js';
 import { type FinanceService, createFinanceService } from './modules/finance/service.js';
 import { healthRoutes } from './modules/health/routes.js';
+import { membershipRoutes } from './modules/memberships/routes.js';
+import { type MembershipService, createMembershipService } from './modules/memberships/service.js';
 import { portalRoutes } from './modules/portal/routes.js';
 import { type PortalService, createPortalService } from './modules/portal/service.js';
 
@@ -20,11 +24,13 @@ export type AppConfig = {
   coreService?: CoreService;
   financeService?: FinanceService;
   portalService?: PortalService;
+  membershipService?: MembershipService;
+  announcementService?: AnnouncementService;
   /**
    * Domain olay yayincisi (DUE_GENERATED, PAYMENT_RECEIVED). server.ts/Lambda ortam
    * degiskenlerinden `createEventPublisherFromEnv()` ile verir; verilmezse bellek ici
-   * yayinci kullanilir (yerel gelistirme/test). `financeService` disaridan verilirse
-   * olay yayinciyi o servisin kendi bagimliliklari belirler.
+   * yayinci kullanilir (yerel gelistirme/test). Servisler disaridan verilirse olay
+   * yayinciyi o servislerin kendi bagimliliklari belirler.
    */
   events?: EventPublisher;
 };
@@ -51,6 +57,22 @@ export function createApp(config: AppConfig) {
     financeRoutes({
       authenticate,
       service: config.financeService ?? createFinanceService({ events }),
+    }),
+  );
+
+  app.route(
+    '/api/memberships',
+    membershipRoutes({
+      authenticate,
+      service: config.membershipService ?? createMembershipService(),
+    }),
+  );
+
+  app.route(
+    '/api/announcements',
+    announcementRoutes({
+      authenticate,
+      service: config.announcementService ?? createAnnouncementService({ events }),
     }),
   );
 

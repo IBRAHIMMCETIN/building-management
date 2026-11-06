@@ -23,7 +23,7 @@ import type { IsoDate, IsoDateTime, Kurus, LiableParty } from '../modules/core/t
 // Olay tipleri
 // ---------------------------------------------------------------------------
 
-export const EVENT_TYPES = ['DUE_GENERATED', 'PAYMENT_RECEIVED'] as const;
+export const EVENT_TYPES = ['DUE_GENERATED', 'PAYMENT_RECEIVED', 'ANNOUNCEMENT_PUBLISHED'] as const;
 export type EventType = (typeof EVENT_TYPES)[number];
 
 export type DueGeneratedPayload = {
@@ -48,9 +48,20 @@ export type PaymentReceivedPayload = {
   paidAt: IsoDate;
 };
 
+/** Bildirim worker'i sakinlere SMS/push gonderir; govde tasinmaz, worker kaydi okur. */
+export type AnnouncementPublishedPayload = {
+  announcementId: string;
+  title: string;
+  /** Bos ise tum apartman. */
+  blockIds: string[];
+  publishAt: IsoDateTime;
+  expiresAt?: IsoDateTime;
+};
+
 type PayloadByType = {
   DUE_GENERATED: DueGeneratedPayload;
   PAYMENT_RECEIVED: PaymentReceivedPayload;
+  ANNOUNCEMENT_PUBLISHED: AnnouncementPublishedPayload;
 };
 
 export type DomainEvent<T extends EventType = EventType> = {

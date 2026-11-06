@@ -48,10 +48,13 @@ export const ANNOUNCEMENT_STATUSES = ['draft', 'published', 'archived'] as const
 export type AnnouncementStatus = (typeof ANNOUNCEMENT_STATUSES)[number];
 
 /**
- * Duyuru. Sakinler yalnizca `published` ve yayin penceresindeki duyurulari gorur.
- *   PK = `APT#<apartmentId>`, SK = `ANN#<publishAt>#<announcementId>`
+ * Duyuru. Yasam dongusu: `draft` -> (onay) `published` -> `archived`.
+ * Sakinler yalnizca onaylanmis (`published` + `approvedAt`) ve yayin penceresindeki
+ * duyurulari gorur.
+ *   PK = `APT#<apartmentId>`, SK = `ANN#<announcementId>`
  */
-export type Announcement = TableKeys & {
+export type Announcement = TableKeys &
+  AuditFields & {
   entityType: 'ANNOUNCEMENT';
   announcementId: string;
   apartmentId: string;
@@ -64,8 +67,7 @@ export type Announcement = TableKeys & {
   expiresAt?: IsoDateTime;
   approvedBy?: string;
   approvedAt?: IsoDateTime;
-  createdAt: IsoDateTime;
-  createdBy: string;
+  archivedAt?: IsoDateTime;
 };
 
 /** Sakinin gorebilecegi alt cariler (iliski + oturma durumuna gore). */

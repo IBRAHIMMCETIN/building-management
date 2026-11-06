@@ -9,6 +9,7 @@ import {
 import {
   DynamoDBDocumentClient,
   GetCommand,
+  PutCommand,
   QueryCommand,
   type QueryCommandInput,
   type QueryCommandOutput,
@@ -197,6 +198,43 @@ export async function getTenantItem<T>(keys: { PK: string; SK: string }): Promis
       new GetCommand({ TableName: tableName, Key: keys, ConsistentRead: true }),
     );
     return out.Item as T | undefined;
+  } catch (err) {
+    throw toDataAccessError(err);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Kosullu yazim yardimcilari (yeni kayit / optimistic locking)
+// ---------------------------------------------------------------------------
+
+/** Kayit yoksa yazar; varsa `DataAccessError('conflict')`. */
+export async function putNewItem(item: { PK: string; SK: string }): Promise<void> {
+  const { client, tableName } = getDynamo();
+  try {
+    await client.send(
+      new PutCommand({ TableName: tableName, Item: item, ConditionExpression: 'attribute_not_exists(PK)' }),
+    );
+  } catch (err) {
+    throw toDataAccessError(err);
+  }
+}
+
+/** Kaydin `version` alani `expectedVersion` ise ustune yazar; degilse `conflict`. */
+export async function putVersionedItem(
+  item: { PK: string; SK: string },
+  expectedVersion: number,
+): Promise<void> {
+  const { client, tableName } = getDynamo();
+  try {
+    await client.send(
+      new PutCommand({
+        TableName: tableName,
+        Item: item,
+        ConditionExpression: 'attribute_exists(PK) AND #version = :expectedVersion',
+        ExpressionAttributeNames: { '#version': 'version' },
+        ExpressionAttributeValues: { ':expectedVersion': expectedVersion },
+      }),
+    );
   } catch (err) {
     throw toDataAccessError(err);
   }

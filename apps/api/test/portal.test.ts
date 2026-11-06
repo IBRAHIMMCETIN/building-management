@@ -517,8 +517,7 @@ describe('portal - duyurular', () => {
     publishAt: '2026-11-01T00:00:00.000Z',
     approvedBy: 'mgr-1',
     approvedAt: '2026-11-01T00:00:00.000Z',
-    createdAt: ts,
-    createdBy: 'mgr-1',
+    ...audit,
     ...over,
   });
 
