@@ -6,13 +6,15 @@
     "dev": "tsx watch src/server.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "build": "esbuild src/server.ts --bundle --platform=node --target=node24 --format=esm --outfile=dist/server.mjs"
+    "build": "esbuild src/server.ts --bundle --platform=node --target=node24 --format=esm --outfile=dist/server.mjs --banner:js=\"import { createRequire as __bmCreateRequire } from 'node:module'; const require = __bmCreateRequire(import.meta.url);\"",
+    "build:lambda": "esbuild api=src/lambda.ts pre-token=src/lambda-pre-token.ts --bundle --platform=node --target=node24 --format=esm --minify --outdir=dist/lambda --out-extension:.js=.mjs --banner:js=\"import { createRequire as __bmCreateRequire } from 'node:module'; const require = __bmCreateRequire(import.meta.url);\""
   },
   "dependencies": {
     "@aws-sdk/client-dynamodb": "^3.1163.0",
     "@aws-sdk/client-eventbridge": "^3.1163.0",
     "@aws-sdk/client-sns": "^3.1163.0",
     "@aws-sdk/lib-dynamodb": "^3.1163.0",
+    "@hono/aws-lambda": "^1.0.1",
     "@hono/node-server": "^2.1.6",
     "aws-jwt-verify": "^5.2.1",
     "hono": "^4.13.16"
