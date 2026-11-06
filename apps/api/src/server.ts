@@ -4,6 +4,7 @@ import { serve } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { createApp } from './app.js';
 import { createAuthenticatorFromEnv } from './auth/authenticators.js';
+import { createEventPublisherFromEnv } from './events/publisher.js';
 
 const port = Number(process.env.PORT ?? 3000);
 const version = process.env.APP_VERSION ?? 'dev';
@@ -11,7 +12,11 @@ const version = process.env.APP_VERSION ?? 'dev';
 const publicDir =
   process.env.PUBLIC_DIR ?? path.join(path.dirname(fileURLToPath(import.meta.url)), 'public');
 
-const app = createApp({ version, authenticate: createAuthenticatorFromEnv() });
+const app = createApp({
+  version,
+  authenticate: createAuthenticatorFromEnv(),
+  events: createEventPublisherFromEnv(),
+});
 
 app.use('/*', serveStatic({ root: publicDir }));
 // SPA: bilinmeyen sayfa yollarinda React uygulamasi acilir.

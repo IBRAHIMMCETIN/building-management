@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { type EventPublisher, buildEvent, noopEventPublisher, publishSafely } from '../../events/publisher.js';
 import { type CoreRepository, coreRepository } from '../core/repository.js';
 import {
   type IsoDate,
@@ -91,6 +92,8 @@ export type FinanceServiceDeps = {
   core: Pick<CoreRepository, 'getUnit' | 'listUnits'>;
   now: () => Date;
   newId: () => string;
+  /** Defter yazimindan sonra DUE_GENERATED / PAYMENT_RECEIVED yayini (varsayilan: kapali). */
+  events: EventPublisher;
 };
 
 // ---------------------------------------------------------------------------
@@ -179,9 +182,11 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
     core: coreRepository,
     now: () => new Date(),
     newId: () => randomUUID(),
+    events: noopEventPublisher,
     ...overrides,
   };
   const repo = deps.repository;
+  const publish = (event: Parameters<typeof buildEvent>[0]) => publishSafely(deps.events, buildEvent(event, deps.now));
   const ensuredSystem = new Set<string>();
 
   const stamp = () => deps.now().toISOString();
@@ -417,7 +422,7 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
     if (unit.status !== 'active') throw new FinanceError('unprocessable', 'Bagimsiz bolum aktif degil');
     await ensureSystemAccounts(ctx);
 
-    return postDues(ctx, {
+    const result = await postDues(ctx, {
       idemId: key,
       fp: fingerprint({ op: 'dues', unitId, party, amount, date, dueDate, description }),
       unitId,
@@ -427,6 +432,27 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
       dueDate,
       description,
     });
+    // Tekrar (replay) isteklerinde olay yeniden yayinlanmaz.
+    if (!result.replayed) {
+      const transactionId = result.transaction.transactionId;
+      await publish({
+        eventId: `DUE_GENERATED:${transactionId}`,
+        type: 'DUE_GENERATED',
+        apartmentId: ctx.apartmentId,
+        actorId: ctx.userId,
+        groupKey: unitId,
+        payload: {
+          mode: 'single',
+          date,
+          dueDate,
+          description,
+          liableParty: party,
+          totalAmount: amount,
+          items: [{ unitId, amount, transactionId }],
+        },
+      });
+    }
+    return result;
   }
 
   /**
@@ -484,6 +510,29 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
         replayed: r.replayed,
       });
     }
+    // Yalnizca bu istekte YENI yazilan kalemler icin tek bir toplu olay (yarim kalan toplu
+    // islem ayni anahtarla tamamlandiginda yalnizca kalan kalemler yayinlanir).
+    const fresh = results.filter((r) => !r.replayed);
+    const firstFresh = fresh[0];
+    if (firstFresh) {
+      await publish({
+        eventId: `DUE_GENERATED:${batchId}:${firstFresh.transactionId}`,
+        type: 'DUE_GENERATED',
+        apartmentId: ctx.apartmentId,
+        actorId: ctx.userId,
+        payload: {
+          mode: 'bulk',
+          batchId,
+          date,
+          dueDate,
+          description,
+          liableParty: party,
+          totalAmount: toKurus(fresh.reduce((s, r) => s + r.amount, 0)),
+          items: fresh.map(({ unitId, amount, transactionId }) => ({ unitId, amount, transactionId })),
+        },
+      });
+    }
+
     return {
       batchId,
       distributionKey,
@@ -582,6 +631,23 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
           idempotency: { id: key, fingerprint: fp, recordId: paymentId },
           counter: { name: 'receipt', expected: counterValue },
           record: payment,
+        });
+        await publish({
+          eventId: `PAYMENT_RECEIVED:${paymentId}`,
+          type: 'PAYMENT_RECEIVED',
+          apartmentId: ctx.apartmentId,
+          actorId: ctx.userId,
+          groupKey: unitId,
+          payload: {
+            paymentId,
+            transactionId: tx.transactionId,
+            receiptNumber: payment.receiptNumber,
+            unitId,
+            liableParty: party,
+            amount,
+            method,
+            paidAt,
+          },
         });
         return { payment, transaction: tx, replayed: false };
       } catch (err) {
