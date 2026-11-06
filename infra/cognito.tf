@@ -5,12 +5,22 @@
 # farkli rollerde olabilir). Akis:
 #   1. Kullanici aktif apartmani `custom:active_apartment` (tercihen `custom:active_role`)
 #      niteligine yazar ve token'i yeniler.
-#   2. Pre Token Generation V2 Lambda (api.tf: pre_token) DynamoDB GSI1'den yetkileri okur,
-#      secimi DOGRULAR ve access + id token'a `role`, `apartmentId` (+ `organizationId`)
-#      claim'lerini ekler. Yetkisiz secim claim uretmez.
-#   3. API Gateway JWT authorizer imzayi dogrular; Lambda claim'leri okur (AUTH_MODE=apigw).
+#   2. Pre Token Generation Lambda (api.tf: pre_token) DynamoDB GSI1'den yetkileri
+#      (UNIT_MEMBERSHIP + APARTMENT_ROLE) okur, secimi DOGRULAR ve `role`, `apartmentId`
+#      (+ `organizationId`) claim'lerini ekler. Yetkisiz secim claim uretmez.
+#        LITE       -> tetikleyici V1_0: claim'ler yalnizca ID token'da. Istemci API'ye ID token
+#                      gonderir (`frontend_env.VITE_COGNITO_TOKEN_USE = "id"`).
+#        ESSENTIALS -> tetikleyici V2_0: claim'ler access + ID token'da.
+#   3. API Gateway JWT authorizer imzayi ve `aud`/`client_id`'yi dogrular; Lambda claim'leri
+#      okur (AUTH_MODE=apigw). Iki token turu da ayni istemciye ait oldugu icin kabul edilir.
 # Tek istisna: `platform_admin` Cognito group'undan gelir.
 # ---------------------------------------------------------------------------
+
+locals {
+  pre_token_lambda_version = var.cognito_user_pool_tier == "LITE" ? "V1_0" : "V2_0"
+  api_token_use            = var.cognito_user_pool_tier == "LITE" ? "id" : "access"
+  ses_enabled              = var.ses_identity_arn != ""
+}
 
 resource "aws_cognito_user_pool" "main" {
   name           = local.name
@@ -54,9 +64,12 @@ resource "aws_cognito_user_pool" "main" {
     }
   }
 
-  # Varsayilan Cognito e-postasi gunluk ~50 ileti ile sinirlidir; uretimde SES'e gecin.
+  # SES verilmisse DEVELOPER (SES kotalari), yoksa COGNITO_DEFAULT (~50 e-posta/gun).
   email_configuration {
-    email_sending_account = "COGNITO_DEFAULT"
+    email_sending_account  = local.ses_enabled ? "DEVELOPER" : "COGNITO_DEFAULT"
+    source_arn             = local.ses_enabled ? var.ses_identity_arn : null
+    from_email_address     = local.ses_enabled ? var.ses_from_address : null
+    reply_to_email_address = local.ses_enabled && var.ses_reply_to != "" ? var.ses_reply_to : null
   }
 
   # Ozel nitelikler: yalnizca TERCIH tasir, yetki degildir (Pre Token Lambda dogrular).
@@ -91,7 +104,14 @@ resource "aws_cognito_user_pool" "main" {
   lambda_config {
     pre_token_generation_config {
       lambda_arn     = aws_lambda_function.pre_token.arn
-      lambda_version = "V2_0"
+      lambda_version = local.pre_token_lambda_version
+    }
+  }
+
+  lifecycle {
+    precondition {
+      condition     = !local.ses_enabled || var.ses_from_address != ""
+      error_message = "ses_identity_arn verildiginde ses_from_address de verilmelidir."
     }
   }
 
@@ -143,6 +163,34 @@ resource "aws_cognito_user_pool_client" "web" {
     "custom:active_apartment",
     "custom:active_role",
   ]
+}
+
+# SES kimligine Cognito'nun bu hesap/havuz adina gonderim yapabilmesi icin yetki.
+resource "aws_ses_identity_policy" "cognito" {
+  count    = local.ses_enabled ? 1 : 0
+  identity = var.ses_identity_arn
+  name     = "${local.name}-cognito"
+  policy   = data.aws_iam_policy_document.ses_cognito[0].json
+}
+
+data "aws_iam_policy_document" "ses_cognito" {
+  count = local.ses_enabled ? 1 : 0
+
+  statement {
+    actions   = ["ses:SendEmail", "ses:SendRawEmail"]
+    resources = [var.ses_identity_arn]
+
+    principals {
+      type        = "Service"
+      identifiers = ["email.cognito-idp.amazonaws.com"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:SourceAccount"
+      values   = [data.aws_caller_identity.current.account_id]
+    }
+  }
 }
 
 resource "aws_lambda_permission" "cognito_pre_token" {

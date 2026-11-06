@@ -2,6 +2,8 @@ import { Hono } from 'hono';
 import { type Authenticator, denyAll } from './auth/claims.js';
 import { type EventPublisher, createInMemoryEventPublisher } from './events/publisher.js';
 import { announcementRoutes } from './modules/announcements/routes.js';
+import { apartmentRoleRoutes } from './modules/apartment-roles/routes.js';
+import { type ApartmentRoleService, createApartmentRoleService } from './modules/apartment-roles/service.js';
 import { type AnnouncementService, createAnnouncementService } from './modules/announcements/service.js';
 import { coreRoutes } from './modules/core/routes.js';
 import { type CoreService, createCoreService } from './modules/core/service.js';
@@ -26,6 +28,7 @@ export type AppConfig = {
   portalService?: PortalService;
   membershipService?: MembershipService;
   announcementService?: AnnouncementService;
+  apartmentRoleService?: ApartmentRoleService;
   /**
    * Domain olay yayincisi (DUE_GENERATED, PAYMENT_RECEIVED). server.ts/Lambda ortam
    * degiskenlerinden `createEventPublisherFromEnv()` ile verir; verilmezse bellek ici
@@ -65,6 +68,14 @@ export function createApp(config: AppConfig) {
     membershipRoutes({
       authenticate,
       service: config.membershipService ?? createMembershipService(),
+    }),
+  );
+
+  app.route(
+    '/api/apartment-roles',
+    apartmentRoleRoutes({
+      authenticate,
+      service: config.apartmentRoleService ?? createApartmentRoleService(),
     }),
   );
 

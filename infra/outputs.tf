@@ -60,5 +60,16 @@ output "frontend_env" {
     VITE_COGNITO_REGION           = local.region
     VITE_COGNITO_USER_POOL_ID     = aws_cognito_user_pool.main.id
     VITE_COGNITO_USER_POOL_CLIENT = aws_cognito_user_pool_client.web.id
+    # LITE katmaninda rol claim'leri yalnizca ID token'da: API'ye ID token gonderilmeli.
+    VITE_COGNITO_TOKEN_USE = local.api_token_use
   }
+}
+
+output "notification_worker_function_name" {
+  value = aws_lambda_function.notification_worker.function_name
+}
+
+output "api_token_use" {
+  description = "API'ye gonderilecek Cognito token turu (id | access)."
+  value       = local.api_token_use
 }

@@ -3,7 +3,11 @@ import { getDynamo } from '../config/dynamodb.js';
 import { ROLES, type Role } from './claims.js';
 
 /**
- * Cognito Pre Token Generation (V2) mantigi.
+ * Cognito Pre Token Generation mantigi (V1 ve V2 olaylari).
+ *
+ *  - V1_0 (Lite katmani): claim'ler yalnizca ID token'a eklenebilir -> istemci API'ye ID token
+ *    gonderir (API Gateway JWT authorizer `aud` = client id ile dogrular).
+ *  - V2_0 (Essentials/Plus): claim'ler access + ID token'a eklenir.
  *
  * Aktif apartman baglamini JWT'ye `apartmentId` + `role` (+ `organizationId`) claim'leri
  * olarak ekler. Rol bilgisi Cognito group'larinda DEGIL, DynamoDB'deki uyelik kayitlarinda
@@ -30,7 +34,7 @@ type ClaimsOverride = {
   claimsToSuppress?: string[];
 };
 
-export type PreTokenGenerationV2Event = {
+export type PreTokenGenerationEvent = {
   version: string;
   triggerSource: string;
   userName: string;
@@ -39,6 +43,9 @@ export type PreTokenGenerationV2Event = {
     groupConfiguration?: { groupsToOverride?: string[] };
   };
   response: {
+    /** V1_0 yaniti: yalnizca ID token. */
+    claimsOverrideDetails?: ClaimsOverride | null;
+    /** V2_0 yaniti: access + ID token. */
     claimsAndScopeOverrideDetails?: {
       idTokenGeneration?: ClaimsOverride;
       accessTokenGeneration?: ClaimsOverride & { scopesToAdd?: string[]; scopesToSuppress?: string[] };
@@ -90,7 +97,8 @@ function isCurrent(item: GrantItem, today: string): boolean {
 /**
  * Ham kayitlari yetkiye cevirir:
  *  - `UNIT_MEMBERSHIP` (malik/kiraci) -> `resident`
- *  - `role` alani tasiyan personel/yonetici kayitlari -> o rol (`platform_admin` haric)
+ *  - `APARTMENT_ROLE` (yonetici/personel) -> kayittaki rol (`platform_admin` ve `resident` haric)
+ * Diger kayit turleri yok sayilir (GSI1'e ileride eklenecek baska kayitlar yetki vermez).
  */
 export function toGrants(items: GrantItem[], today: string): Grant[] {
   const grants: Grant[] = [];
@@ -101,7 +109,13 @@ export function toGrants(items: GrantItem[], today: string): Grant[] {
       continue;
     }
     const role = item.role;
-    if (role && role !== 'platform_admin' && (ROLES as readonly string[]).includes(role)) {
+    if (
+      item.entityType === 'APARTMENT_ROLE' &&
+      role &&
+      role !== 'platform_admin' &&
+      role !== 'resident' &&
+      (ROLES as readonly string[]).includes(role)
+    ) {
       grants.push({
         apartmentId: item.apartmentId,
         role: role as Grant['role'],
@@ -177,7 +191,7 @@ export function createPreTokenHandler(overrides: Partial<PreTokenDeps> = {}) {
     ...overrides,
   };
 
-  return async (event: PreTokenGenerationV2Event): Promise<PreTokenGenerationV2Event> => {
+  return async (event: PreTokenGenerationEvent): Promise<PreTokenGenerationEvent> => {
     const attrs = event.request.userAttributes ?? {};
     const userId = attrs.sub;
     const groups = event.request.groupConfiguration?.groupsToOverride ?? [];
@@ -216,12 +230,16 @@ export function createPreTokenHandler(overrides: Partial<PreTokenDeps> = {}) {
       claimsToAddOrOverride: claims,
       ...(suppress.length ? { claimsToSuppress: [...suppress] } : {}),
     };
-    event.response = {
-      claimsAndScopeOverrideDetails: {
-        idTokenGeneration: override,
-        accessTokenGeneration: override,
-      },
-    };
+    // Cognito V1_0 tetikleyicisine version "1", V2_0'a "2" gonderir.
+    event.response =
+      event.version === '1'
+        ? { claimsOverrideDetails: override }
+        : {
+            claimsAndScopeOverrideDetails: {
+              idTokenGeneration: override,
+              accessTokenGeneration: override,
+            },
+          };
     return event;
   };
 }

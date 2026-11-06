@@ -1,5 +1,5 @@
 # ---------------------------------------------------------------------------
-# Domain olaylari: API Lambda -> SNS topic -> SQS (bildirim kuyrugu) -> worker (Faz 5).
+# Domain olaylari: API Lambda -> SNS topic -> SQS (bildirim kuyrugu) -> worker (worker.tf).
 #
 # Uygulama (src/events/publisher.ts) her mesaja `eventType` ve `apartmentId` mesaj
 # niteliklerini ekler; abonelik filtresi bunlara gore calisir. Raw delivery acik: SQS

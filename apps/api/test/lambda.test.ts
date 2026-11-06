@@ -2,7 +2,7 @@ import { DynamoDBDocumentClient, PutCommand, QueryCommand } from '@aws-sdk/lib-d
 import { mockClient } from 'aws-sdk-client-mock';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-  type PreTokenGenerationV2Event,
+  type PreTokenGenerationEvent,
   createPreTokenHandler,
   queryGrantItems,
   selectContext,
@@ -15,7 +15,7 @@ import type { UnitMembership } from '../src/modules/portal/types.js';
 const NOW = new Date('2026-11-06T10:00:00.000Z');
 const quiet = { info: () => {} };
 
-function event(attrs: Record<string, string>, groups: string[] = []): PreTokenGenerationV2Event {
+function event(attrs: Record<string, string>, groups: string[] = []): PreTokenGenerationEvent {
   return {
     version: '2',
     triggerSource: 'TokenGeneration_Authentication',
@@ -45,7 +45,7 @@ function run(items: object[], attrs: Record<string, string> = {}, groups: string
   return handler(event(attrs, groups));
 }
 
-const accessClaims = (e: PreTokenGenerationV2Event) =>
+const accessClaims = (e: PreTokenGenerationEvent) =>
   e.response.claimsAndScopeOverrideDetails?.accessTokenGeneration;
 
 // ---------------------------------------------------------------------------
@@ -119,6 +119,28 @@ describe('pre token generation - handler', () => {
       claimsToAddOrOverride: {},
       claimsToSuppress: ['role', 'apartmentId', 'organizationId'],
     });
+  });
+
+  it('V1_0 (Lite) olayinda claimler claimsOverrideDetails ile yalnizca ID tokena eklenir', async () => {
+    const handler = createPreTokenHandler({ loadGrantItems: async () => [unitGrant('apt-1')], now: () => NOW, log: quiet });
+    const out = await handler({ ...event({}), version: '1' });
+    expect(out.response.claimsOverrideDetails).toEqual({
+      claimsToAddOrOverride: { role: 'resident', apartmentId: 'apt-1' },
+      claimsToSuppress: ['organizationId'],
+    });
+    expect(out.response.claimsAndScopeOverrideDetails).toBeUndefined();
+  });
+
+  it('rol yalnizca APARTMENT_ROLE kayitlarindan gelir; resident rolu bu yolla verilemez', () => {
+    const grants = toGrants(
+      [
+        { entityType: 'NOTIFICATION', apartmentId: 'a1', role: 'apartment_manager', status: 'active' },
+        roleGrant('a1', 'resident'),
+        roleGrant('a1', 'security_guard'),
+      ],
+      '2026-11-06',
+    );
+    expect(grants).toEqual([{ apartmentId: 'a1', role: 'security_guard', organizationId: undefined }]);
   });
 
   it('platform_admin yalnizca Cognito groupundan gelir, DynamoDB okunmaz', async () => {

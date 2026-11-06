@@ -95,12 +95,20 @@ run "prod_plan" {
 
   # --- Cognito ---
   assert {
-    condition     = aws_cognito_user_pool.main.user_pool_tier == "ESSENTIALS"
-    error_message = "Pre Token V2 icin ESSENTIALS gerekli"
+    condition     = aws_cognito_user_pool.main.user_pool_tier == "LITE"
+    error_message = "Varsayilan katman maliyet icin LITE olmali"
   }
   assert {
-    condition     = aws_cognito_user_pool.main.lambda_config[0].pre_token_generation_config[0].lambda_version == "V2_0"
-    error_message = "Pre Token Generation V2 bagli olmali"
+    condition     = aws_cognito_user_pool.main.lambda_config[0].pre_token_generation_config[0].lambda_version == "V1_0"
+    error_message = "LITE katmaninda Pre Token Generation V1 kullanilmali"
+  }
+  assert {
+    condition     = output.api_token_use == "id" && output.frontend_env.VITE_COGNITO_TOKEN_USE == "id"
+    error_message = "LITE katmaninda istemci ID token gondermeli"
+  }
+  assert {
+    condition     = aws_cognito_user_pool.main.email_configuration[0].email_sending_account == "COGNITO_DEFAULT" && length(aws_ses_identity_policy.cognito) == 0
+    error_message = "SES verilmezse COGNITO_DEFAULT kullanilmali"
   }
   assert {
     condition     = !aws_cognito_user_pool_client.web.generate_secret
@@ -168,6 +176,24 @@ run "prod_plan" {
     condition     = aws_apigatewayv2_integration.api.payload_format_version == "2.0"
     error_message = "Hono aws-lambda adaptoru payload v2 bekler"
   }
+
+  # --- Bildirim worker'i ---
+  assert {
+    condition     = aws_lambda_function.notification_worker.handler == "notification-worker.handler" && tolist(aws_lambda_function.notification_worker.architectures) == tolist(["arm64"])
+    error_message = "Worker handler/mimari hatali"
+  }
+  assert {
+    condition     = aws_lambda_event_source_mapping.notification.event_source_arn == aws_sqs_queue.notification.arn
+    error_message = "Worker bildirim kuyruguna bagli olmali"
+  }
+  assert {
+    condition     = contains(aws_lambda_event_source_mapping.notification.function_response_types, "ReportBatchItemFailures")
+    error_message = "Kismi toplu hata bildirimi acik olmali"
+  }
+  assert {
+    condition     = aws_sqs_queue.notification.visibility_timeout_seconds >= 6 * aws_lambda_function.notification_worker.timeout
+    error_message = "Gorunurluk zaman asimi worker zaman asiminin 6 kati olmali"
+  }
 }
 
 run "staging_names_and_alerts" {
@@ -193,12 +219,49 @@ run "staging_names_and_alerts" {
   }
 }
 
-run "rejects_lite_tier" {
+run "rejects_plus_tier" {
   command = plan
 
   variables {
-    cognito_user_pool_tier = "LITE"
+    cognito_user_pool_tier = "PLUS"
   }
 
   expect_failures = [var.cognito_user_pool_tier]
+}
+
+run "essentials_uses_v2_and_ses" {
+  command = plan
+
+  variables {
+    cognito_user_pool_tier = "ESSENTIALS"
+    ses_identity_arn       = "arn:aws:ses:eu-central-1:123456789012:identity/ornek.com"
+    ses_from_address       = "Bina Yonetim <no-reply@ornek.com>"
+  }
+
+  assert {
+    condition     = aws_cognito_user_pool.main.lambda_config[0].pre_token_generation_config[0].lambda_version == "V2_0"
+    error_message = "ESSENTIALS katmaninda V2 kullanilmali"
+  }
+  assert {
+    condition     = output.api_token_use == "access"
+    error_message = "ESSENTIALS katmaninda access token kullanilmali"
+  }
+  assert {
+    condition     = aws_cognito_user_pool.main.email_configuration[0].email_sending_account == "DEVELOPER" && aws_cognito_user_pool.main.email_configuration[0].source_arn == "arn:aws:ses:eu-central-1:123456789012:identity/ornek.com"
+    error_message = "SES verilince DEVELOPER modu kullanilmali"
+  }
+  assert {
+    condition     = length(aws_ses_identity_policy.cognito) == 1
+    error_message = "SES kimligine Cognito gonderim politikasi eklenmeli"
+  }
+}
+
+run "ses_requires_from_address" {
+  command = plan
+
+  variables {
+    ses_identity_arn = "arn:aws:ses:eu-central-1:123456789012:identity/ornek.com"
+  }
+
+  expect_failures = [aws_cognito_user_pool.main]
 }

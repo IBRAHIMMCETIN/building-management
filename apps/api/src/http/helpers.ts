@@ -2,6 +2,7 @@ import type { Context, MiddlewareHandler } from 'hono';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import type { AuthClaims, Authenticator, Role } from '../auth/claims.js';
 import { DataAccessError } from '../config/dynamodb.js';
+import { AccessDeniedError } from './errors.js';
 import { CoreError } from '../modules/core/service.js';
 import { FinanceError } from '../modules/finance/service.js';
 import { PortalError } from '../modules/portal/service.js';
@@ -53,6 +54,9 @@ export function handleError(err: Error, c: Context) {
   }
   if (err instanceof FinanceError) {
     return c.json({ error: err.code, message: err.message }, err.httpStatus);
+  }
+  if (err instanceof AccessDeniedError) {
+    return c.json({ error: 'forbidden', message: err.message }, 403);
   }
   if (err instanceof PortalError) {
     return c.json({ error: err.code, message: err.message, ...err.details }, err.httpStatus);

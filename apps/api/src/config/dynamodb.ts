@@ -208,7 +208,7 @@ export async function getTenantItem<T>(keys: { PK: string; SK: string }): Promis
 // ---------------------------------------------------------------------------
 
 /** Kayit yoksa yazar; varsa `DataAccessError('conflict')`. */
-export async function putNewItem(item: { PK: string; SK: string }): Promise<void> {
+export async function putNewItem(item: { PK: string; SK: string; [key: string]: unknown }): Promise<void> {
   const { client, tableName } = getDynamo();
   try {
     await client.send(
@@ -221,7 +221,7 @@ export async function putNewItem(item: { PK: string; SK: string }): Promise<void
 
 /** Kaydin `version` alani `expectedVersion` ise ustune yazar; degilse `conflict`. */
 export async function putVersionedItem(
-  item: { PK: string; SK: string },
+  item: { PK: string; SK: string; [key: string]: unknown },
   expectedVersion: number,
 ): Promise<void> {
   const { client, tableName } = getDynamo();

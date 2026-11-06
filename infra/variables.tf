@@ -51,13 +51,45 @@ variable "dynamodb_deletion_protection" {
 
 variable "cognito_user_pool_tier" {
   type        = string
-  default     = "ESSENTIALS"
-  description = "Access token'a ozel claim ekleyen Pre Token Generation V2, ESSENTIALS veya PLUS gerektirir."
+  default     = "LITE"
+  description = <<-EOT
+    LITE (varsayilan): 10.000 MAU/ay ucretsiz, sonrasi en ucuz katman. Pre Token Generation V1
+    yalnizca ID token'a claim ekler -> istemci API'ye ID token gonderir.
+    ESSENTIALS: ayni ucretsiz kota, sonrasi ~3 kat pahali; V2 ile access token'a da claim eklenir.
+    PLUS: ucretsiz kotasi yok; bu proje icin gereksiz.
+  EOT
 
   validation {
-    condition     = contains(["ESSENTIALS", "PLUS"], var.cognito_user_pool_tier)
-    error_message = "Pre Token Generation V2 icin ESSENTIALS veya PLUS gereklidir."
+    condition     = contains(["LITE", "ESSENTIALS"], var.cognito_user_pool_tier)
+    error_message = "LITE veya ESSENTIALS olmalidir (PLUS'in ucretsiz kotasi yoktur)."
   }
+}
+
+# --- E-posta (SES) ----------------------------------------------------------
+# Cognito'nun varsayilan e-postasi gunluk ~50 ileti ile sinirlidir. Uretimde SES kullanin:
+#   1. SES'te alan adini/adresi dogrulayin (ve sandbox'tan cikis talep edin).
+#   2. Asagidaki iki degiskeni verin. Bos birakilirsa COGNITO_DEFAULT kullanilir.
+
+variable "ses_identity_arn" {
+  type        = string
+  default     = ""
+  description = "Dogrulanmis SES kimliginin ARN'i (arn:aws:ses:<region>:<hesap>:identity/ornek.com)."
+
+  validation {
+    condition     = var.ses_identity_arn == "" || can(regex("^arn:aws[a-z-]*:ses:[a-z0-9-]+:[0-9]{12}:identity/.+$", var.ses_identity_arn))
+    error_message = "Gecerli bir SES identity ARN'i olmalidir."
+  }
+}
+
+variable "ses_from_address" {
+  type        = string
+  default     = ""
+  description = "Gonderen adresi, ornegin \"Bina Yonetim <no-reply@ornek.com>\". ses_identity_arn ile birlikte verilmelidir."
+}
+
+variable "ses_reply_to" {
+  type    = string
+  default = ""
 }
 
 variable "cognito_admin_create_user_only" {
