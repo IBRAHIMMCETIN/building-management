@@ -67,6 +67,19 @@ variables {
 run "prod_plan" {
   command = plan
 
+  # Mock saglayicinin hesaplanan degerleri varsayilan olarak yalnizca apply'da uretilir;
+  # plan'da `known after apply` kalan kuyruk ARN'i asagidaki baglanti assert'ini kirar.
+  # ARN'i plan asamasinda sabitliyoruz (Terraform >= 1.11 `override_during`).
+  override_resource {
+    target          = aws_sqs_queue.notification
+    override_during = plan
+    values = {
+      arn = "arn:aws:sqs:eu-central-1:123456789012:building-management-prod-notifications"
+      id  = "https://sqs.eu-central-1.amazonaws.com/123456789012/building-management-prod-notifications"
+      url = "https://sqs.eu-central-1.amazonaws.com/123456789012/building-management-prod-notifications"
+    }
+  }
+
   # --- DynamoDB ---
   assert {
     condition     = aws_dynamodb_table.main.name == "building-management"
@@ -183,7 +196,7 @@ run "prod_plan" {
     error_message = "Worker handler/mimari hatali"
   }
   assert {
-    condition     = aws_lambda_event_source_mapping.notification.event_source_arn == aws_sqs_queue.notification.arn
+    condition     = aws_lambda_event_source_mapping.notification.event_source_arn == aws_sqs_queue.notification.arn && aws_sqs_queue.notification.arn == "arn:aws:sqs:eu-central-1:123456789012:building-management-prod-notifications"
     error_message = "Worker bildirim kuyruguna bagli olmali"
   }
   assert {
