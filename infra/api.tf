@@ -89,6 +89,14 @@ data "aws_iam_policy_document" "api" {
     actions   = ["sns:Publish"]
     resources = [aws_sns_topic.events.arn]
   }
+
+  # Sakin daveti (/api/residents/invite): e-postayla kullanici bul / olustur. Yalnizca bu
+  # havuz; silme, sifre sifirlama, group veya nitelik yazma yetkisi YOK.
+  statement {
+    sid       = "InviteResidents"
+    actions   = ["cognito-idp:AdminGetUser", "cognito-idp:AdminCreateUser"]
+    resources = [aws_cognito_user_pool.main.arn]
+  }
 }
 
 resource "aws_iam_role_policy" "api" {
@@ -122,6 +130,8 @@ resource "aws_lambda_function" "api" {
       DYNAMODB_TABLE_NAME  = aws_dynamodb_table.main.name
       EVENTS_MODE          = "sns"
       EVENTS_SNS_TOPIC_ARN = aws_sns_topic.events.arn
+      # Yalnizca davet icin (AUTH_MODE=apigw oldugundan kimlik dogrulamayi etkilemez).
+      COGNITO_USER_POOL_ID = aws_cognito_user_pool.main.id
     }
   }
 

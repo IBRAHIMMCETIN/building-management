@@ -1,0 +1,50 @@
+import {
+  getTenantItem,
+  putNewItem,
+  putVersionedItem,
+  queryTenantAll,
+  skKey,
+  tenantPk,
+} from '../../config/dynamodb.js';
+import type { AuditFields, TableKeys } from '../core/types.js';
+
+/**
+ * Apartman bazli kisi kaydi: yonetici ekranlarinda ad/e-posta gostermek icin.
+ *   PK = `APT#<apartmentId>`, SK = `PERSON#<userId>`
+ *
+ * Bilerek apartman bolumunde tutulur (kullanici geneli bir profil degil): ayni kisi iki
+ * apartmanda farkli adla kayitli olabilir ve bir apartmanin yoneticisi digerinin
+ * verisini goremez (tenant izolasyonu). Kimlik dogrulamanin kaynagi Cognito'dur.
+ */
+export type Person = TableKeys &
+  AuditFields & {
+    entityType: 'PERSON';
+    apartmentId: string;
+    /** Cognito `sub`. */
+    userId: string;
+    fullName: string;
+    email: string;
+  };
+
+const PERSON_PREFIX = 'PERSON#';
+
+export const personKeys = {
+  person: (apartmentId: string, userId: string): TableKeys => ({
+    PK: tenantPk(apartmentId),
+    SK: skKey('PERSON', userId),
+  }),
+};
+
+export type PersonRepository = {
+  get(apartmentId: string, userId: string): Promise<Person | undefined>;
+  list(apartmentId: string): Promise<Person[]>;
+  create(person: Person): Promise<void>;
+  update(person: Person, expectedVersion: number): Promise<void>;
+};
+
+export const personRepository: PersonRepository = {
+  get: (apartmentId, userId) => getTenantItem<Person>(personKeys.person(apartmentId, userId)),
+  list: (apartmentId) => queryTenantAll<Person>(apartmentId, PERSON_PREFIX, { ConsistentRead: true }),
+  create: (person) => putNewItem(person),
+  update: (person, expectedVersion) => putVersionedItem(person, expectedVersion),
+};

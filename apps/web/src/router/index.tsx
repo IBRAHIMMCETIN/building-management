@@ -3,6 +3,7 @@ import { AdminLayout } from '@/layouts/AdminLayout';
 import { AuthLayout } from '@/layouts/AuthLayout';
 import { ResidentLayout } from '@/layouts/ResidentLayout';
 import { DashboardPage } from '@/pages/admin/DashboardPage';
+import { UnitsPage } from '@/pages/admin/units/UnitsPage';
 import { ForgotPasswordPage } from '@/pages/auth/ForgotPasswordPage';
 import { LoginPage } from '@/pages/auth/LoginPage';
 import { SelectContextPage } from '@/pages/auth/SelectContextPage';
@@ -43,7 +44,7 @@ export const router = createBrowserRouter([
             element: <AdminLayout />,
             children: [
               { index: true, element: <DashboardPage /> },
-              { path: 'units', element: <PlaceholderPage title="Daireler" /> },
+              { path: 'units', element: <UnitsPage /> },
               { path: 'finance', element: <PlaceholderPage title="Finans" /> },
               { path: 'announcements', element: <PlaceholderPage title="Duyurular" /> },
             ],

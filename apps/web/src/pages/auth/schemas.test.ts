@@ -24,3 +24,10 @@ describe('sifre semalari (Cognito politikasi)', () => {
     expect(forgotConfirmSchema.safeParse({ ...base, code: ' 123456 ' }).success).toBe(true);
   });
 });
+
+describe('e-posta', () => {
+  it('bosluklu ve buyuk harfli girisi normalize edip kabul eder', async () => {
+    const { loginSchema } = await import('./schemas');
+    expect(loginSchema.parse({ email: '  Ayse@Site.COM ', password: 'x' }).email).toBe('ayse@site.com');
+  });
+});

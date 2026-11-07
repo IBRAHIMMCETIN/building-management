@@ -169,6 +169,11 @@ run "prod_plan" {
     condition     = aws_lambda_function.api.environment[0].variables.AUTH_MODE == "apigw" && aws_lambda_function.api.environment[0].variables.EVENTS_MODE == "sns"
     error_message = "Lambda AUTH_MODE=apigw ve EVENTS_MODE=sns ile calismali"
   }
+
+  assert {
+    condition     = toset([for a in flatten([for st in data.aws_iam_policy_document.api.statement : st.actions]) : a if startswith(a, "cognito-idp:")]) == toset(["cognito-idp:AdminGetUser", "cognito-idp:AdminCreateUser"])
+    error_message = "API Lambda yalnizca davet icin AdminGetUser/AdminCreateUser yetkisine sahip olmali"
+  }
   assert {
     condition     = aws_lambda_function.api.environment[0].variables.APP_VERSION == "test-sha"
     error_message = "APP_VERSION degiskenden gelmeli"

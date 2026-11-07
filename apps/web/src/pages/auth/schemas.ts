@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
-export const emailSchema = z.email('Geçerli bir e-posta adresi girin.').trim().toLowerCase();
+// Once kirp/kucult, sonra dogrula (z.email().trim() bicimi kirpmadan once denetler).
+export const emailSchema = z.string().trim().toLowerCase().pipe(z.email('Geçerli bir e-posta adresi girin.'));
 
 /** Cognito parola politikasi ile ayni (infra/cognito.tf password_policy). */
 export const PASSWORD_RULES = [

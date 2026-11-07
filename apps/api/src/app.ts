@@ -15,6 +15,8 @@ import { type MeService, createMeService } from './modules/me/service.js';
 import { membershipRoutes } from './modules/memberships/routes.js';
 import { type MembershipService, createMembershipService } from './modules/memberships/service.js';
 import { portalRoutes } from './modules/portal/routes.js';
+import { residentRoutes } from './modules/residents/routes.js';
+import { type ResidentsService, createResidentsService } from './modules/residents/service.js';
 import { type PortalService, createPortalService } from './modules/portal/service.js';
 
 export type AppConfig = {
@@ -35,6 +37,7 @@ export type AppConfig = {
   financeService?: FinanceService;
   portalService?: PortalService;
   membershipService?: MembershipService;
+  residentsService?: ResidentsService;
   announcementService?: AnnouncementService;
   apartmentRoleService?: ApartmentRoleService;
   /**
@@ -75,11 +78,14 @@ export function createApp(config: AppConfig) {
     }),
   );
 
+  const membershipService = config.membershipService ?? createMembershipService();
+  app.route('/api/memberships', membershipRoutes({ authenticate, service: membershipService }));
   app.route(
-    '/api/memberships',
-    membershipRoutes({
+    '/api/residents',
+    residentRoutes({
       authenticate,
-      service: config.membershipService ?? createMembershipService(),
+      // Davet, uyelik kurallarini memberships servisinden alir (tek kaynak).
+      service: config.residentsService ?? createResidentsService({ memberships: membershipService }),
     }),
   );
 

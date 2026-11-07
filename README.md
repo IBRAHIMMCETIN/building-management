@@ -245,6 +245,7 @@ Tüm uçlar `/api` altındadır. `GET /api/health` dışındakiler JWT ile korun
 | `core` | `/api/sites` | Site, blok ve bağımsız bölüm (daire/dükkan) yönetimi; m², arsa payı, sayaç kuralları |
 | `finance` | `/api/finance` | Hesaplar, toplu aidat tahakkuku, tahsilat, gider, ters kayıt, bakiye |
 | `memberships` | `/api/memberships` | Kullanıcı–daire bağlantıları (malik / kiracı) |
+| `residents` | `/api/residents` | Apartmanın kişileri (ad / e-posta, denetçiye maskeli) ve `POST /invite`: e-postayla Cognito kullanıcısı bul/oluştur + üyelik ata |
 | `apartment-roles` | `/api/apartment-roles` | Apartman bazlı personel ve yönetici rolleri |
 | `announcements` | `/api/announcements` | Duyuru oluşturma, onay, arşiv |
 | `portal` | `/api/portal` | Sakin ekranı: `my-unit`, `my-dues`, `my-statement`, `my-receipts`, duyurular |
