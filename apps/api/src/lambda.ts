@@ -1,6 +1,6 @@
 import { handle } from '@hono/aws-lambda';
 import { createApp } from './app.js';
-import { createAuthenticatorFromEnv } from './auth/authenticators.js';
+import { createAuthFromEnv } from './auth/authenticators.js';
 import { createEventPublisherFromEnv } from './events/publisher.js';
 
 /**
@@ -15,9 +15,11 @@ import { createEventPublisherFromEnv } from './events/publisher.js';
  * Yanlis yapilandirma soguk baslangicta (init) hata verir; sessizce calismaz.
  * Statik React dosyalari burada sunulmaz (Cloudflare Pages).
  */
+const auth = createAuthFromEnv();
 const app = createApp({
   version: process.env.APP_VERSION ?? 'dev',
-  authenticate: createAuthenticatorFromEnv(),
+  authenticate: auth.authenticate,
+  identify: auth.identify,
   events: createEventPublisherFromEnv(),
 });
 

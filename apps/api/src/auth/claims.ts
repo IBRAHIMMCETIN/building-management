@@ -54,6 +54,41 @@ export function claimsFromRecord(raw: unknown): AuthClaims | null {
   };
 }
 
+/**
+ * Rolden bagimsiz kimlik. Aktif apartman baglami henuz secilmemis (Pre Token Lambda rol
+ * claim'i eklememis) kullanici da kimligi dogrulanmis sayilir; yalnizca baglam secimi
+ * icin gereken uclar (`/api/me/*`) bunu kullanir. Diger tum uclar `AuthClaims` ister.
+ */
+export type AuthIdentity = {
+  userId: string;
+  email?: string;
+  /** `cognito:groups` (yalnizca `platform_admin` anlamlidir). */
+  groups: string[];
+  /** Token'da gecerli bir baglam varsa (rol + apartman). */
+  claims: AuthClaims | null;
+};
+
+export type IdentityResolver = (c: Context) => Promise<AuthIdentity | null> | AuthIdentity | null;
+
+export const denyAllIdentity: IdentityResolver = () => null;
+
+export function identityFromRecord(raw: unknown): AuthIdentity | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  const userId = nonEmpty(r.sub);
+  if (!userId) return null;
+
+  // API Gateway HTTP API dizi claim'lerini "[a b]" metni olarak iletir; JWT'de dizidir.
+  const rawGroups = r['cognito:groups'];
+  const groups = Array.isArray(rawGroups)
+    ? rawGroups.filter((g): g is string => typeof g === 'string')
+    : typeof rawGroups === 'string'
+      ? rawGroups.replace(/^\[|\]$/g, '').split(/[\s,]+/).filter(Boolean)
+      : [];
+
+  return { userId, email: nonEmpty(r.email), groups, claims: claimsFromRecord(raw) };
+}
+
 type GatewayEvent = {
   requestContext?: {
     authorizer?: { jwt?: { claims?: unknown }; claims?: unknown };
@@ -68,4 +103,10 @@ export const apiGatewayAuthenticator: Authenticator = (c) => {
   const env = c.env as { event?: GatewayEvent } | undefined;
   const authorizer = env?.event?.requestContext?.authorizer;
   return claimsFromRecord(authorizer?.jwt?.claims ?? authorizer?.claims);
+};
+
+export const apiGatewayIdentityResolver: IdentityResolver = (c) => {
+  const env = c.env as { event?: GatewayEvent } | undefined;
+  const authorizer = env?.event?.requestContext?.authorizer;
+  return identityFromRecord(authorizer?.jwt?.claims ?? authorizer?.claims);
 };

@@ -241,6 +241,7 @@ Tüm uçlar `/api` altındadır. `GET /api/health` dışındakiler JWT ile korun
 | Modül | Önek | Kapsam |
 | --- | --- | --- |
 | `health` | `/api/health` | Sağlık ve sürüm bilgisi |
+| `me` | `/api/me` | Oturum sahibinin seçebileceği apartman/rol bağlamları (`GET /contexts`). **Rol claim'i gerektirmez**: bağlam seçilmeden önce de çalışır |
 | `core` | `/api/sites` | Site, blok ve bağımsız bölüm (daire/dükkan) yönetimi; m², arsa payı, sayaç kuralları |
 | `finance` | `/api/finance` | Hesaplar, toplu aidat tahakkuku, tahsilat, gider, ters kayıt, bakiye |
 | `memberships` | `/api/memberships` | Kullanıcı–daire bağlantıları (malik / kiracı) |

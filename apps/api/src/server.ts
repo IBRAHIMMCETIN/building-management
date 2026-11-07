@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { serve } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { createApp } from './app.js';
-import { createAuthenticatorFromEnv } from './auth/authenticators.js';
+import { createAuthFromEnv } from './auth/authenticators.js';
 import { createEventPublisherFromEnv } from './events/publisher.js';
 
 const port = Number(process.env.PORT ?? 3000);
@@ -12,9 +12,11 @@ const version = process.env.APP_VERSION ?? 'dev';
 const publicDir =
   process.env.PUBLIC_DIR ?? path.join(path.dirname(fileURLToPath(import.meta.url)), 'public');
 
+const auth = createAuthFromEnv();
 const app = createApp({
   version,
-  authenticate: createAuthenticatorFromEnv(),
+  authenticate: auth.authenticate,
+  identify: auth.identify,
   events: createEventPublisherFromEnv(),
 });
 

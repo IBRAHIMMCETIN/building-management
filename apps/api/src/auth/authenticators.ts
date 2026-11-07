@@ -1,12 +1,34 @@
 import { CognitoJwtVerifier } from 'aws-jwt-verify';
 import type { Context } from 'hono';
-import { type Authenticator, apiGatewayAuthenticator, claimsFromRecord, denyAll } from './claims.js';
+import {
+  type Authenticator,
+  type IdentityResolver,
+  apiGatewayAuthenticator,
+  apiGatewayIdentityResolver,
+  claimsFromRecord,
+  denyAll,
+  denyAllIdentity,
+  identityFromRecord,
+} from './claims.js';
 
 /** `Authorization: Bearer <token>` basliginden token'i cikarir. */
 export function bearerToken(c: Context): string | undefined {
   const header = c.req.header('authorization');
   return header ? /^Bearer\s+(\S+)$/i.exec(header.trim())?.[1] : undefined;
 }
+
+/** Istekten dogrulanmis ham claim kaydini okur (rol yorumu yapmaz); yoksa null. */
+type RawClaimsReader = (c: Context) => Promise<unknown> | unknown;
+
+const authenticatorFrom =
+  (read: RawClaimsReader): Authenticator =>
+  async (c) =>
+    claimsFromRecord(await read(c));
+
+const identityResolverFrom =
+  (read: RawClaimsReader): IdentityResolver =>
+  async (c) =>
+    identityFromRecord(await read(c));
 
 // ---------------------------------------------------------------------------
 // Cognito JWT (EC2/Node veya API Gateway disi dogrudan calisma)
@@ -24,14 +46,13 @@ export type CognitoAuthConfig = {
   tokenUse?: 'access' | 'id';
 };
 
+type CognitoOptions = { verifier?: TokenVerifier; onReject?: (err: unknown) => void };
+
 /**
  * Imza (JWKS), issuer, sure, token_use ve client_id dogrulanir. Dogrulama basarisizsa
  * (suresi dolmus, bozuk, yanlis havuz...) null doner; ayrinti yalnizca `onReject`'e gider.
  */
-export function createCognitoAuthenticator(
-  config: CognitoAuthConfig,
-  options: { verifier?: TokenVerifier; onReject?: (err: unknown) => void } = {},
-): Authenticator {
+function cognitoReader(config: CognitoAuthConfig, options: CognitoOptions = {}): RawClaimsReader {
   const verifier: TokenVerifier =
     options.verifier ??
     CognitoJwtVerifier.create({
@@ -44,12 +65,23 @@ export function createCognitoAuthenticator(
     const token = bearerToken(c);
     if (!token) return null;
     try {
-      return claimsFromRecord(await verifier.verify(token));
+      return await verifier.verify(token);
     } catch (err) {
       options.onReject?.(err);
       return null;
     }
   };
+}
+
+export function createCognitoAuthenticator(config: CognitoAuthConfig, options: CognitoOptions = {}): Authenticator {
+  return authenticatorFrom(cognitoReader(config, options));
+}
+
+export function createCognitoIdentityResolver(
+  config: CognitoAuthConfig,
+  options: CognitoOptions = {},
+): IdentityResolver {
+  return identityResolverFrom(cognitoReader(config, options));
 }
 
 // ---------------------------------------------------------------------------
@@ -63,23 +95,36 @@ export function encodeMockToken(claims: Record<string, unknown>): string {
   return MOCK_PREFIX + Buffer.from(JSON.stringify(claims)).toString('base64url');
 }
 
+/** Imza dogrulamasi YAPMAZ; yalnizca yerel gelistirme icindir. */
+const mockReader: RawClaimsReader = (c) => {
+  const token = bearerToken(c);
+  if (!token?.startsWith(MOCK_PREFIX)) return null;
+  try {
+    return JSON.parse(Buffer.from(token.slice(MOCK_PREFIX.length), 'base64url').toString('utf8'));
+  } catch {
+    return null;
+  }
+};
+
 /** Imza dogrulamasi YAPMAZ; yalnizca yerel gelistirme icindir. Rol yine dogrulanir. */
 export function createMockAuthenticator(): Authenticator {
-  return (c) => {
-    const token = bearerToken(c);
-    if (!token?.startsWith(MOCK_PREFIX)) return null;
-    try {
-      const json = Buffer.from(token.slice(MOCK_PREFIX.length), 'base64url').toString('utf8');
-      return claimsFromRecord(JSON.parse(json));
-    } catch {
-      return null;
-    }
-  };
+  return authenticatorFrom(mockReader);
+}
+
+export function createMockIdentityResolver(): IdentityResolver {
+  return identityResolverFrom(mockReader);
 }
 
 // ---------------------------------------------------------------------------
 // Ortam degiskenlerinden secim
 // ---------------------------------------------------------------------------
+
+export type AuthFromEnv = {
+  /** Rol + apartman claim'i ZORUNLU uclar (varsayilan). */
+  authenticate: Authenticator;
+  /** Yalnizca kimlik: aktif baglam secimi oncesi (`/api/me/*`). */
+  identify: IdentityResolver;
+};
 
 /**
  * AUTH_MODE:
@@ -90,10 +135,10 @@ export function createMockAuthenticator(): Authenticator {
  *  - `deny` (varsayilan): tum korumali istekler 401.
  * Yanlis yapilandirma sessizce gecmez, uygulama baslarken hata verir.
  */
-export function createAuthenticatorFromEnv(
+export function createAuthFromEnv(
   env: NodeJS.ProcessEnv = process.env,
   log: Pick<Console, 'warn'> = console,
-): Authenticator {
+): AuthFromEnv {
   const mode = env.AUTH_MODE ?? (env.COGNITO_USER_POOL_ID ? 'cognito' : 'deny');
 
   switch (mode) {
@@ -106,25 +151,35 @@ export function createAuthenticatorFromEnv(
       if (tokenUse !== 'access' && tokenUse !== 'id') {
         throw new Error("COGNITO_TOKEN_USE 'access' veya 'id' olmalidir");
       }
-      return createCognitoAuthenticator(
+      // Tek dogrulayici: JWKS onbellegi iki kullanim arasinda paylasilir.
+      const read = cognitoReader(
         { userPoolId, clientId, tokenUse },
         {
           onReject: (err) =>
             log.warn(`JWT reddedildi: ${err instanceof Error ? err.constructor.name : 'bilinmeyen hata'}`),
         },
       );
+      return { authenticate: authenticatorFrom(read), identify: identityResolverFrom(read) };
     }
     case 'apigw':
-      return apiGatewayAuthenticator;
+      return { authenticate: apiGatewayAuthenticator, identify: apiGatewayIdentityResolver };
     case 'mock':
       if (env.NODE_ENV === 'production' || env.AWS_LAMBDA_FUNCTION_NAME) {
         throw new Error('AUTH_MODE=mock production/Lambda ortaminda kullanilamaz');
       }
       log.warn('UYARI: AUTH_MODE=mock aktif; JWT imzasi dogrulanmiyor (yalnizca yerel gelistirme)');
-      return createMockAuthenticator();
+      return { authenticate: createMockAuthenticator(), identify: createMockIdentityResolver() };
     case 'deny':
-      return denyAll;
+      return { authenticate: denyAll, identify: denyAllIdentity };
     default:
       throw new Error(`Gecersiz AUTH_MODE: ${mode} (cognito | apigw | mock | deny)`);
   }
+}
+
+/** Geriye donuk uyumluluk: yalnizca rol zorunlu dogrulayiciyi dondurur. */
+export function createAuthenticatorFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+  log: Pick<Console, 'warn'> = console,
+): Authenticator {
+  return createAuthFromEnv(env, log).authenticate;
 }

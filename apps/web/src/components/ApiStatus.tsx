@@ -1,55 +1,36 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { fetchHealth, type Health } from '../api/health';
-import styles from './ApiStatus.module.css';
+import { Button } from '@/components/ui';
+import { useApiHealth } from '@/hooks/useApiHealth';
+import { cn } from '@/lib/cn';
 
-type State = { kind: 'loading' } | { kind: 'ok'; health: Health } | { kind: 'error' };
-
-const shortVersion = (version: string) =>
-  /^[0-9a-f]{40}$/.test(version) ? version.slice(0, 7) : version;
+const shortVersion = (version: string) => (/^[0-9a-f]{40}$/.test(version) ? version.slice(0, 7) : version);
 
 export function ApiStatus() {
-  const [state, setState] = useState<State>({ kind: 'loading' });
-  const requestRef = useRef<AbortController | null>(null);
-
-  // Her kontrol bir oncekini iptal eder; bilesen kapaninca acik istek de iptal edilir.
-  const check = useCallback(() => {
-    requestRef.current?.abort();
-    const request = new AbortController();
-    requestRef.current = request;
-
-    setState({ kind: 'loading' });
-    fetchHealth(request.signal)
-      .then((health) => {
-        if (!request.signal.aborted) setState({ kind: 'ok', health });
-      })
-      .catch(() => {
-        if (!request.signal.aborted) setState({ kind: 'error' });
-      });
-  }, []);
-
-  useEffect(() => {
-    check();
-    return () => requestRef.current?.abort();
-  }, [check]);
+  const { data, isPending, isError, refetch, isFetching } = useApiHealth();
+  const state = isPending ? 'loading' : isError ? 'error' : 'ok';
 
   return (
-    <div className={styles.status}>
-      <p role="status" className={styles.line}>
-        <span className={styles.dot} data-state={state.kind} aria-hidden="true" />
-        <span>
-          {state.kind === 'loading' && 'API durumu kontrol ediliyor…'}
-          {state.kind === 'ok' && (
-            <>
-              API durumu: çalışıyor · sürüm <code>{shortVersion(state.health.version)}</code>
-            </>
+    <div className="flex flex-wrap items-center gap-3">
+      <p role="status" className="m-0 flex items-center gap-2 text-small text-muted">
+        <span
+          aria-hidden="true"
+          className={cn(
+            'size-2 shrink-0 rounded-full bg-muted',
+            state === 'ok' && 'bg-success',
+            state === 'error' && 'bg-danger',
           )}
-          {state.kind === 'error' && 'API durumu: ulaşılamıyor'}
-        </span>
+        />
+        {state === 'loading' && 'API durumu kontrol ediliyor…'}
+        {state === 'ok' && data && (
+          <span>
+            API çalışıyor · sürüm <code>{shortVersion(data.version)}</code>
+          </span>
+        )}
+        {state === 'error' && 'API durumu: ulaşılamıyor'}
       </p>
-      {state.kind === 'error' && (
-        <button type="button" className={styles.retry} onClick={check}>
+      {state === 'error' && (
+        <Button size="sm" variant="secondary" loading={isFetching} onClick={() => void refetch()}>
           Tekrar dene
-        </button>
+        </Button>
       )}
     </div>
   );

@@ -62,7 +62,7 @@ export const GSI1_NAME_DEFAULT = 'GSI1';
 export const userGsi1Pk = (userId: string) => `USER#${userId}`;
 
 /** GSI1 uzerinden okunan herhangi bir yetki kaydi. */
-type GrantItem = {
+export type GrantItem = {
   entityType?: string;
   apartmentId?: string;
   organizationId?: string;
@@ -86,7 +86,7 @@ export const ROLE_PRECEDENCE: readonly Grant['role'][] = [
 
 const CONTEXT_CLAIMS = ['role', 'apartmentId', 'organizationId'] as const;
 
-function isCurrent(item: GrantItem, today: string): boolean {
+export function isCurrent(item: GrantItem, today: string): boolean {
   return (
     item.status === 'active' &&
     (!item.startDate || item.startDate <= today) &&

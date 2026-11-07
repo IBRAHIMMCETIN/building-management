@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { type Authenticator, denyAll } from './auth/claims.js';
+import { type Authenticator, type IdentityResolver, denyAll, denyAllIdentity } from './auth/claims.js';
 import { type EventPublisher, createInMemoryEventPublisher } from './events/publisher.js';
 import { announcementRoutes } from './modules/announcements/routes.js';
 import { apartmentRoleRoutes } from './modules/apartment-roles/routes.js';
@@ -10,6 +10,8 @@ import { type CoreService, createCoreService } from './modules/core/service.js';
 import { financeRoutes } from './modules/finance/routes.js';
 import { type FinanceService, createFinanceService } from './modules/finance/service.js';
 import { healthRoutes } from './modules/health/routes.js';
+import { meRoutes } from './modules/me/routes.js';
+import { type MeService, createMeService } from './modules/me/service.js';
 import { membershipRoutes } from './modules/memberships/routes.js';
 import { type MembershipService, createMembershipService } from './modules/memberships/service.js';
 import { portalRoutes } from './modules/portal/routes.js';
@@ -22,6 +24,12 @@ export type AppConfig = {
    * Verilmezse korumali rotalar 401 doner; guvenli varsayilan budur.
    */
   authenticate?: Authenticator;
+  /**
+   * Rol gerektirmeyen kimlik cozumleyici (`/api/me/*`): aktif baglam secilmeden once de
+   * calisir. Verilmezse `/api/me` 401 doner.
+   */
+  identify?: IdentityResolver;
+  meService?: MeService;
   /** Testlerde sahte repository ile servis enjekte etmek icin. */
   coreService?: CoreService;
   financeService?: FinanceService;
@@ -47,6 +55,10 @@ export function createApp(config: AppConfig) {
   const events = config.events ?? createInMemoryEventPublisher();
 
   app.route('/api/health', healthRoutes(config));
+  app.route(
+    '/api/me',
+    meRoutes({ identify: config.identify ?? denyAllIdentity, service: config.meService ?? createMeService() }),
+  );
   app.route(
     '/api/sites',
     coreRoutes({

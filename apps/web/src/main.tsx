@@ -1,14 +1,13 @@
-import './styles/theme.css';
-import './styles/global.css';
+import './index.css';
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
-import { HomePage } from './pages/home/HomePage';
+import { App } from './App';
 
 const root = document.getElementById('root');
 if (!root) throw new Error('#root bulunamadı');
 
 createRoot(root).render(
   <StrictMode>
-    <HomePage />
+    <App />
   </StrictMode>,
 );
