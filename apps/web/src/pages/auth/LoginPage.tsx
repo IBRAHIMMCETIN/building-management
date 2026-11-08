@@ -2,6 +2,7 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { useMutation } from '@tanstack/react-query';
 import { ArrowLeft, LogIn } from 'lucide-react';
 import { useState } from 'react';
+import { sessionManager } from '@/lib/auth/sessionManager';
 import { useForm } from 'react-hook-form';
 import { Link, useLocation, useNavigate } from 'react-router';
 import { Alert, Button, Card, CardTitle, FormField, Input, PasswordInput } from '@/components/ui';
@@ -32,6 +33,8 @@ export function LoginPage() {
   const location = useLocation();
   const state = location.state as LoginLocationState;
   const [stage, setStage] = useState<Stage>('credentials');
+  // Oturum sunucu tarafindan (401) dusurulduyse sebebi bir kez goster; sessiz yonlendirme yok.
+  const [expired] = useState(() => sessionManager.consumeExpiredNotice());
   const [email, setEmail] = useState(state?.email ?? '');
 
   const form = useForm<LoginInput>({
@@ -88,6 +91,16 @@ export function LoginPage() {
             <p className="text-small text-muted">Yönetici ve sakinler için tek giriş noktası.</p>
           </div>
 
+          {expired && !login.isError && (
+            <Alert tone="danger">
+              Oturumunuz sunucu tarafından reddedildi (401). Lütfen tekrar giriş yapın.
+              {env.authMode === 'mock' && (
+                <span className="mt-1 block">
+                  Yerel geliştirme: API <code>AUTH_MODE=mock</code> ile çalışmıyor olabilir.
+                </span>
+              )}
+            </Alert>
+          )}
           {state?.notice && !login.isError && <Alert tone="success">{state.notice}</Alert>}
           {login.isError && <Alert tone="danger">{errorMessage(login.error)}</Alert>}
 

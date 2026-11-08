@@ -11,12 +11,21 @@ import {
  * Kullanici dizini portu. Servis Cognito'ya dogrudan bagli degildir; testlerde sahte
  * dizin enjekte edilir.
  */
+export type FindOrCreateResult = {
+  userId: string;
+  created: boolean;
+  /** YALNIZCA mock dizin: yerel testte ilk giris icin gecici sifre. Cognito'da e-postayla gider. */
+  temporaryPassword?: string;
+};
+
 export type UserDirectory = {
   /**
    * E-postaya ait kullaniciyi bulur; yoksa olusturur ve Cognito gecici sifre e-postasini
    * gonderir (ilk giriste NEW_PASSWORD_REQUIRED). Var olan kullaniciya e-posta GITMEZ.
    */
-  findOrCreate(input: { email: string; fullName: string }): Promise<{ userId: string; created: boolean }>;
+  findOrCreate(input: { email: string; fullName: string }): Promise<FindOrCreateResult>;
+  /** Dizin turu (yanitta yerel test ipucu gostermek icin). */
+  readonly kind?: 'cognito' | 'mock';
 };
 
 export class DirectoryUnavailableError extends Error {
@@ -36,6 +45,7 @@ export function createCognitoDirectory(
   userPoolId: string,
   client: Pick<CognitoIdentityProviderClient, 'send'> = new CognitoIdentityProviderClient({}),
 ): UserDirectory {
+  const kind = 'cognito' as const;
   async function find(email: string): Promise<string | undefined> {
     try {
       const out = await client.send(new AdminGetUserCommand({ UserPoolId: userPoolId, Username: email }));
@@ -47,6 +57,7 @@ export function createCognitoDirectory(
   }
 
   return {
+    kind,
     async findOrCreate({ email, fullName }) {
       const existing = await find(email);
       if (existing) return { userId: existing, created: false };
@@ -80,15 +91,60 @@ export function createCognitoDirectory(
   };
 }
 
-/** Ortamdan: COGNITO_USER_POOL_ID yoksa davet devre disi (503). */
+// ---------------------------------------------------------------------------
+// Yerel gelistirme (mock)
+// ---------------------------------------------------------------------------
+
+/**
+ * Mock kullanici kimligi: e-postadan deterministik. Web'in mock girisi de ayni kurali
+ * kullanir (`mock-<e-postanin yerel kismi>`), boylece davet edilen kisi yerelde ayni
+ * e-postayla girdiginde uyelik kayitlari onunla eslesir.
+ */
+export function mockUserId(email: string): string {
+  const local = (email.split('@')[0] ?? '').replace(/\+.*/, '');
+  const safe = local.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 59) || 'user';
+  return `mock-${safe}`;
+}
+
+function mockTemporaryPassword(): string {
+  // Cognito politikasina uygun (10+ karakter, buyuk/kucuk harf, rakam); yalnizca yerel.
+  return `Gecici${Math.floor(10000 + Math.random() * 90000)}`;
+}
+
+/**
+ * Cognito olmadan yerel davet: kullanici olusturulmaz, e-posta gonderilmez. Ayni surec
+ * icinde ikinci davet "mevcut kullanici" sayilir. Gecici sifre konsola ve yanita yazilir.
+ */
+export function createMockDirectory(log: Pick<Console, 'info'> = console): UserDirectory {
+  const known = new Set<string>();
+  return {
+    kind: 'mock',
+    async findOrCreate({ email }) {
+      const userId = mockUserId(email);
+      if (known.has(email)) return { userId, created: false };
+      known.add(email);
+      const temporaryPassword = mockTemporaryPassword();
+      log.info(`[mock davet] ${email} -> ${userId}, gecici sifre: ${temporaryPassword} (e-posta gonderilmedi)`);
+      return { userId, created: true, temporaryPassword };
+    },
+  };
+}
+
+/**
+ * Ortamdan secim:
+ *  - COGNITO_USER_POOL_ID varsa: Cognito.
+ *  - AUTH_MODE=mock ve production/Lambda degilse: mock dizin (yerel test).
+ *  - Aksi halde: davet devre disi (503).
+ */
 export function createDirectoryFromEnv(env: NodeJS.ProcessEnv = process.env): UserDirectory {
   const poolId = env.COGNITO_USER_POOL_ID;
-  if (!poolId) {
-    return {
-      findOrCreate: async () => {
-        throw new DirectoryUnavailableError();
-      },
-    };
+  if (poolId) return createCognitoDirectory(poolId);
+  if (env.AUTH_MODE === 'mock' && env.NODE_ENV !== 'production' && !env.AWS_LAMBDA_FUNCTION_NAME) {
+    return createMockDirectory();
   }
-  return createCognitoDirectory(poolId);
+  return {
+    findOrCreate: async () => {
+      throw new DirectoryUnavailableError();
+    },
+  };
 }

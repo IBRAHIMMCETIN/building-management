@@ -22,6 +22,11 @@ import { type PortalService, createPortalService } from './modules/portal/servic
 export type AppConfig = {
   version: string;
   /**
+   * Yalnizca yerel tani: verilirse /api/health yanitina eklenir (web, kendi moduyla
+   * uyusmazligi gosterir). Production'da (server.ts/lambda.ts) verilmez.
+   */
+  authMode?: string;
+  /**
    * Istekten dogrulanmis JWT claim'lerini cikarir (Lambda'da apiGatewayAuthenticator).
    * Verilmezse korumali rotalar 401 doner; guvenli varsayilan budur.
    */

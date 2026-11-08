@@ -9,6 +9,9 @@ const WRITE_ROLES: readonly Role[] = ['apartment_manager', 'management_company']
 export type FinanceRoutesDeps = { authenticate: Authenticator; service: FinanceService };
 
 /**
+ * Uclar: GET /accounts, /summary, /dues-status, /transactions?from&to&limit&cursor, /balance/:unitId
+ *        POST /accounts, /dues, /payments, /expenses, /transactions/:id/reversal
+ *
  * Tenant izolasyonu: `apartmentId` YALNIZCA JWT claim'inden gelir; URL/govde ile
  * degistirilemez. Claim'de apartmentId yoksa (ornegin apartman secilmemis) 403 doner.
  */
@@ -84,6 +87,22 @@ export function financeRoutes({ authenticate, service }: FinanceRoutesDeps) {
       result.replayed ? 200 : 201,
     );
   });
+
+  // ----- Raporlar (salt okunur) -----
+  r.get('/summary', requireRole(READ_ROLES), async (c) => c.json(await service.summary(ctx(c))));
+
+  r.get('/dues-status', requireRole(READ_ROLES), async (c) => c.json(await service.duesStatus(ctx(c))));
+
+  r.get('/transactions', requireRole(READ_ROLES), async (c) =>
+    c.json(
+      await service.listTransactions(ctx(c), {
+        from: c.req.query('from'),
+        to: c.req.query('to'),
+        limit: c.req.query('limit'),
+        cursor: c.req.query('cursor'),
+      }),
+    ),
+  );
 
   r.get('/balance/:unitId', requireRole(READ_ROLES), async (c) => {
     return c.json(await service.getUnitBalance(ctx(c), c.req.param('unitId')));

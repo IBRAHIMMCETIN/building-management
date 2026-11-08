@@ -8,5 +8,5 @@ export type { ApiClient, ApiClientConfig, RequestOptions, TokenProvider } from '
 export const apiClient = createApiClient({
   baseUrl: env.apiUrl,
   getToken: (options) => sessionManager.getApiToken(options),
-  onAuthFailure: () => sessionManager.set(null),
+  onAuthFailure: () => sessionManager.expire(),
 });

@@ -60,11 +60,35 @@ describe('sessionManager', () => {
     expect(b).toBe(next.idToken);
   });
 
-  it('yenileme basarisizsa oturum duser', async () => {
-    const sm = await load(session({ role: 'resident' }));
+  it('yenileme basarisizsa oturum duser ve saklanan token\'lar da silinir', async () => {
+    const s = session({ role: 'resident' });
+    const sm = await load(s);
     adapter.refresh.mockRejectedValue(new Error('revoked'));
+    adapter.signOut.mockResolvedValue(undefined);
     await expect(sm.refresh()).rejects.toThrow(/Oturum/);
     expect(sm.getSession()).toBeNull();
+    expect(adapter.signOut).toHaveBeenCalledWith(s);
+  });
+
+  it('expire: 401 sonrasi oturum geri yuklenemez (adapter deposu temizlenir)', async () => {
+    const s = session({ role: 'resident' });
+    const sm = await load(s);
+    adapter.signOut.mockResolvedValue(undefined);
+    sm.expire();
+    expect(sm.getSession()).toBeNull();
+    expect(adapter.signOut).toHaveBeenCalledWith(s);
+    sm.expire(); // oturum yokken tekrar cagri etkisiz
+    expect(adapter.signOut).toHaveBeenCalledOnce();
+    // Giris ekrani nedeni bir kez gosterir
+    expect(sm.consumeExpiredNotice()).toBe('unauthorized');
+    expect(sm.consumeExpiredNotice()).toBeNull();
+  });
+
+  it('kullanicinin kendi cikisi "sunucu reddetti" bildirimi uretmez', async () => {
+    const sm = await load(session({ role: 'resident' }));
+    adapter.signOut.mockResolvedValue(undefined);
+    await sm.signOut();
+    expect(sm.consumeExpiredNotice()).toBeNull();
   });
 
   it('baglam secimi: Pre Token tercihi reddederse hata verir ama yeni token\'i saklar', async () => {

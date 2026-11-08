@@ -3,12 +3,14 @@ import { AdminLayout } from '@/layouts/AdminLayout';
 import { AuthLayout } from '@/layouts/AuthLayout';
 import { ResidentLayout } from '@/layouts/ResidentLayout';
 import { DashboardPage } from '@/pages/admin/DashboardPage';
+import { FinancePage } from '@/pages/admin/finance/FinancePage';
 import { UnitsPage } from '@/pages/admin/units/UnitsPage';
 import { ForgotPasswordPage } from '@/pages/auth/ForgotPasswordPage';
 import { LoginPage } from '@/pages/auth/LoginPage';
 import { SelectContextPage } from '@/pages/auth/SelectContextPage';
 import { ForbiddenPage, NotFoundPage, RouteErrorPage } from '@/pages/errors/ErrorPages';
 import { PlaceholderPage } from '@/pages/PlaceholderPage';
+import { DuesPage } from '@/pages/resident/DuesPage';
 import { ResidentHomePage } from '@/pages/resident/ResidentHomePage';
 import { ADMIN_ROLES, RESIDENT_ROLES } from '@/types/roles';
 import { RedirectIfAuthenticated, RequireRole, RequireSession, RootRedirect } from './guards';
@@ -45,7 +47,7 @@ export const router = createBrowserRouter([
             children: [
               { index: true, element: <DashboardPage /> },
               { path: 'units', element: <UnitsPage /> },
-              { path: 'finance', element: <PlaceholderPage title="Finans" /> },
+              { path: 'finance', element: <FinancePage /> },
               { path: 'announcements', element: <PlaceholderPage title="Duyurular" /> },
             ],
           },
@@ -59,7 +61,7 @@ export const router = createBrowserRouter([
             element: <ResidentLayout />,
             children: [
               { index: true, element: <ResidentHomePage /> },
-              { path: 'dues', element: <PlaceholderPage title="Borçlarım" /> },
+              { path: 'dues', element: <DuesPage /> },
               { path: 'announcements', element: <PlaceholderPage title="Duyurular" /> },
             ],
           },

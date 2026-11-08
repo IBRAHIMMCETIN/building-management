@@ -7,6 +7,8 @@ export type PortalRoutesDeps = { authenticate: Authenticator; service: PortalSer
 
 /**
  * Sakin portali: `/api/portal/*` (salt okunur).
+ *   GET /my-unit, /my-summary, /my-statement?from&to, /my-dues, /my-receipts, /announcements
+ *   (hepsi opsiyonel `?unitId=`; birden fazla dairesi olan sakin icin zorunlu)
  *
  *  - Rol: yalnizca `resident` (JWT `role` claim'i). Yonetici/denetci kendi modullerini kullanir.
  *  - Apartman: yalnizca JWT `apartmentId` claim'i; URL/govdeden apartman kabul edilmez.
@@ -35,6 +37,8 @@ export function portalRoutes({ authenticate, service }: PortalRoutesDeps) {
   const unitId = (c: Context<Env>) => c.req.query('unitId');
 
   r.get('/my-unit', async (c) => c.json(await service.getMyUnit(ctx(c), unitId(c))));
+
+  r.get('/my-summary', async (c) => c.json(await service.getMySummary(ctx(c), unitId(c))));
 
   r.get('/my-dues', async (c) => c.json(await service.getMyDues(ctx(c), unitId(c))));
 

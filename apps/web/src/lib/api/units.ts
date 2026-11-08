@@ -63,6 +63,8 @@ export const inviteResultSchema = z.object({
   person: personSchema,
   membership: membershipSchema,
   invitation: z.enum(['sent', 'existing_user']),
+  /** Yalnizca yerel mock API: e-posta gonderilmedigi icin ilk giris bilgisi. */
+  mock: z.object({ temporaryPassword: z.string().optional() }).optional(),
 });
 
 export type Block = z.infer<typeof blockSchema>;

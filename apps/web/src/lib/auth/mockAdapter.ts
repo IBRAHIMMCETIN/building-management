@@ -8,14 +8,34 @@ import { type ActiveContext, type AuthAdapter, type AuthSession, type SignInStep
  * YALNIZCA yerel gelistirme (API: AUTH_MODE=mock). Imza yoktur. Gercek Cognito
  * akislarini arayuzde denemek icin senaryolar:
  *   <rol>@dev.local          -> o rolde tek baglam (ornek: resident@dev.local)
+ *   diger e-postalar         -> daire sakini (davet edilen kisi ayni e-postayla girer)
  *   multi@dev.local          -> 2 apartman / 3 rol, giriste baglam secimi istenir
  *   platform_admin@dev.local -> apartmansiz platform rolu
- *   sifre "Gecici12345"      -> ilk giris yeni sifre (NEW_PASSWORD_REQUIRED)
+ *   sifre "Gecici" + 5 rakam -> ilk giris yeni sifre (NEW_PASSWORD_REQUIRED); mock davetin
+ *                              urettigi gecici sifre de bu bicimdedir (ornek: Gecici12345)
  *   e-postada "+mfa"         -> TOTP adimi (kod: 123456)
  *   sifirlama kodu           -> 123456
  */
 
 const STORAGE_KEY = 'bm.mock-session';
+/** Ilk giriste sifresini belirlemis e-postalar (Cognito'da FORCE_CHANGE_PASSWORD biter). */
+const PASSWORD_SET_KEY = 'bm.mock-password-set';
+
+function passwordSet(): Set<string> {
+  try {
+    return new Set(JSON.parse(localStorage.getItem(PASSWORD_SET_KEY) ?? '[]') as string[]);
+  } catch {
+    return new Set();
+  }
+}
+
+function markPasswordSet(email: string) {
+  try {
+    localStorage.setItem(PASSWORD_SET_KEY, JSON.stringify([...passwordSet().add(email)]));
+  } catch {
+    // depolama yoksa yalnizca bu oturum
+  }
+}
 const TTL_SECONDS = 60 * 60;
 export const MOCK_CODE = '123456';
 export const MOCK_TEMP_PASSWORD = 'Gecici12345';
@@ -24,6 +44,12 @@ const DEV_APT = { apartmentId: 'apt-dev-1', apartmentName: 'Geliştirme Sitesi' 
 const DEV_APT_2 = { apartmentId: 'apt-dev-2', apartmentName: 'Çınar Apartmanı' };
 
 const baseEmail = (email: string) => email.replace(/\+[^@]*/, '');
+
+/** API'deki mockUserId ile ayni kural (apps/api/src/modules/residents/directory.ts). */
+export function mockUserId(email: string): string {
+  const local = baseEmail(email).split('@')[0] ?? '';
+  return `mock-${local.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 59) || 'user'}`;
+}
 
 export function mockContextsFor(email: string): Pick<MeContexts, 'isPlatformAdmin' | 'contexts'> {
   const local = baseEmail(email).split('@')[0] ?? '';
@@ -38,8 +64,8 @@ export function mockContextsFor(email: string): Pick<MeContexts, 'isPlatformAdmi
       ],
     };
   }
-  const role: Exclude<Role, 'platform_admin'> =
-    isRole(local) && local !== 'platform_admin' ? local : 'apartment_manager';
+  // Rol adi olmayan e-posta: davet edilmis sakin gibi davranir.
+  const role: Exclude<Role, 'platform_admin'> = isRole(local) && local !== 'platform_admin' ? local : 'resident';
   return { isPlatformAdmin: false, contexts: [{ ...DEV_APT, role }] };
 }
 
@@ -63,7 +89,7 @@ function issue(email: string, preferred?: ActiveContext): AuthSession {
   const { isPlatformAdmin } = mockContextsFor(email);
   const selected = isPlatformAdmin ? undefined : selectContext(email, preferred);
   const token = encode({
-    sub: `mock-${baseEmail(email).split('@')[0]}`,
+    sub: mockUserId(email),
     email,
     ...(isPlatformAdmin ? { role: 'platform_admin' } : {}),
     ...(selected ? { role: selected.role, apartmentId: selected.apartmentId } : {}),
@@ -112,7 +138,9 @@ export const mockAuthAdapter: AuthAdapter = {
 
   async signIn({ email, password }) {
     await delay();
-    if (password === MOCK_TEMP_PASSWORD) {
+    // Gercek Cognito'da sifre belirlendikten sonra gecici sifre gecersizdir; mock'ta tekrar
+    // "ilk giris" sayilmamali, aksi halde oturum dustugunde kullanici dongude kalir.
+    if (/^Gecici\d{5}$/.test(password) && !passwordSet().has(email)) {
       pending = { email, step: 'newPassword' };
       return { type: 'newPasswordRequired' };
     }
@@ -127,6 +155,7 @@ export const mockAuthAdapter: AuthAdapter = {
     await delay();
     if (pending?.step !== 'newPassword') throw new AuthFlowError('SignInException', 'Giriş oturumu zaman aşımına uğradı.');
     const { email } = pending;
+    markPasswordSet(email);
     if (email.includes('+mfa')) {
       pending = { email, step: 'totp' };
       return { type: 'totpRequired' } satisfies SignInStep;

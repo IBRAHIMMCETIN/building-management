@@ -1,3 +1,4 @@
+import { computePartyDues } from '../src/modules/finance/reports.js';
 import {
   ConditionalCheckFailedException,
   TransactionCanceledException,
@@ -105,6 +106,17 @@ function createFakeFinanceRepo() {
     getExpense: async (apt, id) => expenses.get(k(apt, id)),
     getIdempotency: async (apt, id) => idem.get(k(apt, id)),
     getCounter: async (apt, name) => counters.get(k(apt, name)) ?? 0,
+    listTransactions: async (apt, q = {}) => {
+      const lo = (q.from ?? '0000-00-00').replaceAll('-', '');
+      const hi = (q.to ?? '9999-99-99').replaceAll('-', '') + '~';
+      const all = [...transactions.values()]
+        .filter((t) => t.siteId === apt && t.transactionId >= lo && t.transactionId <= hi)
+        .sort((a, b) => a.transactionId.localeCompare(b.transactionId) * (q.newestFirst ? -1 : 1));
+      const start = q.cursor ? Number(q.cursor) : 0;
+      if (!q.limit) return { items: all.slice(start) };
+      const end = start + q.limit;
+      return { items: all.slice(start, end), cursor: end < all.length ? String(end) : undefined };
+    },
     postTransaction: async (input) => {
       if (failNextPost) {
         const e = failNextPost;
@@ -827,7 +839,11 @@ describe('finance service - bakiye ve hesaplar', () => {
   it('hesap listesi sistem hesaplarini olusturur ve tipe gore filtreler', async () => {
     const t = makeService();
     const all = await t.service.listAccounts(ctx);
-    expect(all.map((a) => a.accountId).sort()).toEqual(['bank', 'cash', 'income-dues', 'payable']);
+    const ids = all.map((a) => a.accountId);
+    expect(ids).toEqual(expect.arrayContaining(['bank', 'cash', 'income-dues', 'payable', 'exp-cleaning', 'exp-elevator']));
+    expect(all.filter((a) => a.system).map((a) => a.accountId).sort()).toEqual(['bank', 'cash', 'income-dues', 'payable']);
+    // Varsayilan gider kalemleri sistem hesabi degil: yonetici pasife alabilir.
+    expect(all.find((a) => a.accountId === 'exp-cleaning')).toMatchObject({ type: 'expense', name: 'Temizlik' });
     expect((await t.service.listAccounts(ctx, 'bank')).map((a) => a.accountId)).toEqual(['bank']);
     await expect(t.service.listAccounts(ctx, 'xx')).rejects.toBeInstanceOf(ValidationError);
   });
@@ -1063,5 +1079,129 @@ describe('finance routes', () => {
     const res = await t.call('POST', '/api/finance/dues', manager, duesBody);
     expect(res.status).toBe(500);
     expect(JSON.stringify(res.json)).not.toContain('gizli');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Raporlar: ozet, aidat durumu, hareketler
+// ---------------------------------------------------------------------------
+
+describe('computePartyDues (FIFO)', () => {
+  it('odemeyi en eski vadeye sayar, kalan vadesi gecmis kismi gecikme olur', () => {
+    const r = computePartyDues(
+      [
+        { amount: 1000, dueDate: '2026-11-15' },
+        { amount: 1000, dueDate: '2026-10-15' },
+      ],
+      500,
+      '2026-11-06',
+    );
+    expect(r).toMatchObject({ charged: 2000, paid: 500, balance: 1500, overdue: 500, oldestUnpaidDueDate: '2026-10-15' });
+  });
+
+  it('vade gunu henuz gecmemisse gecikme yok; fazla odeme avanstir', () => {
+    expect(computePartyDues([{ amount: 1000, dueDate: '2026-11-06' }], 0, '2026-11-06').overdue).toBe(0);
+    expect(computePartyDues([{ amount: 1000, dueDate: '2026-10-01' }], 1500, '2026-11-06')).toMatchObject({
+      balance: -500,
+      overdue: 0,
+      oldestUnpaidDueDate: undefined,
+    });
+  });
+});
+
+describe('finans raporlari', () => {
+  async function seeded() {
+    const t = makeService();
+    let i = 0;
+    const key = () => `k${++i}`;
+    const charge = (unitId: string, amount: number, dueDate: string) =>
+      t.service.chargeUnit(ctx, { idempotencyKey: key(), unitId, liableParty: 'occupant', amount, date: '2026-10-01', dueDate, description: 'Aidat' });
+    const pay = (unitId: string, amount: number, method: 'cash' | 'bank_transfer', paidAt: string) =>
+      t.service.recordPayment(ctx, { idempotencyKey: key(), unitId, liableParty: 'occupant', amount, method, paidAt });
+
+    await charge('u1', 100000, '2026-10-15');
+    await charge('u1', 100000, '2026-11-15');
+    await charge('u2', 100000, '2026-10-15');
+    await pay('u1', 50000, 'cash', '2026-10-20');
+    await pay('u2', 100000, 'bank_transfer', '2026-10-10');
+    await pay('u3', 20000, 'cash', '2026-11-02'); // borcsuz odeme -> avans
+    await t.service.recordExpense(ctx, {
+      idempotencyKey: key(),
+      expenseAccountId: 'exp-cleaning',
+      amount: 30000,
+      date: '2026-11-03',
+      description: 'Merdiven temizligi',
+    });
+    return t;
+  }
+
+  it('aidat durumu: gecikme, odendi, avans ve son odeme tarihi', async () => {
+    const t = await seeded();
+    const { asOf, items } = await t.service.duesStatus(ctx);
+    expect(asOf).toBe('2026-11-06');
+    const byUnit = Object.fromEntries(items.map((d) => [d.unitId, d]));
+    expect(byUnit.u1).toMatchObject({ status: 'overdue', balance: 150000, overdue: 50000, daysOverdue: 22, lastPaymentDate: '2026-10-20' });
+    expect(byUnit.u2).toMatchObject({ status: 'paid', balance: 0, overdue: 0 });
+    expect(byUnit.u3).toMatchObject({ status: 'advance', balance: -20000 });
+  });
+
+  it('ozet: kasa/banka bakiyeleri ve alacaklar', async () => {
+    const t = await seeded();
+    const s = await t.service.summary(ctx);
+    expect(s).toMatchObject({
+      cash: 40000, // 50000 + 20000 - 30000 gider
+      bank: 100000,
+      totalFunds: 140000,
+      receivables: 150000,
+      advances: 20000,
+      overdue: 50000,
+      overdueUnitCount: 1,
+      pendingUnitCount: 0,
+    });
+    expect(s.fundsAccounts.map((a) => a.accountId)).toEqual(['bank', 'cash']);
+  });
+
+  it('hareketler: en yeni once, kategori ve kasa/banka yonu', async () => {
+    const t = await seeded();
+    const { items, nextCursor } = await t.service.listTransactions(ctx);
+    expect(nextCursor).toBeUndefined();
+    expect(items.map((i) => i.date)).toEqual([...items.map((i) => i.date)].sort().reverse());
+    const expense = items.find((i) => i.kind === 'expense');
+    expect(expense).toMatchObject({ category: 'expense', netFundsChange: -30000, funds: [{ accountId: 'cash', direction: 'out' }] });
+    const payment = items.find((i) => i.kind === 'payment' && i.unitId === 'u2');
+    expect(payment).toMatchObject({ category: 'income', netFundsChange: 100000, unitNumber: 'U2', funds: [{ accountType: 'bank' }] });
+    expect(items.filter((i) => i.category === 'accrual')).toHaveLength(3);
+  });
+
+  it('hareketler: tarih filtresi, sayfalama ve gecersiz girdi', async () => {
+    const t = await seeded();
+    const nov = await t.service.listTransactions(ctx, { from: '2026-11-01', to: '2026-11-30' });
+    expect(nov.items.map((i) => i.date).every((d) => d >= '2026-11-01')).toBe(true);
+    const p1 = await t.service.listTransactions(ctx, { limit: '2' });
+    expect(p1.items).toHaveLength(2);
+    const p2 = await t.service.listTransactions(ctx, { limit: '2', cursor: p1.nextCursor });
+    expect(p2.items[0]?.transactionId).not.toBe(p1.items[0]?.transactionId);
+    await expect(t.service.listTransactions(ctx, { limit: '0' })).rejects.toBeInstanceOf(ValidationError);
+    await expect(t.service.listTransactions(ctx, { from: '2026-12-01', to: '2026-11-01' })).rejects.toBeInstanceOf(ValidationError);
+  });
+
+  it('ters kayit "reversal" olarak siniflanir; iptal edilen tahakkuk FIFO\'yu bozmaz', async () => {
+    const t = await seeded();
+    const charge = (await t.service.listTransactions(ctx)).items.find((i) => i.kind === 'dues_charge' && i.dueDate === '2026-11-15');
+    await t.service.reverseTransaction(ctx, charge?.transactionId ?? '', { reason: 'Hatali tahakkuk' });
+    const { items } = await t.service.listTransactions(ctx);
+    expect(items.find((i) => i.kind === 'reversal')).toMatchObject({ category: 'reversal', reversalOf: charge?.transactionId });
+    const u1 = (await t.service.duesStatus(ctx)).items.find((d) => d.unitId === 'u1');
+    // Ekim borcunun 50000'i hala gecikmede: iptal "odeme" sayilip eski borca dusulmedi.
+    expect(u1).toMatchObject({ balance: 50000, overdue: 50000, owner: { charged: 0 }, occupant: { charged: 100000, paid: 50000 } });
+  });
+
+  it('iptal edilen odeme odenmis sayilmaz', async () => {
+    const t = await seeded();
+    const pay = (await t.service.listTransactions(ctx)).items.find((i) => i.kind === 'payment' && i.unitId === 'u2');
+    await t.service.reverseTransaction(ctx, pay?.transactionId ?? '', { reason: 'Karsiliksiz havale' });
+    const u2 = (await t.service.duesStatus(ctx)).items.find((d) => d.unitId === 'u2');
+    expect(u2).toMatchObject({ status: 'overdue', balance: 100000, overdue: 100000, lastPaymentDate: undefined });
+    expect((await t.service.summary(ctx)).bank).toBe(0);
   });
 });

@@ -122,6 +122,24 @@ describe('GET /api/me/contexts', () => {
 });
 
 describe('createAuthFromEnv', () => {
+  it('modu bildirir; yerelde deny modu acik uyari loglar', () => {
+    const warns: string[] = [];
+    const log = { warn: (m: string) => warns.push(m) };
+    expect(createAuthFromEnv({ AUTH_MODE: 'mock' }, log).mode).toBe('mock');
+    expect(createAuthFromEnv({}, log).mode).toBe('deny');
+    expect(warns.some((w) => /AUTH_MODE tanimli degil/.test(w))).toBe(true);
+    warns.length = 0;
+    createAuthFromEnv({ NODE_ENV: 'production' }, log);
+    expect(warns).toEqual([]);
+  });
+
+  it('/api/health kimlik modunu yalnizca verilirse gosterir', async () => {
+    const local = await (await createApp({ version: 't', authMode: 'deny' }).request('/api/health')).json();
+    expect(local).toMatchObject({ authMode: 'deny' });
+    const prod = await (await createApp({ version: 't' }).request('/api/health')).json();
+    expect(prod).not.toHaveProperty('authMode');
+  });
+
   it('her modda kimlik cozumleyici de dondurur', () => {
     const silent = { warn: () => {} };
     expect(typeof createAuthFromEnv({ AUTH_MODE: 'mock' }, silent).identify).toBe('function');

@@ -119,7 +119,11 @@ export function createMockIdentityResolver(): IdentityResolver {
 // Ortam degiskenlerinden secim
 // ---------------------------------------------------------------------------
 
+export type AuthMode = 'cognito' | 'apigw' | 'mock' | 'deny';
+
 export type AuthFromEnv = {
+  /** Secilen mod (yerel tani icin /api/health'te gosterilir; production'da gizli). */
+  mode: AuthMode;
   /** Rol + apartman claim'i ZORUNLU uclar (varsayilan). */
   authenticate: Authenticator;
   /** Yalnizca kimlik: aktif baglam secimi oncesi (`/api/me/*`). */
@@ -159,18 +163,25 @@ export function createAuthFromEnv(
             log.warn(`JWT reddedildi: ${err instanceof Error ? err.constructor.name : 'bilinmeyen hata'}`),
         },
       );
-      return { authenticate: authenticatorFrom(read), identify: identityResolverFrom(read) };
+      return { mode: 'cognito', authenticate: authenticatorFrom(read), identify: identityResolverFrom(read) };
     }
     case 'apigw':
-      return { authenticate: apiGatewayAuthenticator, identify: apiGatewayIdentityResolver };
+      return { mode: 'apigw', authenticate: apiGatewayAuthenticator, identify: apiGatewayIdentityResolver };
     case 'mock':
       if (env.NODE_ENV === 'production' || env.AWS_LAMBDA_FUNCTION_NAME) {
         throw new Error('AUTH_MODE=mock production/Lambda ortaminda kullanilamaz');
       }
       log.warn('UYARI: AUTH_MODE=mock aktif; JWT imzasi dogrulanmiyor (yalnizca yerel gelistirme)');
-      return { authenticate: createMockAuthenticator(), identify: createMockIdentityResolver() };
+      return { mode: 'mock', authenticate: createMockAuthenticator(), identify: createMockIdentityResolver() };
     case 'deny':
-      return { authenticate: denyAll, identify: denyAllIdentity };
+      // Sessiz 401'ler yerelde "oturum dongusu" gibi gorunur: yapilandirma eksigini acikca yaz.
+      if (env.NODE_ENV !== 'production' && !env.AWS_LAMBDA_FUNCTION_NAME) {
+        log.warn(
+          'UYARI: AUTH_MODE tanimli degil (deny): korumali tum uclar 401 doner. ' +
+            "Yerel mock icin AUTH_MODE=mock verin (web: VITE_AUTH_MODE=mock).",
+        );
+      }
+      return { mode: 'deny', authenticate: denyAll, identify: denyAllIdentity };
     default:
       throw new Error(`Gecersiz AUTH_MODE: ${mode} (cognito | apigw | mock | deny)`);
   }

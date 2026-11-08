@@ -42,4 +42,14 @@ describe('mockAuthAdapter senaryolari', () => {
     await expect(auth.confirmPasswordReset({ email: 'ayse@site.com', code: '1', newPassword: 'x' })).rejects.toThrow();
     await expect(auth.confirmPasswordReset({ email: 'ayse@site.com', code: MOCK_CODE, newPassword: 'x' })).resolves.toBeUndefined();
   });
+
+  it('sifresini belirlemis kullanici gecici sifreyle tekrar "ilk giris" dongusune girmez', async () => {
+    expect(await auth.signIn({ email: 'ayse@test.com', password: 'Gecici48213' })).toEqual({ type: 'newPasswordRequired' });
+    const done = await auth.confirmNewPassword('GecerliSifre1');
+    expect(done.type).toBe('done');
+    // Oturum dustu (401) ve kullanici elindeki gecici sifreyle tekrar girdi:
+    const again = await auth.signIn({ email: 'ayse@test.com', password: 'Gecici48213' });
+    expect(again.type).toBe('done');
+    if (again.type === 'done') expect(again.session.claims).toMatchObject({ sub: 'mock-ayse', role: 'resident', apartmentId: 'apt-dev-1' });
+  });
 });

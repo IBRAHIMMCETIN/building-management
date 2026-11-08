@@ -112,13 +112,28 @@ npm run dev:api
 npm run dev:web
 ```
 
-Kimlik doğrulaması olmadan yerelde denemek için API'yi mock modda başlatabilirsiniz (**yalnızca yerel**; production/Lambda ortamında reddedilir):
+### Mock modda yerel çalışma (Cognito olmadan)
 
-```bash
-AUTH_MODE=mock DYNAMODB_TABLE_NAME=building-management-dev AWS_REGION=eu-central-1 npm run dev:api
+API ve web `mock` kimlik moduyla çalışır (**yalnızca yerel**; production/Lambda ortamında reddedilir). Veritabanı olarak AWS'de, Terraform'dan bağımsız ve adı `-local` ile biten bir geliştirme tablosu kullanılır.
+
+```powershell
+# 1) Konsol oturumuyla CLI girişi (12 saat geçerli); kimliği bu terminale aktar
+aws login --profile console
+aws configure export-credentials --profile console --format powershell | Invoke-Expression
+
+# 2) Ortam (aynı terminal)
+$env:AUTH_MODE="mock"; $env:AWS_REGION="eu-north-1"; $env:DYNAMODB_TABLE_NAME="building-management-local"
+
+# 3) Tablo + örnek site (apt-dev-1) + bloklar; tekrar çalıştırılabilir
+npm run db:init
+
+# 4) API
+npm run dev:api
 ```
 
-DynamoDB Local kullanıyorsanız `DYNAMODB_ENDPOINT=http://localhost:8000` ekleyin.
+`apps/web/.env.local` içinde `VITE_AUTH_MODE=mock` olmalıdır. Mock modda sakin daveti Cognito'ya gitmez: geçici şifre API konsoluna ve davet sonucuna yazılır.
+
+> `db:init` Terraform'un yönettiği tablolara (adı `-local` ile bitmeyen) dokunmaz. Resmi DynamoDB Local (Docker/Java) kullanmak için `DYNAMODB_ENDPOINT=http://localhost:8000` verin. `dynalite` gibi emülatörler `TransactWriteItems` desteklemediği için finans defteri onlarda çalışmaz.
 
 ### Kök komutlar
 
@@ -243,7 +258,7 @@ Tüm uçlar `/api` altındadır. `GET /api/health` dışındakiler JWT ile korun
 | `health` | `/api/health` | Sağlık ve sürüm bilgisi |
 | `me` | `/api/me` | Oturum sahibinin seçebileceği apartman/rol bağlamları (`GET /contexts`). **Rol claim'i gerektirmez**: bağlam seçilmeden önce de çalışır |
 | `core` | `/api/sites` | Site, blok ve bağımsız bölüm (daire/dükkan) yönetimi; m², arsa payı, sayaç kuralları |
-| `finance` | `/api/finance` | Hesaplar, toplu aidat tahakkuku, tahsilat, gider, ters kayıt, bakiye |
+| `finance` | `/api/finance` | Hesaplar, toplu aidat tahakkuku, tahsilat, gider, ters kayıt, bakiye; raporlar: `GET /summary`, `/dues-status` (FIFO gecikme), `/transactions` (sayfalı) |
 | `memberships` | `/api/memberships` | Kullanıcı–daire bağlantıları (malik / kiracı) |
 | `residents` | `/api/residents` | Apartmanın kişileri (ad / e-posta, denetçiye maskeli) ve `POST /invite`: e-postayla Cognito kullanıcısı bul/oluştur + üyelik ata |
 | `apartment-roles` | `/api/apartment-roles` | Apartman bazlı personel ve yönetici rolleri |

@@ -6,6 +6,8 @@ export const healthSchema = z.object({
   version: z.string(),
   startedAt: z.string(),
   time: z.string(),
+  /** Yalnizca yerel API: kimlik modu (cognito | apigw | mock | deny). */
+  authMode: z.string().optional(),
 });
 
 export type Health = z.infer<typeof healthSchema>;

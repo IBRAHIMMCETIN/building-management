@@ -21,10 +21,12 @@ import {
 } from '../core/validation.js';
 import {
   type FinanceRepository,
+  InvalidCursorError,
   LedgerConflictError,
   financeKeys,
   financeRepository,
 } from './repository.js';
+import { buildDuesStatus, buildSummary, toTransactionView } from './reports.js';
 import {
   ACCOUNT_TYPES,
   type Account,
@@ -78,6 +80,26 @@ export const SYSTEM_ACCOUNTS = {
   incomeDues: 'income-dues',
   payable: 'payable',
 } as const;
+
+/**
+ * Varsayilan gider kalemleri (KMK isletme giderleri). Sistem hesabi DEGILDIR: yonetici
+ * yeniden adlandirabilir veya pasife alabilir; yalnizca eksikse olusturulur.
+ */
+export const DEFAULT_EXPENSE_ACCOUNTS = [
+  { accountId: 'exp-cleaning', name: 'Temizlik' },
+  { accountId: 'exp-elevator', name: 'Asansör Bakımı' },
+  { accountId: 'exp-electricity', name: 'Ortak Elektrik' },
+  { accountId: 'exp-water', name: 'Ortak Su' },
+  { accountId: 'exp-heating', name: 'Isınma / Doğalgaz' },
+  { accountId: 'exp-staff', name: 'Personel / Kapıcı' },
+  { accountId: 'exp-security', name: 'Güvenlik' },
+  { accountId: 'exp-garden', name: 'Bahçe Bakımı' },
+  { accountId: 'exp-repair', name: 'Tamir / Onarım' },
+  { accountId: 'exp-management', name: 'Yönetim Giderleri' },
+  { accountId: 'exp-other', name: 'Diğer Giderler' },
+] as const;
+
+export const MAX_TRANSACTION_PAGE = 200;
 
 export const DUES_DISTRIBUTION_KEYS = ['equal', 'area', 'land_share'] as const;
 export type DuesDistributionKey = (typeof DUES_DISTRIBUTION_KEYS)[number];
@@ -230,6 +252,7 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
         name: 'Tedarikci Borclari',
         system: true,
       }),
+      ...DEFAULT_EXPENSE_ACCOUNTS.map((e) => newAccount(ctx, { ...e, type: 'expense' })),
     ]);
     ensuredSystem.add(ctx.apartmentId);
   }
@@ -847,7 +870,71 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
     };
   }
 
+  // -------------------------------------------------------------------------
+  // Raporlar (salt okunur)
+  // -------------------------------------------------------------------------
+
+  async function loadReportData(ctx: FinanceContext) {
+    await ensureSystemAccounts(ctx);
+    const [accounts, units, txs] = await Promise.all([
+      repo.listAccounts(ctx.apartmentId),
+      deps.core.listUnits(ctx.apartmentId),
+      repo.listTransactions(ctx.apartmentId),
+    ]);
+    return { accounts, units, transactions: txs.items };
+  }
+
+  /** Daire bazli aidat durumu (FIFO ile gecikme). */
+  async function duesStatus(ctx: FinanceContext) {
+    const { accounts, units, transactions } = await loadReportData(ctx);
+    const receivables = new Set(accounts.filter((a) => a.type === 'receivable').map((a) => a.accountId));
+    const items = buildDuesStatus(units, transactions, receivables, today()).sort((a, b) =>
+      a.unitNumber.localeCompare(b.unitNumber, 'tr', { numeric: true }),
+    );
+    return { asOf: today(), items };
+  }
+
+  /** Kasa/banka bakiyeleri + alacak/gecikme ozeti. */
+  async function summary(ctx: FinanceContext) {
+    const { accounts, units, transactions } = await loadReportData(ctx);
+    const receivables = new Set(accounts.filter((a) => a.type === 'receivable').map((a) => a.accountId));
+    return { asOf: today(), ...buildSummary(accounts, buildDuesStatus(units, transactions, receivables, today())) };
+  }
+
+  /** Defter hareketleri (en yeni once), sayfali. */
+  async function listTransactions(
+    ctx: FinanceContext,
+    query: { from?: string; to?: string; limit?: string; cursor?: string } = {},
+  ) {
+    const q: Obj = { ...query };
+    const from = optDate(q, 'from');
+    const to = optDate(q, 'to');
+    if (from && to && from > to) throw new ValidationError('from, to tarihinden sonra olamaz', 'from');
+    const limit = query.limit === undefined ? 50 : Number(query.limit);
+    if (!Number.isInteger(limit) || limit < 1 || limit > MAX_TRANSACTION_PAGE) {
+      throw new ValidationError(`limit 1-${MAX_TRANSACTION_PAGE} arasinda olmali`, 'limit');
+    }
+    await ensureSystemAccounts(ctx);
+    const [accounts, units] = await Promise.all([repo.listAccounts(ctx.apartmentId), deps.core.listUnits(ctx.apartmentId)]);
+    let page: Awaited<ReturnType<FinanceRepository['listTransactions']>>;
+    try {
+      page = await repo.listTransactions(ctx.apartmentId, { from, to, limit, cursor: query.cursor, newestFirst: true });
+    } catch (err) {
+      if (err instanceof InvalidCursorError) throw new ValidationError(err.message, 'cursor');
+      throw err;
+    }
+    const accountMap = new Map(accounts.map((a) => [a.accountId, a]));
+    const unitNumbers = new Map(units.map((u) => [u.unitId, u.number]));
+    return {
+      items: page.items.map((tx) => toTransactionView(tx, accountMap, unitNumbers)),
+      nextCursor: page.cursor,
+    };
+  }
+
   return {
+    duesStatus,
+    summary,
+    listTransactions,
     listAccounts,
     createAccount,
     updateAccount,

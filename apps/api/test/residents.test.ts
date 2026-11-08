@@ -15,7 +15,7 @@ import type { Unit } from '../src/modules/core/types.js';
 import type { MembershipRepository } from '../src/modules/memberships/repository.js';
 import { createMembershipService } from '../src/modules/memberships/service.js';
 import type { UnitMembership } from '../src/modules/portal/types.js';
-import { createCognitoDirectory, createDirectoryFromEnv, type UserDirectory } from '../src/modules/residents/directory.js';
+import { createCognitoDirectory, createDirectoryFromEnv, createMockDirectory, mockUserId, type UserDirectory } from '../src/modules/residents/directory.js';
 import type { Person, PersonRepository } from '../src/modules/residents/repository.js';
 import { createResidentsService, maskEmail } from '../src/modules/residents/service.js';
 
@@ -229,5 +229,44 @@ describe('createCognitoDirectory', () => {
     const dir = createCognitoDirectory(POOL, new CognitoIdentityProviderClient({}));
     await expect(dir.findOrCreate({ email: 'a@b.co', fullName: 'A B' })).resolves.toEqual({ userId: 'sub-raced', created: false });
     cognito.restore();
+  });
+});
+
+describe('mock davet dizini (yerel)', () => {
+  it('AUTH_MODE=mock iken Cognito olmadan daveti tamamlar ve gecici sifre dondurur', async () => {
+    const t = setup(createMockDirectory({ info: () => {} }));
+    const res = await t.call('POST', '/invite', { ...tenantInvite, email: 'elif+test@site.com' });
+    expect(res.status).toBe(201);
+    expect(res.body).toMatchObject({ invitation: 'sent', membership: { userId: 'mock-elif' } });
+    expect(res.body.mock.temporaryPassword).toMatch(/^Gecici\d{5}$/);
+
+    const again = await t.call('POST', '/invite', { ...tenantInvite, unitId: 'u2', email: 'elif+test@site.com', relation: 'owner' });
+    expect(again.body).toMatchObject({ invitation: 'existing_user', mock: {} });
+    expect(again.body.mock.temporaryPassword).toBeUndefined();
+  });
+
+  it('mock kimlik web mock girisiyle ayni kurali kullanir', () => {
+    expect(mockUserId('Ayse.Yilmaz@site.com')).toBe('mock-Ayse_Yilmaz');
+    expect(mockUserId('resident@dev.local')).toBe('mock-resident');
+  });
+
+  it('production veya Lambda ortaminda mock dizin ASLA secilmez', async () => {
+    for (const env of [
+      { AUTH_MODE: 'mock', NODE_ENV: 'production' },
+      { AUTH_MODE: 'mock', AWS_LAMBDA_FUNCTION_NAME: 'api' },
+      {},
+    ]) {
+      const dir = createDirectoryFromEnv(env);
+      expect(dir.kind).not.toBe('mock');
+      await expect(dir.findOrCreate({ email: 'a@b.co', fullName: 'A B' })).rejects.toThrow(/yapilandirilmamis/);
+    }
+    expect(createDirectoryFromEnv({ AUTH_MODE: 'mock' }).kind).toBe('mock');
+    expect(createDirectoryFromEnv({ AUTH_MODE: 'mock', COGNITO_USER_POOL_ID: 'eu-north-1_x' }).kind).toBe('cognito');
+  });
+
+  it('Cognito dizininde yanitta mock alani yok', async () => {
+    const t = setup();
+    const res = await t.call('POST', '/invite', tenantInvite);
+    expect(res.body.mock).toBeUndefined();
   });
 });

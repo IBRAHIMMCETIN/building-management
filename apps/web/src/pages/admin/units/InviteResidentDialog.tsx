@@ -90,6 +90,22 @@ export function InviteResidentDialog({ row, onClose }: Props) {
             <UserCheck className="size-10 text-success" aria-hidden="true" />
           )}
           <p className="font-semibold">{done.person.fullName} daireye eklendi</p>
+          {done.mock && (
+            <Alert>
+              <span className="block text-left">
+                <strong>Yerel test (mock):</strong> e-posta gönderilmedi.
+                {done.mock.temporaryPassword ? (
+                  <>
+                    {' '}
+                    Giriş ekranında <code>{done.person.email}</code> ve geçici şifre{' '}
+                    <code className="select-all">{done.mock.temporaryPassword}</code> ile ilk girişi deneyebilirsiniz.
+                  </>
+                ) : (
+                  ' Bu kişi bu oturumda daha önce davet edilmiş.'
+                )}
+              </span>
+            </Alert>
+          )}
           <p className="text-small text-muted">
             {done.invitation === 'sent'
               ? `${done.person.email} adresine giriş bilgileri gönderildi. İlk girişte kendi şifresini belirleyecek.`
@@ -141,7 +157,11 @@ export function InviteResidentDialog({ row, onClose }: Props) {
           <FormField label="E-posta" error={errors.email?.message} hint="Giriş bilgileri bu adrese gönderilir.">
             <Input type="email" inputMode="email" autoComplete="off" {...form.register('email')} />
           </FormField>
-          <FormField label={relation === 'tenant' ? 'Taşınma tarihi' : 'Mülkiyet başlangıcı'} error={errors.startDate?.message}>
+          <FormField
+            label={relation === 'tenant' ? 'Taşınma tarihi' : 'Mülkiyet başlangıcı'}
+            error={errors.startDate?.message}
+            hint="Sakin bu tarihten önceki borç ve ödemeleri göremez. Sistemden önce taşınmış biriyse gerçek tarihi girin."
+          >
             <Input type="date" {...form.register('startDate')} />
           </FormField>
 

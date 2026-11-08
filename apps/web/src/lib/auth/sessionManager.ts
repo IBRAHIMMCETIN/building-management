@@ -16,6 +16,8 @@ type Listener = () => void;
 class SessionManager {
   private state: SessionState = { status: 'initializing', session: null };
   private listeners = new Set<Listener>();
+  /** Oturumun sunucu tarafindan dusuruldugu bilgisi (giris ekraninda bir kez gosterilir). */
+  private expiredNotice: 'unauthorized' | null = null;
   /** Ayni anda gelen 401'ler tek bir yenileme cagrisini paylasir (single-flight). */
   private refreshing: Promise<AuthSession> | null = null;
 
@@ -48,6 +50,7 @@ class SessionManager {
   }
 
   async signIn(input: { email: string; password: string }): Promise<SignInStep> {
+    this.expiredNotice = null;
     return this.applyStep(await authAdapter.signIn(input));
   }
 
@@ -63,6 +66,26 @@ class SessionManager {
     const current = this.state.session;
     this.set(null);
     await authAdapter.signOut(current);
+  }
+
+  /**
+   * Oturum sunucuda gecersiz (401 / yenileme basarisiz): bellekteki oturumla birlikte
+   * adapter'in sakladigi token'lar da silinir. Yalnizca `set(null)` yetmez; aksi halde
+   * sayfa yenilenince `restore()` ayni gecersiz oturumu geri getirir.
+   */
+  expire(): void {
+    const current = this.state.session;
+    if (!current) return;
+    this.expiredNotice = 'unauthorized';
+    this.set(null);
+    void authAdapter.signOut(current).catch(() => undefined);
+  }
+
+  /** Giris ekrani: oturum 401 ile dustuyse nedenini bir kez dondurur. */
+  consumeExpiredNotice(): 'unauthorized' | null {
+    const notice = this.expiredNotice;
+    this.expiredNotice = null;
+    return notice;
   }
 
   async setActiveContext(context: ActiveContext): Promise<AuthSession> {
@@ -89,7 +112,7 @@ class SessionManager {
         return next;
       })
       .catch((err: unknown) => {
-        this.set(null);
+        this.expire();
         throw err instanceof AuthRequiredError ? err : new AuthRequiredError();
       })
       .finally(() => {

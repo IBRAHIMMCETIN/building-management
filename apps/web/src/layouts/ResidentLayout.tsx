@@ -1,6 +1,7 @@
 import { Home, Megaphone, Receipt } from 'lucide-react';
 import type { ComponentType } from 'react';
 import { NavLink, Outlet } from 'react-router';
+import { PortalUnitProvider } from '@/context/PortalUnitContext';
 import { cn } from '@/lib/cn';
 import { UserMenu } from './UserMenu';
 
@@ -22,7 +23,9 @@ export function ResidentLayout() {
       </header>
 
       <main className="mx-auto w-full max-w-content flex-1 px-4 pt-6 pb-24">
-        <Outlet />
+        <PortalUnitProvider>
+          <Outlet />
+        </PortalUnitProvider>
       </main>
 
       <nav

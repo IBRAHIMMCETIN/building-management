@@ -4,6 +4,8 @@ import {
 } from '@aws-sdk/client-dynamodb';
 import {
   PutCommand,
+  QueryCommand,
+  type QueryCommandOutput,
   TransactWriteCommand,
   type TransactWriteCommandInput,
   UpdateCommand,
@@ -298,8 +300,81 @@ export type FinanceRepository = {
   getIdempotency(apartmentId: string, id: string): Promise<IdempotencyRecord | undefined>;
   getCounter(apartmentId: string, name: string): Promise<number>;
 
+  /**
+   * Islem basliklari, tarih araligina gore (SK = `TX#<YYYYMMDD>-...` kronolojik).
+   * `limit` verilirse sayfalanir; `cursor` bir onceki sayfanin devami.
+   */
+  listTransactions(apartmentId: string, query?: TransactionQuery): Promise<{ items: Transaction[]; cursor?: string }>;
+
   postTransaction(input: PostInput): Promise<void>;
 };
+
+export type TransactionQuery = {
+  /** Dahil, YYYY-MM-DD */
+  from?: string;
+  /** Dahil, YYYY-MM-DD */
+  to?: string;
+  newestFirst?: boolean;
+  limit?: number;
+  cursor?: string;
+};
+
+const encodeCursor = (key: QueryCommandOutput['LastEvaluatedKey']) =>
+  key ? Buffer.from(JSON.stringify(key)).toString('base64url') : undefined;
+
+function decodeCursor(apartmentId: string, cursor: string): Record<string, unknown> {
+  try {
+    const key = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as Record<string, unknown>;
+    // Imleç istemciden gelir: baska apartmanin anahtari ile devam edilemez.
+    if (key.PK !== tenantPk(apartmentId) || typeof key.SK !== 'string' || !key.SK.startsWith('TX#')) {
+      throw new Error('tenant');
+    }
+    return { PK: key.PK, SK: key.SK };
+  } catch {
+    throw new InvalidCursorError();
+  }
+}
+
+export class InvalidCursorError extends Error {
+  constructor() {
+    super('Gecersiz sayfa imleci');
+    this.name = 'InvalidCursorError';
+  }
+}
+
+async function queryTransactions(
+  apartmentId: string,
+  q: TransactionQuery = {},
+): Promise<{ items: Transaction[]; cursor?: string }> {
+  const { client, tableName } = getDynamo();
+  const pk = tenantPk(apartmentId);
+  // TX#<YYYYMMDD>-<uuid>: araligin ust siniri gunun tum islemlerini kapsamali ('~' > rakam/harf).
+  const lower = `TX#${(q.from ?? '0000-00-00').replaceAll('-', '')}`;
+  const upper = `TX#${(q.to ?? '9999-99-99').replaceAll('-', '')}~`;
+  const items: Transaction[] = [];
+  let startKey: Record<string, unknown> | undefined = q.cursor ? decodeCursor(apartmentId, q.cursor) : undefined;
+  try {
+    do {
+      const out: QueryCommandOutput = await client.send(
+        new QueryCommand({
+          TableName: tableName,
+          KeyConditionExpression: '#pk = :pk AND #sk BETWEEN :lo AND :hi',
+          ExpressionAttributeNames: { '#pk': 'PK', '#sk': 'SK' },
+          ExpressionAttributeValues: { ':pk': pk, ':lo': lower, ':hi': upper },
+          ScanIndexForward: !q.newestFirst,
+          ...(q.limit ? { Limit: q.limit - items.length } : {}),
+          ...(startKey ? { ExclusiveStartKey: startKey } : {}),
+        }),
+      );
+      items.push(...((out.Items ?? []) as Transaction[]));
+      startKey = out.LastEvaluatedKey;
+      if (q.limit && items.length >= q.limit) return { items, cursor: encodeCursor(startKey) };
+    } while (startKey);
+    return { items };
+  } catch (err) {
+    throw toDataAccessError(err);
+  }
+}
 
 async function putAccount(account: Account, ignoreExisting: boolean): Promise<void> {
   const { client, tableName } = getDynamo();
@@ -374,6 +449,8 @@ export function createFinanceRepository(): FinanceRepository {
       const item = await getTenantItem<{ value?: number }>(financeKeys.counter(apartmentId, name));
       return item?.value ?? 0;
     },
+
+    listTransactions: queryTransactions,
 
     postTransaction,
   };

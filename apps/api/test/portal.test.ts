@@ -133,6 +133,7 @@ function createWorld() {
   const entries: LedgerEntry[] = [];
 
   const financeRepo: FinanceRepository = {
+    listTransactions: async (apt) => ({ items: [...transactions.values()].filter((t) => t.siteId === apt) }),
     getAccount: async (apt, id) => accounts.get(k(apt, id)),
     listAccounts: async (apt) => [...accounts.values()].filter((a) => a.siteId === apt),
     createAccount: async (a) => void accounts.set(k(a.siteId, a.accountId), a),
@@ -307,7 +308,11 @@ describe('portal - erisim kontrolu', () => {
     const { get, token } = setup();
     const res = await get('/api/portal/my-unit', token('multi', 'resident'));
     expect(res.status).toBe(400);
-    expect(await res.json()).toMatchObject({ error: 'unit_selection_required', unitIds: ['u2', 'u3'] });
+    const sel = (await res.json()) as any;
+    expect(sel).toMatchObject({ error: 'unit_selection_required', unitIds: ['u2', 'u3'] });
+    // Secici etiketleri yalnizca kullanicinin kendi daireleri
+    expect(sel.units.map((u: any) => u.unitId).sort()).toEqual(['u2', 'u3']);
+    expect(sel.units[0].label).toMatch(/· U[23]$/);
 
     const ok = await get('/api/portal/my-unit?unitId=u3', token('multi', 'resident'));
     expect(ok.status).toBe(200);
@@ -759,5 +764,98 @@ describe('olaylar - createEventPublisherFromEnv', () => {
     expect(createEventPublisherFromEnv({ EVENTS_MODE: 'sns', EVENTS_SNS_TOPIC_ARN: 'arn:x', AWS_REGION: 'eu-central-1' }, quiet)).toBeDefined();
     expect(createEventPublisherFromEnv({ EVENTS_MODE: 'eventbridge', EVENTS_BUS_NAME: 'b', AWS_REGION: 'eu-central-1' }, quiet)).toBeDefined();
     expect(createEventPublisherFromEnv({ EVENTS_MODE: 'none', NODE_ENV: 'production' }, quiet)).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Sakin ozeti (my-summary) ve ekstre zenginlestirme
+// ---------------------------------------------------------------------------
+
+describe('portal - sakin ozeti (my-summary)', () => {
+  const summary = async (t: ReturnType<typeof setup>) =>
+    (await (await t.get('/api/portal/my-summary', t.token('tenant-1', 'resident'))).json()) as any;
+
+  it('hic tahakkuk yoksa "no_debt"', async () => {
+    const t = setup();
+    expect(await summary(t)).toMatchObject({ status: 'no_debt', debt: 0, totalCharged: 0, totalPaid: 0, unitLabel: 'A Blok · U1', relationLabel: 'Kiracı' });
+  });
+
+  it('vadesi gecmemis borc "pending"; siradaki vade ve tutar doner', async () => {
+    const t = setup();
+    await t.charge('u1', 'occupant', 100000, 'k1');
+    await t.pay('u1', 'occupant', 30000, 'p1');
+    expect(await summary(t)).toMatchObject({
+      status: 'pending',
+      debt: 70000,
+      totalCharged: 100000,
+      totalPaid: 30000,
+      overdueAmount: 0,
+      nextDue: { dueDate: '2026-11-15', amount: 70000 },
+      lastPayment: { paidAt: '2026-11-05', amount: 30000, receiptNumber: 'MKB-000001' },
+    });
+  });
+
+  it('vadesi gecmis borc "overdue" ve gun sayisi', async () => {
+    const t = setup();
+    await t.charge('u1', 'occupant', 100000, 'k1', { date: '2026-10-01', dueDate: '2026-10-15' });
+    expect(await summary(t)).toMatchObject({ status: 'overdue', overdueAmount: 100000, daysOverdue: 22, oldestOverdueDueDate: '2026-10-15' });
+  });
+
+  it('tamami odenmis "paid"; fazla odeme avans', async () => {
+    const t = setup();
+    await t.charge('u1', 'occupant', 100000, 'k1');
+    await t.pay('u1', 'occupant', 120000, 'p1');
+    expect(await summary(t)).toMatchObject({ status: 'paid', debt: 0, advance: 20000, totalPaid: 120000 });
+  });
+
+  it('iptal edilen odeme toplam odenene ve son odemeye katilmaz', async () => {
+    const t = setup();
+    await t.charge('u1', 'occupant', 100000, 'k1');
+    const p = await t.pay('u1', 'occupant', 100000, 'p1');
+    await t.post(`/transactions/${p.body.transaction.transactionId}/reversal`, { reason: 'Karsiliksiz cek' });
+    const body = await summary(t);
+    expect(body).toMatchObject({ status: 'pending', debt: 100000, totalPaid: 0 });
+    expect(body.lastPayment).toBeUndefined();
+  });
+
+  it('sakin rolu disinda erisilemez; baska dairenin ozeti istenemez', async () => {
+    const t = setup();
+    expect((await t.get('/api/portal/my-summary', t.token('mgr-1', 'apartment_manager'))).status).toBe(403);
+    expect((await t.get('/api/portal/my-summary?unitId=u2', t.token('tenant-1', 'resident'))).status).toBe(403);
+  });
+});
+
+describe('portal - ekstre: hareket turu ve makbuz no', () => {
+  it('tahakkuk ACCRUAL, tahsilat COLLECTION + makbuz no, ters kayit REVERSAL ve iptal isareti', async () => {
+    const t = setup();
+    await t.charge('u1', 'occupant', 100000, 'k1');
+    const p = await t.pay('u1', 'occupant', 40000, 'p1');
+    await t.pay('u1', 'occupant', 10000, 'p2', { method: 'bank_transfer' });
+    await t.post(`/transactions/${p.body.transaction.transactionId}/reversal`, { reason: 'Hatali' });
+
+    const body = (await (await t.get('/api/portal/my-statement', t.token('tenant-1', 'resident'))).json()) as any;
+    const rows = body.accounts[0].entries;
+    expect(rows.map((r: any) => [r.entryType, r.receiptNumber ?? null, r.debit, r.credit, r.reversed ?? false])).toEqual([
+      ['ACCRUAL', null, 100000, 0, false],
+      ['COLLECTION', 'MKB-000001', 0, 40000, true],
+      ['COLLECTION', 'MKB-000002', 0, 10000, false],
+      ['REVERSAL', null, 40000, 0, false],
+    ]);
+    expect(body.closingBalance).toBe(90000);
+  });
+});
+
+describe('portal - mock kimlik cozumlemesi', () => {
+  it('mock token (sub = mock-<eposta>) davetle olusan uyelik uzerinden daireyi cozer', async () => {
+    const t = setup();
+    // Mock davet dizini bu kimligi uretir: mockUserId('ayse@site.com') === 'mock-ayse'
+    t.world.memberships.push({ ...t.world.memberships[0], userId: 'mock-ayse', unitId: 'u2' } as any);
+    await t.charge('u2', 'occupant', 50000, 'k-u2');
+    const res = await t.get('/api/portal/my-summary', t.token('mock-ayse', 'resident'));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ unitId: 'u2', debt: 50000 });
+    // Uyeligi olmayan mock kullanici (ornek: resident@dev.local) acik bir 403 alir
+    const none = await t.get('/api/portal/my-summary', t.token('mock-resident', 'resident'));
+    expect(none.status).toBe(403);
   });
 });

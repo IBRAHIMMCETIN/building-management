@@ -43,6 +43,8 @@ export type InviteResult = {
   membership: MembershipView;
   /** sent: yeni hesap, gecici sifre e-postasi gitti. existing_user: hesap zaten vardi. */
   invitation: 'sent' | 'existing_user';
+  /** Yalnizca yerel mock dizinde: e-posta gonderilmedigi icin ilk giris bilgisi. */
+  mock?: { temporaryPassword?: string };
 };
 
 export type ResidentsServiceDeps = {
@@ -150,7 +152,7 @@ export function createResidentsService(overrides: Partial<ResidentsServiceDeps> 
     const unit = await deps.core.getUnit(ctx.apartmentId, unitId);
     if (!unit || unit.status !== 'active') throw new CoreError('not_found', 'Bagimsiz bolum bulunamadi veya pasif');
 
-    let account: { userId: string; created: boolean };
+    let account: Awaited<ReturnType<UserDirectory['findOrCreate']>>;
     try {
       account = await deps.directory.findOrCreate({ email, fullName });
     } catch (err) {
@@ -169,6 +171,7 @@ export function createResidentsService(overrides: Partial<ResidentsServiceDeps> 
       person: toView(person, ctx.role),
       membership,
       invitation: account.created ? 'sent' : 'existing_user',
+      ...(deps.directory.kind === 'mock' ? { mock: { temporaryPassword: account.temporaryPassword } } : {}),
     };
   }
 

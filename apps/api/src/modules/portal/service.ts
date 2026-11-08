@@ -60,10 +60,21 @@ export type PortalServiceDeps = {
 // Gorunum tipleri (istemciye donen)
 // ---------------------------------------------------------------------------
 
+/**
+ * Sakin dilinde hareket turu: ACCRUAL = borc tahakkuku, COLLECTION = tahsilat/odeme,
+ * REVERSAL = duzeltme (ters kayit), OTHER = diger borc/alacak.
+ */
+export type StatementEntryType = 'ACCRUAL' | 'COLLECTION' | 'REVERSAL' | 'OTHER';
+
 export type StatementRow = {
   date: IsoDate;
   transactionId: string;
   kind?: TransactionKind;
+  entryType: StatementEntryType;
+  /** Tahsilat satirinda makbuz numarasi (ornek: MKB-000012). Odeme yontemi icin /my-receipts. */
+  receiptNumber?: string;
+  /** Bu satirin islemi daha sonra ters kayitla iptal edildi mi? */
+  reversed?: boolean;
   description: string;
   dueDate?: IsoDate;
   debit: Kurus;
@@ -107,12 +118,13 @@ export type ReceiptView = {
   status: 'valid' | 'reversed';
 };
 
+// Kullaniciya dogrudan gosterilen etiketler: Turkce karakterlerle.
 const PARTY_LABEL: Record<LiableParty, string> = {
   owner: 'Kat Maliki Carisi',
-  occupant: 'Sakin (Kiraci) Carisi',
+  occupant: 'Sakin (Kiracı) Carisi',
 };
 
-const RELATION_LABEL: Record<UnitRelation, string> = { owner: 'Kat Maliki', tenant: 'Kiraci' };
+const RELATION_LABEL: Record<UnitRelation, string> = { owner: 'Kat Maliki', tenant: 'Kiracı' };
 
 // ---------------------------------------------------------------------------
 // Saf yardimcilar
@@ -204,6 +216,28 @@ export function allocateOpenDues(
   return { open, advance: toKurus(credit) };
 }
 
+function entryTypeOf(kind: TransactionKind | undefined): StatementEntryType {
+  switch (kind) {
+    case 'dues_charge':
+      return 'ACCRUAL';
+    case 'payment':
+      return 'COLLECTION';
+    case 'reversal':
+      return 'REVERSAL';
+    default:
+      return 'OTHER';
+  }
+}
+
+/**
+ * Sakin ozeti durumu:
+ *  no_debt: hic tahakkuk yok ve bakiye sifir (Borc yok)
+ *  paid:    tahakkuk var, hepsi odenmis (Odendi)
+ *  pending: acik borc var, vadesi gecmemis (Bekliyor)
+ *  overdue: vadesi gecmis borc var (Gecikmede)
+ */
+export type PortalDuesStatus = 'no_debt' | 'paid' | 'pending' | 'overdue';
+
 function parseOptionalDate(value: string | undefined, field: string): IsoDate | undefined {
   if (value === undefined || value === '') return undefined;
   if (!isIsoDate(value)) throw new ValidationError(`${field} YYYY-MM-DD biciminde olmalidir`, field);
@@ -257,8 +291,22 @@ export function createPortalService(overrides: Partial<PortalServiceDeps> = {}) 
     } else if (memberships.length === 1) {
       membership = memberships[0];
     } else {
+      // Secici icin okunur etiketler ("A Blok · 5"); yalnizca kullanicinin KENDI daireleri.
+      const units = await Promise.all(
+        memberships.map(async (m) => {
+          const u = await deps.core.getUnit(ctx.apartmentId, m.unitId);
+          const b = u ? await deps.core.getBlock(ctx.apartmentId, u.blockId) : undefined;
+          return {
+            unitId: m.unitId,
+            label: u ? (b ? `${b.name} · ${u.number}` : u.number) : m.unitId,
+            relationLabel: RELATION_LABEL[m.relation],
+          };
+        }),
+      );
+      units.sort((a, b) => a.label.localeCompare(b.label, 'tr', { numeric: true }));
       throw new PortalError('unit_selection_required', 'Birden fazla daireniz var; unitId secin', {
         unitIds: memberships.map((m) => m.unitId).sort(),
+        units,
       });
     }
 
@@ -355,7 +403,18 @@ export function createPortalService(overrides: Partial<PortalServiceDeps> = {}) 
     if (from && to && from > to) throw new ValidationError('from, to tarihinden sonra olamaz', 'from');
 
     const resolved = await resolveUnit(ctx, query.unitId);
-    const { ledgers, txById } = await loadLedgers(resolved);
+    const [{ ledgers, txById }, payments] = await Promise.all([
+      loadLedgers(resolved),
+      repo.listUnitPayments(ctx.apartmentId, resolved.unit.unitId),
+    ]);
+    // Makbuz numarasi: tahsilat islemi -> Payment kaydi (ayni daire ve apartman).
+    const paymentByTx = new Map(
+      payments
+        .filter((p) => p.siteId === ctx.apartmentId && p.unitId === resolved.unit.unitId)
+        .map((p) => [p.transactionId, p]),
+    );
+    const reversedTx = new Set<string>();
+    for (const tx of txById.values()) if (tx.reversalOf) reversedTx.add(tx.reversalOf);
 
     const accounts: PartyStatement[] = ledgers.map(({ party, entries }) => {
       let opening = 0;
@@ -375,10 +434,14 @@ export function createPortalService(overrides: Partial<PortalServiceDeps> = {}) 
         if (e.side === 'debit') totalDebit += e.amount;
         else totalCredit += e.amount;
         const tx = txById.get(e.transactionId);
+        const payment = tx?.kind === 'payment' ? paymentByTx.get(e.transactionId) : undefined;
         rows.push({
           date: e.date,
           transactionId: e.transactionId,
           kind: tx?.kind,
+          entryType: entryTypeOf(tx?.kind),
+          ...(payment ? { receiptNumber: payment.receiptNumber } : {}),
+          ...(reversedTx.has(e.transactionId) ? { reversed: true } : {}),
           description: tx?.description ?? '-',
           dueDate: tx?.dueDate,
           debit: toKurus(e.side === 'debit' ? e.amount : 0),
@@ -405,6 +468,88 @@ export function createPortalService(overrides: Partial<PortalServiceDeps> = {}) 
       period: { from: from ?? resolved.membership.startDate, to: to ?? today() },
       accounts,
       closingBalance: toKurus(accounts.reduce((s, a) => s + a.closingBalance, 0)),
+    };
+  }
+
+  // ----- /my-summary -----
+
+  /**
+   * Ana sayfa / Borclarim ust karti: guncel borc, toplam tahakkuk, toplam odenen, gecikme
+   * ve durum rozeti. Ters kayitla iptal edilen islemler (ve ters kayitlarin kendisi)
+   * toplamlara katilmaz; bakiye ise defterin kendisidir (iptaller zaten net sifir).
+   */
+  async function getMySummary(ctx: PortalContext, unitId?: string) {
+    const resolved = await resolveUnit(ctx, unitId);
+    const { unit, membership } = resolved;
+    const [{ ledgers, txById }, payments, block] = await Promise.all([
+      loadLedgers(resolved),
+      repo.listUnitPayments(ctx.apartmentId, unit.unitId),
+      deps.core.getBlock(ctx.apartmentId, unit.blockId),
+    ]);
+    const day = today();
+
+    const cancelled = new Set<string>();
+    for (const tx of txById.values()) {
+      if (tx.reversalOf) {
+        cancelled.add(tx.reversalOf);
+        cancelled.add(tx.transactionId);
+      }
+    }
+
+    let balance = 0;
+    let totalCharged = 0;
+    let totalPaid = 0;
+    for (const { entries } of ledgers) {
+      for (const e of entries) {
+        balance += signed(e);
+        if (cancelled.has(e.transactionId)) continue;
+        const kind = txById.get(e.transactionId)?.kind;
+        if (e.side === 'debit' && kind === 'dues_charge') totalCharged += e.amount;
+        if (e.side === 'credit' && kind === 'payment') totalPaid += e.amount;
+      }
+    }
+
+    const open = ledgers.flatMap(({ party, entries }) => allocateOpenDues(party, entries, txById, day).open);
+    const overdueAmount = open.filter((o) => o.overdue).reduce((s, o) => s + o.remaining, 0);
+    const upcoming = open.filter((o) => !o.overdue).sort((a, b) => a.dueDate.localeCompare(b.dueDate))[0];
+    const oldestOverdue = open.filter((o) => o.overdue).sort((a, b) => a.dueDate.localeCompare(b.dueDate))[0];
+
+    const debt = Math.max(balance, 0);
+    const status: PortalDuesStatus =
+      overdueAmount > 0 ? 'overdue' : debt > 0 ? 'pending' : totalCharged > 0 ? 'paid' : 'no_debt';
+
+    const parties = new Set(resolved.parties);
+    const lastPayment = payments
+      .filter(
+        (p) =>
+          p.siteId === ctx.apartmentId &&
+          p.unitId === unit.unitId &&
+          parties.has(p.liableParty) &&
+          inWindow(p.paidAt, membership) &&
+          !cancelled.has(p.transactionId),
+      )
+      .sort((a, b) => b.paidAt.localeCompare(a.paidAt) || b.receiptNumber.localeCompare(a.receiptNumber))[0];
+
+    return {
+      unitId: unit.unitId,
+      unitLabel: block ? `${block.name} · ${unit.number}` : unit.number,
+      relationLabel: RELATION_LABEL[membership.relation],
+      currency: 'TRY' as const,
+      asOf: day,
+      status,
+      balance: toKurus(balance),
+      debt: toKurus(debt),
+      advance: toKurus(Math.max(-balance, 0)),
+      totalCharged: toKurus(totalCharged),
+      totalPaid: toKurus(totalPaid),
+      overdueAmount: toKurus(overdueAmount),
+      oldestOverdueDueDate: oldestOverdue?.dueDate,
+      daysOverdue: oldestOverdue?.daysOverdue ?? 0,
+      openCount: open.length,
+      nextDue: upcoming ? { dueDate: upcoming.dueDate, amount: upcoming.remaining, description: upcoming.description } : undefined,
+      lastPayment: lastPayment
+        ? { paidAt: lastPayment.paidAt, amount: lastPayment.amount, receiptNumber: lastPayment.receiptNumber }
+        : undefined,
     };
   }
 
@@ -503,7 +648,7 @@ export function createPortalService(overrides: Partial<PortalServiceDeps> = {}) 
     return { items };
   }
 
-  return { resolveUnit, getMyUnit, getMyStatement, getMyDues, getMyReceipts, getAnnouncements };
+  return { resolveUnit, getMyUnit, getMySummary, getMyStatement, getMyDues, getMyReceipts, getAnnouncements };
 }
 
 export type PortalService = ReturnType<typeof createPortalService>;

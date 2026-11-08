@@ -13,8 +13,11 @@ const publicDir =
   process.env.PUBLIC_DIR ?? path.join(path.dirname(fileURLToPath(import.meta.url)), 'public');
 
 const auth = createAuthFromEnv();
+const isProduction = process.env.NODE_ENV === 'production';
 const app = createApp({
   version,
+  // Yerel tani: web mock modda iken API'nin de mock oldugunu dogrulayabilsin.
+  ...(isProduction ? {} : { authMode: auth.mode }),
   authenticate: auth.authenticate,
   identify: auth.identify,
   events: createEventPublisherFromEnv(),
