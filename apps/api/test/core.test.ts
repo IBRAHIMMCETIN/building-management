@@ -787,6 +787,14 @@ describe('core routes', () => {
     expect((await call('GET', '/api/sites/id-1/units')).status).toBe(401);
   });
 
+  it('OPTIONS preflight kimlik istemeden 204 doner, diger metotlar korunmaya devam eder', async () => {
+    const app = createApp({ version: 'x' });
+    const pre = await app.request('/api/sites/id-1/units', { method: 'OPTIONS' });
+    expect(pre.status).toBe(204);
+    expect(await pre.text()).toBe('');
+    expect((await app.request('/api/sites/id-1/units')).status).toBe(401);
+  });
+
   it('authenticate verilmezse varsayilan olarak tum istekler 401 alir', async () => {
     const res = await createApp({ version: 'x' }).request('/api/sites');
     expect(res.status).toBe(401);

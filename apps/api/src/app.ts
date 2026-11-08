@@ -62,6 +62,11 @@ export function createApp(config: AppConfig) {
   const authenticate = config.authenticate ?? denyAll;
   const events = config.events ?? createInMemoryEventPublisher();
 
+  // CORS preflight: API Gateway'deki kimliksiz `OPTIONS /api/{proxy+}` rotasi buraya duser.
+  // CORS basliklarini API Gateway ekler (cors_configuration); burada yalnizca 2xx donulur.
+  // Kimlik dogrulama middleware'lerinden ONCE tanimlanmalidir.
+  app.options('/api/*', (c) => c.body(null, 204));
+
   app.route('/api/health', healthRoutes(config));
   app.route(
     '/api/me',

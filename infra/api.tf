@@ -225,7 +225,7 @@ resource "aws_apigatewayv2_api" "http" {
   protocol_type = "HTTP"
   description   = "Building management API (Hono on Lambda)"
 
-  # CORS preflight (OPTIONS) API Gateway tarafindan, authorizer'dan ONCE yanitlanir.
+  # Preflight icin ayrica kimliksiz OPTIONS rotasi gerekir (bkz. cors_preflight rotasi).
   cors_configuration {
     allow_origins  = var.cors_allow_origins
     allow_methods  = ["GET", "POST", "PATCH", "DELETE", "OPTIONS"]
@@ -271,6 +271,15 @@ resource "aws_apigatewayv2_route" "api" {
   target             = "integrations/${aws_apigatewayv2_integration.api.id}"
   authorization_type = "JWT"
   authorizer_id      = aws_apigatewayv2_authorizer.cognito.id
+}
+
+# CORS preflight: tarayici OPTIONS isteginde Authorization gondermez. Bu rota olmadan
+# OPTIONS da `ANY /api/{proxy+}` (JWT) rotasina duser ve 401 alir. Daha ozel rota onceliklidir.
+resource "aws_apigatewayv2_route" "cors_preflight" {
+  api_id             = aws_apigatewayv2_api.http.id
+  route_key          = "OPTIONS /api/{proxy+}"
+  target             = "integrations/${aws_apigatewayv2_integration.api.id}"
+  authorization_type = "NONE"
 }
 
 resource "aws_apigatewayv2_stage" "default" {

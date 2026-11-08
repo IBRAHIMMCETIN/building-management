@@ -191,6 +191,10 @@ run "prod_plan" {
     error_message = "Yalnizca saglik kontrolu acik olmali"
   }
   assert {
+    condition     = aws_apigatewayv2_route.cors_preflight.route_key == "OPTIONS /api/{proxy+}" && aws_apigatewayv2_route.cors_preflight.authorization_type == "NONE"
+    error_message = "CORS preflight (OPTIONS) kimliksiz olmali; aksi halde tarayici istekleri 401 ile engellenir"
+  }
+  assert {
     condition     = aws_apigatewayv2_integration.api.payload_format_version == "2.0"
     error_message = "Hono aws-lambda adaptoru payload v2 bekler"
   }
