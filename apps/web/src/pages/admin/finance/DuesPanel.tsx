@@ -1,12 +1,11 @@
 import { CircleCheck, HandCoins, Search } from 'lucide-react';
 import { useDeferredValue, useMemo, useState } from 'react';
-import { Alert, Badge, Button, Card, Input, Skeleton } from '@/components/ui';
+import { Alert, Badge, Button, Card, FilterChips, Input, Skeleton } from '@/components/ui';
 import { useDuesStatus } from '@/hooks/useFinance';
 import { useBlocks } from '@/hooks/useUnits';
 import { errorMessage } from '@/lib/api/errors';
 import { DUES_STATUS_LABELS, type DuesStatus, type UnitDues } from '@/lib/api/finance';
 import { formatTRY } from '@/lib/money';
-import { FilterChips } from './FilterChips';
 import { formatDate } from './format';
 import type { PaymentPreset } from './PaymentDialog';
 

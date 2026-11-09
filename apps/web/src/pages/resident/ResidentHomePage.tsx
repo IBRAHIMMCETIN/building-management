@@ -3,8 +3,8 @@ import { Link } from 'react-router';
 import { ChangeUnitLink, PortalQueryState } from '@/components/portal/PortalQueryState';
 import { PortalStatusBadge } from '@/components/portal/PortalStatusBadge';
 import { Card, CardTitle, Skeleton } from '@/components/ui';
-import { useMySummary } from '@/hooks/usePortal';
-import { formatDate } from '@/lib/dates';
+import { useMyAnnouncements, useMySummary } from '@/hooks/usePortal';
+import { formatDate, formatDateTime } from '@/lib/dates';
 import { formatTRY } from '@/lib/money';
 
 function DebtCard() {
@@ -80,11 +80,49 @@ function DebtCard() {
   );
 }
 
+/** Son 3 duyuru. Daire secimi / uyelik hatalari borc kartinda gosterildigi icin burada sessiz kalinir. */
+function LatestAnnouncementsCard() {
+  const list = useMyAnnouncements();
+  if (list.isError) return null;
+
+  return (
+    <Card className="flex flex-col gap-4">
+      <CardTitle>Son duyurular</CardTitle>
+      {list.isPending ? (
+        <div role="status" aria-label="Duyurular yükleniyor" className="flex flex-col gap-2">
+          <Skeleton className="h-4 w-2/3" />
+          <Skeleton className="h-4 w-1/2" />
+        </div>
+      ) : list.data.length === 0 ? (
+        <p className="text-small text-muted">Güncel duyuru yok.</p>
+      ) : (
+        <ul className="flex flex-col divide-y divide-border">
+          {list.data.slice(0, 3).map((a) => (
+            <li key={a.announcementId} className="flex flex-col gap-0.5 py-2 first:pt-0 last:pb-0">
+              <span className="font-medium break-words">{a.title}</span>
+              <time dateTime={a.publishAt} className="text-small text-muted">
+                {formatDateTime(a.publishAt)}
+              </time>
+            </li>
+          ))}
+        </ul>
+      )}
+      <div className="border-t border-border pt-3">
+        <Link to="/app/announcements" className="inline-flex items-center gap-1 text-small font-medium text-accent underline-offset-4 hover:underline">
+          Tüm duyurular
+          <ArrowRight className="size-4" aria-hidden="true" />
+        </Link>
+      </div>
+    </Card>
+  );
+}
+
 export function ResidentHomePage() {
   return (
     <div className="flex flex-col gap-6">
       <h1 className="text-title font-bold">Hoş geldiniz</h1>
       <DebtCard />
+      <LatestAnnouncementsCard />
     </div>
   );
 }

@@ -1,12 +1,11 @@
 import { ArrowDownLeft, ArrowLeftRight, ArrowUpRight, FileText, ReceiptText, Undo2 } from 'lucide-react';
 import { type ComponentType, useMemo, useState } from 'react';
-import { Alert, Badge, Button, Card, Skeleton } from '@/components/ui';
+import { Alert, Badge, Button, Card, FilterChips, Skeleton } from '@/components/ui';
 import { useTransactions } from '@/hooks/useFinance';
 import { errorMessage } from '@/lib/api/errors';
 import { CATEGORY_LABELS, type LedgerTransaction, type TransactionCategory } from '@/lib/api/finance';
 import { cn } from '@/lib/cn';
 import { formatSignedTRY, formatTRY } from '@/lib/money';
-import { FilterChips } from './FilterChips';
 import { formatDate } from './format';
 
 type Filter = 'all' | 'income' | 'expense' | 'accrual';

@@ -2,6 +2,7 @@ import { createBrowserRouter } from 'react-router';
 import { AdminLayout } from '@/layouts/AdminLayout';
 import { AuthLayout } from '@/layouts/AuthLayout';
 import { ResidentLayout } from '@/layouts/ResidentLayout';
+import { AnnouncementsPage } from '@/pages/admin/announcements/AnnouncementsPage';
 import { DashboardPage } from '@/pages/admin/DashboardPage';
 import { FinancePage } from '@/pages/admin/finance/FinancePage';
 import { UnitsPage } from '@/pages/admin/units/UnitsPage';
@@ -10,6 +11,7 @@ import { LoginPage } from '@/pages/auth/LoginPage';
 import { SelectContextPage } from '@/pages/auth/SelectContextPage';
 import { ForbiddenPage, NotFoundPage, RouteErrorPage } from '@/pages/errors/ErrorPages';
 import { PlaceholderPage } from '@/pages/PlaceholderPage';
+import { ResidentAnnouncementsPage } from '@/pages/resident/AnnouncementsPage';
 import { DuesPage } from '@/pages/resident/DuesPage';
 import { ResidentHomePage } from '@/pages/resident/ResidentHomePage';
 import { ADMIN_ROLES, RESIDENT_ROLES } from '@/types/roles';
@@ -48,7 +50,7 @@ export const router = createBrowserRouter([
               { index: true, element: <DashboardPage /> },
               { path: 'units', element: <UnitsPage /> },
               { path: 'finance', element: <FinancePage /> },
-              { path: 'announcements', element: <PlaceholderPage title="Duyurular" /> },
+              { path: 'announcements', element: <AnnouncementsPage /> },
             ],
           },
         ],
@@ -62,7 +64,7 @@ export const router = createBrowserRouter([
             children: [
               { index: true, element: <ResidentHomePage /> },
               { path: 'dues', element: <DuesPage /> },
-              { path: 'announcements', element: <PlaceholderPage title="Duyurular" /> },
+              { path: 'announcements', element: <ResidentAnnouncementsPage /> },
             ],
           },
         ],

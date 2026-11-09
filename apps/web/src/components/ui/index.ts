@@ -9,3 +9,5 @@ export { PasswordInput } from './PasswordInput';
 export { Badge } from './Badge';
 export { Select, type SelectProps } from './Select';
 export { Skeleton } from './Skeleton';
+export { FilterChips } from './FilterChips';
+export { Textarea, type TextareaProps } from './Textarea';

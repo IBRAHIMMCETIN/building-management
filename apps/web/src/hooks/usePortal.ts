@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { usePortalUnit } from '@/context/PortalUnitContext';
 import { ApiError } from '@/lib/api/errors';
+import { announcementsApi } from '@/lib/api/announcements';
 import { portalApi } from '@/lib/api/portal';
 import { useAuth } from './useAuth';
 import { unitKeys } from './useUnits';
@@ -9,6 +10,8 @@ export const portalKeys = {
   all: (apt: string, user: string) => [...unitKeys.apartment(apt), 'portal', user] as const,
   summary: (apt: string, user: string, unitId?: string) => [...portalKeys.all(apt, user), 'summary', unitId ?? 'auto'] as const,
   statement: (apt: string, user: string, unitId?: string) => [...portalKeys.all(apt, user), 'statement', unitId ?? 'auto'] as const,
+  announcements: (apt: string, user: string, unitId?: string) =>
+    [...portalKeys.all(apt, user), 'announcements', unitId ?? 'auto'] as const,
 };
 
 /** Daire secimi / uyelik yok gibi "beklenen" 4xx'ler tekrar denenmez (ekran secici gosterir). */
@@ -35,6 +38,17 @@ export function useMyStatement() {
   return useQuery({
     queryKey: portalKeys.statement(apt, userId, unitId),
     queryFn: ({ signal }) => portalApi.myStatement(unitId, signal),
+    enabled,
+    retry,
+  });
+}
+
+/** Sakinin dairesinin blogunu kapsayan, yayin penceresindeki duyurular (en yeni once). */
+export function useMyAnnouncements() {
+  const { apt, userId, unitId, enabled } = useScope();
+  return useQuery({
+    queryKey: portalKeys.announcements(apt, userId, unitId),
+    queryFn: ({ signal }) => announcementsApi.portalList(unitId, signal).then((r) => r.items),
     enabled,
     retry,
   });
