@@ -1,0 +1,45 @@
+name: CI
+
+# Her push ve PR'da tum calisma alanlari: typecheck, test, web derlemesi.
+# AWS kimlik bilgisi GEREKMEZ (testler mock/sahte istemcilerle kosar). Dagitim ayri:
+# serverless-deploy.yml (API + altyapi).
+
+on:
+  push:
+    branches: [main, feature/**]
+  pull_request:
+    branches: [main, feature/**]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: "24.22.2"
+
+jobs:
+  check:
+    name: Typecheck, test, build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      # Web derlemesi production modunda: VITE_AUTH_MODE=mock yasak oldugu icin sahte
+      # Cognito degerleriyle derlenir (yalnizca derlenebilirlik kontrolu; yayinlanmaz).
+      - name: Web build
+        run: npm run build --workspace apps/web
+        env:
+          VITE_AUTH_MODE: cognito
+          VITE_COGNITO_REGION: eu-north-1
+          VITE_COGNITO_USER_POOL_ID: eu-north-1_ci
+          VITE_COGNITO_USER_POOL_CLIENT: ci-client

@@ -23,6 +23,8 @@ export const summarySchema = z.object({
   advances: kurus,
   payables: kurus,
   overdue: kurus,
+  /** Islemis, henuz deftere yazilmamis kistelyevm gecikme tazminati (eski API'de yok). */
+  accruedLateFees: kurus.default(0),
   overdueUnitCount: z.number().int(),
   pendingUnitCount: z.number().int(),
   fundsAccounts: z.array(z.object({ accountId: z.string(), name: z.string(), type: z.enum(['cash', 'bank']), balance: kurus })),
@@ -84,6 +86,7 @@ export const duesStatusSchema = z.object({
       occupant: partyDues,
       balance: kurus,
       overdue: kurus,
+      lateFee: kurus.default(0),
       daysOverdue: z.number().int(),
       status: z.enum(DUES_STATUSES),
       lastPaymentDate: isoDate.optional(),

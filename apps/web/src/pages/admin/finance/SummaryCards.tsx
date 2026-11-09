@@ -60,7 +60,9 @@ export function SummaryCards() {
         tone={data.overdue > 0 ? 'warning' : 'default'}
         detail={
           data.overdue > 0
-            ? `${formatTRY(data.overdue)} gecikmede · ${data.overdueUnitCount} daire`
+            ? `${formatTRY(data.overdue)} gecikmede · ${data.overdueUnitCount} daire${
+                data.accruedLateFees > 0 ? ` · +${formatTRY(data.accruedLateFees)} işleyen tazminat` : ''
+              }`
             : data.receivables > 0
               ? 'Gecikmiş borç yok'
               : 'Bekleyen borç yok'

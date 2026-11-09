@@ -32,11 +32,16 @@ function Balance({ row }: { row: UnitDues }) {
 }
 
 function Overdue({ row }: { row: UnitDues }) {
-  if (row.overdue <= 0) return <span className="text-muted">—</span>;
+  if (row.overdue <= 0 && row.lateFee <= 0) return <span className="text-muted">—</span>;
   return (
     <span className="text-danger tabular-nums">
-      {formatTRY(row.overdue)}
-      <span className="block text-small text-muted">{row.daysOverdue} gün</span>
+      {row.overdue > 0 && formatTRY(row.overdue)}
+      {row.overdue > 0 && <span className="block text-small text-muted">{row.daysOverdue} gün</span>}
+      {row.lateFee > 0 && (
+        <span className="block text-small text-warning" title="İşleyen kıstelyevm gecikme tazminatı; ayın 1'inde cariye yazılır">
+          +{formatTRY(row.lateFee)} tazminat
+        </span>
+      )}
     </span>
   );
 }

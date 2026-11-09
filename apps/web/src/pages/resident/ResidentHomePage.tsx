@@ -51,7 +51,10 @@ function DebtCard() {
             <p className="flex items-start gap-2 text-small text-warning">
               <TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
               <span>
-                {formatTRY(s.overdueAmount)} tutarın son ödeme tarihi {s.daysOverdue} gün önce geçti. Gecikme tazminatı uygulanabilir.
+                {formatTRY(s.overdueAmount)} tutarın son ödeme tarihi {s.daysOverdue} gün önce geçti.
+                {s.accruedLateFee > 0
+                  ? ` Bugüne kadar işleyen gecikme tazminatı ${formatTRY(s.accruedLateFee)}; ayın 1'inde borcunuza eklenir.`
+                  : ' Gecikme tazminatı uygulanabilir.'}
               </span>
             </p>
           ) : s.nextDue ? (
