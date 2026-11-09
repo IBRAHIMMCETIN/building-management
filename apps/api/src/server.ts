@@ -3,6 +3,8 @@ import { fileURLToPath } from 'node:url';
 import { serve } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { createApp } from './app.js';
+import { createAuthFromEnv } from './auth/authenticators.js';
+import { createEventPublisherFromEnv } from './events/publisher.js';
 
 const port = Number(process.env.PORT ?? 3000);
 const version = process.env.APP_VERSION ?? 'dev';
@@ -10,7 +12,16 @@ const version = process.env.APP_VERSION ?? 'dev';
 const publicDir =
   process.env.PUBLIC_DIR ?? path.join(path.dirname(fileURLToPath(import.meta.url)), 'public');
 
-const app = createApp({ version });
+const auth = createAuthFromEnv();
+const isProduction = process.env.NODE_ENV === 'production';
+const app = createApp({
+  version,
+  // Yerel tani: web mock modda iken API'nin de mock oldugunu dogrulayabilsin.
+  ...(isProduction ? {} : { authMode: auth.mode }),
+  authenticate: auth.authenticate,
+  identify: auth.identify,
+  events: createEventPublisherFromEnv(),
+});
 
 app.use('/*', serveStatic({ root: publicDir }));
 // SPA: bilinmeyen sayfa yollarinda React uygulamasi acilir.

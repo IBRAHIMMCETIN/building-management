@@ -22,5 +22,6 @@ __pycache__/
 # Secrets - asla commit'leme
 .env
 .env.*
+!.env.example
 *accessKeys*.csv
 credentials

@@ -1,0 +1,21 @@
+@import 'tailwindcss';
+@import './styles/theme.css';
+
+@layer base {
+  :root {
+    color-scheme: light dark;
+  }
+
+  body {
+    @apply bg-bg text-body text-text font-sans antialiased;
+  }
+
+  code {
+    @apply font-mono;
+  }
+
+  /* Modal/cekmece acikken arka sayfa kaymasin. */
+  html:has(dialog[open]) {
+    overflow: hidden;
+  }
+}

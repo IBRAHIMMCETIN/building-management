@@ -1,0 +1,6 @@
+# Serverless yigin (infra/*.tf) yerel ciktilari
+.build/
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
