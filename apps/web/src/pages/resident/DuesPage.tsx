@@ -51,6 +51,12 @@ function SummaryCard() {
           {formatTRY(s.overdueAmount)} gecikmede (en eski vade {s.oldestOverdueDueDate ? formatDate(s.oldestOverdueDueDate) : '—'}, {s.daysOverdue} gün).
         </p>
       )}
+      {s.accruedLateFee > 0 && (
+        <p className="text-small text-muted">
+          Bugüne kadar işleyen gecikme tazminatı: <strong className="text-warning tabular-nums">{formatTRY(s.accruedLateFee)}</strong>. Ödenen
+          kısım için tazminat ödeme gününde durur; işleyen tutar her ayın 1’inde borcunuza eklenir.
+        </p>
+      )}
       <dl className="grid grid-cols-2 gap-3 sm:grid-cols-3">
         <div className="rounded-md bg-surface-muted p-3">
           <dt className="text-small text-muted">Toplam tahakkuk</dt>

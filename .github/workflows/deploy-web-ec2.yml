@@ -1,12 +1,12 @@
-name: Deploy web to EC2
+name: "[Arsiv] Deploy web to EC2"
+
+# ARSIV: Proje serverless mimariye (Lambda + API Gateway + DynamoDB, bkz.
+# serverless-deploy.yml) ve web icin Cloudflare Pages'e tasindi. EC2 yolu artik kullanilmiyor.
+# Otomatik tetikleme (push) kaldirildi; yalnizca elle calistirilabilir. Ihtiyac kalmadiginda
+# bu dosya ve infra/ec2 birlikte silinecek.
+# Typecheck/test artik ci.yml'de kosar.
 
 on:
-  push:
-    branches: [main]
-    paths-ignore:
-      - "infra/hello-lambda/**"
-      - ".github/workflows/deploy-hello-lambda.yml"
-      - "**/*.md"
   workflow_dispatch:
 
 concurrency:

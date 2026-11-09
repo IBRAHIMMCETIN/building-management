@@ -26,6 +26,8 @@ export const mySummarySchema = z.object({
   totalCharged: kurus,
   totalPaid: kurus,
   overdueAmount: kurus,
+  /** Islemis, henuz cariye yazilmamis gecikme tazminati (eski API'de yok). */
+  accruedLateFee: kurus.default(0),
   oldestOverdueDueDate: z.string().optional(),
   daysOverdue: z.number().int(),
   openCount: z.number().int(),
