@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { Announcement, CreateAnnouncementInput, UpdateAnnouncementInput } from '@/lib/api/announcements';
+import type { Announcement, CreateAnnouncementInput, UpdateAnnouncementInput } from '@/lib/api/announcementModel';
 import { isoToIstanbulLocal, istanbulLocalToIso, nowIstanbulLocal } from '@/lib/dates';
 
 /*

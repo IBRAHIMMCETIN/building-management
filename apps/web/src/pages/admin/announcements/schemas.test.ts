@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { type Announcement, displayStatus } from '@/lib/api/announcements';
+import { type Announcement, displayStatus } from '@/lib/api/announcementModel';
 import { isoToIstanbulLocal, istanbulLocalToIso, nowIstanbulLocal } from '@/lib/dates';
 import { formDefaults, makeAnnouncementSchema, toCreateInput, toUpdateInput } from './schemas';
 
