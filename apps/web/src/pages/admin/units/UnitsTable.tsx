@@ -45,10 +45,10 @@ const unitLabel = (row: UnitRow) => `${row.blockName} ${row.unit.number}`;
 export function UnitsTable({ rows, showResidents, canManage, onInvite }: Props) {
   return (
     <>
-      <div className="hidden overflow-x-auto rounded-lg border border-border bg-surface md:block">
+      <div className="hidden overflow-x-auto rounded-xl border border-border bg-surface/60 shadow-sm backdrop-blur-sm md:block">
         <table className="w-full text-left text-small">
           <caption className="sr-only">Daireler</caption>
-          <thead className="border-b border-border bg-surface-muted text-muted">
+          <thead className="border-b border-border bg-surface-muted/50 text-xs tracking-wide text-muted uppercase">
             <tr>
               <th scope="col" className="px-4 py-3 font-medium">Daire No</th>
               <th scope="col" className="px-4 py-3 font-medium">Blok / Kat</th>
@@ -67,7 +67,7 @@ export function UnitsTable({ rows, showResidents, canManage, onInvite }: Props) 
               )}
             </tr>
           </thead>
-          <tbody className="divide-y divide-border">
+          <tbody className="divide-y divide-border text-text-secondary [&>tr]:transition-colors [&>tr:hover]:bg-surface-muted/40">
             {rows.map((row) => (
               <tr key={row.unit.unitId} className="align-top hover:bg-surface-muted/50">
                 <th scope="row" className="px-4 py-3 font-semibold">
@@ -110,7 +110,7 @@ export function UnitsTable({ rows, showResidents, canManage, onInvite }: Props) 
 
       <ul className="flex flex-col gap-3 md:hidden" aria-label="Daireler">
         {rows.map((row) => (
-          <li key={row.unit.unitId} className="rounded-lg border border-border bg-surface p-4">
+          <li key={row.unit.unitId} className="rounded-xl border border-border bg-surface/60 p-5 shadow-sm backdrop-blur-sm transition-colors hover:border-border-strong">
             <div className="flex items-start justify-between gap-3">
               <div>
                 <p className="font-semibold">
@@ -151,7 +151,7 @@ export function UnitsTableSkeleton({ showResidents }: { showResidents: boolean }
   const cols = showResidents ? 6 : 3;
   return (
     <div role="status" aria-label="Daireler yükleniyor">
-      <div className="hidden rounded-lg border border-border bg-surface md:block">
+      <div className="hidden rounded-xl border border-border bg-surface/60 shadow-sm backdrop-blur-sm md:block">
         <div className="flex gap-6 border-b border-border bg-surface-muted px-4 py-3">
           {Array.from({ length: cols }, (_, i) => (
             <Skeleton key={i} className="h-4 flex-1" />
@@ -167,7 +167,7 @@ export function UnitsTableSkeleton({ showResidents }: { showResidents: boolean }
       </div>
       <div className="flex flex-col gap-3 md:hidden">
         {Array.from({ length: 4 }, (_, i) => (
-          <div key={i} className="flex flex-col gap-2 rounded-lg border border-border bg-surface p-4">
+          <div key={i} className="flex flex-col gap-2 rounded-xl border border-border bg-surface/60 p-5 shadow-sm backdrop-blur-sm transition-colors hover:border-border-strong">
             <Skeleton className="h-5 w-1/2" />
             <Skeleton className="h-4 w-3/4" />
             <Skeleton className="h-4 w-2/3" />

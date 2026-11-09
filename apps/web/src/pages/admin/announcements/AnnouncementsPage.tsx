@@ -1,4 +1,4 @@
-import { Archive, Megaphone, Pencil, Plus, Send } from 'lucide-react';
+import { Archive, CalendarClock, CalendarX, Megaphone, Pencil, Plus, Send, Users } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { Alert, Badge, Button, Card, Dialog, FilterChips, Skeleton } from '@/components/ui';
 import { useAnnouncementPermissions, useAnnouncements, useApproveAnnouncement, useArchiveAnnouncement } from '@/hooks/useAnnouncements';
@@ -109,7 +109,7 @@ export function AnnouncementsPage() {
           )}
         </Card>
       ) : (
-        <ul className="flex flex-col gap-3">
+        <ul className="flex flex-col gap-4">
           {visible.map((a) => (
             <li key={a.announcementId}>
               <AnnouncementCard
@@ -157,33 +157,44 @@ function AnnouncementCard({ item, target, canWrite, onEdit, onApprove, onArchive
         : `${future ? 'Yayınlanacak' : 'Yayınlandı'}: ${formatDateTime(item.publishAt)}`;
 
   return (
-    <Card className="flex flex-col gap-3 p-5">
-      <div className="flex flex-wrap items-start justify-between gap-2">
-        <h2 className="min-w-0 text-heading font-semibold break-words">{item.title}</h2>
+    <Card interactive className="flex flex-col gap-3">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <h2 className="min-w-0 text-base font-semibold break-words text-text md:text-lg">{item.title}</h2>
         <Badge tone={TONES[status]}>{DISPLAY_STATUS_LABELS[status]}</Badge>
       </div>
-      <p className="flex flex-wrap gap-x-3 gap-y-1 text-small text-muted">
-        <span>{target}</span>
-        <span>{when}</span>
-        {item.expiresAt && <span>Bitiş: {formatDateTime(item.expiresAt)}</span>}
+      <p className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted">
+        <span className="inline-flex items-center gap-1.5">
+          <Users className="size-3.5" aria-hidden="true" />
+          {target}
+        </span>
+        <span className="inline-flex items-center gap-1.5">
+          <CalendarClock className="size-3.5" aria-hidden="true" />
+          {when}
+        </span>
+        {item.expiresAt && (
+          <span className="inline-flex items-center gap-1.5">
+            <CalendarX className="size-3.5" aria-hidden="true" />
+            Bitiş: {formatDateTime(item.expiresAt)}
+          </span>
+        )}
       </p>
-      <p className="line-clamp-4 text-body whitespace-pre-line break-words">{item.body}</p>
+      <p className="line-clamp-4 text-sm leading-relaxed whitespace-pre-line break-words text-text-secondary">{item.body}</p>
 
       {canWrite && item.status !== 'archived' && (
-        <div className="flex flex-wrap justify-end gap-2 border-t border-border pt-3">
+        <div className="-mx-2.5 -mb-1.5 flex flex-wrap items-center justify-end gap-1 pt-1">
           {item.status === 'draft' && (
-            <Button size="sm" variant="ghost" onClick={onEdit}>
-              <Pencil className="size-4" aria-hidden="true" />
+            <Button size="xs" variant="subtle" onClick={onEdit}>
+              <Pencil className="size-3.5" aria-hidden="true" />
               Düzenle
             </Button>
           )}
-          <Button size="sm" variant="ghost" onClick={onArchive}>
-            <Archive className="size-4" aria-hidden="true" />
+          <Button size="xs" variant="subtle" onClick={onArchive}>
+            <Archive className="size-3.5" aria-hidden="true" />
             {item.status === 'published' ? 'Yayından kaldır' : 'Arşivle'}
           </Button>
           {item.status === 'draft' && (
-            <Button size="sm" onClick={onApprove}>
-              <Send className="size-4" aria-hidden="true" />
+            <Button size="xs" onClick={onApprove}>
+              <Send className="size-3.5" aria-hidden="true" />
               {future ? 'Onayla ve planla' : 'Yayınla'}
             </Button>
           )}

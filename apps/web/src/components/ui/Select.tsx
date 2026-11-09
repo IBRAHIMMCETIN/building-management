@@ -11,8 +11,8 @@ export function Select({ className, invalid, children, ...props }: SelectProps) 
       <select
         aria-invalid={invalid || undefined}
         className={cn(
-          'h-10 w-full appearance-none rounded-md border border-border bg-surface pr-9 pl-3 text-body text-text',
-          'focus:border-accent focus:ring-2 focus:ring-accent/30 focus:outline-none',
+          'h-10 w-full appearance-none rounded-md border border-border-strong bg-surface/80 pr-9 pl-3 text-small text-text shadow-xs transition-colors',
+          'focus:border-accent focus:ring-2 focus:ring-accent/20 focus:outline-none',
           'aria-invalid:border-danger disabled:opacity-60',
           className,
         )}

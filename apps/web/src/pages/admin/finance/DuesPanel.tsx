@@ -157,10 +157,10 @@ export function DuesPanel({ canWrite, onCollect }: Props) {
         </p>
       ) : (
         <>
-          <div className="hidden overflow-x-auto rounded-lg border border-border bg-surface md:block">
+          <div className="hidden overflow-x-auto rounded-xl border border-border bg-surface/60 shadow-sm backdrop-blur-sm md:block">
             <table className="w-full text-left text-small">
               <caption className="sr-only">Daire bazlı aidat durumu ({dues.data.asOf} itibarıyla)</caption>
-              <thead className="border-b border-border bg-surface-muted text-muted">
+              <thead className="border-b border-border bg-surface-muted/50 text-xs tracking-wide text-muted uppercase">
                 <tr>
                   <th scope="col" className="px-4 py-3 font-medium">Daire</th>
                   <th scope="col" className="px-4 py-3 font-medium">Durum</th>
@@ -174,7 +174,7 @@ export function DuesPanel({ canWrite, onCollect }: Props) {
                   )}
                 </tr>
               </thead>
-              <tbody className="divide-y divide-border">
+              <tbody className="divide-y divide-border text-text-secondary [&>tr]:transition-colors [&>tr:hover]:bg-surface-muted/40">
                 {visible.map((r) => (
                   <tr key={r.unitId} className="align-top">
                     <th scope="row" className="px-4 py-3 font-semibold">
@@ -204,7 +204,7 @@ export function DuesPanel({ canWrite, onCollect }: Props) {
 
           <ul className="flex flex-col gap-3 md:hidden" aria-label="Aidat durumu">
             {visible.map((r) => (
-              <li key={r.unitId} className="rounded-lg border border-border bg-surface p-4">
+              <li key={r.unitId} className="rounded-xl border border-border bg-surface/60 p-5 shadow-sm backdrop-blur-sm transition-colors hover:border-border-strong">
                 <div className="flex items-start justify-between gap-3">
                   <p className="font-semibold">{label(r)}</p>
                   <StatusBadge row={r} />

@@ -136,10 +136,10 @@ function Movements() {
         Hesap hareketleri
       </h2>
 
-      <div className="hidden overflow-x-auto rounded-lg border border-border bg-surface md:block">
+      <div className="hidden overflow-x-auto rounded-xl border border-border bg-surface/60 shadow-sm backdrop-blur-sm md:block">
         <table className="w-full text-left text-small">
           <caption className="sr-only">Hesap hareketleri, en yeni önce</caption>
-          <thead className="border-b border-border bg-surface-muted text-muted">
+          <thead className="border-b border-border bg-surface-muted/50 text-xs tracking-wide text-muted uppercase">
             <tr>
               <th scope="col" className="px-4 py-3 font-medium">Tarih</th>
               <th scope="col" className="px-4 py-3 font-medium">Açıklama</th>
@@ -148,7 +148,7 @@ function Movements() {
               <th scope="col" className="px-4 py-3 text-right font-medium">Tahsilat</th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-border">
+          <tbody className="divide-y divide-border text-text-secondary [&>tr]:transition-colors [&>tr:hover]:bg-surface-muted/40">
             {rows.map((r) => (
               <tr key={`${r.transactionId}-${r.liableParty}`} className={cn('align-top', r.reversed && 'opacity-70')}>
                 <td className="px-4 py-3 whitespace-nowrap tabular-nums">{formatDate(r.date)}</td>
@@ -173,7 +173,7 @@ function Movements() {
 
       <ul className="flex flex-col gap-2 md:hidden" aria-label="Hesap hareketleri">
         {rows.map((r) => (
-          <li key={`${r.transactionId}-${r.liableParty}`} className={cn('rounded-lg border border-border bg-surface p-3', r.reversed && 'opacity-70')}>
+          <li key={`${r.transactionId}-${r.liableParty}`} className={cn('rounded-xl border border-border bg-surface/60 p-4 shadow-sm backdrop-blur-sm transition-colors hover:border-border-strong', r.reversed && 'opacity-70')}>
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <p className={cn('font-medium', r.reversed && 'line-through')}>{r.description}</p>

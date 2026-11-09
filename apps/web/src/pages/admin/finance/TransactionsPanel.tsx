@@ -109,10 +109,10 @@ export function TransactionsPanel() {
         <p className="py-6 text-center text-small text-muted">Yüklenen hareketler arasında bu türde kayıt yok.</p>
       ) : (
         <>
-          <div className="hidden overflow-x-auto rounded-lg border border-border bg-surface md:block">
+          <div className="hidden overflow-x-auto rounded-xl border border-border bg-surface/60 shadow-sm backdrop-blur-sm md:block">
             <table className="w-full text-left text-small">
               <caption className="sr-only">Defter hareketleri</caption>
-              <thead className="border-b border-border bg-surface-muted text-muted">
+              <thead className="border-b border-border bg-surface-muted/50 text-xs tracking-wide text-muted uppercase">
                 <tr>
                   <th scope="col" className="px-4 py-3 font-medium">Tarih</th>
                   <th scope="col" className="px-4 py-3 font-medium">Açıklama</th>
@@ -121,7 +121,7 @@ export function TransactionsPanel() {
                   <th scope="col" className="px-4 py-3 text-right font-medium">Tutar</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-border">
+              <tbody className="divide-y divide-border text-text-secondary [&>tr]:transition-colors [&>tr:hover]:bg-surface-muted/40">
                 {visible.map((tx) => (
                   <tr key={tx.transactionId} className="align-top">
                     <td className="px-4 py-3 whitespace-nowrap tabular-nums">{formatDate(tx.date)}</td>
@@ -144,7 +144,7 @@ export function TransactionsPanel() {
 
           <ul className="flex flex-col gap-2 md:hidden" aria-label="Defter hareketleri">
             {visible.map((tx) => (
-              <li key={tx.transactionId} className="flex items-start justify-between gap-3 rounded-lg border border-border bg-surface p-3">
+              <li key={tx.transactionId} className="flex items-start justify-between gap-3 rounded-xl border border-border bg-surface/60 p-4 shadow-sm backdrop-blur-sm transition-colors hover:border-border-strong">
                 <div className="min-w-0">
                   <p className="truncate font-medium">{tx.description}</p>
                   <p className="text-small text-muted">

@@ -69,15 +69,15 @@ export function UnitsPage() {
 
       {summary && rows.length > 0 && (
         <dl className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-          <div className="rounded-lg border border-border bg-surface p-4">
+          <div className="rounded-xl border border-border bg-surface/60 p-5 shadow-sm backdrop-blur-sm transition-colors hover:border-border-strong">
             <dt className="text-small text-muted">Aktif bölüm</dt>
             <dd className="text-heading font-semibold tabular-nums">{summary.activeUnitCount}</dd>
           </div>
-          <div className="rounded-lg border border-border bg-surface p-4">
+          <div className="rounded-xl border border-border bg-surface/60 p-5 shadow-sm backdrop-blur-sm transition-colors hover:border-border-strong">
             <dt className="text-small text-muted">Toplam brüt alan</dt>
             <dd className="text-heading font-semibold tabular-nums">{m2(summary.totalGrossAreaTenthsM2)} m²</dd>
           </div>
-          <div className="col-span-2 rounded-lg border border-border bg-surface p-4 sm:col-span-1">
+          <div className="col-span-2 rounded-xl border border-border bg-surface/60 p-5 shadow-sm backdrop-blur-sm transition-colors hover:border-border-strong sm:col-span-1">
             <dt className="text-small text-muted">Arsa payı toplamı</dt>
             <dd className="flex items-center gap-2 text-heading font-semibold tabular-nums">
               {summary.landShare.numerator}/{summary.landShare.denominator}
