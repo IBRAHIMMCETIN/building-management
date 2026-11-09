@@ -71,6 +71,7 @@ function createFakeRepo() {
     getSite: async (a) => structuredClone(sites.get(`${coreKeys.site(a).PK}|SITE`)),
     createSite: async (s) => put(sites, s),
     updateSite: async (s, v) => put(sites, s, v),
+    listSiteIds: async () => [...sites.values()].map((s) => s.siteId).sort(),
     getBlock: async (a, id) => {
       const k = coreKeys.block(a, id);
       return structuredClone(blocks.get(`${k.PK}|${k.SK}`));
@@ -200,6 +201,37 @@ describe('core repository', () => {
     expect(input.ConditionExpression).toBe('attribute_exists(PK) AND #version = :expectedVersion');
     expect(input.ExpressionAttributeNames).toEqual({ '#version': 'version' });
     expect(input.ExpressionAttributeValues).toEqual({ ':expectedVersion': 2 });
+  });
+
+  it('site dizini: create/update GSI1 anahtarlarini yazar, getSite bunlari disari vermez', async () => {
+    ddbMock.on(PutCommand).resolves({});
+    await repo.createSite(site());
+    await repo.updateSite({ ...site(), version: 3 }, 2);
+    for (const call of ddbMock.commandCalls(PutCommand)) {
+      expect(call.args[0].input.Item).toMatchObject({ GSI1PK: 'SITE_DIRECTORY', GSI1SK: 'SITE#apt-1' });
+    }
+
+    ddbMock.on(GetCommand).resolves({ Item: { ...site(), GSI1PK: 'SITE_DIRECTORY', GSI1SK: 'SITE#apt-1' } });
+    const read = await repo.getSite('apt-1');
+    expect(read).not.toHaveProperty('GSI1PK');
+    expect(read).not.toHaveProperty('GSI1SK');
+  });
+
+  it('listSiteIds GSI1 site dizinini sayfalayarak okur', async () => {
+    ddbMock
+      .on(QueryCommand)
+      .resolvesOnce({ Items: [{ siteId: 'b' }], LastEvaluatedKey: { k: 1 } })
+      .resolvesOnce({ Items: [{ siteId: 'a' }] });
+
+    expect(await repo.listSiteIds()).toEqual(['a', 'b']);
+    const calls = ddbMock.commandCalls(QueryCommand);
+    expect(calls).toHaveLength(2);
+    expect(calls[0]!.args[0].input).toMatchObject({
+      IndexName: 'GSI1',
+      KeyConditionExpression: 'GSI1PK = :pk',
+      ExpressionAttributeValues: { ':pk': 'SITE_DIRECTORY' },
+    });
+    expect(calls[1]!.args[0].input.ExclusiveStartKey).toEqual({ k: 1 });
   });
 
   it('surum uyusmazligi conflict olarak yansir', async () => {

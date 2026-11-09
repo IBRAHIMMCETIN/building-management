@@ -11,7 +11,7 @@
 # ---------------------------------------------------------------------------
 
 locals {
-  notification_event_types = ["DUE_GENERATED", "PAYMENT_RECEIVED", "ANNOUNCEMENT_PUBLISHED"]
+  notification_event_types = ["DUE_GENERATED", "PAYMENT_RECEIVED", "ANNOUNCEMENT_PUBLISHED", "LATE_FEE_POSTED", "DUES_REMINDER"]
   # Worker Lambda zaman asimi x 6 (AWS onerisi); worker 30 sn varsayilir.
   notification_visibility_timeout = 180
 }

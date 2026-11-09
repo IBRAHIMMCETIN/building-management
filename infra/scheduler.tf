@@ -1,0 +1,291 @@
+# ---------------------------------------------------------------------------
+# Zamanlanmis gorevler: EventBridge Scheduler -> SQS (scheduled-jobs) -> scheduler worker.
+#
+# Kod: apps/api/src/workers/scheduler-worker.ts (build:lambda -> scheduler-worker.mjs)
+# - Scheduler dogrudan is yapmaz; kuyruga `{ job, scheduledTime }` birakir. scheduledTime
+#   Scheduler'in PLANLANAN zamanidir; is gunu/donem bundan Istanbul saatine gore turetilir.
+# - Zaman dilimi Europe/Istanbul (yaz/kis saati degisse bile yerel saatte calisir).
+# - Isler idempotenttir (donem bazli defter anahtarlari, deterministik olay kimlikleri);
+#   SQS'in tekrar teslimi veya elle yeniden calistirma ayni ayi iki kez borclandirmaz.
+# - Hata: 5 denemeden sonra DLQ + alarm.
+# ---------------------------------------------------------------------------
+
+locals {
+  scheduler_function        = "${local.name}-scheduler-worker"
+  scheduler_timeout_seconds = 300
+
+  # Lambda zaman asimi x 6 (AWS onerisi).
+  jobs_visibility_timeout = 6 * 300
+
+  # Gecikme tazminati yeni ayin aidatindan ONCE kesinlestirilir.
+  scheduled_jobs = {
+    late_fees = {
+      cron        = "cron(30 2 1 * ? *)"
+      description = "Her ayin 1'i 02:30 - onceki ayin gecikme tazminatini kesinlestir"
+    }
+    monthly_dues = {
+      cron        = "cron(0 3 1 * ? *)"
+      description = "Her ayin 1'i 03:00 - aylik aidat planini tahakkuk et"
+    }
+    dues_reminders = {
+      cron        = "cron(0 10 * * ? *)"
+      description = "Her gun 10:00 - vadeden 3 gun once, 1 ve 7 gun sonra borc hatirlatmasi"
+    }
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Kuyruk + DLQ
+# ---------------------------------------------------------------------------
+
+resource "aws_sqs_queue" "jobs_dlq" {
+  name                      = "${local.name}-scheduled-jobs-dlq"
+  message_retention_seconds = 1209600 # 14 gun
+  sqs_managed_sse_enabled   = true
+}
+
+resource "aws_sqs_queue" "jobs" {
+  name                       = "${local.name}-scheduled-jobs"
+  visibility_timeout_seconds = local.jobs_visibility_timeout
+  message_retention_seconds  = 345600 # 4 gun
+  receive_wait_time_seconds  = 20
+  sqs_managed_sse_enabled    = true
+
+  redrive_policy = jsonencode({
+    deadLetterTargetArn = aws_sqs_queue.jobs_dlq.arn
+    maxReceiveCount     = 5
+  })
+}
+
+resource "aws_sqs_queue_redrive_allow_policy" "jobs_dlq" {
+  queue_url = aws_sqs_queue.jobs_dlq.id
+
+  redrive_allow_policy = jsonencode({
+    redrivePermission = "byQueue"
+    sourceQueueArns   = [aws_sqs_queue.jobs.arn]
+  })
+}
+
+# ---------------------------------------------------------------------------
+# Worker Lambda
+# ---------------------------------------------------------------------------
+
+resource "aws_cloudwatch_log_group" "scheduler_worker" {
+  name              = "/aws/lambda/${local.scheduler_function}"
+  retention_in_days = var.log_retention_days
+}
+
+resource "aws_iam_role" "scheduler_worker" {
+  name               = local.scheduler_function
+  assume_role_policy = data.aws_iam_policy_document.lambda_assume.json
+}
+
+data "aws_iam_policy_document" "scheduler_worker" {
+  statement {
+    sid       = "Logs"
+    actions   = ["logs:CreateLogStream", "logs:PutLogEvents"]
+    resources = ["${aws_cloudwatch_log_group.scheduler_worker.arn}:*"]
+  }
+
+  # Defter yazimi API ile ayni kurallarla: DeleteItem / BatchWriteItem / Scan YOK.
+  # Index: site dizini (GSI1) sorgusu.
+  statement {
+    sid = "DynamoDbTable"
+    actions = [
+      "dynamodb:GetItem",
+      "dynamodb:BatchGetItem",
+      "dynamodb:Query",
+      "dynamodb:PutItem",
+      "dynamodb:UpdateItem",
+      "dynamodb:ConditionCheckItem",
+    ]
+    resources = [
+      aws_dynamodb_table.main.arn,
+      "${aws_dynamodb_table.main.arn}/index/*",
+    ]
+  }
+
+  statement {
+    sid       = "PublishDomainEvents"
+    actions   = ["sns:Publish"]
+    resources = [aws_sns_topic.events.arn]
+  }
+
+  statement {
+    sid = "ConsumeJobs"
+    actions = [
+      "sqs:ReceiveMessage",
+      "sqs:DeleteMessage",
+      "sqs:ChangeMessageVisibility",
+      "sqs:GetQueueAttributes",
+    ]
+    resources = [aws_sqs_queue.jobs.arn]
+  }
+}
+
+resource "aws_iam_role_policy" "scheduler_worker" {
+  name   = "scheduler-worker"
+  role   = aws_iam_role.scheduler_worker.id
+  policy = data.aws_iam_policy_document.scheduler_worker.json
+}
+
+resource "aws_lambda_function" "scheduler_worker" {
+  function_name    = local.scheduler_function
+  description      = "Zamanlanmis gorevler: gecikme tazminati, aylik aidat, borc hatirlatma"
+  role             = aws_iam_role.scheduler_worker.arn
+  runtime          = var.lambda_runtime
+  architectures    = ["arm64"]
+  handler          = "scheduler-worker.handler"
+  filename         = data.archive_file.lambda.output_path
+  source_code_hash = data.archive_file.lambda.output_base64sha256
+  memory_size      = 512
+  timeout          = local.scheduler_timeout_seconds
+
+  environment {
+    variables = {
+      NODE_ENV             = "production"
+      DYNAMODB_TABLE_NAME  = aws_dynamodb_table.main.name
+      EVENTS_MODE          = "sns"
+      EVENTS_SNS_TOPIC_ARN = aws_sns_topic.events.arn
+    }
+  }
+
+  depends_on = [
+    aws_cloudwatch_log_group.scheduler_worker,
+    aws_iam_role_policy.scheduler_worker,
+  ]
+
+  lifecycle {
+    precondition {
+      condition     = local.jobs_visibility_timeout >= 6 * local.scheduler_timeout_seconds
+      error_message = "Kuyruk gorunurluk zaman asimi worker zaman asiminin en az 6 kati olmali."
+    }
+  }
+}
+
+resource "aws_lambda_event_source_mapping" "jobs" {
+  event_source_arn        = aws_sqs_queue.jobs.arn
+  function_name           = aws_lambda_function.scheduler_worker.arn
+  batch_size              = 1
+  function_response_types = ["ReportBatchItemFailures"]
+
+  # Ayni anda en fazla 2 is: ay basinda gecikme tazminati ve aidat ayni anda yarismasin.
+  scaling_config {
+    maximum_concurrency = 2
+  }
+
+  depends_on = [aws_iam_role_policy.scheduler_worker]
+}
+
+# ---------------------------------------------------------------------------
+# EventBridge Scheduler
+# ---------------------------------------------------------------------------
+
+data "aws_iam_policy_document" "scheduler_assume" {
+  statement {
+    actions = ["sts:AssumeRole"]
+
+    principals {
+      type        = "Service"
+      identifiers = ["scheduler.amazonaws.com"]
+    }
+
+    # Karisik vekil (confused deputy) korumasi: yalnizca bu hesabin zamanlamalari.
+    condition {
+      test     = "StringEquals"
+      variable = "aws:SourceAccount"
+      values   = [data.aws_caller_identity.current.account_id]
+    }
+  }
+}
+
+resource "aws_iam_role" "scheduler" {
+  name               = "${local.name}-scheduler"
+  assume_role_policy = data.aws_iam_policy_document.scheduler_assume.json
+}
+
+data "aws_iam_policy_document" "scheduler_send" {
+  statement {
+    sid       = "SendJobs"
+    actions   = ["sqs:SendMessage"]
+    resources = [aws_sqs_queue.jobs.arn]
+  }
+}
+
+resource "aws_iam_role_policy" "scheduler" {
+  name   = "send-scheduled-jobs"
+  role   = aws_iam_role.scheduler.id
+  policy = data.aws_iam_policy_document.scheduler_send.json
+}
+
+resource "aws_scheduler_schedule_group" "main" {
+  name = local.name
+}
+
+resource "aws_scheduler_schedule" "jobs" {
+  for_each = local.scheduled_jobs
+
+  name                         = replace(each.key, "_", "-")
+  group_name                   = aws_scheduler_schedule_group.main.name
+  description                  = each.value.description
+  schedule_expression          = each.value.cron
+  schedule_expression_timezone = "Europe/Istanbul"
+  state                        = var.scheduler_enabled ? "ENABLED" : "DISABLED"
+
+  flexible_time_window {
+    mode = "OFF"
+  }
+
+  target {
+    arn      = aws_sqs_queue.jobs.arn
+    role_arn = aws_iam_role.scheduler.arn
+
+    # Context attribute: Scheduler planlanan zamani ISO 8601 olarak yerlestirir.
+    input = jsonencode({
+      job           = each.key
+      scheduledTime = "<aws.scheduler.scheduled-time>"
+    })
+
+    retry_policy {
+      maximum_event_age_in_seconds = 86400
+      maximum_retry_attempts       = 185
+    }
+  }
+
+  depends_on = [aws_iam_role_policy.scheduler]
+}
+
+# ---------------------------------------------------------------------------
+# Alarmlar
+# ---------------------------------------------------------------------------
+
+resource "aws_cloudwatch_metric_alarm" "jobs_dlq" {
+  alarm_name          = "${local.name}-scheduled-jobs-dlq-not-empty"
+  alarm_description   = "Zamanlanmis gorev DLQ'sunda islenemeyen mesaj var (aidat/tazminat/hatirlatma eksik kalmis olabilir)."
+  namespace           = "AWS/SQS"
+  metric_name         = "ApproximateNumberOfMessagesVisible"
+  dimensions          = { QueueName = aws_sqs_queue.jobs_dlq.name }
+  statistic           = "Maximum"
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = 0
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
+}
+
+resource "aws_cloudwatch_metric_alarm" "scheduler_worker_errors" {
+  alarm_name          = "${local.scheduler_function}-errors"
+  alarm_description   = "Zamanlanmis gorev worker'i hata veriyor."
+  namespace           = "AWS/Lambda"
+  metric_name         = "Errors"
+  dimensions          = { FunctionName = aws_lambda_function.scheduler_worker.function_name }
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = 1
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+}

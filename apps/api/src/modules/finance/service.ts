@@ -36,7 +36,7 @@ import {
   periodLabel,
   unpostedLateFee,
 } from './lateFee.js';
-import { buildDuesStatus, buildSummary, toTransactionView } from './reports.js';
+import { buildDueReminders, buildDuesStatus, buildSummary, toTransactionView } from './reports.js';
 import {
   ACCOUNT_TYPES,
   type Account,
@@ -1065,11 +1065,20 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
     };
   }
 
+  /** Hatirlatma gunu `date` (Istanbul) icin gonderilecek borc hatirlatmalari. */
+  async function dueReminders(apartmentId: string, date: IsoDate) {
+    if (!isIsoDate(date)) throw new ValidationError('date YYYY-MM-DD olmali', 'date');
+    const [accounts, txPage] = await Promise.all([repo.listAccounts(apartmentId), repo.listTransactions(apartmentId)]);
+    const receivables = new Set(accounts.filter((a) => a.type === 'receivable').map((a) => a.accountId));
+    return buildDueReminders(txPage.items, receivables, date);
+  }
+
   return {
     duesStatus,
     summary,
     autoChargeDues,
     postLateFees,
+    dueReminders,
     listTransactions,
     listAccounts,
     createAccount,

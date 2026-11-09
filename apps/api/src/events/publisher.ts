@@ -23,7 +23,13 @@ import type { IsoDate, IsoDateTime, Kurus, LiableParty } from '../modules/core/t
 // Olay tipleri
 // ---------------------------------------------------------------------------
 
-export const EVENT_TYPES = ['DUE_GENERATED', 'PAYMENT_RECEIVED', 'ANNOUNCEMENT_PUBLISHED'] as const;
+export const EVENT_TYPES = [
+  'DUE_GENERATED',
+  'PAYMENT_RECEIVED',
+  'ANNOUNCEMENT_PUBLISHED',
+  'LATE_FEE_POSTED',
+  'DUES_REMINDER',
+] as const;
 export type EventType = (typeof EVENT_TYPES)[number];
 
 export type DueGeneratedPayload = {
@@ -58,10 +64,29 @@ export type AnnouncementPublishedPayload = {
   expiresAt?: IsoDateTime;
 };
 
+/** Zamanlanmis gorev: ay basinda kesinlestirilen gecikme tazminatlari. */
+export type LateFeePostedPayload = {
+  /** Kesinlestirilen donem (YYYY-MM). */
+  period: string;
+  items: { unitId: string; liableParty: LiableParty; amount: Kurus; transactionId: string }[];
+};
+
+export const REMINDER_KINDS = ['upcoming', 'overdue_1', 'overdue_7'] as const;
+export type ReminderKind = (typeof REMINDER_KINDS)[number];
+
+/** Zamanlanmis gorev: vadeden 3 gun once, vade gectikten 1 ve 7 gun sonra hatirlatma. */
+export type DuesReminderPayload = {
+  /** Hatirlatma gunu (Istanbul). */
+  date: IsoDate;
+  items: { unitId: string; liableParty: LiableParty; kind: ReminderKind; dueDate: IsoDate; amount: Kurus }[];
+};
+
 type PayloadByType = {
   DUE_GENERATED: DueGeneratedPayload;
   PAYMENT_RECEIVED: PaymentReceivedPayload;
   ANNOUNCEMENT_PUBLISHED: AnnouncementPublishedPayload;
+  LATE_FEE_POSTED: LateFeePostedPayload;
+  DUES_REMINDER: DuesReminderPayload;
 };
 
 export type DomainEvent<T extends EventType = EventType> = {

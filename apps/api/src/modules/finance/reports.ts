@@ -298,3 +298,69 @@ export function buildSummary(accounts: Account[], dues: UnitDuesView[]): Finance
       .sort((a, b) => a.type.localeCompare(b.type) || a.name.localeCompare(b.name, 'tr')),
   };
 }
+
+// ---------------------------------------------------------------------------
+// Borc hatirlatmalari (zamanlanmis gorev)
+// ---------------------------------------------------------------------------
+
+export type DueReminderKind = 'upcoming' | 'overdue_1' | 'overdue_7';
+
+export type DueReminder = {
+  unitId: string;
+  liableParty: LiableParty;
+  kind: DueReminderKind;
+  dueDate: IsoDate;
+  /** O vadedeki acik (odenmemis) tutar. */
+  amount: number;
+};
+
+const shiftDate = (d: IsoDate, days: number): IsoDate =>
+  new Date(Date.parse(`${d}T00:00:00Z`) + days * 86_400_000).toISOString().slice(0, 10);
+
+/**
+ * `date` gunu gonderilecek hatirlatmalar: acik borcu olan alt carilerde vadesi 3 gun sonra
+ * olan (upcoming), 1 gun once (overdue_1) ve 7 gun once (overdue_7) gecen kalemler.
+ * Acik tutar ayni FIFO kuraliyla bulunur (anapara once, deftere yazilmis tazminat en son);
+ * ayni vadeli kalemler toplanir. Iptal edilen islemler sayilmaz.
+ */
+export function buildDueReminders(transactions: Transaction[], receivableIds: Set<string>, date: IsoDate): DueReminder[] {
+  const targets = new Map<IsoDate, DueReminderKind>([
+    [shiftDate(date, 3), 'upcoming'],
+    [shiftDate(date, -1), 'overdue_1'],
+    [shiftDate(date, -7), 'overdue_7'],
+  ]);
+  const cancelled = cancelledTransactions(transactions);
+  type Acc = { unitId: string; party: LiableParty; charges: Charge[]; credits: number };
+  const perAccount = new Map<string, Acc>();
+
+  for (const tx of transactions) {
+    if (cancelled.has(tx.transactionId)) continue;
+    for (const line of tx.lines) {
+      if (!line.unitId || !line.liableParty || !receivableIds.has(line.accountId)) continue;
+      let acc = perAccount.get(line.accountId);
+      if (!acc) {
+        acc = { unitId: line.unitId, party: line.liableParty, charges: [], credits: 0 };
+        perAccount.set(line.accountId, acc);
+      }
+      if (line.side === 'debit') acc.charges.push({ amount: line.amount, dueDate: tx.dueDate ?? tx.date, fee: tx.kind === 'late_fee' });
+      else acc.credits += line.amount;
+    }
+  }
+
+  const out: DueReminder[] = [];
+  for (const acc of [...perAccount.values()].sort((a, b) => a.unitId.localeCompare(b.unitId) || a.party.localeCompare(b.party))) {
+    const sorted = [...acc.charges].sort((a, b) => Number(a.fee ?? false) - Number(b.fee ?? false) || a.dueDate.localeCompare(b.dueDate));
+    let credit = acc.credits;
+    const byDue = new Map<IsoDate, number>();
+    for (const c of sorted) {
+      const covered = Math.min(credit, c.amount);
+      credit -= covered;
+      const open = c.amount - covered;
+      if (open > 0 && targets.has(c.dueDate)) byDue.set(c.dueDate, (byDue.get(c.dueDate) ?? 0) + open);
+    }
+    for (const [dueDate, amount] of [...byDue.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+      out.push({ unitId: acc.unitId, liableParty: acc.party, kind: targets.get(dueDate) as DueReminderKind, dueDate, amount });
+    }
+  }
+  return out;
+}

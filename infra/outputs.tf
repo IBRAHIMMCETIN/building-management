@@ -73,3 +73,12 @@ output "api_token_use" {
   description = "API'ye gonderilecek Cognito token turu (id | access)."
   value       = local.api_token_use
 }
+
+output "scheduler_worker_function_name" {
+  value = aws_lambda_function.scheduler_worker.function_name
+}
+
+output "scheduled_jobs_queue_url" {
+  description = "Elle tetikleme: aws sqs send-message --queue-url <bu> --message-body '{\"job\":\"late_fees\",\"scheduledTime\":\"2026-12-01T00:00:00Z\"}'"
+  value       = aws_sqs_queue.jobs.url
+}

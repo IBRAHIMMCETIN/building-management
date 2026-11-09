@@ -139,9 +139,9 @@ run "prod_plan" {
   # --- SNS / SQS ---
   assert {
     condition = jsondecode(aws_sns_topic_subscription.notification.filter_policy).eventType == [
-      "DUE_GENERATED", "PAYMENT_RECEIVED", "ANNOUNCEMENT_PUBLISHED",
+      "DUE_GENERATED", "PAYMENT_RECEIVED", "ANNOUNCEMENT_PUBLISHED", "LATE_FEE_POSTED", "DUES_REMINDER",
     ]
-    error_message = "Bildirim kuyrugu uc olay turune abone olmali"
+    error_message = "Bildirim kuyrugu bes olay turune abone olmali (zamanlanmis gorev olaylari dahil)"
   }
   assert {
     condition     = aws_sns_topic_subscription.notification.raw_message_delivery
@@ -215,6 +215,60 @@ run "prod_plan" {
   assert {
     condition     = aws_sqs_queue.notification.visibility_timeout_seconds >= 6 * aws_lambda_function.notification_worker.timeout
     error_message = "Gorunurluk zaman asimi worker zaman asiminin 6 kati olmali"
+  }
+
+  # --- Zamanlanmis gorevler ---
+  assert {
+    condition = (
+      aws_scheduler_schedule.jobs["late_fees"].schedule_expression == "cron(30 2 1 * ? *)" &&
+      aws_scheduler_schedule.jobs["monthly_dues"].schedule_expression == "cron(0 3 1 * ? *)" &&
+      aws_scheduler_schedule.jobs["dues_reminders"].schedule_expression == "cron(0 10 * * ? *)"
+    )
+    error_message = "Zamanlama ifadeleri hatali (tazminat 02:30, aidat 03:00, hatirlatma 10:00)"
+  }
+  assert {
+    condition     = alltrue([for s in aws_scheduler_schedule.jobs : s.schedule_expression_timezone == "Europe/Istanbul" && s.state == "ENABLED"])
+    error_message = "Zamanlamalar Europe/Istanbul ve varsayilan acik olmali"
+  }
+  assert {
+    condition     = alltrue([for k, s in aws_scheduler_schedule.jobs : jsondecode(s.target[0].input).job == k && jsondecode(s.target[0].input).scheduledTime == "<aws.scheduler.scheduled-time>"])
+    error_message = "Hedef girdisi is adini ve planlanan zamani tasimali"
+  }
+  assert {
+    condition     = aws_lambda_function.scheduler_worker.handler == "scheduler-worker.handler" && aws_lambda_function.scheduler_worker.environment[0].variables.EVENTS_MODE == "sns"
+    error_message = "Scheduler worker handler/olay yayini hatali"
+  }
+  assert {
+    condition     = aws_lambda_event_source_mapping.jobs.batch_size == 1 && contains(aws_lambda_event_source_mapping.jobs.function_response_types, "ReportBatchItemFailures")
+    error_message = "Gorev kuyrugu tek tek ve kismi hata bildirimiyle islenmeli"
+  }
+  assert {
+    condition     = aws_sqs_queue.jobs.visibility_timeout_seconds >= 6 * aws_lambda_function.scheduler_worker.timeout
+    error_message = "Gorev kuyrugu gorunurluk zaman asimi worker zaman asiminin 6 kati olmali"
+  }
+  assert {
+    condition = alltrue([
+      for st in data.aws_iam_policy_document.scheduler_worker.statement :
+      length(setintersection(toset(st.actions), toset(["dynamodb:DeleteItem", "dynamodb:Scan", "dynamodb:BatchWriteItem"]))) == 0
+    ])
+    error_message = "Scheduler worker defteri silemez/tarayamaz (append-only)"
+  }
+  assert {
+    condition     = toset(flatten([for st in data.aws_iam_policy_document.scheduler_send.statement : st.actions])) == toset(["sqs:SendMessage"])
+    error_message = "Scheduler rolu yalnizca gorev kuyruguna mesaj birakabilmeli"
+  }
+}
+
+run "scheduler_can_be_disabled" {
+  command = plan
+
+  variables {
+    scheduler_enabled = false
+  }
+
+  assert {
+    condition     = alltrue([for s in aws_scheduler_schedule.jobs : s.state == "DISABLED"])
+    error_message = "scheduler_enabled=false iken zamanlamalar kapali olmali"
   }
 }
 

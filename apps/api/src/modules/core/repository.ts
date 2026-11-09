@@ -1,4 +1,4 @@
-import { PutCommand } from '@aws-sdk/lib-dynamodb';
+import { PutCommand, QueryCommand, type QueryCommandOutput } from '@aws-sdk/lib-dynamodb';
 import {
   getDynamo,
   getTenantItem,
@@ -22,6 +22,50 @@ export const coreKeys = {
   }),
 };
 
+/**
+ * Site dizini (GSI1, seyrek): zamanlanmis gorevler tum apartmanlari bu indeksle listeler.
+ *   GSI1PK = `SITE_DIRECTORY`, GSI1SK = `SITE#<siteId>`
+ * GSI1'in diger kullanimi `USER#<userId>` anahtarlidir; cakisma yoktur. Tek bolum ilk yillar
+ * icin yeterlidir (binlerce site); buyurse GSI1PK `SITE_DIRECTORY#<0-9>` ile bolunur.
+ */
+export const SITE_DIRECTORY_PK = 'SITE_DIRECTORY';
+export const siteDirectoryKeys = (siteId: string) => ({ GSI1PK: SITE_DIRECTORY_PK, GSI1SK: `SITE#${siteId}` });
+
+function withDirectory(site: Site): Site & ReturnType<typeof siteDirectoryKeys> {
+  return { ...site, ...siteDirectoryKeys(site.siteId) };
+}
+
+function withoutDirectory(item: (Site & { GSI1PK?: string; GSI1SK?: string }) | undefined): Site | undefined {
+  if (!item) return undefined;
+  const { GSI1PK: _pk, GSI1SK: _sk, ...site } = item;
+  return site;
+}
+
+async function listSiteIds(): Promise<string[]> {
+  const { client, tableName } = getDynamo();
+  const ids: string[] = [];
+  let startKey: QueryCommandOutput['LastEvaluatedKey'];
+  try {
+    do {
+      const out: QueryCommandOutput = await client.send(
+        new QueryCommand({
+          TableName: tableName,
+          IndexName: 'GSI1',
+          KeyConditionExpression: 'GSI1PK = :pk',
+          ExpressionAttributeValues: { ':pk': SITE_DIRECTORY_PK },
+          ProjectionExpression: 'siteId',
+          ExclusiveStartKey: startKey,
+        }),
+      );
+      for (const item of out.Items ?? []) if (typeof item.siteId === 'string') ids.push(item.siteId);
+      startKey = out.LastEvaluatedKey;
+    } while (startKey);
+  } catch (err) {
+    throw toDataAccessError(err);
+  }
+  return ids.sort();
+}
+
 const BLOCK_PREFIX = 'BLOCK#';
 const UNIT_PREFIX = 'UNIT#';
 
@@ -34,6 +78,8 @@ export type CoreRepository = {
   getSite(apartmentId: string): Promise<Site | undefined>;
   createSite(site: Site): Promise<void>;
   updateSite(site: Site, expectedVersion: number): Promise<void>;
+  /** Tum apartman kimlikleri (site dizini). Yalnizca zamanlanmis gorevler kullanir. */
+  listSiteIds(): Promise<string[]>;
 
   getBlock(apartmentId: string, blockId: string): Promise<Block | undefined>;
   listBlocks(apartmentId: string): Promise<Block[]>;
@@ -92,10 +138,11 @@ async function putVersioned(
 
 export function createCoreRepository(): CoreRepository {
   return {
-    getSite: (apartmentId) => getTenantItem<Site>(coreKeys.site(apartmentId)),
-    createSite: (site) => putNew(site, coreKeys.site(site.siteId)),
+    getSite: async (apartmentId) => withoutDirectory(await getTenantItem<Site>(coreKeys.site(apartmentId))),
+    createSite: (site) => putNew(withDirectory(site), coreKeys.site(site.siteId)),
     updateSite: (site, expectedVersion) =>
-      putVersioned(site, coreKeys.site(site.siteId), expectedVersion),
+      putVersioned(withDirectory(site), coreKeys.site(site.siteId), expectedVersion),
+    listSiteIds,
 
     getBlock: (apartmentId, blockId) => getTenantItem<Block>(coreKeys.block(apartmentId, blockId)),
     listBlocks: (apartmentId) => queryTenantAll<Block>(apartmentId, BLOCK_PREFIX, { ConsistentRead: true }),

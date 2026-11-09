@@ -16,6 +16,8 @@ import { type UnitMembership, visibleParties } from '../modules/portal/types.js'
  *       PAYMENT_RECEIVED       -> odemenin yapildigi alt cariyi goren uyeler
  *       DUE_GENERATED          -> her kalemin dairesinde ilgili alt cariyi goren uyeler
  *       ANNOUNCEMENT_PUBLISHED -> apartmandaki (blok hedefliyse o bloklardaki) tum uyeler
+ *       LATE_FEE_POSTED        -> tazminat yazilan alt cariyi goren uyeler
+ *       DUES_REMINDER          -> hatirlatilan alt cariyi goren uyeler (ilk kalem)
  *  4. Her aliciya `Notifier` ile bildirim gonderilir. Su an kanal `log` (yapilandirilmis log);
  *     SMS / WhatsApp / e-posta saglayicilari ayni arayuzle eklenecek.
  *  5. Basariyla islenen olay icin `NOTIF#` kaydi yazilir (30 gun TTL).
@@ -39,7 +41,12 @@ export type SqsBatchResponse = { batchItemFailures: { itemIdentifier: string }[]
 // Bildirim modeli ve kanallar
 // ---------------------------------------------------------------------------
 
-export type NotificationTemplate = 'due_generated' | 'payment_received' | 'announcement_published';
+export type NotificationTemplate =
+  | 'due_generated'
+  | 'payment_received'
+  | 'announcement_published'
+  | 'late_fee_posted'
+  | `dues_reminder_${'upcoming' | 'overdue_1' | 'overdue_7'}`;
 
 export type Notification = {
   eventId: string;
@@ -150,6 +157,28 @@ export function buildNotifications(
               dueDate: p.dueDate,
               description: p.description,
             });
+          }
+        }
+      }
+      break;
+    }
+    case 'LATE_FEE_POSTED': {
+      const p = event.payload;
+      for (const item of p.items) {
+        for (const m of current) {
+          if (m.unitId === item.unitId && seesParty(m, item.liableParty)) {
+            add(m.userId, 'late_fee_posted', { unitId: item.unitId, amount: item.amount, period: p.period });
+          }
+        }
+      }
+      break;
+    }
+    case 'DUES_REMINDER': {
+      const p = event.payload;
+      for (const item of p.items) {
+        for (const m of current) {
+          if (m.unitId === item.unitId && seesParty(m, item.liableParty)) {
+            add(m.userId, `dues_reminder_${item.kind}`, { unitId: item.unitId, amount: item.amount, dueDate: item.dueDate });
           }
         }
       }

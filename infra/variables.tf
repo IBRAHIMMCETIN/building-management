@@ -157,3 +157,9 @@ variable "api_throttle_burst_limit" {
   type    = number
   default = 100
 }
+
+variable "scheduler_enabled" {
+  description = "Zamanlanmis gorevler (aylik aidat, gecikme tazminati, hatirlatma) acik mi? Kapaliyken zamanlamalar DISABLED olur; worker ve kuyruk yine kurulur (elle tetiklenebilir)."
+  type        = bool
+  default     = true
+}
