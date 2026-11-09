@@ -841,7 +841,7 @@ describe('finance service - bakiye ve hesaplar', () => {
     const all = await t.service.listAccounts(ctx);
     const ids = all.map((a) => a.accountId);
     expect(ids).toEqual(expect.arrayContaining(['bank', 'cash', 'income-dues', 'payable', 'exp-cleaning', 'exp-elevator']));
-    expect(all.filter((a) => a.system).map((a) => a.accountId).sort()).toEqual(['bank', 'cash', 'income-dues', 'payable']);
+    expect(all.filter((a) => a.system).map((a) => a.accountId).sort()).toEqual(['bank', 'cash', 'income-dues', 'income-late-fee', 'payable']);
     // Varsayilan gider kalemleri sistem hesabi degil: yonetici pasife alabilir.
     expect(all.find((a) => a.accountId === 'exp-cleaning')).toMatchObject({ type: 'expense', name: 'Temizlik' });
     expect((await t.service.listAccounts(ctx, 'bank')).map((a) => a.accountId)).toEqual(['bank']);
@@ -1203,5 +1203,133 @@ describe('finans raporlari', () => {
     const u2 = (await t.service.duesStatus(ctx)).items.find((d) => d.unitId === 'u2');
     expect(u2).toMatchObject({ status: 'overdue', balance: 100000, overdue: 100000, lastPaymentDate: undefined });
     expect((await t.service.summary(ctx)).bank).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Zamanlanmis gorevler: gecikme tazminati kesinlestirme + otomatik aidat
+// ---------------------------------------------------------------------------
+
+describe('finance service - gecikme tazminati kesinlestirme (postLateFees)', () => {
+  async function seeded() {
+    const s = makeService();
+    // Ekim aidati 3.000 TL, vade 10 Ekim; 20 Ekim'de 1.000 TL odeme.
+    await s.service.chargeUnit(ctx, {
+      idempotencyKey: 'ekim-u1',
+      unitId: 'u1',
+      liableParty: 'occupant',
+      amount: 300_000,
+      date: '2026-10-01',
+      dueDate: '2026-10-10',
+      description: 'Ekim aidati',
+    });
+    await s.service.recordPayment(ctx, {
+      idempotencyKey: 'odeme-1',
+      unitId: 'u1',
+      liableParty: 'occupant',
+      amount: 100_000,
+      method: 'cash',
+      paidAt: '2026-10-20',
+    });
+    return s;
+  }
+
+  const opts = { period: '2026-10', monthlyBasisPoints: 500, dueDayOfMonth: 10 };
+
+  it('donem sonuna kadar islemis tazminati ayin 1i tarihli tek late_fee kaydi olarak yazar', async () => {
+    const { service, transactions, balanceOf, trialBalance } = await seeded();
+    const r = await service.postLateFees(APT, opts);
+    // 1.000 TL x 10 gun + 2.000 TL x 21 gun -> 86,67 TL
+    expect(r).toMatchObject({ period: '2026-10', count: 1, totalAmount: 8667 });
+    const fee = [...transactions.values()].find((t) => t.kind === 'late_fee');
+    expect(fee).toMatchObject({
+      date: '2026-11-01',
+      dueDate: '2026-11-10',
+      reference: 'LATE_FEE:2026-10',
+      description: 'Gecikme tazminatı (Ekim 2026)',
+      createdBy: 'system-scheduler',
+      totalAmount: 8667,
+    });
+    expect(balanceOf('recv-u1-occupant')).toBe(200_000 + 8667);
+    expect(balanceOf('income-late-fee')).toBe(-8667);
+    expect(trialBalance()).toBe(0);
+  });
+
+  it('ayni donem tekrar calisirsa ikinci kayit yazilmaz (idempotent)', async () => {
+    const { service, transactions } = await seeded();
+    await service.postLateFees(APT, opts);
+    const again = await service.postLateFees(APT, opts);
+    expect(again.count).toBe(0);
+    expect(again.items).toEqual([expect.objectContaining({ unitId: 'u1', replayed: true, amount: 8667 })]);
+    expect([...transactions.values()].filter((t) => t.kind === 'late_fee')).toHaveLength(1);
+  });
+
+  it('ekranda yalnizca deftere yazilmamis kisim "islemis tazminat" olarak gorunur', async () => {
+    const { service } = await seeded();
+    const before = await service.duesStatus(ctx);
+    // Bugun 6 Kasim: 1.000 x 10 + 2.000 x 27 gun -> 106,67 TL
+    expect(before.items.find((i) => i.unitId === 'u1')?.lateFee).toBe(10667);
+    await service.postLateFees(APT, opts);
+    const after = await service.duesStatus(ctx);
+    // Kalan: 2.000 TL x 6 gun (1-6 Kasim) = 20,00 TL
+    expect(after.items.find((i) => i.unitId === 'u1')?.lateFee).toBe(2000);
+    expect(after.lateFeeMonthlyBasisPoints).toBe(500);
+    expect((await service.summary(ctx)).accruedLateFees).toBe(2000);
+  });
+
+  it('kismi odeme once anaparayi kapatir; tazminat kalemi en son', async () => {
+    const { service } = await seeded();
+    await service.postLateFees(APT, opts);
+    await service.recordPayment(ctx, {
+      idempotencyKey: 'odeme-2',
+      unitId: 'u1',
+      liableParty: 'occupant',
+      amount: 200_000,
+      method: 'cash',
+      paidAt: '2026-11-06',
+    });
+    const row = (await service.duesStatus(ctx)).items.find((i) => i.unitId === 'u1');
+    // Anapara bitti, yalnizca tazminat (vadesi 10 Kasim, henuz gelmedi) kaldi.
+    expect(row).toMatchObject({ balance: 8667, overdue: 0, status: 'pending' });
+  });
+
+  it('oran 0 ise veya tazminat yoksa hicbir sey yazmaz; gecersiz donem 400', async () => {
+    const { service, transactions } = await seeded();
+    expect((await service.postLateFees(APT, { ...opts, monthlyBasisPoints: 0 })).count).toBe(0);
+    expect((await service.postLateFees(APT, { ...opts, period: '2026-09' })).count).toBe(0);
+    expect([...transactions.values()].some((t) => t.kind === 'late_fee')).toBe(false);
+    await expect(service.postLateFees(APT, { ...opts, period: '2026-1' })).rejects.toBeInstanceOf(ValidationError);
+  });
+
+  it('ters kayitla iptal edilen tahakkuk tazminat dogurmaz', async () => {
+    const { service, transactions } = await seeded();
+    const charge = [...transactions.values()].find((t) => t.kind === 'dues_charge')!;
+    await service.reverseTransaction(ctx, charge.transactionId, { reason: 'hatali', date: '2026-10-25' });
+    expect((await service.postLateFees(APT, opts)).count).toBe(0);
+  });
+});
+
+describe('finance service - otomatik aylik aidat (autoChargeDues)', () => {
+  const plan = { enabled: true, totalAmount: toKurus(300_000), distributionKey: 'equal' as const, liableParty: 'occupant' as const };
+
+  it('plan kapaliysa veya yoksa atlanir', async () => {
+    const { service, transactions } = makeService();
+    expect(await service.autoChargeDues(APT, { period: '2026-12', plan: undefined, dueDayOfMonth: 10 })).toEqual({ status: 'skipped', reason: 'plan_disabled' });
+    expect(await service.autoChargeDues(APT, { period: '2026-12', plan: { ...plan, enabled: false }, dueDayOfMonth: 10 })).toMatchObject({ status: 'skipped' });
+    expect(transactions.size).toBe(0);
+  });
+
+  it('donemin 1i tarihli, son odemesi ayar gununde toplu tahakkuk; tekrar calisma ikinci kez borclandirmaz', async () => {
+    const { service, transactions, balanceOf } = makeService();
+    const r = await service.autoChargeDues(APT, { period: '2026-12', plan, dueDayOfMonth: 5 });
+    expect(r).toMatchObject({ status: 'charged', count: 3, distributedAmount: 300_000, replayed: false });
+    const charges = [...transactions.values()].filter((t) => t.kind === 'dues_charge');
+    expect(charges).toHaveLength(3);
+    expect(charges[0]).toMatchObject({ date: '2026-12-01', dueDate: '2026-12-05', description: 'Aralık 2026 aidatı', createdBy: 'system-scheduler' });
+    expect(balanceOf('recv-u1-occupant')).toBe(100_000);
+
+    const again = await service.autoChargeDues(APT, { period: '2026-12', plan, dueDayOfMonth: 5 });
+    expect(again).toMatchObject({ status: 'charged', replayed: true });
+    expect([...transactions.values()].filter((t) => t.kind === 'dues_charge')).toHaveLength(3);
   });
 });

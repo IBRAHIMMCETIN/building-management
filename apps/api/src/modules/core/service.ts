@@ -9,6 +9,7 @@ import {
   type LandShare,
   type LiableParty,
   type MeterSplitRule,
+  type MonthlyDuesPlan,
   type Site,
   type SiteSettings,
   type SiteType,
@@ -16,6 +17,7 @@ import {
   type UnitExemption,
   type UnitType,
   tenthsM2ToM2,
+  toKurus,
   toTenthsM2,
 } from './types.js';
 import {
@@ -186,6 +188,19 @@ function parseMeterSplit(value: unknown): MeterSplitRule {
   };
 }
 
+/** Aylik aidat plani tutar ust siniri: 999.999.999,99 TL (finans MAX_AMOUNT ile ayni). */
+const MAX_PLAN_AMOUNT = 99_999_999_999;
+
+function parseMonthlyDuesPlan(value: unknown): MonthlyDuesPlan {
+  const o = asObject(value, 'monthlyDuesPlan');
+  return {
+    enabled: optBool(o, 'enabled') ?? true,
+    totalAmount: toKurus(reqInt(o, 'totalAmount', 1, MAX_PLAN_AMOUNT)),
+    distributionKey: reqEnum(o, 'distributionKey', METER_COMMON_KEYS),
+    liableParty: reqEnum(o, 'liableParty', LIABLE_PARTIES),
+  };
+}
+
 /** `base` uzerine kismi `settings` girdisini uygular ve capraz kurallari dogrular. */
 function parseSettings(value: unknown, base: SiteSettings): SiteSettings {
   const o = asObject(value, 'settings');
@@ -193,6 +208,10 @@ function parseSettings(value: unknown, base: SiteSettings): SiteSettings {
   let meterSplit = base.meterSplit;
   if (o.meterSplit === null) meterSplit = undefined;
   else if (o.meterSplit !== undefined) meterSplit = parseMeterSplit(o.meterSplit);
+
+  let monthlyDuesPlan = base.monthlyDuesPlan;
+  if (o.monthlyDuesPlan === null) monthlyDuesPlan = undefined;
+  else if (o.monthlyDuesPlan !== undefined) monthlyDuesPlan = parseMonthlyDuesPlan(o.monthlyDuesPlan);
 
   const settings: SiteSettings = {
     landShareEnabled: optBool(o, 'landShareEnabled') ?? base.landShareEnabled,
@@ -204,6 +223,7 @@ function parseSettings(value: unknown, base: SiteSettings): SiteSettings {
     dueDayOfMonth: optInt(o, 'dueDayOfMonth', 1, 28) ?? base.dueDayOfMonth,
     lateFeeMonthlyBasisPoints:
       optInt(o, 'lateFeeMonthlyBasisPoints', 0, 10_000) ?? base.lateFeeMonthlyBasisPoints,
+    monthlyDuesPlan,
     timezone: 'Europe/Istanbul',
     currency: 'TRY',
   };
@@ -221,6 +241,12 @@ function parseSettings(value: unknown, base: SiteSettings): SiteSettings {
         'expenseGroupRules',
       );
     }
+  }
+  if (settings.monthlyDuesPlan?.distributionKey === 'land_share' && !settings.landShareEnabled) {
+    throw new ValidationError(
+      'monthlyDuesPlan.distributionKey land_share olamaz: landShareEnabled kapali',
+      'monthlyDuesPlan',
+    );
   }
   if (settings.meterSplit?.commonShareKey === 'land_share' && !settings.landShareEnabled) {
     throw new ValidationError(

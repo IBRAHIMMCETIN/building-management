@@ -36,7 +36,7 @@ export const transactionSchema = z.object({
   date: isoDate,
   dueDate: isoDate.optional(),
   description: z.string(),
-  kind: z.enum(['dues_charge', 'payment', 'expense', 'reversal']),
+  kind: z.enum(['dues_charge', 'payment', 'expense', 'reversal', 'late_fee']),
   category: z.enum(TRANSACTION_CATEGORIES),
   amount: kurus,
   funds: z.array(

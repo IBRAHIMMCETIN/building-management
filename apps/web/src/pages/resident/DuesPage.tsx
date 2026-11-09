@@ -13,6 +13,7 @@ const TYPE_LABEL: Record<StatementRow['entryType'], string> = {
   ACCRUAL: 'Tahakkuk',
   COLLECTION: 'Tahsilat',
   REVERSAL: 'Düzeltme',
+  LATE_FEE: 'Gecikme tazminatı',
   OTHER: 'Diğer',
 };
 

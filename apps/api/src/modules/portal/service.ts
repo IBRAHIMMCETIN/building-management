@@ -2,6 +2,8 @@ import type { Role } from '../../auth/claims.js';
 import { type CoreRepository, coreRepository } from '../core/repository.js';
 import { type IsoDate, type Kurus, type LiableParty, type Unit, toKurus, tenthsM2ToM2 } from '../core/types.js';
 import { ValidationError, assertId, isIsoDate } from '../core/validation.js';
+import { type FeeCharge, type FeeCredit, unpostedLateFee } from '../finance/lateFee.js';
+import { DEFAULT_LATE_FEE_BASIS_POINTS } from '../finance/service.js';
 import type { LedgerEntry, Payment, Transaction, TransactionKind } from '../finance/types.js';
 import { type PortalRepository, portalRepository } from './repository.js';
 import { type UnitMembership, type UnitRelation, visibleParties } from './types.js';
@@ -64,7 +66,7 @@ export type PortalServiceDeps = {
  * Sakin dilinde hareket turu: ACCRUAL = borc tahakkuku, COLLECTION = tahsilat/odeme,
  * REVERSAL = duzeltme (ters kayit), OTHER = diger borc/alacak.
  */
-export type StatementEntryType = 'ACCRUAL' | 'COLLECTION' | 'REVERSAL' | 'OTHER';
+export type StatementEntryType = 'ACCRUAL' | 'COLLECTION' | 'REVERSAL' | 'LATE_FEE' | 'OTHER';
 
 export type StatementRow = {
   date: IsoDate;
@@ -105,6 +107,8 @@ export type OpenDue = {
   remaining: Kurus;
   overdue: boolean;
   daysOverdue: number;
+  /** Deftere yazilmis gecikme tazminati kalemi (mahsupta anaparadan sonra gelir). */
+  lateFee?: boolean;
 };
 
 export type ReceiptView = {
@@ -188,14 +192,20 @@ export function allocateOpenDues(
         remaining: e.amount,
         overdue: false,
         daysOverdue: 0,
+        ...(tx.kind === 'late_fee' ? { lateFee: true } : {}),
       });
     } else {
       credit += e.amount;
     }
   }
 
+  // Karar 2a: tahsilat once anaparayi (vade sirasiyla), en son gecikme tazminatini kapatir.
   charges.sort(
-    (a, b) => a.dueDate.localeCompare(b.dueDate) || a.date.localeCompare(b.date) || a.transactionId.localeCompare(b.transactionId),
+    (a, b) =>
+      Number(a.lateFee ?? false) - Number(b.lateFee ?? false) ||
+      a.dueDate.localeCompare(b.dueDate) ||
+      a.date.localeCompare(b.date) ||
+      a.transactionId.localeCompare(b.transactionId),
   );
 
   const open: OpenDue[] = [];
@@ -224,6 +234,8 @@ function entryTypeOf(kind: TransactionKind | undefined): StatementEntryType {
       return 'COLLECTION';
     case 'reversal':
       return 'REVERSAL';
+    case 'late_fee':
+      return 'LATE_FEE';
     default:
       return 'OTHER';
   }
@@ -481,11 +493,13 @@ export function createPortalService(overrides: Partial<PortalServiceDeps> = {}) 
   async function getMySummary(ctx: PortalContext, unitId?: string) {
     const resolved = await resolveUnit(ctx, unitId);
     const { unit, membership } = resolved;
-    const [{ ledgers, txById }, payments, block] = await Promise.all([
+    const [{ ledgers, txById }, payments, block, site] = await Promise.all([
       loadLedgers(resolved),
       repo.listUnitPayments(ctx.apartmentId, unit.unitId),
       deps.core.getBlock(ctx.apartmentId, unit.blockId),
+      deps.core.getSite(ctx.apartmentId),
     ]);
+    const lateFeeRate = site?.settings.lateFeeMonthlyBasisPoints ?? DEFAULT_LATE_FEE_BASIS_POINTS;
     const day = today();
 
     const cancelled = new Set<string>();
@@ -499,14 +513,23 @@ export function createPortalService(overrides: Partial<PortalServiceDeps> = {}) 
     let balance = 0;
     let totalCharged = 0;
     let totalPaid = 0;
+    let accruedLateFee = 0;
     for (const { entries } of ledgers) {
+      const feeCharges: FeeCharge[] = [];
+      const feeCredits: FeeCredit[] = [];
+      let postedFees = 0;
       for (const e of entries) {
         balance += signed(e);
         if (cancelled.has(e.transactionId)) continue;
-        const kind = txById.get(e.transactionId)?.kind;
-        if (e.side === 'debit' && kind === 'dues_charge') totalCharged += e.amount;
+        const tx = txById.get(e.transactionId);
+        const kind = tx?.kind;
+        if (e.side === 'debit' && (kind === 'dues_charge' || kind === 'late_fee')) totalCharged += e.amount;
         if (e.side === 'credit' && kind === 'payment') totalPaid += e.amount;
+        if (e.side === 'debit' && kind === 'dues_charge') feeCharges.push({ id: e.transactionId, dueDate: tx?.dueDate ?? e.date, amount: e.amount });
+        else if (e.side === 'debit' && kind === 'late_fee') postedFees += e.amount;
+        else if (e.side === 'credit') feeCredits.push({ date: e.date, amount: e.amount });
       }
+      if (lateFeeRate > 0) accruedLateFee += unpostedLateFee({ charges: feeCharges, credits: feeCredits, postedFees }, lateFeeRate, day);
     }
 
     const open = ledgers.flatMap(({ party, entries }) => allocateOpenDues(party, entries, txById, day).open);
@@ -543,6 +566,9 @@ export function createPortalService(overrides: Partial<PortalServiceDeps> = {}) 
       totalCharged: toKurus(totalCharged),
       totalPaid: toKurus(totalPaid),
       overdueAmount: toKurus(overdueAmount),
+      /** Islemis, henuz deftere yazilmamis kistelyevm gecikme tazminati (bugun itibariyla). */
+      accruedLateFee: toKurus(accruedLateFee),
+      lateFeeMonthlyBasisPoints: lateFeeRate,
       oldestOverdueDueDate: oldestOverdue?.dueDate,
       daysOverdue: oldestOverdue?.daysOverdue ?? 0,
       openCount: open.length,

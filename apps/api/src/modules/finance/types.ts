@@ -55,7 +55,11 @@ export type Account = TableKeys &
     liableParty?: LiableParty;
   };
 
-export type TransactionKind = 'dues_charge' | 'payment' | 'expense' | 'reversal';
+/**
+ * late_fee: kistelyevm gecikme tazminati kesinlestirmesi (ayin 1'inde, alt cari basina tek
+ * kayit). `reference` = `LATE_FEE:<YYYY-MM>` (kesinlestirilen donem).
+ */
+export type TransactionKind = 'dues_charge' | 'payment' | 'expense' | 'reversal' | 'late_fee';
 
 export type TransactionLine = {
   accountId: string;

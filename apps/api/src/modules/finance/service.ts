@@ -5,6 +5,7 @@ import {
   type IsoDate,
   type Kurus,
   type LiableParty,
+  type MonthlyDuesPlan,
   type Unit,
   toKurus,
 } from '../core/types.js';
@@ -26,6 +27,15 @@ import {
   financeKeys,
   financeRepository,
 } from './repository.js';
+import {
+  cancelledTransactions,
+  feeLedgerFor,
+  isPeriod,
+  nextPeriod,
+  periodBounds,
+  periodLabel,
+  unpostedLateFee,
+} from './lateFee.js';
 import { buildDuesStatus, buildSummary, toTransactionView } from './reports.js';
 import {
   ACCOUNT_TYPES,
@@ -78,8 +88,15 @@ export const SYSTEM_ACCOUNTS = {
   cash: 'cash',
   bank: 'bank',
   incomeDues: 'income-dues',
+  incomeLateFee: 'income-late-fee',
   payable: 'payable',
 } as const;
+
+/** KMK m.20 varsayilani: aylik %5. Apartman ayari okunamazsa kullanilir. */
+export const DEFAULT_LATE_FEE_BASIS_POINTS = 500;
+
+/** Zamanlanmis gorevlerin defter kayitlarindaki kullanici kimligi. */
+export const SYSTEM_ACTOR = 'system-scheduler';
 
 /**
  * Varsayilan gider kalemleri (KMK isletme giderleri). Sistem hesabi DEGILDIR: yonetici
@@ -111,7 +128,8 @@ export type FinanceContext = { apartmentId: string; userId: string };
 
 export type FinanceServiceDeps = {
   repository: FinanceRepository;
-  core: Pick<CoreRepository, 'getUnit' | 'listUnits'>;
+  /** `getSite` gecikme tazminati oranini okumak icin (yoksa varsayilan %5). */
+  core: Pick<CoreRepository, 'getUnit' | 'listUnits'> & Partial<Pick<CoreRepository, 'getSite'>>;
   now: () => Date;
   newId: () => string;
   /** Defter yazimindan sonra DUE_GENERATED / PAYMENT_RECEIVED yayini (varsayilan: kapali). */
@@ -244,6 +262,12 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
         accountId: SYSTEM_ACCOUNTS.incomeDues,
         type: 'income',
         name: 'Aidat Gelirleri',
+        system: true,
+      }),
+      newAccount(ctx, {
+        accountId: SYSTEM_ACCOUNTS.incomeLateFee,
+        type: 'income',
+        name: 'Gecikme Tazminati Gelirleri',
         system: true,
       }),
       newAccount(ctx, {
@@ -884,21 +908,131 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
     return { accounts, units, transactions: txs.items };
   }
 
-  /** Daire bazli aidat durumu (FIFO ile gecikme). */
+  async function lateFeeRate(apartmentId: string): Promise<number> {
+    const site = deps.core.getSite ? await deps.core.getSite(apartmentId) : undefined;
+    return site?.settings.lateFeeMonthlyBasisPoints ?? DEFAULT_LATE_FEE_BASIS_POINTS;
+  }
+
+  /** Daire bazli aidat durumu (FIFO ile gecikme + islemis kistelyevm tazminati). */
   async function duesStatus(ctx: FinanceContext) {
-    const { accounts, units, transactions } = await loadReportData(ctx);
+    const [{ accounts, units, transactions }, rate] = await Promise.all([loadReportData(ctx), lateFeeRate(ctx.apartmentId)]);
     const receivables = new Set(accounts.filter((a) => a.type === 'receivable').map((a) => a.accountId));
-    const items = buildDuesStatus(units, transactions, receivables, today()).sort((a, b) =>
+    const items = buildDuesStatus(units, transactions, receivables, today(), rate).sort((a, b) =>
       a.unitNumber.localeCompare(b.unitNumber, 'tr', { numeric: true }),
     );
-    return { asOf: today(), items };
+    return { asOf: today(), lateFeeMonthlyBasisPoints: rate, items };
   }
 
   /** Kasa/banka bakiyeleri + alacak/gecikme ozeti. */
   async function summary(ctx: FinanceContext) {
-    const { accounts, units, transactions } = await loadReportData(ctx);
+    const [{ accounts, units, transactions }, rate] = await Promise.all([loadReportData(ctx), lateFeeRate(ctx.apartmentId)]);
     const receivables = new Set(accounts.filter((a) => a.type === 'receivable').map((a) => a.accountId));
-    return { asOf: today(), ...buildSummary(accounts, buildDuesStatus(units, transactions, receivables, today())) };
+    return { asOf: today(), ...buildSummary(accounts, buildDuesStatus(units, transactions, receivables, today(), rate)) };
+  }
+
+  // -------------------------------------------------------------------------
+  // Zamanlanmis gorevler (EventBridge Scheduler -> worker). Kullanici istegi degildir:
+  // apartman kimligi worker'in site dizininden gelir, aktor SYSTEM_ACTOR'dur.
+  // -------------------------------------------------------------------------
+
+  function assertPeriod(period: string): void {
+    if (!isPeriod(period)) throw new ValidationError('period YYYY-MM olmali', 'period');
+  }
+
+  /**
+   * Aylik aidat plani: donemin 1'i tarihli, son odemesi `dueDayOfMonth` olan toplu tahakkuk.
+   * Idempotency anahtari donem bazli (`auto-dues-<YYYY-MM>`): gorev tekrar calissa veya yarida
+   * kalsa bile ayni ay ikinci kez borclandirilmaz, eksik kalan daireler tamamlanir.
+   */
+  async function autoChargeDues(
+    apartmentId: string,
+    p: { period: string; plan: MonthlyDuesPlan | undefined; dueDayOfMonth: number },
+  ) {
+    assertPeriod(p.period);
+    if (!p.plan?.enabled) return { status: 'skipped' as const, reason: 'plan_disabled' as const };
+    const ctx: FinanceContext = { apartmentId, userId: SYSTEM_ACTOR };
+    const { first } = periodBounds(p.period);
+    const result = await chargeBulk(ctx, {
+      idempotencyKey: `auto-dues-${p.period}`,
+      liableParty: p.plan.liableParty,
+      totalAmount: p.plan.totalAmount,
+      distributionKey: p.plan.distributionKey,
+      date: first,
+      dueDate: `${p.period}-${String(p.dueDayOfMonth).padStart(2, '0')}`,
+      description: `${periodLabel(p.period)} aidatı`,
+    });
+    return { status: 'charged' as const, ...result };
+  }
+
+  /**
+   * Gecikme tazminati kesinlestirmesi (karar 1a): her alt cari icin
+   * `toplam tazminat(donem sonu) - deftere yazilmis` tutari, bir sonraki ayin 1'i tarihli tek
+   * `late_fee` islemi olarak yazilir. Eksi/sifir fark yazilmaz.
+   * Idempotency: `lf-<YYYY-MM>-<unitId>-<o|t>` kaydi varsa hesap atlanir (tutar yeniden
+   * hesaplanmaz; boylece ayni donem asla iki kez yazilmaz).
+   */
+  async function postLateFees(
+    apartmentId: string,
+    p: { period: string; monthlyBasisPoints: number; dueDayOfMonth: number },
+  ) {
+    assertPeriod(p.period);
+    const ctx: FinanceContext = { apartmentId, userId: SYSTEM_ACTOR };
+    const items: { accountId: string; unitId: string; liableParty: LiableParty; amount: Kurus; transactionId: string; replayed: boolean }[] = [];
+    if (p.monthlyBasisPoints <= 0) return { period: p.period, count: 0, totalAmount: toKurus(0), items };
+
+    await ensureSystemAccounts(ctx);
+    const { last } = periodBounds(p.period);
+    const postPeriod = nextPeriod(p.period);
+    const postDate = periodBounds(postPeriod).first;
+    const dueDate = `${postPeriod}-${String(p.dueDayOfMonth).padStart(2, '0')}`;
+    const [accounts, txPage] = await Promise.all([repo.listAccounts(apartmentId), repo.listTransactions(apartmentId)]);
+    const transactions = txPage.items;
+    const cancelled = cancelledTransactions(transactions);
+
+    const receivables = accounts
+      .filter((a) => a.type === 'receivable' && a.unitId && a.liableParty)
+      .sort((a, b) => a.accountId.localeCompare(b.accountId));
+    for (const account of receivables) {
+      const unitId = account.unitId as string;
+      const party = account.liableParty as LiableParty;
+      const idemId = `lf-${p.period}-${unitId}-${party === 'owner' ? 'o' : 't'}`;
+      const existing = await repo.getIdempotency(apartmentId, idemId);
+      if (existing) {
+        const tx = await repo.getTransaction(apartmentId, existing.transactionId);
+        if (tx) items.push({ accountId: account.accountId, unitId, liableParty: party, amount: tx.totalAmount, transactionId: tx.transactionId, replayed: true });
+        continue;
+      }
+      const amount = unpostedLateFee(feeLedgerFor(account.accountId, transactions, cancelled), p.monthlyBasisPoints, last);
+      if (amount < 1) continue;
+
+      const fp = fingerprint({ op: 'late_fee', period: p.period, accountId: account.accountId, amount });
+      const tx = buildTx(ctx, {
+        kind: 'late_fee',
+        date: postDate,
+        dueDate,
+        description: `Gecikme tazminatı (${periodLabel(p.period)})`,
+        reference: `LATE_FEE:${p.period}`,
+        lines: [
+          { accountId: account.accountId, side: 'debit', amount: toKurus(amount), unitId, liableParty: party },
+          { accountId: SYSTEM_ACCOUNTS.incomeLateFee, side: 'credit', amount: toKurus(amount) },
+        ],
+      });
+      try {
+        await repo.postTransaction({ transaction: tx, idempotency: { id: idemId, fingerprint: fp } });
+        items.push({ accountId: account.accountId, unitId, liableParty: party, amount: toKurus(amount), transactionId: tx.transactionId, replayed: false });
+      } catch (err) {
+        // Es zamanli ayni gorev: diger calisma yazdi; bu hesap tamam sayilir.
+        if (err instanceof LedgerConflictError && err.reason === 'duplicate') continue;
+        throw mapConflict(err);
+      }
+    }
+    const fresh = items.filter((i) => !i.replayed);
+    return {
+      period: p.period,
+      count: fresh.length,
+      totalAmount: toKurus(fresh.reduce((s, i) => s + i.amount, 0)),
+      items,
+    };
   }
 
   /** Defter hareketleri (en yeni once), sayfali. */
@@ -934,6 +1068,8 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
   return {
     duesStatus,
     summary,
+    autoChargeDues,
+    postLateFees,
     listTransactions,
     listAccounts,
     createAccount,

@@ -154,6 +154,19 @@ export type Address = {
   postalCode?: string;
 };
 
+/**
+ * Otomatik aylik aidat plani: her ayin 1'inde zamanlanmis gorev toplam tutari dagitim
+ * anahtarina gore aktif bagimsiz bolumlere tahakkuk eder (son odeme: `dueDayOfMonth`).
+ */
+export type MonthlyDuesPlan = {
+  enabled: boolean;
+  /** Aylik toplam tutar (kurus). */
+  totalAmount: Kurus;
+  distributionKey: Exclude<DistributionKey, 'meter'>;
+  /** Isletme gideri -> occupant (oturan), yatirim -> owner. */
+  liableParty: LiableParty;
+};
+
 export type SiteSettings = {
   /** Arsa payi anahtari opsiyoneldir; yonetim plani gerektirmiyorsa false. */
   landShareEnabled: boolean;
@@ -163,6 +176,8 @@ export type SiteSettings = {
   dueDayOfMonth: number;
   /** Aylik gecikme faizi orani, baz puan (100 = %1). Kistelyevm gunluge bolunerek hesaplanir. */
   lateFeeMonthlyBasisPoints: number;
+  /** Tanimsiz veya `enabled: false` ise otomatik tahakkuk yapilmaz. */
+  monthlyDuesPlan?: MonthlyDuesPlan;
   timezone: 'Europe/Istanbul';
   currency: Currency;
 };

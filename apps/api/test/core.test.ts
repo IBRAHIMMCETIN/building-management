@@ -363,6 +363,35 @@ describe('core service - site', () => {
     expect(ok.settings.expenseGroupRules[0]?.defaultKey).toBe('land_share');
   });
 
+  it('aylik aidat plani: dogrulanir, kaydedilir, null ile kaldirilir', async () => {
+    const { service } = makeService();
+    const plan = { totalAmount: 1_500_000, distributionKey: 'area', liableParty: 'occupant' };
+
+    const created = await service.createSite('u', 't', { ...siteInput, settings: { monthlyDuesPlan: plan } });
+    expect(created.settings.monthlyDuesPlan).toEqual({ ...plan, enabled: true });
+
+    for (const [bad, field] of [
+      [{ ...plan, totalAmount: 0 }, 'totalAmount'],
+      [{ ...plan, totalAmount: 1.5 }, 'totalAmount'],
+      [{ ...plan, distributionKey: 'meter' }, 'distributionKey'],
+      [{ ...plan, liableParty: 'tenant' }, 'liableParty'],
+    ] as const) {
+      const err = await service.createSite('u', 't', { ...siteInput, settings: { monthlyDuesPlan: bad } }).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ValidationError);
+      expect((err as ValidationError).field).toBe(field);
+    }
+
+    await expect(
+      service.createSite('u', 't', { ...siteInput, settings: { monthlyDuesPlan: { ...plan, distributionKey: 'land_share' } } }),
+    ).rejects.toMatchObject({ field: 'monthlyDuesPlan' });
+
+    const updated = await service.updateSite('u', created.siteId, {
+      version: created.version,
+      settings: { monthlyDuesPlan: null },
+    });
+    expect(updated.settings.monthlyDuesPlan).toBeUndefined();
+  });
+
   it('meterSplit tanimsizken meter anahtari secilemez', async () => {
     const { service } = makeService();
     const rules = [{ group: 'heating', defaultKey: 'meter', liableParty: 'occupant' }];

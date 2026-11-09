@@ -4,6 +4,7 @@
  * Tum tutarlar kurus cinsinden tam sayidir.
  */
 import type { IsoDate, LiableParty, Unit } from '../core/types.js';
+import { type FeeCharge, type FeeCredit, cancelledTransactions, unpostedLateFee } from './lateFee.js';
 import type { Account, Transaction } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -116,6 +117,8 @@ export type PartyDues = {
   overdue: number;
   /** En eski karsilanmamis vadenin tarihi. */
   oldestUnpaidDueDate?: IsoDate;
+  /** Islemis ama henuz deftere yazilmamis kistelyevm gecikme tazminati (bugun itibariyla). */
+  lateFee: number;
 };
 
 export type UnitDuesView = {
@@ -126,12 +129,15 @@ export type UnitDuesView = {
   occupant: PartyDues;
   balance: number;
   overdue: number;
+  /** Malik + sakin carilerinin islemis (deftere yazilmamis) gecikme tazminati. */
+  lateFee: number;
   daysOverdue: number;
   status: DuesStatus;
   lastPaymentDate?: IsoDate;
 };
 
-type Charge = { amount: number; dueDate: IsoDate };
+/** `fee`: deftere yazilmis gecikme tazminati; mahsupta anaparadan SONRA gelir (karar 2a). */
+type Charge = { amount: number; dueDate: IsoDate; fee?: boolean };
 
 function daysBetween(from: IsoDate, to: IsoDate): number {
   return Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000);
@@ -142,8 +148,8 @@ function daysBetween(from: IsoDate, to: IsoDate): number {
  * borclardan vadesi bugunden once olanlar gecikmis sayilir. Vadesiz borc satiri (ornegin bir
  * odemenin ters kaydi) islem tarihinde vadeli kabul edilir.
  */
-export function computePartyDues(charges: Charge[], credits: number, today: IsoDate): PartyDues {
-  const sorted = [...charges].sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+export function computePartyDues(charges: Charge[], credits: number, today: IsoDate, lateFee = 0): PartyDues {
+  const sorted = [...charges].sort((a, b) => Number(a.fee ?? false) - Number(b.fee ?? false) || a.dueDate.localeCompare(b.dueDate));
   const charged = sorted.reduce((s, c) => s + c.amount, 0);
   let remainingCredit = credits;
   let overdue = 0;
@@ -156,12 +162,18 @@ export function computePartyDues(charges: Charge[], credits: number, today: IsoD
     oldestUnpaidDueDate ??= c.dueDate;
     if (c.dueDate < today) overdue += open;
   }
-  return { charged, paid: credits, balance: charged - credits, overdue, oldestUnpaidDueDate };
+  return { charged, paid: credits, balance: charged - credits, overdue, oldestUnpaidDueDate, lateFee };
 }
 
-export function buildDuesStatus(units: Unit[], transactions: Transaction[], receivableIds: Set<string>, today: IsoDate): UnitDuesView[] {
-  type Acc = { charges: Charge[]; credits: number };
-  const empty = (): Acc => ({ charges: [], credits: 0 });
+export function buildDuesStatus(
+  units: Unit[],
+  transactions: Transaction[],
+  receivableIds: Set<string>,
+  today: IsoDate,
+  lateFeeBasisPoints = 0,
+): UnitDuesView[] {
+  type Acc = { charges: Charge[]; credits: number; feeCharges: FeeCharge[]; feeCredits: FeeCredit[]; postedFees: number };
+  const empty = (): Acc => ({ charges: [], credits: 0, feeCharges: [], feeCredits: [], postedFees: 0 });
   const perUnit = new Map<string, { owner: Acc; occupant: Acc; lastPaymentDate?: IsoDate }>();
   const slot = (unitId: string) => {
     let s = perUnit.get(unitId);
@@ -174,13 +186,7 @@ export function buildDuesStatus(units: Unit[], transactions: Transaction[], rece
 
   // Ters kayit ve iptal ettigi islem birlikte disarida birakilir: iptal edilen tahakkuk
   // "odeme" gibi en eski borca sayilmamali (FIFO'yu bozar), iptal edilen odeme de odeme degildir.
-  const cancelled = new Set<string>();
-  for (const tx of transactions) {
-    if (tx.kind === 'reversal' && tx.reversalOf) {
-      cancelled.add(tx.reversalOf);
-      cancelled.add(tx.transactionId);
-    }
-  }
+  const cancelled = cancelledTransactions(transactions);
 
   for (const tx of transactions) {
     if (cancelled.has(tx.transactionId)) continue;
@@ -189,9 +195,13 @@ export function buildDuesStatus(units: Unit[], transactions: Transaction[], rece
       const s = slot(line.unitId);
       const party = s[line.liableParty];
       if (line.side === 'debit') {
-        party.charges.push({ amount: line.amount, dueDate: tx.dueDate ?? tx.date });
+        const dueDate = tx.dueDate ?? tx.date;
+        party.charges.push({ amount: line.amount, dueDate, fee: tx.kind === 'late_fee' });
+        if (tx.kind === 'dues_charge') party.feeCharges.push({ id: tx.transactionId, dueDate, amount: line.amount });
+        if (tx.kind === 'late_fee') party.postedFees += line.amount;
       } else {
         party.credits += line.amount;
+        party.feeCredits.push({ date: tx.date, amount: line.amount });
         if (tx.kind === 'payment' && (!s.lastPaymentDate || tx.date > s.lastPaymentDate)) s.lastPaymentDate = tx.date;
       }
     }
@@ -201,8 +211,12 @@ export function buildDuesStatus(units: Unit[], transactions: Transaction[], rece
     .filter((u) => u.status === 'active')
     .map((u) => {
       const s = perUnit.get(u.unitId) ?? { owner: empty(), occupant: empty() };
-      const owner = computePartyDues(s.owner.charges, s.owner.credits, today);
-      const occupant = computePartyDues(s.occupant.charges, s.occupant.credits, today);
+      const fee = (a: Acc) =>
+        lateFeeBasisPoints > 0
+          ? unpostedLateFee({ charges: a.feeCharges, credits: a.feeCredits, postedFees: a.postedFees }, lateFeeBasisPoints, today)
+          : 0;
+      const owner = computePartyDues(s.owner.charges, s.owner.credits, today, fee(s.owner));
+      const occupant = computePartyDues(s.occupant.charges, s.occupant.credits, today, fee(s.occupant));
       const balance = owner.balance + occupant.balance;
       const overdue = owner.overdue + occupant.overdue;
       const oldest = [owner, occupant]
@@ -227,6 +241,7 @@ export function buildDuesStatus(units: Unit[], transactions: Transaction[], rece
         occupant,
         balance,
         overdue,
+        lateFee: owner.lateFee + occupant.lateFee,
         daysOverdue: oldest ? Math.max(daysBetween(oldest, today), 0) : 0,
         status,
         lastPaymentDate: s.lastPaymentDate,
@@ -251,6 +266,8 @@ export type FinanceSummary = {
   /** Tedarikci borclari. */
   payables: number;
   overdue: number;
+  /** Islemis, henuz deftere yazilmamis gecikme tazminati toplami. */
+  accruedLateFees: number;
   overdueUnitCount: number;
   pendingUnitCount: number;
   fundsAccounts: { accountId: string; name: string; type: 'cash' | 'bank'; balance: number }[];
@@ -272,6 +289,7 @@ export function buildSummary(accounts: Account[], dues: UnitDuesView[]): Finance
     // Borc hesabinin normal tarafi alacak: bakiye (borc - alacak) negatiftir.
     payables: -sum('payable'),
     overdue: dues.reduce((s, d) => s + d.overdue, 0),
+    accruedLateFees: dues.reduce((s, d) => s + d.lateFee, 0),
     overdueUnitCount: dues.filter((d) => d.status === 'overdue').length,
     pendingUnitCount: dues.filter((d) => d.status === 'pending').length,
     fundsAccounts: active

@@ -33,7 +33,7 @@ export const mySummarySchema = z.object({
   lastPayment: z.object({ paidAt: z.string(), amount: kurus, receiptNumber: z.string() }).optional(),
 });
 
-export const ENTRY_TYPES = ['ACCRUAL', 'COLLECTION', 'REVERSAL', 'OTHER'] as const;
+export const ENTRY_TYPES = ['ACCRUAL', 'COLLECTION', 'REVERSAL', 'LATE_FEE', 'OTHER'] as const;
 export type EntryType = (typeof ENTRY_TYPES)[number];
 
 const statementRow = z.object({

@@ -801,6 +801,17 @@ describe('portal - sakin ozeti (my-summary)', () => {
     expect(await summary(t)).toMatchObject({ status: 'overdue', overdueAmount: 100000, daysOverdue: 22, oldestOverdueDueDate: '2026-10-15' });
   });
 
+  it('islemis kistelyevm gecikme tazminati (aylik %5, gunluk) ozet icinde doner', async () => {
+    const t = setup();
+    await t.charge('u1', 'occupant', 100000, 'k1', { date: '2026-10-01', dueDate: '2026-10-15' });
+    // 1.000 TL x 22 gun x %5/30 = 36,666.. TL -> 3667 kurus
+    expect(await summary(t)).toMatchObject({ accruedLateFee: 3667, lateFeeMonthlyBasisPoints: 500 });
+    // 1 Kasim'da 600 TL odeme: 400 TL anapara 6 Kasim'a kadar acik kalir.
+    await t.pay('u1', 'occupant', 60000, 'p1', { paidAt: '2026-11-01' });
+    // 600 TL x 17 gun + 400 TL x 22 gun -> 1.900.000 kurus-gun x 500 / 300.000 = 3166,67
+    expect(await summary(t)).toMatchObject({ accruedLateFee: 3167 });
+  });
+
   it('tamami odenmis "paid"; fazla odeme avans', async () => {
     const t = setup();
     await t.charge('u1', 'occupant', 100000, 'k1');
