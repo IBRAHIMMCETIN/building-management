@@ -41,6 +41,7 @@ import {
   ACCOUNT_TYPES,
   type Account,
   type Expense,
+  type ExpenseInvoice,
   type Payment,
   PAYMENT_METHODS,
   type PaymentMethod,
@@ -134,6 +135,17 @@ export type FinanceServiceDeps = {
   newId: () => string;
   /** Defter yazimindan sonra DUE_GENERATED / PAYMENT_RECEIVED yayini (varsayilan: kapali). */
   events: EventPublisher;
+  /**
+   * Gider faturasi: gecici yuklemeyi dogrulayip kalici yere tasir (documents modulu).
+   * Verilmezse fatura ekli gider reddedilir.
+   */
+  attachments?: {
+    promote(
+      apartmentId: string,
+      upload: { uploadId: string; fileName: string },
+      target: { expenseId: string; date: IsoDate },
+    ): Promise<ExpenseInvoice>;
+  };
 };
 
 // ---------------------------------------------------------------------------
@@ -211,6 +223,12 @@ const fingerprint = (value: unknown): string =>
 const compact = (d: IsoDate) => d.replaceAll('-', '');
 
 const receivableId = (unitId: string, party: LiableParty) => `recv-${unitId}-${party}`;
+
+function parseInvoiceUpload(value: unknown): { uploadId: string; fileName: string } | undefined {
+  if (value === undefined || value === null) return undefined;
+  const o = asObject(value, 'invoiceUpload');
+  return { uploadId: assertId(o.uploadId, 'invoiceUpload.uploadId'), fileName: reqString(o, 'fileName', 255) };
+}
 
 // ---------------------------------------------------------------------------
 // Servis
@@ -309,6 +327,7 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
       batchId?: string;
       reversalOf?: string;
       reason?: string;
+      invoice?: Transaction['invoice'];
     },
   ): Transaction {
     const transactionId = `${compact(p.date)}-${deps.newId()}`;
@@ -326,6 +345,7 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
       batchId: p.batchId,
       reversalOf: p.reversalOf,
       reason: p.reason,
+      invoice: p.invoice,
       lines: p.lines,
       totalAmount: toKurus(total),
       createdAt: stamp(),
@@ -735,8 +755,19 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
     const description = reqString(o, 'description', 200);
     const supplier = optString(o, 'supplier', 120);
     const invoiceNumber = optString(o, 'invoiceNumber', 60);
+    const invoiceUpload = parseInvoiceUpload(o.invoiceUpload);
 
-    const fp = fingerprint({ op: 'expense', expenseAccountId, creditAccountId, amount, date, description, supplier, invoiceNumber });
+    const fp = fingerprint({
+      op: 'expense',
+      expenseAccountId,
+      creditAccountId,
+      amount,
+      date,
+      description,
+      supplier,
+      invoiceNumber,
+      ...(invoiceUpload ? { invoiceUploadId: invoiceUpload.uploadId } : {}),
+    });
     const replay = await replayOf(ctx, key, fp);
     if (replay) return expenseResult(ctx, replay, true);
 
@@ -745,6 +776,15 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
     if (!expenseAccount) throw new FinanceError('not_found', 'Gider hesabi bulunamadi');
     if (expenseAccount.type !== 'expense' || expenseAccount.status !== 'active') {
       throw new FinanceError('unprocessable', 'Gider hesabi aktif bir gider hesabi olmali');
+    }
+
+    // Fatura, defter yaziminden ONCE kalici yere tasinir: kayit hic var olmayan dosyaya
+    // isaret etmez. Defter yazimi basarisiz olursa kopya sahipsiz kalir (zararsiz).
+    const expenseId = deps.newId();
+    let invoice: ExpenseInvoice | undefined;
+    if (invoiceUpload) {
+      if (!deps.attachments) throw new FinanceError('unprocessable', 'Belge deposu yapilandirilmamis; fatura eklenemez');
+      invoice = await deps.attachments.promote(ctx.apartmentId, invoiceUpload, { expenseId, date });
     }
 
     for (let attempt = 1; ; attempt++) {
@@ -758,12 +798,12 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
         throw new FinanceError('insufficient_funds', 'Kasa/banka bakiyesi bu gider icin yetersiz');
       }
 
-      const expenseId = deps.newId();
       const tx = buildTx(ctx, {
         kind: 'expense',
         date,
         description,
         reference: invoiceNumber,
+        invoice: invoice ? { expenseId, fileName: invoice.fileName } : undefined,
         lines: [
           { accountId: expenseAccountId, side: 'debit', amount },
           { accountId: creditAccountId, side: 'credit', amount },
@@ -781,6 +821,7 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
         description,
         supplier,
         invoiceNumber,
+        invoice,
         transactionId: tx.transactionId,
         createdAt: tx.createdAt,
         createdBy: ctx.userId,

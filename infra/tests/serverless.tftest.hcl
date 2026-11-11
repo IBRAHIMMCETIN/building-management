@@ -259,6 +259,68 @@ run "prod_plan" {
   }
 }
 
+run "documents_bucket" {
+  command = plan
+
+  variables {
+    environment                  = "dev"
+    dynamodb_deletion_protection = false
+  }
+
+  assert {
+    condition     = aws_s3_bucket.documents.bucket == "building-management-dev-documents-123456789012-eu-central-1" && aws_s3_bucket.documents.force_destroy
+    error_message = "Belge bucket adi/ortam ayari hatali"
+  }
+  assert {
+    condition = (
+      aws_s3_bucket_public_access_block.documents.block_public_acls &&
+      aws_s3_bucket_public_access_block.documents.block_public_policy &&
+      aws_s3_bucket_public_access_block.documents.ignore_public_acls &&
+      aws_s3_bucket_public_access_block.documents.restrict_public_buckets
+    )
+    error_message = "Belge bucket'i tamamen private olmali"
+  }
+  assert {
+    condition     = one(aws_s3_bucket_ownership_controls.documents.rule).object_ownership == "BucketOwnerEnforced"
+    error_message = "ACL'ler kapali olmali"
+  }
+  assert {
+    condition     = one(aws_s3_bucket_versioning.documents.versioning_configuration).status == "Enabled"
+    error_message = "Surumleme acik olmali"
+  }
+  assert {
+    condition     = one(one(aws_s3_bucket_server_side_encryption_configuration.documents.rule).apply_server_side_encryption_by_default).sse_algorithm == "AES256"
+    error_message = "Sunucu tarafi sifreleme acik olmali"
+  }
+  assert {
+    condition = anytrue([
+      for r in aws_s3_bucket_lifecycle_configuration.documents.rule :
+      r.id == "pending-uploads" && one(r.filter).prefix == "tmp/" && one(r.expiration).days == 1
+    ])
+    error_message = "Gidere baglanmamis gecici yuklemeler 1 gunde silinmeli"
+  }
+  assert {
+    condition = alltrue([
+      for st in data.aws_iam_policy_document.api.statement :
+      length(setintersection(toset(st.actions), toset(["s3:DeleteObject", "s3:DeleteObjectVersion", "s3:*", "s3:PutBucketPolicy"]))) == 0
+    ])
+    error_message = "API belge silemez / bucket ayari degistiremez"
+  }
+  assert {
+    condition     = one([for st in data.aws_iam_policy_document.documents_bucket.statement : st if st.sid == "DenyInsecureTransport"]).effect == "Deny"
+    error_message = "Sifresiz (HTTP) erisim reddedilmeli"
+  }
+}
+
+run "prod_keeps_documents" {
+  command = plan
+
+  assert {
+    condition     = aws_s3_bucket.documents.bucket == "building-management-documents-123456789012-eu-central-1" && !aws_s3_bucket.documents.force_destroy
+    error_message = "Prod belge bucket'i bos degilken silinememeli"
+  }
+}
+
 run "scheduler_can_be_disabled" {
   command = plan
 

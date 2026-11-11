@@ -1,7 +1,9 @@
-import { ArrowDownLeft, ArrowLeftRight, ArrowUpRight, FileText, ReceiptText, Undo2 } from 'lucide-react';
+import { ArrowDownLeft, ArrowLeftRight, ArrowUpRight, FileText, Paperclip, ReceiptText, Undo2 } from 'lucide-react';
 import { type ComponentType, useMemo, useState } from 'react';
 import { Alert, Badge, Button, Card, FilterChips, Skeleton } from '@/components/ui';
 import { useTransactions } from '@/hooks/useFinance';
+import { useOpenDocument } from '@/hooks/useOpenDocument';
+import { documentsApi } from '@/lib/api/documents';
 import { errorMessage } from '@/lib/api/errors';
 import { CATEGORY_LABELS, type LedgerTransaction, type TransactionCategory } from '@/lib/api/finance';
 import { cn } from '@/lib/cn';
@@ -54,8 +56,44 @@ function Details({ tx }: { tx: LedgerTransaction }) {
   return bits.length ? <span className="block text-small text-muted">{bits.join(' · ')}</span> : null;
 }
 
+type DocOpener = ReturnType<typeof useOpenDocument>;
+
+/** Makbuz (tahsilat) ve fatura (gider) baglantilari. Yoksa hicbir sey cizilmez. */
+function DocumentButtons({ tx, docs }: { tx: LedgerTransaction; docs: DocOpener }) {
+  if (!tx.hasReceipt && !tx.invoice) return null;
+  const busy = docs.pendingId === tx.transactionId;
+  return (
+    <span className="mt-1.5 -ml-2.5 flex flex-wrap gap-1">
+      {tx.hasReceipt && (
+        <Button
+          size="xs"
+          variant="subtle"
+          loading={busy}
+          onClick={() => void docs.open(tx.transactionId, () => documentsApi.receiptForTransaction(tx.transactionId))}
+        >
+          {!busy && <ReceiptText className="size-3.5" aria-hidden="true" />}
+          Makbuz
+        </Button>
+      )}
+      {tx.invoice && (
+        <Button
+          size="xs"
+          variant="subtle"
+          loading={busy}
+          title={tx.invoice.fileName}
+          onClick={() => void docs.open(tx.transactionId, () => documentsApi.invoiceForTransaction(tx.transactionId))}
+        >
+          {!busy && <Paperclip className="size-3.5" aria-hidden="true" />}
+          Fatura
+        </Button>
+      )}
+    </span>
+  );
+}
+
 export function TransactionsPanel() {
   const [filter, setFilter] = useState<Filter>('all');
+  const docs = useOpenDocument();
   const query = useTransactions();
   const all = useMemo(() => query.data?.pages.flatMap((p) => p.items) ?? [], [query.data]);
   const visible = filter === 'all' ? all : all.filter((t) => t.category === filter);
@@ -93,6 +131,7 @@ export function TransactionsPanel() {
 
   return (
     <div className="flex flex-col gap-4">
+      {docs.error && <Alert tone="danger">{docs.error}</Alert>}
       <FilterChips<Filter>
         label="Hareket türü"
         value={filter}
@@ -128,6 +167,7 @@ export function TransactionsPanel() {
                     <td className="px-4 py-3">
                       {tx.description}
                       <Details tx={tx} />
+                      <DocumentButtons tx={tx} docs={docs} />
                     </td>
                     <td className="px-4 py-3">{accountLabel(tx)}</td>
                     <td className="px-4 py-3">
@@ -153,6 +193,7 @@ export function TransactionsPanel() {
                   <div className="mt-1.5">
                     <CategoryBadge category={tx.category} />
                   </div>
+                  <DocumentButtons tx={tx} docs={docs} />
                 </div>
                 <div className="shrink-0 text-right">
                   <Amount tx={tx} />

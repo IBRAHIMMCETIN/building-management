@@ -92,6 +92,8 @@ export type Transaction = TableKeys & {
   totalAmount: Kurus;
   createdAt: IsoDateTime;
   createdBy: string;
+  /** Gider islemine bagli fatura (kayit aninda yazilir; sonradan degismez). */
+  invoice?: { expenseId: string; fileName: string };
 };
 
 /**
@@ -137,6 +139,8 @@ export type Payment = TableKeys & {
   createdBy: string;
 };
 
+export type ExpenseInvoice = { key: string; fileName: string; contentType: string; size: number };
+
 /** Gider kaydi. SK = `EXP#<expenseId>` */
 export type Expense = TableKeys & {
   entityType: 'EXPENSE';
@@ -150,6 +154,8 @@ export type Expense = TableKeys & {
   description: string;
   supplier?: string;
   invoiceNumber?: string;
+  /** Fatura dosyasi (private S3: apartments/{apt}/invoices/...). */
+  invoice?: ExpenseInvoice;
   transactionId: string;
   createdAt: IsoDateTime;
   createdBy: string;

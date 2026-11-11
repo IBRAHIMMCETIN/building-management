@@ -1,10 +1,11 @@
 import { zodResolver } from '@hookform/resolvers/zod';
 import { CheckCircle2 } from 'lucide-react';
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { Alert, Button, Dialog, FormField, Input, Select } from '@/components/ui';
 import { useFinanceAccounts, useFinanceSummary, useRecordExpense } from '@/hooks/useFinance';
 import { useIdempotencyKey } from '@/hooks/useIdempotencyKey';
+import { INVOICE_ACCEPT, documentsApi, invoiceFileError } from '@/lib/api/documents';
 import { ApiError, errorMessage } from '@/lib/api/errors';
 import { applyApiFieldError } from '@/lib/api/formErrors';
 import { formatTRY } from '@/lib/money';
@@ -16,11 +17,21 @@ const FIELDS = ['expenseAccountId', 'creditAccountId', 'amount', 'date', 'descri
 
 const PAYABLE = 'payable';
 
+type Uploaded = { signature: string; value: { uploadId: string; fileName: string } };
+const signatureOf = (f: File) => `${f.name}|${f.size}|${f.lastModified}`;
+
 export function ExpenseDialog({ open, onClose }: Props) {
   const expenseAccounts = useFinanceAccounts('expense');
   const summary = useFinanceSummary();
   const record = useRecordExpense();
   const [idempotencyKey, renewKey] = useIdempotencyKey();
+  // Fatura dosyasi: secilen dosya, ayni modal icinde yeniden denemede tekrar yuklenmesin diye
+  // yukleme sonucu ve input'u sifirlamak icin anahtar.
+  const [file, setFile] = useState<File | null>(null);
+  const [fileError, setFileError] = useState<string | null>(null);
+  const [uploaded, setUploaded] = useState<Uploaded | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [fileInputKey, setFileInputKey] = useState(0);
 
   const form = useForm<ExpenseForm, unknown, ExpenseValues>({
     resolver: zodResolver(expenseSchema),
@@ -35,8 +46,23 @@ export function ExpenseDialog({ open, onClose }: Props) {
     record.reset();
     renewKey();
     form.reset({ expenseAccountId: '', creditAccountId: 'cash', amount: '', date: todayIstanbul(), description: '', supplier: '', invoiceNumber: '' });
+    clearFile();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- yalnizca acilista
   }, [open]);
+
+  function clearFile() {
+    setFile(null);
+    setFileError(null);
+    setUploaded(null);
+    setFileInputKey((k) => k + 1);
+  }
+
+  function onFileChange(next: File | null) {
+    setFile(next);
+    setFileError(next ? invoiceFileError(next) : null);
+    // Farkli dosya = farkli istek: onceki denemenin anahtariyla gonderilirse 409 olurdu.
+    if (record.isError) renewKey();
+  }
 
   // Hata sonrasi form degisirse yeni islemdir: ayni anahtarla farkli icerik 409 olurdu.
   useEffect(() => {
@@ -53,8 +79,31 @@ export function ExpenseDialog({ open, onClose }: Props) {
   };
 
   const submit = form.handleSubmit(async (v) => {
+    let invoiceUpload: Uploaded['value'] | undefined;
+    if (file) {
+      const invalid = invoiceFileError(file);
+      if (invalid) {
+        setFileError(invalid);
+        return;
+      }
+      const signature = signatureOf(file);
+      if (uploaded?.signature === signature) {
+        invoiceUpload = uploaded.value;
+      } else {
+        setUploading(true);
+        try {
+          invoiceUpload = await documentsApi.uploadInvoice(file);
+          setUploaded({ signature, value: invoiceUpload });
+        } catch (err) {
+          setFileError(errorMessage(err));
+          return;
+        } finally {
+          setUploading(false);
+        }
+      }
+    }
     try {
-      await record.mutateAsync({ idempotencyKey, ...v });
+      await record.mutateAsync({ idempotencyKey, ...v, invoiceUpload });
     } catch (err) {
       if (applyApiFieldError(err, form.setError, FIELDS)) return;
       if (err instanceof ApiError && err.code === 'insufficient_funds') {
@@ -74,7 +123,7 @@ export function ExpenseDialog({ open, onClose }: Props) {
   const funds = summary.data?.fundsAccounts ?? [];
 
   return (
-    <Dialog open={open} onClose={() => !record.isPending && onClose()} title="Gider kaydı ekle">
+    <Dialog open={open} onClose={() => !record.isPending && !uploading && onClose()} title="Gider kaydı ekle">
       {done ? (
         <div className="flex flex-col items-center gap-3 py-2 text-center">
           <CheckCircle2 className="size-10 text-success" aria-hidden="true" />
@@ -86,6 +135,7 @@ export function ExpenseDialog({ open, onClose }: Props) {
                 record.reset();
                 renewKey();
                 form.reset({ ...form.getValues(), amount: '', description: '', supplier: '', invoiceNumber: '' });
+                clearFile();
               }}
             >
               Yeni gider
@@ -158,11 +208,26 @@ export function ExpenseDialog({ open, onClose }: Props) {
             </FormField>
           </div>
 
+          <FormField label="Fatura dosyası (isteğe bağlı)" error={fileError ?? undefined} hint="PDF veya fotoğraf, en fazla 10 MB. Denetçiler görüntüleyebilir.">
+            <Input
+              key={fileInputKey}
+              type="file"
+              accept={INVOICE_ACCEPT}
+              className="h-auto py-1.5 file:mr-3 file:rounded-md file:border-0 file:bg-surface-muted file:px-3 file:py-1 file:text-xs file:font-medium file:text-text"
+              onChange={(e) => onFileChange(e.target.files?.[0] ?? null)}
+            />
+          </FormField>
+          {file && (
+            <button type="button" onClick={clearFile} className="-mt-2 self-start text-xs text-muted underline-offset-4 hover:text-text hover:underline">
+              Dosyayı kaldır
+            </button>
+          )}
+
           <div className="flex flex-col-reverse gap-2 pt-2 sm:flex-row sm:justify-end">
-            <Button variant="ghost" onClick={onClose} disabled={record.isPending}>
+            <Button variant="ghost" onClick={onClose} disabled={record.isPending || uploading}>
               Vazgeç
             </Button>
-            <Button type="submit" loading={record.isPending}>
+            <Button type="submit" loading={record.isPending || uploading} disabled={Boolean(file && invoiceFileError(file))}>
               Gideri kaydet
             </Button>
           </div>

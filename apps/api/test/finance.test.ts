@@ -187,7 +187,7 @@ function createFakeFinanceRepo() {
   };
 }
 
-function makeService(units: Unit[] = [unit('u1'), unit('u2'), unit('u3')]) {
+function makeService(units: Unit[] = [unit('u1'), unit('u2'), unit('u3')], extra: Partial<Parameters<typeof createFinanceService>[0]> = {}) {
   const fake = createFakeFinanceRepo();
   let n = 0;
   const service = createFinanceService({
@@ -195,6 +195,7 @@ function makeService(units: Unit[] = [unit('u1'), unit('u2'), unit('u3')]) {
     core: fakeCore(units),
     now: () => NOW,
     newId: () => `id-${++n}`,
+    ...extra,
   });
   return { service, ...fake };
 }
@@ -697,6 +698,42 @@ describe('finance service - gider', () => {
     expect(t.balanceOf('cash')).toBe(20000);
     expect(t.trialBalance()).toBe(0);
     expect(r.expense.supplier).toBe('ABC');
+  });
+
+  it('fatura eki: dosya kalici yere tasinir, gider kaydina ve islem basligina baglanir', async () => {
+    const promoted: unknown[] = [];
+    const t = makeService(undefined, {
+      attachments: {
+        promote: async (apt, upload, target) => {
+          promoted.push({ apt, upload, target });
+          return { key: `apartments/${apt}/invoices/2026/11/${target.expenseId}.pdf`, fileName: upload.fileName, contentType: 'application/pdf', size: 1234 };
+        },
+      },
+    });
+    await t.service.listAccounts(ctx);
+    await t.service.createAccount(ctx, { accountId: 'exp-clean', type: 'expense', name: 'Temizlik' });
+    await fund(t, 50000);
+    const r = await t.service.recordExpense(ctx, { ...exp, date: '2026-11-05', invoiceUpload: { uploadId: 'up-1', fileName: 'Fatura.pdf' } });
+    expect(promoted).toEqual([{ apt: APT, upload: { uploadId: 'up-1', fileName: 'Fatura.pdf' }, target: { expenseId: r.expense.expenseId, date: '2026-11-05' } }]);
+    expect(r.expense.invoice).toEqual({ key: `apartments/apt-1/invoices/2026/11/${r.expense.expenseId}.pdf`, fileName: 'Fatura.pdf', contentType: 'application/pdf', size: 1234 });
+    expect(r.transaction.invoice).toEqual({ expenseId: r.expense.expenseId, fileName: 'Fatura.pdf' });
+
+    const list = await t.service.listTransactions(ctx);
+    const view = list.items.find((i) => i.transactionId === r.transaction.transactionId);
+    expect(view).toMatchObject({ invoice: { fileName: 'Fatura.pdf' }, hasReceipt: false });
+    expect(list.items.find((i) => i.kind === 'payment')?.hasReceipt).toBe(true);
+
+    // Ayni anahtarla tekrar: replay, dosya ikinci kez tasinmaz.
+    const again = await t.service.recordExpense(ctx, { ...exp, date: '2026-11-05', invoiceUpload: { uploadId: 'up-1', fileName: 'Fatura.pdf' } });
+    expect(again.replayed).toBe(true);
+    expect(promoted).toHaveLength(1);
+  });
+
+  it('belge deposu yoksa fatura ekli gider 422; gecersiz yukleme kimligi 400', async () => {
+    const t = await withExpenseAccount();
+    await fund(t, 50000);
+    await expect(t.service.recordExpense(ctx, { ...exp, invoiceUpload: { uploadId: 'up-1', fileName: 'F.pdf' } })).rejects.toMatchObject({ code: 'unprocessable' });
+    await expect(t.service.recordExpense(ctx, { ...exp, idempotencyKey: 'exp-00002', invoiceUpload: { uploadId: '../x', fileName: 'F.pdf' } })).rejects.toBeInstanceOf(ValidationError);
   });
 
   it('kasa bakiyesi yetersizse gider reddedilir ve hicbir sey yazilmaz', async () => {

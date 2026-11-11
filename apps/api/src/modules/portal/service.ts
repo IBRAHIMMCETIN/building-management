@@ -75,6 +75,8 @@ export type StatementRow = {
   entryType: StatementEntryType;
   /** Tahsilat satirinda makbuz numarasi (ornek: MKB-000012). Odeme yontemi icin /my-receipts. */
   receiptNumber?: string;
+  /** Tahsilat satiri: makbuz indirme (`/api/documents/my-receipts/:paymentId`). */
+  paymentId?: string;
   /** Bu satirin islemi daha sonra ters kayitla iptal edildi mi? */
   reversed?: boolean;
   description: string;
@@ -452,7 +454,7 @@ export function createPortalService(overrides: Partial<PortalServiceDeps> = {}) 
           transactionId: e.transactionId,
           kind: tx?.kind,
           entryType: entryTypeOf(tx?.kind),
-          ...(payment ? { receiptNumber: payment.receiptNumber } : {}),
+          ...(payment ? { receiptNumber: payment.receiptNumber, paymentId: payment.paymentId } : {}),
           ...(reversedTx.has(e.transactionId) ? { reversed: true } : {}),
           description: tx?.description ?? '-',
           dueDate: tx?.dueDate,

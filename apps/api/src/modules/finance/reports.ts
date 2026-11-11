@@ -44,6 +44,10 @@ export type TransactionView = {
   reversalOf?: string;
   reason?: string;
   batchId?: string;
+  /** Tahsilat: makbuz indirilebilir. */
+  hasReceipt: boolean;
+  /** Gidere bagli fatura dosyasi. */
+  invoice?: { fileName: string };
   createdAt: string;
   createdBy: string;
 };
@@ -95,6 +99,8 @@ export function toTransactionView(
     reversalOf: tx.reversalOf,
     reason: tx.reason,
     batchId: tx.batchId,
+    hasReceipt: tx.kind === 'payment',
+    invoice: tx.invoice ? { fileName: tx.invoice.fileName } : undefined,
     createdAt: tx.createdAt,
     createdBy: tx.createdBy,
   };

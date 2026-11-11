@@ -82,3 +82,8 @@ output "scheduled_jobs_queue_url" {
   description = "Elle tetikleme: aws sqs send-message --queue-url <bu> --message-body '{\"job\":\"late_fees\",\"scheduledTime\":\"2026-12-01T00:00:00Z\"}'"
   value       = aws_sqs_queue.jobs.url
 }
+
+output "documents_bucket" {
+  description = "Private belge deposu (makbuz PDF, gider faturasi). Yerel API icin DOCUMENTS_BUCKET."
+  value       = aws_s3_bucket.documents.id
+}

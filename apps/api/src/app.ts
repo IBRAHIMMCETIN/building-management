@@ -7,6 +7,8 @@ import { type ApartmentRoleService, createApartmentRoleService } from './modules
 import { type AnnouncementService, createAnnouncementService } from './modules/announcements/service.js';
 import { coreRoutes } from './modules/core/routes.js';
 import { type CoreService, createCoreService } from './modules/core/service.js';
+import { documentRoutes } from './modules/documents/routes.js';
+import { type DocumentsService, createDocumentsService } from './modules/documents/service.js';
 import { financeRoutes } from './modules/finance/routes.js';
 import { type FinanceService, createFinanceService } from './modules/finance/service.js';
 import { healthRoutes } from './modules/health/routes.js';
@@ -41,6 +43,7 @@ export type AppConfig = {
   coreService?: CoreService;
   financeService?: FinanceService;
   portalService?: PortalService;
+  documentsService?: DocumentsService;
   membershipService?: MembershipService;
   residentsService?: ResidentsService;
   announcementService?: AnnouncementService;
@@ -80,11 +83,18 @@ export function createApp(config: AppConfig) {
     }),
   );
 
+  const portalService = config.portalService ?? createPortalService();
+  // Belgeler: makbuz yetkisi portal listesinden, fatura tasima finans gider kaydindan.
+  const documentsService = config.documentsService ?? createDocumentsService({ portal: portalService });
+  app.route('/api/documents', documentRoutes({ authenticate, service: documentsService }));
+
   app.route(
     '/api/finance',
     financeRoutes({
       authenticate,
-      service: config.financeService ?? createFinanceService({ events }),
+      service:
+        config.financeService ??
+        createFinanceService({ events, attachments: { promote: documentsService.promoteInvoice } }),
     }),
   );
 
@@ -119,7 +129,7 @@ export function createApp(config: AppConfig) {
     '/api/portal',
     portalRoutes({
       authenticate,
-      service: config.portalService ?? createPortalService(),
+      service: portalService,
     }),
   );
 

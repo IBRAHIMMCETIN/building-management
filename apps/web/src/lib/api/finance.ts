@@ -57,6 +57,10 @@ export const transactionSchema = z.object({
   reference: z.string().optional(),
   reversalOf: z.string().optional(),
   reason: z.string().optional(),
+  /** Tahsilat: makbuz PDF'i indirilebilir (eski API'de yok). */
+  hasReceipt: z.boolean().default(false),
+  /** Gidere bagli fatura dosyasi. */
+  invoice: z.object({ fileName: z.string() }).optional(),
 });
 
 export const transactionPageSchema = z.object({
@@ -130,6 +134,8 @@ export type RecordExpenseInput = {
   description: string;
   supplier?: string;
   invoiceNumber?: string;
+  /** documentsApi.uploadInvoice sonucu: yuklenmis fatura dosyasi. */
+  invoiceUpload?: { uploadId: string; fileName: string };
 };
 
 export type ChargeDuesInput =
