@@ -2,8 +2,8 @@ import type { IsoDate } from '../core/types.js';
 
 /*
  * S3 anahtar duzeni (proje kurali: her sey `apartments/{apartmentId}/...` altinda, private).
- *   apartments/{apt}/receipts/{yyyy}/{mm}/{paymentId}.pdf          tahsilat makbuzu (onbellek)
- *   apartments/{apt}/receipts/{yyyy}/{mm}/{paymentId}-iptal.pdf    ters kayitla iptal edilmis hali
+ *   apartments/{apt}/receipts/{yyyy}/{mm}/{paymentId}.v{N}.pdf        tahsilat makbuzu (onbellek)
+ *   apartments/{apt}/receipts/{yyyy}/{mm}/{paymentId}-iptal.v{N}.pdf  ters kayitla iptal edilmis hali
  *   apartments/{apt}/invoices/{yyyy}/{mm}/{expenseId}.{ext}        gider faturasi
  *   tmp/{apt}/invoice-uploads/{uploadId}                           tarayicidan yuklenen, henuz
  *                                                                  gidere baglanmamis dosya
@@ -16,8 +16,16 @@ export const PENDING_UPLOAD_PREFIX = 'tmp/';
 
 const ym = (date: IsoDate) => `${date.slice(0, 4)}/${date.slice(5, 7)}`;
 
+/**
+ * Makbuz sablon surumu. Sablon (metin/duzen) degistiginde artirilir: onbellekteki eski PDF'ler
+ * yeni anahtarla eslesmez, makbuzlar ilk istekte yeni sablonla yeniden uretilir. Eski dosyalar
+ * kayit olarak kalir.
+ *   v1: ilk surum   v2: "Bagimsiz bolum" -> "Blok / Daire"
+ */
+export const RECEIPT_TEMPLATE_VERSION = 2;
+
 export function receiptKey(apartmentId: string, paidAt: IsoDate, paymentId: string, reversed: boolean): string {
-  return `apartments/${apartmentId}/receipts/${ym(paidAt)}/${paymentId}${reversed ? '-iptal' : ''}.pdf`;
+  return `apartments/${apartmentId}/receipts/${ym(paidAt)}/${paymentId}${reversed ? '-iptal' : ''}.v${RECEIPT_TEMPLATE_VERSION}.pdf`;
 }
 
 export function pendingUploadKey(apartmentId: string, uploadId: string): string {

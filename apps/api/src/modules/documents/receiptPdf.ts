@@ -120,7 +120,7 @@ export async function renderReceiptPdf(data: ReceiptData, fonts?: PdfFonts): Pro
 
   // --- Ayrintilar ---
   const rows: [string, string][] = [
-    ['Bağımsız bölüm', data.unitLabel],
+    ['Blok / Daire', data.unitLabel],
     ['Cari hesap', data.partyLabel],
     ...(data.payerName ? ([['Ödeyen', data.payerName]] as [string, string][]) : []),
     ['Ödeme yöntemi', data.methodLabel],

@@ -8,7 +8,7 @@ import type { Block, Site, Unit } from '../src/modules/core/types.js';
 import { toKurus } from '../src/modules/core/types.js';
 import { amountInWordsTR, integerInWordsTR } from '../src/modules/documents/amountWords.js';
 import { DocumentError } from '../src/modules/documents/errors.js';
-import { contentDisposition, invoiceKey, pendingUploadKey, receiptKey, safeFileName } from '../src/modules/documents/keys.js';
+import { RECEIPT_TEMPLATE_VERSION, contentDisposition, invoiceKey, pendingUploadKey, receiptKey, safeFileName } from '../src/modules/documents/keys.js';
 import { renderReceiptPdf } from '../src/modules/documents/receiptPdf.js';
 import { createDocumentsService } from '../src/modules/documents/service.js';
 import { createMemoryDocumentStore, createS3DocumentStore } from '../src/modules/documents/store.js';
@@ -47,8 +47,8 @@ describe('amountInWordsTR', () => {
 
 describe('S3 anahtarlari ve dosya adlari', () => {
   it('proje duzenine uyar: apartments/{apt}/..., gecici yuklemeler tmp/ altinda', () => {
-    expect(receiptKey(APT, '2026-11-05', 'p1', false)).toBe('apartments/apt-1/receipts/2026/11/p1.pdf');
-    expect(receiptKey(APT, '2026-11-05', 'p1', true)).toBe('apartments/apt-1/receipts/2026/11/p1-iptal.pdf');
+    expect(receiptKey(APT, '2026-11-05', 'p1', false)).toBe('apartments/apt-1/receipts/2026/11/p1.v2.pdf');
+    expect(receiptKey(APT, '2026-11-05', 'p1', true)).toBe('apartments/apt-1/receipts/2026/11/p1-iptal.v2.pdf');
     expect(invoiceKey(APT, '2026-01-31', 'e1', 'pdf')).toBe('apartments/apt-1/invoices/2026/01/e1.pdf');
     expect(pendingUploadKey(APT, 'u1')).toBe('tmp/apt-1/invoice-uploads/u1');
   });
@@ -83,6 +83,11 @@ const receiptData = {
 };
 
 describe('makbuz PDF', () => {
+  it('sablon surumu anahtarda: sablon degisince eski onbellek kullanilmaz', () => {
+    expect(RECEIPT_TEMPLATE_VERSION).toBe(2);
+    expect(receiptKey(APT, '2026-11-05', 'p1', false)).toMatch(/\.v2\.pdf$/);
+  });
+
   it('Turkce karakterli tek sayfalik PDF uretir, font gomulur, ust veri makbuz no icerir', async () => {
     const bytes = await renderReceiptPdf(receiptData);
     expect(Buffer.from(bytes.subarray(0, 5)).toString()).toBe('%PDF-');
@@ -179,10 +184,10 @@ describe('documents servisi - makbuz', () => {
     const { service, mem, puts } = setup();
     const first = await service.receiptForTransaction(APT, 'tx-pay');
     expect(first).toMatchObject({ fileName: 'Makbuz-MKB-000001.pdf', contentType: 'application/pdf', status: 'valid', expiresAt: '2026-11-11T10:05:00.000Z' });
-    expect(first.url).toContain('apartments/apt-1/receipts/2026/11/p1.pdf');
+    expect(first.url).toContain('apartments/apt-1/receipts/2026/11/p1.v2.pdf');
     expect(first.url).toContain('ttl=300');
-    expect(puts).toEqual(['apartments/apt-1/receipts/2026/11/p1.pdf']);
-    expect(mem.objects.get('apartments/apt-1/receipts/2026/11/p1.pdf')?.contentType).toBe('application/pdf');
+    expect(puts).toEqual(['apartments/apt-1/receipts/2026/11/p1.v2.pdf']);
+    expect(mem.objects.get('apartments/apt-1/receipts/2026/11/p1.v2.pdf')?.contentType).toBe('application/pdf');
 
     await service.receiptForTransaction(APT, 'tx-pay');
     expect(puts).toHaveLength(1);
@@ -194,7 +199,7 @@ describe('documents servisi - makbuz', () => {
     reversed.add('REV_tx-pay');
     const r = await service.receiptForTransaction(APT, 'tx-pay');
     expect(r).toMatchObject({ status: 'reversed', fileName: 'Makbuz-MKB-000001-IPTAL.pdf' });
-    expect(puts).toEqual(['apartments/apt-1/receipts/2026/11/p1.pdf', 'apartments/apt-1/receipts/2026/11/p1-iptal.pdf']);
+    expect(puts).toEqual(['apartments/apt-1/receipts/2026/11/p1.v2.pdf', 'apartments/apt-1/receipts/2026/11/p1-iptal.v2.pdf']);
   });
 
   it('tahsilat olmayan, olmayan veya baska apartmanin islemi 404', async () => {
