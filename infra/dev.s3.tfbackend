@@ -1,0 +1,7 @@
+# Dev yigininin uzak state'i. Kullanim (repo kokunden):
+#   terraform -chdir=infra init -reconfigure "-backend-config=dev.s3.tfbackend"
+# Prod state'i (CI) ayri key'dedir: serverless/terraform.tfstate. Ikisini asla karistirmayin.
+bucket       = "building-management-tfstate-204957732942-eu-north-1"
+key          = "serverless-dev/terraform.tfstate"
+region       = "eu-north-1"
+use_lockfile = true

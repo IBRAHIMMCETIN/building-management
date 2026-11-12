@@ -60,6 +60,7 @@ mock_provider "archive" {
 }
 
 variables {
+  environment     = "prod"
   lambda_dist_dir = "tests"
   app_version     = "test-sha"
 }
