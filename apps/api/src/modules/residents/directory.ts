@@ -3,6 +3,7 @@ import {
   AdminGetUserCommand,
   type AttributeType,
   CognitoIdentityProviderClient,
+  UnsupportedUserStateException,
   UsernameExistsException,
   UserNotFoundException,
 } from '@aws-sdk/client-cognito-identity-provider';
@@ -23,7 +24,12 @@ export type UserDirectory = {
    * E-postaya ait kullaniciyi bulur; yoksa olusturur ve Cognito gecici sifre e-postasini
    * gonderir (ilk giriste NEW_PASSWORD_REQUIRED). Var olan kullaniciya e-posta GITMEZ.
    */
-  findOrCreate(input: { email: string; fullName: string }): Promise<FindOrCreateResult>;
+  findOrCreate(input: { email: string; fullName: string; sendInvitation?: boolean }): Promise<FindOrCreateResult>;
+  /**
+   * Sessiz olusturulmus (sendInvitation: false) ve henuz ilk girisini yapmamis kullaniciya
+   * gecici sifre e-postasini gonderir. Hesabini zaten etkinlestirmis kullaniciya gitmez.
+   */
+  resendInvitation(email: string): Promise<'sent' | 'not_pending'>;
   /** Dizin turu (yanitta yerel test ipucu gostermek icin). */
   readonly kind?: 'cognito' | 'mock';
 };
@@ -39,7 +45,8 @@ const attr = (attrs: AttributeType[] | undefined, name: string) => attrs?.find((
 
 /**
  * Cognito uygulamasi. Havuz `username_attributes = ["email"]` oldugu icin kullanici adi
- * e-postadir. Gereken IAM: cognito-idp:AdminGetUser, cognito-idp:AdminCreateUser.
+ * e-postadir. Gereken IAM: cognito-idp:AdminGetUser, cognito-idp:AdminCreateUser
+ * (davet yeniden gonderme de AdminCreateUser + MessageAction=RESEND ile yapilir).
  */
 export function createCognitoDirectory(
   userPoolId: string,
@@ -58,7 +65,24 @@ export function createCognitoDirectory(
 
   return {
     kind,
-    async findOrCreate({ email, fullName }) {
+    async resendInvitation(email) {
+      try {
+        await client.send(
+          new AdminCreateUserCommand({
+            UserPoolId: userPoolId,
+            Username: email,
+            MessageAction: 'RESEND',
+            DesiredDeliveryMediums: ['EMAIL'],
+          }),
+        );
+        return 'sent';
+      } catch (err) {
+        // Kullanici sifresini belirlemis (CONFIRMED): davet gerekmez.
+        if (err instanceof UnsupportedUserStateException) return 'not_pending';
+        throw err;
+      }
+    },
+    async findOrCreate({ email, fullName, sendInvitation = true }) {
       const existing = await find(email);
       if (existing) return { userId: existing, created: false };
 
@@ -73,7 +97,9 @@ export function createCognitoDirectory(
               { Name: 'email_verified', Value: 'true' },
               { Name: 'name', Value: fullName },
             ],
-            DesiredDeliveryMediums: ['EMAIL'],
+            // Toplu aktarimda once sessiz olusturulur; yonetici kontrol ettikten sonra
+            // resendInvitation ile gonderilir (gonderilmis e-posta geri alinamaz).
+            ...(sendInvitation ? { DesiredDeliveryMediums: ['EMAIL'] as ['EMAIL'] } : { MessageAction: 'SUPPRESS' as const }),
           }),
         );
         const sub = attr(out.User?.Attributes, 'sub');
@@ -119,13 +145,19 @@ export function createMockDirectory(log: Pick<Console, 'info'> = console): UserD
   const known = new Set<string>();
   return {
     kind: 'mock',
-    async findOrCreate({ email }) {
+    async findOrCreate({ email, sendInvitation = true }) {
       const userId = mockUserId(email);
       if (known.has(email)) return { userId, created: false };
       known.add(email);
       const temporaryPassword = mockTemporaryPassword();
-      log.info(`[mock davet] ${email} -> ${userId}, gecici sifre: ${temporaryPassword} (e-posta gonderilmedi)`);
+      log.info(
+        `[mock davet] ${email} -> ${userId}, gecici sifre: ${temporaryPassword} (e-posta gonderilmedi${sendInvitation ? '' : ', sessiz'})`,
+      );
       return { userId, created: true, temporaryPassword };
+    },
+    async resendInvitation(email) {
+      log.info(`[mock davet] ${email}: davet yeniden gonderildi (e-posta gonderilmedi)`);
+      return 'sent';
     },
   };
 }
@@ -142,9 +174,8 @@ export function createDirectoryFromEnv(env: NodeJS.ProcessEnv = process.env): Us
   if (env.AUTH_MODE === 'mock' && env.NODE_ENV !== 'production' && !env.AWS_LAMBDA_FUNCTION_NAME) {
     return createMockDirectory();
   }
-  return {
-    findOrCreate: async () => {
-      throw new DirectoryUnavailableError();
-    },
+  const unavailable = async (): Promise<never> => {
+    throw new DirectoryUnavailableError();
   };
+  return { findOrCreate: unavailable, resendInvitation: unavailable };
 }

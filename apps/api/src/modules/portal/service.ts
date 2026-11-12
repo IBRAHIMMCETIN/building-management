@@ -231,6 +231,7 @@ export function allocateOpenDues(
 function entryTypeOf(kind: TransactionKind | undefined): StatementEntryType {
   switch (kind) {
     case 'dues_charge':
+    case 'opening_balance':
       return 'ACCRUAL';
     case 'payment':
       return 'COLLECTION';
@@ -525,9 +526,9 @@ export function createPortalService(overrides: Partial<PortalServiceDeps> = {}) 
         if (cancelled.has(e.transactionId)) continue;
         const tx = txById.get(e.transactionId);
         const kind = tx?.kind;
-        if (e.side === 'debit' && (kind === 'dues_charge' || kind === 'late_fee')) totalCharged += e.amount;
+        if (e.side === 'debit' && (kind === 'dues_charge' || kind === 'late_fee' || kind === 'opening_balance')) totalCharged += e.amount;
         if (e.side === 'credit' && kind === 'payment') totalPaid += e.amount;
-        if (e.side === 'debit' && kind === 'dues_charge') feeCharges.push({ id: e.transactionId, dueDate: tx?.dueDate ?? e.date, amount: e.amount });
+        if (e.side === 'debit' && (kind === 'dues_charge' || kind === 'opening_balance')) feeCharges.push({ id: e.transactionId, dueDate: tx?.dueDate ?? e.date, amount: e.amount });
         else if (e.side === 'debit' && kind === 'late_fee') postedFees += e.amount;
         else if (e.side === 'credit') feeCredits.push({ date: e.date, amount: e.amount });
       }

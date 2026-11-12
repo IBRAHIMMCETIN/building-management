@@ -1,4 +1,4 @@
-import { ArrowLeftRight, Building2, LayoutDashboard, Megaphone, Menu, Settings, Users, Wallet } from 'lucide-react';
+import { ArrowLeftRight, Building2, FileUp, LayoutDashboard, Megaphone, Menu, Settings, Users, Wallet } from 'lucide-react';
 import { type ComponentType, useEffect, useState } from 'react';
 import { NavLink, Outlet, useLocation } from 'react-router';
 import { ContextSwitchDialog, useCanSwitchContext } from '@/components/context/ContextSwitcher';
@@ -17,6 +17,7 @@ const NAV: NavItem[] = [
   { to: '/admin/units', label: 'Daireler', icon: Users },
   { to: '/admin/finance', label: 'Finans', icon: Wallet },
   { to: '/admin/announcements', label: 'Duyurular', icon: Megaphone },
+  { to: '/admin/import', label: 'Toplu Aktarım', icon: FileUp },
   { to: '/admin/settings', label: 'Ayarlar', icon: Settings },
 ];
 

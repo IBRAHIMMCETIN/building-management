@@ -38,7 +38,7 @@ export const transactionSchema = z.object({
   date: isoDate,
   dueDate: isoDate.optional(),
   description: z.string(),
-  kind: z.enum(['dues_charge', 'payment', 'expense', 'reversal', 'late_fee']),
+  kind: z.enum(['dues_charge', 'payment', 'expense', 'reversal', 'late_fee', 'opening_balance']),
   category: z.enum(TRANSACTION_CATEGORIES),
   amount: kurus,
   funds: z.array(
@@ -100,7 +100,7 @@ export const duesStatusSchema = z.object({
 
 export const accountSchema = z.object({
   accountId: z.string(),
-  type: z.enum(['cash', 'bank', 'receivable', 'payable', 'income', 'expense']),
+  type: z.enum(['cash', 'bank', 'receivable', 'payable', 'income', 'expense', 'equity']),
   name: z.string(),
   status: z.enum(['active', 'inactive']),
   balance: kurus,

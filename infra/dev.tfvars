@@ -7,3 +7,4 @@ environment = "dev"
 dynamodb_deletion_protection = true
 
 cors_allow_origins = ["http://localhost:5173"]
+

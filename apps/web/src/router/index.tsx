@@ -5,6 +5,7 @@ import { ResidentLayout } from '@/layouts/ResidentLayout';
 import { AnnouncementsPage } from '@/pages/admin/announcements/AnnouncementsPage';
 import { DashboardPage } from '@/pages/admin/DashboardPage';
 import { FinancePage } from '@/pages/admin/finance/FinancePage';
+import { ImportPage } from '@/pages/admin/import/ImportPage';
 import { SettingsPage } from '@/pages/admin/settings/SettingsPage';
 import { UnitsPage } from '@/pages/admin/units/UnitsPage';
 import { ForgotPasswordPage } from '@/pages/auth/ForgotPasswordPage';
@@ -52,6 +53,7 @@ export const router = createBrowserRouter([
               { path: 'units', element: <UnitsPage /> },
               { path: 'finance', element: <FinancePage /> },
               { path: 'announcements', element: <AnnouncementsPage /> },
+              { path: 'import', element: <ImportPage /> },
               { path: 'settings', element: <SettingsPage /> },
             ],
           },

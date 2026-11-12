@@ -91,6 +91,7 @@ export const SYSTEM_ACCOUNTS = {
   incomeDues: 'income-dues',
   incomeLateFee: 'income-late-fee',
   payable: 'payable',
+  openingBalance: 'opening-balance',
 } as const;
 
 /** KMK m.20 varsayilani: aylik %5. Apartman ayari okunamazsa kullanilir. */
@@ -286,6 +287,12 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
         accountId: SYSTEM_ACCOUNTS.incomeLateFee,
         type: 'income',
         name: 'Gecikme Tazminati Gelirleri',
+        system: true,
+      }),
+      newAccount(ctx, {
+        accountId: SYSTEM_ACCOUNTS.openingBalance,
+        type: 'equity',
+        name: 'Açılış / Devir Bakiyeleri',
         system: true,
       }),
       newAccount(ctx, {
@@ -1106,6 +1113,86 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
     };
   }
 
+  // -------------------------------------------------------------------------
+  // Acilis (devir) bakiyeleri - toplu aktarim (imports modulu) kullanir
+  // -------------------------------------------------------------------------
+
+  /** Idempotent yazim: anahtar varsa onceki islem doner (icerik ayniysa). */
+  async function postIdempotent(ctx: FinanceContext, idemId: string, fp: string, build: () => Transaction) {
+    const replay = await replayOf(ctx, idemId, fp);
+    if (replay) return { transaction: await loadTx(ctx, replay.transactionId), replayed: true };
+    const tx = build();
+    try {
+      await repo.postTransaction({ transaction: tx, idempotency: { id: idemId, fingerprint: fp } });
+      return { transaction: tx, replayed: false };
+    } catch (err) {
+      if (err instanceof LedgerConflictError && err.reason === 'duplicate') {
+        const again = await replayOf(ctx, idemId, fp);
+        if (again) return { transaction: await loadTx(ctx, again.transactionId), replayed: true };
+      }
+      throw mapConflict(err);
+    }
+  }
+
+  /**
+   * Daire alt carisinin devir bakiyesi. `amount` isaretli kurus: pozitif = borc (vadeli
+   * tahakkuk gibi davranir; kistelyevm vadeden sonra isler), negatif = avans (tahsilat gibi
+   * mahsup edilir). Karsi hesap `opening-balance` (ozkaynak): mizan dengede kalir.
+   */
+  async function postOpeningBalance(
+    ctx: FinanceContext,
+    p: { idemId: string; unitId: string; party: LiableParty; amount: number; date: IsoDate; dueDate: IsoDate; description: string; batchId?: string },
+  ) {
+    if (!Number.isSafeInteger(p.amount) || p.amount === 0 || Math.abs(p.amount) > MAX_AMOUNT) {
+      throw new ValidationError('Acilis bakiyesi sifirdan farkli gecerli bir kurus tutari olmalidir', 'amount');
+    }
+    await ensureSystemAccounts(ctx);
+    const recv = receivable(ctx, p.unitId, p.party);
+    await repo.ensureAccounts([recv]);
+    const abs = toKurus(Math.abs(p.amount));
+    const debt = p.amount > 0;
+    const fp = fingerprint({ op: 'opening', unitId: p.unitId, party: p.party, amount: p.amount, date: p.date, dueDate: p.dueDate, description: p.description });
+    return postIdempotent(ctx, p.idemId, fp, () =>
+      buildTx(ctx, {
+        kind: 'opening_balance',
+        date: p.date,
+        dueDate: debt ? p.dueDate : undefined,
+        description: p.description,
+        batchId: p.batchId,
+        lines: [
+          { accountId: recv.accountId, side: debt ? 'debit' : 'credit', amount: abs, unitId: p.unitId, liableParty: p.party },
+          { accountId: SYSTEM_ACCOUNTS.openingBalance, side: debt ? 'credit' : 'debit', amount: abs },
+        ],
+      }),
+    );
+  }
+
+  /** Kasa / banka devir bakiyesi (pozitif kurus). */
+  async function postOpeningFunds(
+    ctx: FinanceContext,
+    p: { idemId: string; account: 'cash' | 'bank'; amount: number; date: IsoDate; batchId?: string },
+  ) {
+    if (!Number.isSafeInteger(p.amount) || p.amount < 1 || p.amount > MAX_AMOUNT) {
+      throw new ValidationError('Tutar pozitif kurus olmalidir', 'amount');
+    }
+    await ensureSystemAccounts(ctx);
+    const accountId = p.account === 'cash' ? SYSTEM_ACCOUNTS.cash : SYSTEM_ACCOUNTS.bank;
+    const amount = toKurus(p.amount);
+    const fp = fingerprint({ op: 'opening_funds', accountId, amount, date: p.date });
+    return postIdempotent(ctx, p.idemId, fp, () =>
+      buildTx(ctx, {
+        kind: 'opening_balance',
+        date: p.date,
+        description: p.account === 'cash' ? 'Kasa devir bakiyesi' : 'Banka devir bakiyesi',
+        batchId: p.batchId,
+        lines: [
+          { accountId, side: 'debit', amount },
+          { accountId: SYSTEM_ACCOUNTS.openingBalance, side: 'credit', amount },
+        ],
+      }),
+    );
+  }
+
   /** Hatirlatma gunu `date` (Istanbul) icin gonderilecek borc hatirlatmalari. */
   async function dueReminders(apartmentId: string, date: IsoDate) {
     if (!isIsoDate(date)) throw new ValidationError('date YYYY-MM-DD olmali', 'date');
@@ -1120,6 +1207,8 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
     autoChargeDues,
     postLateFees,
     dueReminders,
+    postOpeningBalance,
+    postOpeningFunds,
     listTransactions,
     listAccounts,
     createAccount,

@@ -19,7 +19,8 @@ import type {
   TableKeys,
 } from '../core/types.js';
 
-export const ACCOUNT_TYPES = ['cash', 'bank', 'receivable', 'payable', 'income', 'expense'] as const;
+/** equity: acilis/devir bakiyelerinin karsi hesabi (sisteme gecis aninda). */
+export const ACCOUNT_TYPES = ['cash', 'bank', 'receivable', 'payable', 'income', 'expense', 'equity'] as const;
 export type AccountType = (typeof ACCOUNT_TYPES)[number];
 
 export type EntrySide = 'debit' | 'credit';
@@ -32,6 +33,7 @@ export const NORMAL_SIDE: Record<AccountType, EntrySide> = {
   expense: 'debit',
   payable: 'credit',
   income: 'credit',
+  equity: 'credit',
 };
 
 /**
@@ -58,8 +60,9 @@ export type Account = TableKeys &
 /**
  * late_fee: kistelyevm gecikme tazminati kesinlestirmesi (ayin 1'inde, alt cari basina tek
  * kayit). `reference` = `LATE_FEE:<YYYY-MM>` (kesinlestirilen donem).
+ * opening_balance: sisteme gecis (toplu aktarim) devir bakiyesi; karsi hesap `opening-balance`.
  */
-export type TransactionKind = 'dues_charge' | 'payment' | 'expense' | 'reversal' | 'late_fee';
+export type TransactionKind = 'dues_charge' | 'payment' | 'expense' | 'reversal' | 'late_fee' | 'opening_balance';
 
 export type TransactionLine = {
   accountId: string;

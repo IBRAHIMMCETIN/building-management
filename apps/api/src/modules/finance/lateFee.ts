@@ -119,7 +119,7 @@ export function cancelledTransactions(transactions: Iterable<Transaction>): Set<
 }
 
 /**
- * Bir alacak (alt cari) hesabinin tazminat girdileri. Taban yalnizca aidat tahakkuklari;
+ * Bir alacak (alt cari) hesabinin tazminat girdileri. Taban aidat tahakkuklari ve devir borclari;
  * alacak satirlari (tahsilat vb.) islem tarihinde mahsup edilir.
  */
 export function feeLedgerFor(
@@ -133,7 +133,7 @@ export function feeLedgerFor(
     for (const line of tx.lines) {
       if (line.accountId !== accountId) continue;
       if (line.side === 'debit') {
-        if (tx.kind === 'dues_charge') out.charges.push({ id: tx.transactionId, dueDate: tx.dueDate ?? tx.date, amount: line.amount });
+        if (tx.kind === 'dues_charge' || tx.kind === 'opening_balance') out.charges.push({ id: tx.transactionId, dueDate: tx.dueDate ?? tx.date, amount: line.amount });
         else if (tx.kind === 'late_fee') out.postedFees += line.amount;
       } else {
         out.credits.push({ date: tx.date, amount: line.amount });

@@ -41,8 +41,11 @@ export type PersonView = Pick<Person, 'userId' | 'fullName' | 'email' | 'created
 export type InviteResult = {
   person: PersonView;
   membership: MembershipView;
-  /** sent: yeni hesap, gecici sifre e-postasi gitti. existing_user: hesap zaten vardi. */
-  invitation: 'sent' | 'existing_user';
+  /**
+   * sent: yeni hesap, gecici sifre e-postasi gitti. pending: yeni hesap sessiz olusturuldu
+   * (toplu aktarim; e-posta daha sonra). existing_user: hesap zaten vardi.
+   */
+  invitation: 'sent' | 'pending' | 'existing_user';
   /** Yalnizca yerel mock dizinde: e-posta gonderilmedigi icin ilk giris bilgisi. */
   mock?: { temporaryPassword?: string };
 };
@@ -142,7 +145,8 @@ export function createResidentsService(overrides: Partial<ResidentsServiceDeps> 
     return updated;
   }
 
-  async function invite(ctx: ResidentsContext, body: unknown): Promise<InviteResult> {
+  async function invite(ctx: ResidentsContext, body: unknown, options: { sendInvitation?: boolean } = {}): Promise<InviteResult> {
+    const sendInvitation = options.sendInvitation ?? true;
     const o = asObject(body);
     const unitId = assertId(o.unitId, 'unitId');
     const fullName = reqString(o, 'fullName', 100, 2).replace(/\s+/g, ' ');
@@ -154,7 +158,7 @@ export function createResidentsService(overrides: Partial<ResidentsServiceDeps> 
 
     let account: Awaited<ReturnType<UserDirectory['findOrCreate']>>;
     try {
-      account = await deps.directory.findOrCreate({ email, fullName });
+      account = await deps.directory.findOrCreate({ email, fullName, sendInvitation });
     } catch (err) {
       throw cognitoErrorToResidents(err);
     }
@@ -170,7 +174,7 @@ export function createResidentsService(overrides: Partial<ResidentsServiceDeps> 
     return {
       person: toView(person, ctx.role),
       membership,
-      invitation: account.created ? 'sent' : 'existing_user',
+      invitation: account.created ? (sendInvitation ? 'sent' : 'pending') : 'existing_user',
       ...(deps.directory.kind === 'mock' ? { mock: { temporaryPassword: account.temporaryPassword } } : {}),
     };
   }
@@ -183,5 +187,14 @@ export function createResidentsService(overrides: Partial<ResidentsServiceDeps> 
       .sort((a, b) => a.fullName.localeCompare(b.fullName, 'tr'));
   }
 
-  return { invite, list };
+  /** Toplu aktarimdan sonra: sessiz olusturulan kullaniciya davet e-postasi. */
+  async function resendInvitation(email: string): Promise<'sent' | 'not_pending'> {
+    try {
+      return await deps.directory.resendInvitation(email);
+    } catch (err) {
+      throw cognitoErrorToResidents(err);
+    }
+  }
+
+  return { invite, list, resendInvitation };
 }

@@ -76,6 +76,7 @@ export function toTransactionView(
 
   let category: TransactionCategory;
   if (tx.kind === 'reversal') category = 'reversal';
+  else if (tx.kind === 'opening_balance') category = 'accrual';
   else if (funds.some((f) => f.direction === 'in') && funds.some((f) => f.direction === 'out')) category = 'transfer';
   else if (netFundsChange > 0) category = 'income';
   else if (netFundsChange < 0) category = 'expense';
@@ -203,7 +204,7 @@ export function buildDuesStatus(
       if (line.side === 'debit') {
         const dueDate = tx.dueDate ?? tx.date;
         party.charges.push({ amount: line.amount, dueDate, fee: tx.kind === 'late_fee' });
-        if (tx.kind === 'dues_charge') party.feeCharges.push({ id: tx.transactionId, dueDate, amount: line.amount });
+        if (tx.kind === 'dues_charge' || tx.kind === 'opening_balance') party.feeCharges.push({ id: tx.transactionId, dueDate, amount: line.amount });
         if (tx.kind === 'late_fee') party.postedFees += line.amount;
       } else {
         party.credits += line.amount;
