@@ -75,6 +75,8 @@ export type StatementRow = {
   entryType: StatementEntryType;
   /** Tahsilat satirinda makbuz numarasi (ornek: MKB-000012). Odeme yontemi icin /my-receipts. */
   receiptNumber?: string;
+  /** Tahsilat satiri: makbuz indirme (`/api/documents/my-receipts/:paymentId`). */
+  paymentId?: string;
   /** Bu satirin islemi daha sonra ters kayitla iptal edildi mi? */
   reversed?: boolean;
   description: string;
@@ -229,6 +231,7 @@ export function allocateOpenDues(
 function entryTypeOf(kind: TransactionKind | undefined): StatementEntryType {
   switch (kind) {
     case 'dues_charge':
+    case 'opening_balance':
       return 'ACCRUAL';
     case 'payment':
       return 'COLLECTION';
@@ -452,7 +455,7 @@ export function createPortalService(overrides: Partial<PortalServiceDeps> = {}) 
           transactionId: e.transactionId,
           kind: tx?.kind,
           entryType: entryTypeOf(tx?.kind),
-          ...(payment ? { receiptNumber: payment.receiptNumber } : {}),
+          ...(payment ? { receiptNumber: payment.receiptNumber, paymentId: payment.paymentId } : {}),
           ...(reversedTx.has(e.transactionId) ? { reversed: true } : {}),
           description: tx?.description ?? '-',
           dueDate: tx?.dueDate,
@@ -523,9 +526,10 @@ export function createPortalService(overrides: Partial<PortalServiceDeps> = {}) 
         if (cancelled.has(e.transactionId)) continue;
         const tx = txById.get(e.transactionId);
         const kind = tx?.kind;
-        if (e.side === 'debit' && (kind === 'dues_charge' || kind === 'late_fee')) totalCharged += e.amount;
-        if (e.side === 'credit' && kind === 'payment') totalPaid += e.amount;
-        if (e.side === 'debit' && kind === 'dues_charge') feeCharges.push({ id: e.transactionId, dueDate: tx?.dueDate ?? e.date, amount: e.amount });
+        if (e.side === 'debit' && (kind === 'dues_charge' || kind === 'late_fee' || kind === 'opening_balance')) totalCharged += e.amount;
+        // Devir avansi (eski sistemde yapilmis odeme) de odenen toplamina girer.
+        if (e.side === 'credit' && (kind === 'payment' || kind === 'opening_balance')) totalPaid += e.amount;
+        if (e.side === 'debit' && (kind === 'dues_charge' || kind === 'opening_balance')) feeCharges.push({ id: e.transactionId, dueDate: tx?.dueDate ?? e.date, amount: e.amount });
         else if (e.side === 'debit' && kind === 'late_fee') postedFees += e.amount;
         else if (e.side === 'credit') feeCredits.push({ date: e.date, amount: e.amount });
       }

@@ -38,7 +38,7 @@ export const transactionSchema = z.object({
   date: isoDate,
   dueDate: isoDate.optional(),
   description: z.string(),
-  kind: z.enum(['dues_charge', 'payment', 'expense', 'reversal', 'late_fee']),
+  kind: z.enum(['dues_charge', 'payment', 'expense', 'reversal', 'late_fee', 'opening_balance']),
   category: z.enum(TRANSACTION_CATEGORIES),
   amount: kurus,
   funds: z.array(
@@ -57,6 +57,10 @@ export const transactionSchema = z.object({
   reference: z.string().optional(),
   reversalOf: z.string().optional(),
   reason: z.string().optional(),
+  /** Tahsilat: makbuz PDF'i indirilebilir (eski API'de yok). */
+  hasReceipt: z.boolean().default(false),
+  /** Gidere bagli fatura dosyasi. */
+  invoice: z.object({ fileName: z.string() }).optional(),
 });
 
 export const transactionPageSchema = z.object({
@@ -96,7 +100,7 @@ export const duesStatusSchema = z.object({
 
 export const accountSchema = z.object({
   accountId: z.string(),
-  type: z.enum(['cash', 'bank', 'receivable', 'payable', 'income', 'expense']),
+  type: z.enum(['cash', 'bank', 'receivable', 'payable', 'income', 'expense', 'equity']),
   name: z.string(),
   status: z.enum(['active', 'inactive']),
   balance: kurus,
@@ -130,6 +134,8 @@ export type RecordExpenseInput = {
   description: string;
   supplier?: string;
   invoiceNumber?: string;
+  /** documentsApi.uploadInvoice sonucu: yuklenmis fatura dosyasi. */
+  invoiceUpload?: { uploadId: string; fileName: string };
 };
 
 export type ChargeDuesInput =

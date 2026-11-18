@@ -7,7 +7,11 @@ import { type ApartmentRoleService, createApartmentRoleService } from './modules
 import { type AnnouncementService, createAnnouncementService } from './modules/announcements/service.js';
 import { coreRoutes } from './modules/core/routes.js';
 import { type CoreService, createCoreService } from './modules/core/service.js';
+import { documentRoutes } from './modules/documents/routes.js';
+import { type DocumentsService, createDocumentsService } from './modules/documents/service.js';
 import { financeRoutes } from './modules/finance/routes.js';
+import { importRoutes } from './modules/imports/routes.js';
+import { type ImportsService, createImportsService } from './modules/imports/service.js';
 import { type FinanceService, createFinanceService } from './modules/finance/service.js';
 import { healthRoutes } from './modules/health/routes.js';
 import { meRoutes } from './modules/me/routes.js';
@@ -41,6 +45,8 @@ export type AppConfig = {
   coreService?: CoreService;
   financeService?: FinanceService;
   portalService?: PortalService;
+  documentsService?: DocumentsService;
+  importsService?: ImportsService;
   membershipService?: MembershipService;
   residentsService?: ResidentsService;
   announcementService?: AnnouncementService;
@@ -80,24 +86,31 @@ export function createApp(config: AppConfig) {
     }),
   );
 
-  app.route(
-    '/api/finance',
-    financeRoutes({
-      authenticate,
-      service: config.financeService ?? createFinanceService({ events }),
-    }),
-  );
+  const portalService = config.portalService ?? createPortalService();
+  // Belgeler: makbuz yetkisi portal listesinden, fatura tasima finans gider kaydindan.
+  const documentsService = config.documentsService ?? createDocumentsService({ portal: portalService });
+  app.route('/api/documents', documentRoutes({ authenticate, service: documentsService }));
+
+  const financeService =
+    config.financeService ?? createFinanceService({ events, attachments: { promote: documentsService.promoteInvoice } });
+  app.route('/api/finance', financeRoutes({ authenticate, service: financeService }));
 
   const membershipService = config.membershipService ?? createMembershipService();
   app.route('/api/memberships', membershipRoutes({ authenticate, service: membershipService }));
-  app.route(
-    '/api/residents',
-    residentRoutes({
-      authenticate,
-      // Davet, uyelik kurallarini memberships servisinden alir (tek kaynak).
-      service: config.residentsService ?? createResidentsService({ memberships: membershipService }),
-    }),
-  );
+  // Davet, uyelik kurallarini memberships servisinden alir (tek kaynak).
+  const residentsService = config.residentsService ?? createResidentsService({ memberships: membershipService });
+  app.route('/api/residents', residentRoutes({ authenticate, service: residentsService }));
+
+  // Toplu aktarim: yazimlar mevcut servislerle (ayni is kurallari).
+  const importsService =
+    config.importsService ??
+    createImportsService({
+      residents: residentsService,
+      finance: financeService,
+      memberships: membershipService,
+      ...(config.coreService ? { core: config.coreService } : {}),
+    });
+  app.route('/api/imports', importRoutes({ authenticate, service: importsService }));
 
   app.route(
     '/api/apartment-roles',
@@ -119,7 +132,7 @@ export function createApp(config: AppConfig) {
     '/api/portal',
     portalRoutes({
       authenticate,
-      service: config.portalService ?? createPortalService(),
+      service: portalService,
     }),
   );
 

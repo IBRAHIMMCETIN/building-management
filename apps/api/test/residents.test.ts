@@ -3,6 +3,7 @@ import {
   AdminGetUserCommand,
   CognitoIdentityProviderClient,
   UserNotFoundException,
+  UnsupportedUserStateException,
   UsernameExistsException,
 } from '@aws-sdk/client-cognito-identity-provider';
 import { mockClient } from 'aws-sdk-client-mock';
@@ -85,6 +86,7 @@ function setup(directoryOverride?: UserDirectory) {
       accounts.set(email, sub);
       return { userId: sub, created: true };
     },
+    resendInvitation: async () => 'sent',
   };
 
   const membershipService = createMembershipService({ repository: membershipRepo, core, now: () => NOW });
@@ -216,6 +218,29 @@ describe('createCognitoDirectory', () => {
     const input = cognito.commandCalls(AdminCreateUserCommand)[0]?.args[0].input;
     expect(input).toMatchObject({ UserPoolId: POOL, Username: 'a@b.co', DesiredDeliveryMediums: ['EMAIL'] });
     expect(input?.UserAttributes).toContainEqual({ Name: 'name', Value: 'A B' });
+    cognito.restore();
+  });
+
+  it('sessiz olusturma e-posta gondermez (SUPPRESS); davet sonradan RESEND ile gider', async () => {
+    const cognito = mockClient(CognitoIdentityProviderClient);
+    cognito.on(AdminGetUserCommand).rejects(new UserNotFoundException({ message: 'yok', $metadata: {} }));
+    cognito.on(AdminCreateUserCommand).resolves({ User: { Attributes: [{ Name: 'sub', Value: 'sub-new' }] } });
+    const dir = createCognitoDirectory(POOL, new CognitoIdentityProviderClient({}));
+    await dir.findOrCreate({ email: 'a@b.co', fullName: 'A B', sendInvitation: false });
+    const create = cognito.commandCalls(AdminCreateUserCommand)[0]?.args[0].input;
+    expect(create).toMatchObject({ MessageAction: 'SUPPRESS' });
+    expect(create).not.toHaveProperty('DesiredDeliveryMediums');
+
+    await expect(dir.resendInvitation('a@b.co')).resolves.toBe('sent');
+    expect(cognito.commandCalls(AdminCreateUserCommand)[1]?.args[0].input).toMatchObject({ Username: 'a@b.co', MessageAction: 'RESEND', DesiredDeliveryMediums: ['EMAIL'] });
+    cognito.restore();
+  });
+
+  it('hesabini etkinlestirmis kullaniciya davet yeniden gonderilmez', async () => {
+    const cognito = mockClient(CognitoIdentityProviderClient);
+    cognito.on(AdminCreateUserCommand).rejects(new UnsupportedUserStateException({ message: 'confirmed', $metadata: {} }));
+    const dir = createCognitoDirectory(POOL, new CognitoIdentityProviderClient({}));
+    await expect(dir.resendInvitation('a@b.co')).resolves.toBe('not_pending');
     cognito.restore();
   });
 

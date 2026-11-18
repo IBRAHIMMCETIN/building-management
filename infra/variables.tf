@@ -7,9 +7,11 @@ variable "project" {
   default = "building-management"
 }
 
+# Bilerek varsayilan YOK: unutulursa Terraform sorar / CI'da hata verir. Varsayilan "prod"
+# iken dev state'i ile -var verilmeden alinan apply, dev kaynaklarini silip prod adlariyla
+# yeniden olusturdu (12.11.2026). Dev: -var-file=dev.tfvars, CI: TF_VAR_environment.
 variable "environment" {
   type        = string
-  default     = "prod"
   description = "prod | staging | dev. prod disinda kaynak adlarina sonek eklenir."
 
   validation {

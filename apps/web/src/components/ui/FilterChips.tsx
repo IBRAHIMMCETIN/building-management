@@ -18,13 +18,13 @@ export function FilterChips<T extends string>({ label, value, options, onChange 
           aria-pressed={value === o.value}
           onClick={() => onChange(o.value)}
           className={cn(
-            'inline-flex items-center gap-1.5 rounded-full border border-border px-3 py-1 text-small text-muted',
-            'hover:border-accent hover:text-text focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
-            value === o.value && 'border-accent bg-accent/10 font-medium text-accent',
+            'inline-flex items-center gap-1.5 rounded-full border border-border-strong bg-surface/60 px-3 py-1 text-xs font-medium text-muted transition-colors',
+            'hover:bg-surface-muted hover:text-text focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
+            value === o.value && 'border-accent/30 bg-accent/10 text-accent hover:bg-accent/15 hover:text-accent',
           )}
         >
           {o.label}
-          {o.count !== undefined && <span className="tabular-nums">{o.count}</span>}
+          {o.count !== undefined && <span className="rounded-full bg-surface-muted px-1.5 tabular-nums">{o.count}</span>}
         </button>
       ))}
     </div>

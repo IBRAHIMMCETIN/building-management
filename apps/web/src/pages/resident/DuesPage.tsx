@@ -2,7 +2,10 @@ import { ReceiptText } from 'lucide-react';
 import { useMemo } from 'react';
 import { ChangeUnitLink, PortalQueryState } from '@/components/portal/PortalQueryState';
 import { PortalStatusBadge } from '@/components/portal/PortalStatusBadge';
-import { Badge, Card, Skeleton } from '@/components/ui';
+import { Alert, Badge, Button, Card, Skeleton } from '@/components/ui';
+import { usePortalUnit } from '@/context/PortalUnitContext';
+import { useOpenDocument } from '@/hooks/useOpenDocument';
+import { documentsApi } from '@/lib/api/documents';
 import { useMyStatement, useMySummary } from '@/hooks/usePortal';
 import { formatDate } from '@/lib/dates';
 import { type StatementRow, mergeStatement } from '@/lib/api/portal';
@@ -105,8 +108,32 @@ function RowMeta({ row }: { row: StatementRow }) {
   );
 }
 
+type DocOpener = ReturnType<typeof useOpenDocument>;
+
+/** Makbuz no: tahsilat satirinda PDF'i yeni sekmede acar. */
+function ReceiptLink({ row, docs, unitId }: { row: StatementRow; docs: DocOpener; unitId?: string }) {
+  if (!row.receiptNumber) return <span className="text-muted">—</span>;
+  const paymentId = row.paymentId;
+  if (!paymentId) return <span className="font-mono">{row.receiptNumber}</span>;
+  return (
+    <Button
+      size="xs"
+      variant="subtle"
+      className="-ml-2.5 font-mono"
+      loading={docs.pendingId === paymentId}
+      aria-label={`${row.receiptNumber} numaralı makbuzu aç`}
+      onClick={() => void docs.open(paymentId, () => documentsApi.myReceipt(paymentId, unitId))}
+    >
+      {docs.pendingId !== paymentId && <ReceiptText className="size-3.5" aria-hidden="true" />}
+      {row.receiptNumber}
+    </Button>
+  );
+}
+
 function Movements() {
   const statement = useMyStatement();
+  const docs = useOpenDocument();
+  const { unitId } = usePortalUnit();
   const rows = useMemo(() => (statement.data ? mergeStatement(statement.data) : []), [statement.data]);
 
   if (statement.isPending) {
@@ -135,11 +162,12 @@ function Movements() {
       <h2 id="movements-title" className="text-heading font-semibold">
         Hesap hareketleri
       </h2>
+      {docs.error && <Alert tone="danger">{docs.error}</Alert>}
 
-      <div className="hidden overflow-x-auto rounded-lg border border-border bg-surface md:block">
+      <div className="hidden overflow-x-auto rounded-xl border border-border bg-surface/60 shadow-sm backdrop-blur-sm md:block">
         <table className="w-full text-left text-small">
           <caption className="sr-only">Hesap hareketleri, en yeni önce</caption>
-          <thead className="border-b border-border bg-surface-muted text-muted">
+          <thead className="border-b border-border bg-surface-muted/50 text-xs tracking-wide text-muted uppercase">
             <tr>
               <th scope="col" className="px-4 py-3 font-medium">Tarih</th>
               <th scope="col" className="px-4 py-3 font-medium">Açıklama</th>
@@ -148,7 +176,7 @@ function Movements() {
               <th scope="col" className="px-4 py-3 text-right font-medium">Tahsilat</th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-border">
+          <tbody className="divide-y divide-border text-text-secondary [&>tr]:transition-colors [&>tr:hover]:bg-surface-muted/40">
             {rows.map((r) => (
               <tr key={`${r.transactionId}-${r.liableParty}`} className={cn('align-top', r.reversed && 'opacity-70')}>
                 <td className="px-4 py-3 whitespace-nowrap tabular-nums">{formatDate(r.date)}</td>
@@ -158,7 +186,9 @@ function Movements() {
                     <RowMeta row={r} />
                   </span>
                 </td>
-                <td className="px-4 py-3 font-mono text-small whitespace-nowrap">{r.receiptNumber ?? '—'}</td>
+                <td className="px-4 py-3 text-small whitespace-nowrap">
+                  <ReceiptLink row={r} docs={docs} unitId={unitId} />
+                </td>
                 <td className={cn('px-4 py-3 text-right tabular-nums', r.reversed && 'line-through')}>
                   {r.debit > 0 ? formatTRY(r.debit) : <span className="text-muted">—</span>}
                 </td>
@@ -173,14 +203,16 @@ function Movements() {
 
       <ul className="flex flex-col gap-2 md:hidden" aria-label="Hesap hareketleri">
         {rows.map((r) => (
-          <li key={`${r.transactionId}-${r.liableParty}`} className={cn('rounded-lg border border-border bg-surface p-3', r.reversed && 'opacity-70')}>
+          <li key={`${r.transactionId}-${r.liableParty}`} className={cn('rounded-xl border border-border bg-surface/60 p-4 shadow-sm backdrop-blur-sm transition-colors hover:border-border-strong', r.reversed && 'opacity-70')}>
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <p className={cn('font-medium', r.reversed && 'line-through')}>{r.description}</p>
-                <p className="text-small text-muted">
-                  {formatDate(r.date)}
-                  {r.receiptNumber && <span className="font-mono"> · {r.receiptNumber}</span>}
-                </p>
+                <p className="text-small text-muted">{formatDate(r.date)}</p>
+                {r.receiptNumber && (
+                  <div className="mt-1">
+                    <ReceiptLink row={r} docs={docs} unitId={unitId} />
+                  </div>
+                )}
               </div>
               <Amount row={r} />
             </div>

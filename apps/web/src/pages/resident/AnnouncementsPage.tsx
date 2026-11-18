@@ -39,12 +39,12 @@ export function ResidentAnnouncementsPage() {
         <ul className="flex flex-col gap-3">
           {list.data.map((a) => (
             <li key={a.announcementId}>
-              <Card className="flex flex-col gap-2 p-5">
-                <h2 className="text-heading font-semibold break-words">{a.title}</h2>
-                <p className="text-small text-muted">
+              <Card className="flex flex-col gap-2">
+                <h2 className="text-base font-semibold break-words text-text md:text-lg">{a.title}</h2>
+                <p className="text-xs text-muted">
                   <time dateTime={a.publishAt}>{formatDateTime(a.publishAt)}</time>
                 </p>
-                <p className="text-body whitespace-pre-line break-words">{a.body}</p>
+                <p className="text-sm leading-relaxed whitespace-pre-line break-words text-text-secondary">{a.body}</p>
               </Card>
             </li>
           ))}

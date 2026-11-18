@@ -15,7 +15,7 @@ type DialogProps = {
 };
 
 const variants = {
-  modal: 'm-auto w-[calc(100%-2rem)] max-w-md rounded-lg starting:open:scale-95 starting:open:opacity-0',
+  modal: 'm-auto w-[calc(100%-2rem)] max-w-md rounded-xl starting:open:scale-95 starting:open:opacity-0',
   sheet: 'my-0 mr-auto ml-0 h-dvh max-h-dvh w-72 max-w-[85vw] starting:open:-translate-x-full',
 } as const;
 
@@ -44,7 +44,7 @@ export function Dialog({ open, onClose, title, hideTitle, variant = 'modal', chi
         if (e.target === e.currentTarget) onClose();
       }}
       className={cn(
-        'border border-border bg-surface p-0 text-text shadow-xl backdrop:bg-scrim',
+        'border border-border-strong bg-surface p-0 text-text shadow-2xl backdrop:bg-scrim backdrop:backdrop-blur-sm',
         'transition duration-200 ease-out motion-reduce:transition-none',
         variants[variant],
         className,

@@ -1,0 +1,36 @@
+import { createHash } from 'node:crypto';
+import { getTenantItem, putNewItem, putVersionedItem, queryTenantAll, skKey, tenantPk } from '../../config/dynamodb.js';
+import type { ImportItem, ImportJob } from './types.js';
+
+const itemHash = (key: string) => createHash('sha256').update(key).digest('hex').slice(0, 32);
+
+export const importKeys = {
+  job: (apartmentId: string, importId: string) => ({ PK: tenantPk(apartmentId), SK: skKey('IMPORT', importId) }),
+  item: (apartmentId: string, importId: string, itemKey: string) => ({
+    PK: tenantPk(apartmentId),
+    SK: skKey('IMPORTITEM', importId, itemHash(itemKey)),
+  }),
+};
+
+export type ImportRepository = {
+  getJob(apartmentId: string, importId: string): Promise<ImportJob | undefined>;
+  listJobs(apartmentId: string): Promise<ImportJob[]>;
+  createJob(job: ImportJob): Promise<void>;
+  updateJob(job: ImportJob, expectedVersion: number): Promise<void>;
+  getItem(apartmentId: string, importId: string, itemKey: string): Promise<ImportItem | undefined>;
+  listItems(apartmentId: string, importId: string): Promise<ImportItem[]>;
+  /** Kosullu (attribute_not_exists): ayni satir iki kez yazilmaz. */
+  createItem(item: ImportItem): Promise<void>;
+  updateItem(item: ImportItem, expectedVersion: number): Promise<void>;
+};
+
+export const importRepository: ImportRepository = {
+  getJob: (apt, id) => getTenantItem<ImportJob>(importKeys.job(apt, id)),
+  listJobs: (apt) => queryTenantAll<ImportJob>(apt, 'IMPORT#'),
+  createJob: (job) => putNewItem(job),
+  updateJob: (job, v) => putVersionedItem(job, v),
+  getItem: (apt, id, key) => getTenantItem<ImportItem>(importKeys.item(apt, id, key)),
+  listItems: (apt, id) => queryTenantAll<ImportItem>(apt, `IMPORTITEM#${id}#`, { ConsistentRead: true }),
+  createItem: (item) => putNewItem(item),
+  updateItem: (item, v) => putVersionedItem(item, v),
+};

@@ -19,7 +19,8 @@ import type {
   TableKeys,
 } from '../core/types.js';
 
-export const ACCOUNT_TYPES = ['cash', 'bank', 'receivable', 'payable', 'income', 'expense'] as const;
+/** equity: acilis/devir bakiyelerinin karsi hesabi (sisteme gecis aninda). */
+export const ACCOUNT_TYPES = ['cash', 'bank', 'receivable', 'payable', 'income', 'expense', 'equity'] as const;
 export type AccountType = (typeof ACCOUNT_TYPES)[number];
 
 export type EntrySide = 'debit' | 'credit';
@@ -32,6 +33,7 @@ export const NORMAL_SIDE: Record<AccountType, EntrySide> = {
   expense: 'debit',
   payable: 'credit',
   income: 'credit',
+  equity: 'credit',
 };
 
 /**
@@ -58,8 +60,9 @@ export type Account = TableKeys &
 /**
  * late_fee: kistelyevm gecikme tazminati kesinlestirmesi (ayin 1'inde, alt cari basina tek
  * kayit). `reference` = `LATE_FEE:<YYYY-MM>` (kesinlestirilen donem).
+ * opening_balance: sisteme gecis (toplu aktarim) devir bakiyesi; karsi hesap `opening-balance`.
  */
-export type TransactionKind = 'dues_charge' | 'payment' | 'expense' | 'reversal' | 'late_fee';
+export type TransactionKind = 'dues_charge' | 'payment' | 'expense' | 'reversal' | 'late_fee' | 'opening_balance';
 
 export type TransactionLine = {
   accountId: string;
@@ -92,6 +95,8 @@ export type Transaction = TableKeys & {
   totalAmount: Kurus;
   createdAt: IsoDateTime;
   createdBy: string;
+  /** Gider islemine bagli fatura (kayit aninda yazilir; sonradan degismez). */
+  invoice?: { expenseId: string; fileName: string };
 };
 
 /**
@@ -137,6 +142,8 @@ export type Payment = TableKeys & {
   createdBy: string;
 };
 
+export type ExpenseInvoice = { key: string; fileName: string; contentType: string; size: number };
+
 /** Gider kaydi. SK = `EXP#<expenseId>` */
 export type Expense = TableKeys & {
   entityType: 'EXPENSE';
@@ -150,6 +157,8 @@ export type Expense = TableKeys & {
   description: string;
   supplier?: string;
   invoiceNumber?: string;
+  /** Fatura dosyasi (private S3: apartments/{apt}/invoices/...). */
+  invoice?: ExpenseInvoice;
   transactionId: string;
   createdAt: IsoDateTime;
   createdBy: string;

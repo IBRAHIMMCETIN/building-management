@@ -9,6 +9,9 @@ release.tar.gz
 *.tfstate
 *.tfstate.*
 *.tfplan
+# Ortam dosyalari (dev.tfvars, dev.s3.tfbackend) gizli bilgi icermez ve repoda tutulur.
+# Gizli degisken gerekirse *.secret.tfvars kullanin:
+*.secret.tfvars
 
 # AWS SAM
 .aws-sam/

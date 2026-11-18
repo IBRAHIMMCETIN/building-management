@@ -45,6 +45,8 @@ const statementRow = z.object({
   description: z.string(),
   dueDate: z.string().optional(),
   receiptNumber: z.string().optional(),
+  /** Tahsilat satiri: makbuz PDF'i (eski API'de yok). */
+  paymentId: z.string().optional(),
   reversed: z.boolean().optional(),
   debit: kurus,
   credit: kurus,
