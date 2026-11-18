@@ -231,6 +231,7 @@ describe('documents servisi - gider faturasi', () => {
     expect(ok).toMatchObject({ uploadId: 'id-1', fileName: 'fatura.pdf', method: 'PUT', headers: { 'Content-Type': 'application/pdf' }, maxBytes: 10 * 1024 * 1024 });
     expect(ok.uploadUrl).toContain('tmp/apt-1/invoice-uploads/id-1');
     expect(ok.uploadUrl).toContain('ct=application%2Fpdf');
+    expect(ok.uploadUrl).toContain('len=2048');
 
     await expect(service.createInvoiceUpload(APT, { fileName: 'a.exe', contentType: 'application/x-msdownload', size: 1 })).rejects.toBeInstanceOf(DocumentError);
     await expect(service.createInvoiceUpload(APT, { fileName: 'a.pdf', contentType: 'application/pdf', size: 10 * 1024 * 1024 + 1 })).rejects.toMatchObject({ code: 'unprocessable' });
@@ -326,7 +327,9 @@ describe('S3 belge deposu', () => {
     expect(get.searchParams.get('X-Amz-Expires')).toBe('300');
     expect(get.searchParams.get('response-content-disposition')).toBe('inline; filename="x.pdf"');
 
-    const put = new URL(await store.presignPut('tmp/a/invoice-uploads/u1', { contentType: 'image/png', expiresIn: 300 }));
+    const put = new URL(await store.presignPut('tmp/a/invoice-uploads/u1', { contentType: 'image/png', contentLength: 1234, expiresIn: 300 }));
     expect(put.searchParams.get('X-Amz-SignedHeaders')).toContain('content-type');
+    // Boyut imzalidir: S3 farkli boyutta govdeyi reddeder.
+    expect(put.searchParams.get('X-Amz-SignedHeaders')).toContain('content-length');
   });
 });

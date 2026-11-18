@@ -527,7 +527,8 @@ export function createPortalService(overrides: Partial<PortalServiceDeps> = {}) 
         const tx = txById.get(e.transactionId);
         const kind = tx?.kind;
         if (e.side === 'debit' && (kind === 'dues_charge' || kind === 'late_fee' || kind === 'opening_balance')) totalCharged += e.amount;
-        if (e.side === 'credit' && kind === 'payment') totalPaid += e.amount;
+        // Devir avansi (eski sistemde yapilmis odeme) de odenen toplamina girer.
+        if (e.side === 'credit' && (kind === 'payment' || kind === 'opening_balance')) totalPaid += e.amount;
         if (e.side === 'debit' && (kind === 'dues_charge' || kind === 'opening_balance')) feeCharges.push({ id: e.transactionId, dueDate: tx?.dueDate ?? e.date, amount: e.amount });
         else if (e.side === 'debit' && kind === 'late_fee') postedFees += e.amount;
         else if (e.side === 'credit') feeCredits.push({ date: e.date, amount: e.amount });

@@ -23,8 +23,11 @@ export type DocumentStore = {
   /** Ayni bucket icinde kopya (gecici yuklemeyi kalici yere tasimak icin). */
   copy(fromKey: string, toKey: string): Promise<void>;
   presignGet(key: string, options: { contentDisposition: string; contentType: string; expiresIn: number }): Promise<string>;
-  /** Tarayicidan dogrudan yukleme. `Content-Type` imzalanir; istemci ayni basligi gondermelidir. */
-  presignPut(key: string, options: { contentType: string; expiresIn: number }): Promise<string>;
+  /**
+   * Tarayicidan dogrudan yukleme. `Content-Type` ve `Content-Length` imzalanir: istemci ayni
+   * turu ve bildirdigi boyutta dosyayi gondermelidir (boyut siniri yuklemede de gecerli olur).
+   */
+  presignPut(key: string, options: { contentType: string; contentLength: number; expiresIn: number }): Promise<string>;
 };
 
 /** Imzali URL omru (saniye). Proje kurali: kisa sureli. */
@@ -88,11 +91,11 @@ export function createS3DocumentStore(config: { bucket: string; region?: string;
       }
     },
 
-    async presignPut(key, { contentType, expiresIn }) {
+    async presignPut(key, { contentType, contentLength, expiresIn }) {
       try {
-        return await getSignedUrl(client, new PutObjectCommand({ Bucket, Key: key, ContentType: contentType }), {
+        return await getSignedUrl(client, new PutObjectCommand({ Bucket, Key: key, ContentType: contentType, ContentLength: contentLength }), {
           expiresIn,
-          signableHeaders: new Set(['content-type']),
+          signableHeaders: new Set(['content-type', 'content-length']),
         });
       } catch (err) {
         throw storageError('presign-put', err);
@@ -125,7 +128,7 @@ export function createMemoryDocumentStore() {
       objects.set(to, o);
     },
     presignGet: async (key, o) => `memory://get/${key}?ttl=${o.expiresIn}&cd=${encodeURIComponent(o.contentDisposition)}`,
-    presignPut: async (key, o) => `memory://put/${key}?ttl=${o.expiresIn}&ct=${encodeURIComponent(o.contentType)}`,
+    presignPut: async (key, o) => `memory://put/${key}?ttl=${o.expiresIn}&ct=${encodeURIComponent(o.contentType)}&len=${o.contentLength}`,
   };
   return { store, objects };
 }
