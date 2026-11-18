@@ -6,5 +6,12 @@ environment = "dev"
 # 12.11.2026 olayindan sonra dev tablosu da korunur. Bilerek yikmak icin once false ile apply edin.
 dynamodb_deletion_protection = true
 
-cors_allow_origins = ["http://localhost:5173"]
+# API Gateway CORS + S3 belge bucket CORS (api.tf, storage.tf) bu listeyi kullanir.
+# Cloudflare Pages: production (main) + sabit preview dal adresi. Hash'li preview
+# URL'leri (abc123.building-management-apx.pages.dev) bilincli olarak listede yok.
+cors_allow_origins = [
+  "http://localhost:5173",
+  "https://building-management-apx.pages.dev",
+  "https://feature-adim-7-web-ekranlari.building-management-apx.pages.dev",
+]
 
