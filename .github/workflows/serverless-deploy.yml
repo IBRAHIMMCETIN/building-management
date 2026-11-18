@@ -51,7 +51,8 @@ env:
   TF_VAR_environment: prod
   TF_VAR_app_version: ${{ github.sha }}
   TF_VAR_alert_email: ${{ vars.ALERT_EMAIL }}
-  TF_VAR_cors_allow_origins: ${{ vars.CORS_ALLOW_ORIGINS || '["http://localhost:5173"]' }}
+  # Canli web (Cloudflare Pages, Git entegrasyonu) + yerel gelistirme. Repo variable verilirse onu kullanir.
+  TF_VAR_cors_allow_origins: ${{ vars.CORS_ALLOW_ORIGINS || '["http://localhost:5173","https://building-management-apx.pages.dev"]' }}
   TF_VAR_cognito_user_pool_tier: ${{ vars.COGNITO_USER_POOL_TIER || 'LITE' }}
   TF_VAR_ses_identity_arn: ${{ vars.SES_IDENTITY_ARN }}
   TF_VAR_ses_from_address: ${{ vars.SES_FROM_ADDRESS }}
@@ -286,6 +287,14 @@ jobs:
           # Korumali uclar kimlik dogrulamasiz 401 donmeli (API Gateway JWT authorizer).
           code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$url/api/portal/my-unit")
           [ "$code" = "401" ] || { echo "::error::Korumali uc $code dondu (401 bekleniyordu)"; exit 1; }
+          # Web adresleri (https) API'ye tarayicidan erisebilmeli: CORS on kontrolu.
+          for origin in $(echo "$TF_VAR_cors_allow_origins" | jq -r '.[] | select(startswith("https://"))'); do
+            allow=$(curl -s -D - -o /dev/null --max-time 5 -X OPTIONS "$url/api/health" \
+              -H "Origin: $origin" -H "Access-Control-Request-Method: GET" \
+              | tr -d '\r' | grep -i '^access-control-allow-origin:' | cut -d' ' -f2-)
+            [ "$allow" = "$origin" ] || { echo "::error::API CORS $origin adresine izin vermiyor (allow-origin: '${allow}')"; exit 1; }
+            echo "CORS tamam: $origin"
+          done
           {
             echo "### Yayinda: $url"
             echo "Cognito token turu: \`$(terraform -chdir=$TF_DIR output -raw api_token_use)\`"
