@@ -475,6 +475,57 @@ describe('finance service - aidat tahakkuku', () => {
       code: 'not_found',
     });
   });
+
+  it('blok kapsami: yalnizca secilen blogun dairelerine dagitir', async () => {
+    const t = makeService([unit('u1', { blockId: 'a' }), unit('u2', { blockId: 'a' }), unit('u3', { blockId: 'b' })]);
+    const r = await t.service.chargeBulk(ctx, {
+      idempotencyKey: 'bulk-0101', liableParty: 'occupant', totalAmount: 1000, distributionKey: 'equal', blockIds: ['a'], ...dueBase,
+    });
+    expect(r.items.map((i) => [i.unitId, i.amount])).toEqual([['u1', 500], ['u2', 500]]);
+    expect(t.balanceOf('recv-u3-occupant')).toBe(0);
+    expect(t.trialBalance()).toBe(0);
+  });
+
+  it('gider kalemi muafiyeti: muaf bolum dagitima girmez, tutar kalanlara dagitilir; gecerlilik tarihine bakilir', async () => {
+    const t = makeService([
+      unit('u1'),
+      unit('u2'),
+      unit('d1', { type: 'shop', exemptions: [{ expenseCategory: 'elevator', reason: 'Zemin kat dükkan' }] }),
+      // Muafiyet tahakkuk tarihinde (2026-11-01) henuz baslamamis: dagitima girer.
+      unit('u4', { exemptions: [{ expenseCategory: 'elevator', validFrom: '2026-12-01' }] }),
+      // Baska gider kalemi: dagitima girer.
+      unit('u5', { exemptions: [{ expenseCategory: 'pool' }] }),
+    ]);
+    const body = {
+      idempotencyKey: 'bulk-0102', liableParty: 'owner', totalAmount: 1000, distributionKey: 'equal', expenseCategory: 'Elevator', ...dueBase,
+    };
+
+    const preview = await t.service.previewBulk(ctx, body);
+    expect(preview).toMatchObject({ count: 4, distributedAmount: 1000, expenseCategory: 'elevator' });
+    expect(preview.exempt).toEqual([{ unitId: 'd1', blockId: 'b1', number: 'D1', reason: 'Zemin kat dükkan' }]);
+    expect(t.transactions.size).toBe(0); // onizleme yazmaz
+
+    const r = await t.service.chargeBulk(ctx, body);
+    expect(r.items.map((i) => [i.unitId, i.amount])).toEqual([['u1', 250], ['u2', 250], ['u4', 250], ['u5', 250]]);
+    expect(r.exempt.map((e) => e.unitId)).toEqual(['d1']);
+    expect(t.balanceOf('recv-d1-owner')).toBe(0);
+    expect(t.trialBalance()).toBe(0);
+  });
+
+  it('kapsamdaki herkes muafsa yazilmaz; ayni anahtar farkli kapsamla 409; gecersiz gider kalemi 400', async () => {
+    const t = makeService([unit('u1', { exemptions: [{ expenseCategory: 'pool' }] }), unit('u2')]);
+    const base = { idempotencyKey: 'bulk-0103', liableParty: 'owner', totalAmount: 1000, distributionKey: 'equal', ...dueBase };
+    await expect(t.service.chargeBulk(ctx, { ...base, unitIds: ['u1'], expenseCategory: 'pool' })).rejects.toMatchObject({
+      code: 'unprocessable',
+    });
+    expect(t.transactions.size).toBe(0);
+
+    await t.service.chargeBulk(ctx, { ...base, unitIds: ['u2'] });
+    await expect(t.service.chargeBulk(ctx, { ...base, unitIds: ['u2'], expenseCategory: 'pool' })).rejects.toMatchObject({
+      code: 'idempotency_conflict',
+    });
+    await expect(t.service.previewBulk(ctx, { ...base, expenseCategory: 'Asansör!' })).rejects.toBeInstanceOf(ValidationError);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -923,6 +974,16 @@ describe('finance routes', () => {
     expect(res.json.mode).toBe('bulk');
     expect(res.json.distributedAmount).toBe(10001);
     expect(res.json.items.map((i: { amount: number }) => i.amount)).toEqual([5001, 5000]);
+  });
+
+  it('toplu tahakkuk onizlemesi: yonetici gorur, denetci goremez, hicbir sey yazilmaz', async () => {
+    const { call, transactions } = setup([unit('u1'), unit('d1', { exemptions: [{ expenseCategory: 'elevator' }] })]);
+    const body = { liableParty: 'owner', totalAmount: 1000, distributionKey: 'equal', expenseCategory: 'elevator', ...dueBase };
+    const res = await call('POST', '/api/finance/dues/preview', manager, body);
+    expect(res.status).toBe(200);
+    expect(res.json).toMatchObject({ count: 1, items: [{ unitId: 'u1', amount: 1000 }], exempt: [{ unitId: 'd1' }] });
+    expect((await call('POST', '/api/finance/dues/preview', claims('observer'), body)).status).toBe(403);
+    expect(transactions.size).toBe(0);
   });
 
   it('gecersiz tutar 400, gecersiz JSON 400', async () => {

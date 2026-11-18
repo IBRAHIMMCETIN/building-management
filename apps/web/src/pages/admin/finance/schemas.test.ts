@@ -23,7 +23,7 @@ describe('form semalari', () => {
     expect(r.error?.issues[0]).toMatchObject({ path: ['amount'], message: expect.stringContaining('geçersiz') });
   });
   it('tahakkuk: tek dairede daire zorunlu, vade tahakkuktan once olamaz', () => {
-    const base = { mode: 'single', distributionKey: 'equal', unitId: '', liableParty: 'occupant', amount: '100', date: '2026-11-08', dueDate: '2026-11-01', description: 'Aidat' };
+    const base = { mode: 'single', distributionKey: 'equal', excludedBlockIds: [], expenseCategory: '', unitId: '', liableParty: 'occupant', amount: '100', date: '2026-11-08', dueDate: '2026-11-01', description: 'Aidat' };
     const paths = chargeSchema.safeParse(base).error?.issues.map((i) => i.path[0]);
     expect(paths).toEqual(expect.arrayContaining(['unitId', 'dueDate']));
     expect(chargeSchema.safeParse({ ...base, mode: 'bulk', dueDate: '2026-11-10' }).success).toBe(true);

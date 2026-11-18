@@ -4,6 +4,7 @@ import { Alert, Button, Card, Input } from '@/components/ui';
 import { useBlocks, useCurrentMemberships, usePeople, useUnitPermissions, useUnits } from '@/hooks/useUnits';
 import { errorMessage } from '@/lib/api/errors';
 import { CreateUnitDialog } from './CreateUnitDialog';
+import { ExemptionsDialog } from './ExemptionsDialog';
 import { InviteResidentDialog } from './InviteResidentDialog';
 import { UnitsTable, UnitsTableSkeleton } from './UnitsTable';
 import { type UnitRow, buildUnitRows, filterRows } from './unitRows';
@@ -21,6 +22,7 @@ export function UnitsPage() {
   const deferredQuery = useDeferredValue(query);
   const [createOpen, setCreateOpen] = useState(false);
   const [inviteRow, setInviteRow] = useState<UnitRow | null>(null);
+  const [exemptionsRow, setExemptionsRow] = useState<UnitRow | null>(null);
 
   // Kisi/uyelik sorgusu basarisiz olsa da daire listesi gosterilir (kisi sutunlari "—").
   const residentsLoading = canReadResidents && (memberships.isPending || people.isPending);
@@ -164,7 +166,7 @@ export function UnitsPage() {
               </Button>
             </Card>
           ) : (
-            <UnitsTable rows={visible} showResidents={canReadResidents} canManage={canManage} onInvite={setInviteRow} />
+            <UnitsTable rows={visible} showResidents={canReadResidents} canManage={canManage} onInvite={setInviteRow} onExemptions={setExemptionsRow} />
           )}
         </>
       )}
@@ -173,6 +175,7 @@ export function UnitsPage() {
         <>
           <CreateUnitDialog open={createOpen} onClose={() => setCreateOpen(false)} />
           <InviteResidentDialog row={inviteRow} onClose={() => setInviteRow(null)} />
+          <ExemptionsDialog row={exemptionsRow} onClose={() => setExemptionsRow(null)} />
         </>
       )}
     </div>

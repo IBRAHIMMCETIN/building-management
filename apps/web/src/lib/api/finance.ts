@@ -148,15 +148,46 @@ export type ChargeDuesInput =
       dueDate: string;
       description: string;
     }
-  | {
-      idempotencyKey: string;
-      liableParty: LiableParty;
-      totalAmount: number;
-      distributionKey: 'equal' | 'area' | 'land_share';
-      date: string;
-      dueDate: string;
-      description: string;
-    };
+  | ({ idempotencyKey: string } & DuesBulkInput);
+
+/** Toplu tahakkuk (ve onizlemesi): kapsam `blockIds`, muafiyet `expenseCategory`. */
+export type DuesBulkInput = {
+  liableParty: LiableParty;
+  totalAmount: number;
+  distributionKey: 'equal' | 'area' | 'land_share';
+  date: string;
+  dueDate: string;
+  description: string;
+  blockIds?: string[];
+  expenseCategory?: string;
+};
+
+/**
+ * Gider kalemleri (muafiyet kategorileri). API kodla eslestirir (Unit.exemptions);
+ * etiketler yalnizca burada tutulur.
+ */
+export const EXPENSE_CATEGORIES = [
+  { value: 'elevator', label: 'Asansör' },
+  { value: 'playground', label: 'Çocuk parkı' },
+  { value: 'pool', label: 'Havuz' },
+  { value: 'garden', label: 'Bahçe' },
+  { value: 'heating', label: 'Isınma' },
+  { value: 'parking', label: 'Otopark' },
+] as const;
+
+export const expenseCategoryLabel = (value: string) =>
+  EXPENSE_CATEGORIES.find((c) => c.value === value)?.label ?? value;
+
+const exemptUnitSchema = z.object({ unitId: z.string(), blockId: z.string(), number: z.string(), reason: z.string().optional() });
+
+export const duesPreviewSchema = z.object({
+  count: z.number().int(),
+  totalAmount: kurus,
+  distributedAmount: kurus,
+  items: z.array(z.object({ unitId: z.string(), blockId: z.string(), number: z.string(), amount: kurus })),
+  exempt: z.array(exemptUnitSchema),
+});
+export type DuesPreview = z.infer<typeof duesPreviewSchema>;
 
 const paymentResultSchema = z.object({
   replayed: z.boolean(),
@@ -170,6 +201,7 @@ const duesResultSchema = z.union([
     replayed: z.boolean(),
     count: z.number().int(),
     distributedAmount: kurus,
+    exempt: z.array(exemptUnitSchema).default([]),
   }),
 ]);
 
@@ -189,6 +221,8 @@ export const financeApi = {
   recordExpense: (input: RecordExpenseInput) =>
     apiClient.post('/api/finance/expenses', input, { schema: expenseResultSchema }),
   chargeDues: (input: ChargeDuesInput) => apiClient.post('/api/finance/dues', input, { schema: duesResultSchema }),
+  previewDues: (input: DuesBulkInput, signal?: AbortSignal) =>
+    apiClient.post('/api/finance/dues/preview', input, { signal, schema: duesPreviewSchema }),
 };
 
 export const CATEGORY_LABELS: Record<TransactionCategory, string> = {

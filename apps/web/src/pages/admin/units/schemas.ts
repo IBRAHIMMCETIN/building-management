@@ -85,3 +85,12 @@ export const inviteSchema = z
 
 export type InviteForm = z.input<typeof inviteSchema>;
 export type InviteValues = z.output<typeof inviteSchema>;
+
+/** Daire muafiyetleri: isaretli gider kalemleri ve (istege bagli) ortak gerekce. */
+export const exemptionsSchema = z.object({
+  categories: z.array(z.string()),
+  reason: z.string().trim().max(200, 'En fazla 200 karakter.'),
+});
+
+export type ExemptionsForm = z.input<typeof exemptionsSchema>;
+export type ExemptionsValues = z.output<typeof exemptionsSchema>;

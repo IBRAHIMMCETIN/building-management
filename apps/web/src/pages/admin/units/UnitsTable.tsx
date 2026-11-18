@@ -1,5 +1,6 @@
-import { UserPlus } from 'lucide-react';
+import { ShieldMinus, UserPlus } from 'lucide-react';
 import { Badge, Button, Skeleton } from '@/components/ui';
+import { expenseCategoryLabel } from '@/lib/api/finance';
 import { UNIT_TYPE_LABELS } from '@/lib/api/units';
 import { type RowParty, type UnitRow, formatFloor, formatLandShare, landSharePercent } from './unitRows';
 
@@ -8,6 +9,7 @@ type Props = {
   showResidents: boolean;
   canManage: boolean;
   onInvite: (row: UnitRow) => void;
+  onExemptions: (row: UnitRow) => void;
 };
 
 function Parties({ parties, empty = '—' }: { parties: RowParty[]; empty?: string }) {
@@ -41,8 +43,14 @@ function LandShare({ row }: { row: UnitRow }) {
 
 const unitLabel = (row: UnitRow) => `${row.blockName} ${row.unit.number}`;
 
+/** "Muaf: Asansör, Havuz" ya da muafiyet yoksa null. */
+function exemptionText(row: UnitRow): string | null {
+  const list = row.unit.exemptions.map((e) => expenseCategoryLabel(e.expenseCategory));
+  return list.length ? `Muaf: ${list.join(', ')}` : null;
+}
+
 /** md ve ustu: tablo. Alti: kart listesi (yatay kaydirma yerine okunabilir satirlar). */
-export function UnitsTable({ rows, showResidents, canManage, onInvite }: Props) {
+export function UnitsTable({ rows, showResidents, canManage, onInvite, onExemptions }: Props) {
   return (
     <>
       <div className="hidden overflow-x-auto rounded-xl border border-border bg-surface/60 shadow-sm backdrop-blur-sm md:block">
@@ -73,6 +81,7 @@ export function UnitsTable({ rows, showResidents, canManage, onInvite }: Props) 
                 <th scope="row" className="px-4 py-3 font-semibold">
                   {row.unit.number}
                   <span className="block text-small font-normal text-muted">{UNIT_TYPE_LABELS[row.unit.type]}</span>
+                  {exemptionText(row) && <span className="block text-small font-normal text-muted">{exemptionText(row)}</span>}
                 </th>
                 <td className="px-4 py-3">
                   {row.blockName}
@@ -96,10 +105,16 @@ export function UnitsTable({ rows, showResidents, canManage, onInvite }: Props) 
                 )}
                 {canManage && (
                   <td className="px-4 py-2.5 text-right">
-                    <Button variant="ghost" size="sm" onClick={() => onInvite(row)} aria-label={`${unitLabel(row)} için sakin davet et`}>
-                      <UserPlus className="size-4" aria-hidden="true" />
-                      <span className="hidden lg:inline">Davet et</span>
-                    </Button>
+                    <div className="flex justify-end gap-1">
+                      <Button variant="ghost" size="sm" onClick={() => onExemptions(row)} aria-label={`${unitLabel(row)} muafiyetleri`}>
+                        <ShieldMinus className="size-4" aria-hidden="true" />
+                        <span className="hidden lg:inline">Muafiyetler</span>
+                      </Button>
+                      <Button variant="ghost" size="sm" onClick={() => onInvite(row)} aria-label={`${unitLabel(row)} için sakin davet et`}>
+                        <UserPlus className="size-4" aria-hidden="true" />
+                        <span className="hidden lg:inline">Davet et</span>
+                      </Button>
+                    </div>
                   </td>
                 )}
               </tr>
@@ -119,6 +134,7 @@ export function UnitsTable({ rows, showResidents, canManage, onInvite }: Props) 
                 <p className="text-small text-muted">
                   {UNIT_TYPE_LABELS[row.unit.type]} · {formatFloor(row.unit.floor)} · Arsa payı {formatLandShare(row.unit.landShare)}
                 </p>
+                {exemptionText(row) && <p className="text-small text-muted">{exemptionText(row)}</p>}
               </div>
               {showResidents && <Occupancy value={row.occupancy} />}
             </div>
@@ -135,10 +151,16 @@ export function UnitsTable({ rows, showResidents, canManage, onInvite }: Props) 
               </dl>
             )}
             {canManage && (
-              <Button variant="secondary" size="sm" className="mt-3 w-full" onClick={() => onInvite(row)}>
-                <UserPlus className="size-4" aria-hidden="true" />
-                Sakin davet et
-              </Button>
+              <div className="mt-3 grid grid-cols-2 gap-2">
+                <Button variant="secondary" size="sm" onClick={() => onExemptions(row)}>
+                  <ShieldMinus className="size-4" aria-hidden="true" />
+                  Muafiyetler
+                </Button>
+                <Button variant="secondary" size="sm" onClick={() => onInvite(row)}>
+                  <UserPlus className="size-4" aria-hidden="true" />
+                  Sakin davet et
+                </Button>
+              </div>
             )}
           </li>
         ))}
