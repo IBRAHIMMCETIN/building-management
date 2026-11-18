@@ -8,6 +8,7 @@ const unit = (unitId: string, number: string, blockId = 'b1', extra: Partial<Uni
   number,
   type: 'flat',
   grossAreaM2: 100,
+  exemptions: [],
   status: 'active',
   version: 1,
   ...extra,

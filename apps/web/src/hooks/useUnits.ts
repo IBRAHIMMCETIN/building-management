@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { type CreateUnitInput, type InviteResidentInput, unitsApi } from '@/lib/api/units';
+import { type CreateUnitInput, type InviteResidentInput, type UnitExemption, unitsApi } from '@/lib/api/units';
 import type { Role } from '@/types/roles';
 import { useAuth } from './useAuth';
 
@@ -99,6 +99,17 @@ export function useCreateUnit() {
       return unitsApi.createUnit(apartmentId, { ...input, blockId });
     },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: unitKeys.units(apartmentId) }),
+  });
+}
+
+/** Dairenin gider kalemi muafiyetlerini yazar (iyimser kilit: `version`); liste yenilenir. */
+export function useUpdateUnitExemptions() {
+  const apartmentId = useApartmentId();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { unitId: string; version: number; exemptions: UnitExemption[] }) =>
+      unitsApi.updateUnitExemptions(apartmentId, input.unitId, { version: input.version, exemptions: input.exemptions }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: unitKeys.apartment(apartmentId) }),
   });
 }
 

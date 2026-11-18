@@ -17,5 +17,7 @@ export function useUnitOptions() {
       })
       .sort((a, b) => a.blockName.localeCompare(b.blockName, 'tr') || a.number.localeCompare(b.number, 'tr', { numeric: true }));
   }, [units.data, blocks.data]);
-  return { options, isPending: units.isPending || blocks.isPending, activeCount: options.length };
+  const activeBlocks = useMemo(() => (blocks.data ?? []).filter((b) => b.status === 'active'), [blocks.data]);
+  const blockName = useMemo(() => new Map(activeBlocks.map((b) => [b.blockId, b.name])), [activeBlocks]);
+  return { options, isPending: units.isPending || blocks.isPending, activeCount: options.length, activeBlocks, blockName };
 }

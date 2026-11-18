@@ -48,6 +48,10 @@ export const chargeSchema = z
   .object({
     mode: z.enum(['bulk', 'single']),
     distributionKey: z.enum(['equal', 'area', 'land_share']),
+    /** Toplu: kapsam disi birakilan bloklar (varsayilan: hepsi dahil). */
+    excludedBlockIds: z.array(z.string()),
+    /** Toplu: gider kalemi; bos = genel (muafiyet uygulanmaz). */
+    expenseCategory: z.string(),
     unitId: z.string(),
     liableParty: z.enum(['occupant', 'owner']),
     amount: moneyField(),

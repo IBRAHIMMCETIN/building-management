@@ -1,6 +1,7 @@
-import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { keepPreviousData, useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   type ChargeDuesInput,
+  type DuesBulkInput,
   type FinanceAccount,
   type RecordExpenseInput,
   type RecordPaymentInput,
@@ -29,6 +30,7 @@ export const financeKeys = {
   dues: (apt: string) => [...financeKeys.all(apt), 'dues-status'] as const,
   transactions: (apt: string, filter: { from?: string; to?: string }) => [...financeKeys.all(apt), 'transactions', filter] as const,
   accounts: (apt: string, type?: string) => [...financeKeys.all(apt), 'accounts', type ?? 'all'] as const,
+  duesPreview: (apt: string, input: DuesBulkInput | null) => [...financeKeys.all(apt), 'dues-preview', input] as const,
 };
 
 function useApt() {
@@ -40,6 +42,21 @@ function useApt() {
 export function useFinanceSummary() {
   const { apt, enabled } = useApt();
   return useQuery({ queryKey: financeKeys.summary(apt), queryFn: ({ signal }) => financeApi.summary(signal), enabled });
+}
+
+/**
+ * Toplu tahakkuk onizlemesi (yazmaz): kime ne dusecegi ve kimin muaf oldugu. `input` null
+ * iken (form eksik) istek atilmaz; degisirken onceki sonuc gosterilmeye devam eder.
+ */
+export function useDuesPreview(input: DuesBulkInput | null) {
+  const { apt, enabled } = useApt();
+  return useQuery({
+    queryKey: financeKeys.duesPreview(apt, input),
+    queryFn: ({ signal }) => financeApi.previewDues(input as DuesBulkInput, signal),
+    enabled: enabled && input !== null,
+    placeholderData: keepPreviousData,
+    retry: false,
+  });
 }
 
 export function useDuesStatus() {

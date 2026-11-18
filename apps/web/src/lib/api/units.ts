@@ -13,6 +13,14 @@ export { UNIT_TYPES, UNIT_TYPE_LABELS, type UnitType } from '@/types/units';
 
 const share = z.object({ numerator: z.number().int(), denominator: z.number().int() });
 
+/** Bagimsiz bolumun pay almadigi gider kalemi (bkz. EXPENSE_CATEGORIES). */
+export const exemptionSchema = z.object({
+  expenseCategory: z.string(),
+  reason: z.string().optional(),
+  validFrom: z.string().optional(),
+  validTo: z.string().optional(),
+});
+
 export const blockSchema = z.object({
   blockId: z.string(),
   name: z.string(),
@@ -28,6 +36,7 @@ export const unitSchema = z.object({
   type: z.enum(UNIT_TYPES),
   grossAreaM2: z.number(),
   landShare: share.optional(),
+  exemptions: z.array(exemptionSchema).default([]),
   status: z.enum(['active', 'inactive']),
   version: z.number().int(),
 });
@@ -69,6 +78,7 @@ export const inviteResultSchema = z.object({
 
 export type Block = z.infer<typeof blockSchema>;
 export type Unit = z.infer<typeof unitSchema>;
+export type UnitExemption = z.infer<typeof exemptionSchema>;
 export type UnitList = z.infer<typeof unitListSchema>;
 export type Membership = z.infer<typeof membershipSchema>;
 export type Person = z.infer<typeof personSchema>;
@@ -102,6 +112,9 @@ export const unitsApi = {
     apiClient.get(`${site(apartmentId)}/blocks`, { signal, schema: z.object({ items: z.array(blockSchema) }) }),
   createUnit: (apartmentId: string, input: CreateUnitInput) =>
     apiClient.post(`${site(apartmentId)}/units`, input, { schema: unitSchema }),
+  /** Iyimser kilit: `version` guncel degilse API 409 doner. */
+  updateUnitExemptions: (apartmentId: string, unitId: string, input: { version: number; exemptions: UnitExemption[] }) =>
+    apiClient.patch(`${site(apartmentId)}/units/${encodeURIComponent(unitId)}`, input, { schema: unitSchema }),
   createBlock: (apartmentId: string, name: string) =>
     apiClient.post(`${site(apartmentId)}/blocks`, { name }, { schema: blockSchema }),
   listCurrentMemberships: (signal?: AbortSignal) =>
