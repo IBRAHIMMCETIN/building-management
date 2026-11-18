@@ -44,7 +44,7 @@ React (Vite, PWA)  ──►  API Gateway (HTTP API, JWT authorizer, throttling)
 
 | Katman | Teknoloji |
 | --- | --- |
-| Frontend | React 19 + Vite, Cloudflare Pages (hedef) |
+| Frontend | React 19 + Vite, Cloudflare Pages (Git entegrasyonu): https://building-management-apx.pages.dev |
 | API | Node.js 24, [Hono](https://hono.dev) + `@hono/aws-lambda`, AWS Lambda (arm64) |
 | Kimlik | Amazon Cognito + Pre Token Generation trigger, `aws-jwt-verify` |
 | Veritabanı | Amazon DynamoDB (single-table, `apartmentId` bazlı izolasyon) |
@@ -222,6 +222,8 @@ terraform -chdir=infra apply
 - **Her push / PR** (`main`, `feature/aws-entegrasyonu`): typecheck, test, `build:lambda`, `terraform fmt` / `validate` / `test`.
 - **Kimlik bilgisi varsa:** `terraform plan` (adım özetine yazılır).
 - **Yalnızca `main`'e push:** `terraform apply` + sağlık kontrolü (`production` environment).
+
+Web (Cloudflare Pages, Git entegrasyonu): `main`'e her push'ta Cloudflare kendisi derler ve yayınlar. Derleme değişkenleri Pages proje ayarlarındadır (**Production** → prod yığınının `frontend_env` çıktısı, **Preview** → dev yığınının). Canlı adres `serverless-deploy.yml`'deki varsayılan CORS listesindedir; sağlık kontrolü her deploy'da `https` adreslerinin API'ye CORS iznini doğrular.
 
 AWS erişimi tercihen OIDC ile sağlanır (`infra/github-oidc`, repo variable `AWS_DEPLOY_ROLE_ARN`). Opsiyonel repo variable'ları: `AWS_REGION`, `ALERT_EMAIL`, `CORS_ALLOW_ORIGINS` (JSON liste), `COGNITO_USER_POOL_TIER`, `SES_IDENTITY_ARN`, `SES_FROM_ADDRESS`.
 
