@@ -50,6 +50,7 @@ function setup(sites: Site[] = [site('apt-1'), site('apt-2')]) {
       count: 3,
       replayed: false,
       items: [],
+      exempt: [],
     })),
     postLateFees: vi.fn(async (_apt: string, p: { period: string }) => ({
       period: p.period,

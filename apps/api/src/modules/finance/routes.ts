@@ -44,6 +44,9 @@ export function financeRoutes({ authenticate, service }: FinanceRoutesDeps) {
     return c.json(publicView(account));
   });
 
+  // Toplu tahakkuk onizlemesi (yazmaz): paylar ve gider kalemi muafiyetleri.
+  r.post('/dues/preview', requireRole(WRITE_ROLES), async (c) => c.json(await service.previewBulk(ctx(c), await readJson(c))));
+
   r.post('/dues', requireRole(WRITE_ROLES), async (c) => {
     const result = await service.charge(ctx(c), await readJson(c));
     if (result.mode === 'single') {

@@ -196,6 +196,31 @@ function unitWeight(unit: Unit, key: DuesDistributionKey): bigint {
   }
 }
 
+/**
+ * Gider kalemi (muafiyet kategorisi): `elevator`, `playground`, `pool` gibi kucuk harf kod.
+ * Bagimsiz bolum muafiyetleri (`Unit.exemptions[].expenseCategory`) ayni kodla eslesir.
+ */
+const EXPENSE_CATEGORY = /^[a-z0-9_-]{2,50}$/;
+
+function parseExpenseCategory(value: unknown): string | undefined {
+  if (value === undefined || value === null || value === '') return undefined;
+  const v = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  if (!EXPENSE_CATEGORY.test(v)) {
+    throw new ValidationError('expenseCategory 2-50 karakter, kucuk harf/rakam/-/_ olmalidir', 'expenseCategory');
+  }
+  return v;
+}
+
+/** Bolumun `date` tarihinde gecerli (validFrom/validTo dahil) `category` muafiyeti. */
+function activeExemption(unit: Unit, category: string, date: IsoDate) {
+  return (unit.exemptions ?? []).find(
+    (e) =>
+      e.expenseCategory.trim().toLowerCase() === category &&
+      (!e.validFrom || e.validFrom <= date) &&
+      (!e.validTo || date <= e.validTo),
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Girdi dogrulama
 // ---------------------------------------------------------------------------
@@ -534,31 +559,88 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
    * AYRI atomik islem yazilir (idempotency anahtari `<key>_<unitId>`), bu sayede yarim kalan
    * bir istek ayni anahtarla tekrar gonderilerek guvenle tamamlanir.
    */
-  async function chargeBulk(ctx: FinanceContext, body: unknown) {
-    const o = asObject(body);
-    const key = reqKey(o);
+  /**
+   * Toplu tahakkukun plani (yazmaz): kapsam (`blockIds` / `unitIds`, ikisi birlikte verilirse
+   * kesisimi), gider kalemi muafiyetleri ve paylar. Gider kalemi (`expenseCategory`, ornegin
+   * `elevator`) verilirse, tahakkuk tarihinde o kalemden muaf olan bagimsiz bolumler dagitima
+   * girmez; tutar kalanlar arasinda dagitilir (KMK: muaf bolum o giderden pay almaz).
+   */
+  async function planBulk(ctx: FinanceContext, o: Obj) {
     const party = reqEnum(o, 'liableParty', LIABLE_PARTIES);
     const totalAmount = reqInt(o, 'totalAmount', 1, MAX_AMOUNT);
     const distributionKey = reqEnum(o, 'distributionKey', DUES_DISTRIBUTION_KEYS);
     const date = optDate(o, 'date') ?? today();
     const dueDate = reqDate(o, 'dueDate');
     const description = reqString(o, 'description', 200);
-    const unitIds = o.unitIds === undefined ? undefined : parseUnitIds(o.unitIds);
+    const unitIds = o.unitIds === undefined ? undefined : parseIdList(o.unitIds, 'unitIds');
+    const blockIds = o.blockIds === undefined ? undefined : parseIdList(o.blockIds, 'blockIds');
+    const expenseCategory = parseExpenseCategory(o.expenseCategory);
 
-    const units = (await deps.core.listUnits(ctx.apartmentId))
-      .filter((u) => u.status === 'active' && (!unitIds || unitIds.includes(u.unitId)))
+    const active = (await deps.core.listUnits(ctx.apartmentId))
+      .filter((u) => u.status === 'active')
       .sort((a, b) => a.unitId.localeCompare(b.unitId));
     if (unitIds) {
-      const found = new Set(units.map((u) => u.unitId));
+      const found = new Set(active.map((u) => u.unitId));
       const missing = unitIds.filter((id) => !found.has(id));
       if (missing.length) throw new FinanceError('not_found', `Aktif bagimsiz bolum bulunamadi: ${missing.join(', ')}`);
     }
-    if (units.length === 0) throw new FinanceError('unprocessable', 'Tahakkuk icin aktif bagimsiz bolum yok');
-    if (units.length > MAX_BULK_UNITS) {
+    const scoped = active.filter(
+      (u) => (!unitIds || unitIds.includes(u.unitId)) && (!blockIds || blockIds.includes(u.blockId)),
+    );
+
+    const included: Unit[] = [];
+    const exempt: { unitId: string; blockId: string; number: string; reason?: string }[] = [];
+    for (const unit of scoped) {
+      const exemption = expenseCategory ? activeExemption(unit, expenseCategory, date) : undefined;
+      if (exemption) exempt.push({ unitId: unit.unitId, blockId: unit.blockId, number: unit.number, reason: exemption.reason });
+      else included.push(unit);
+    }
+    if (included.length > MAX_BULK_UNITS) {
       throw new ValidationError(`Tek istekte en fazla ${MAX_BULK_UNITS} bagimsiz bolum`, 'unitIds');
     }
+    const shares = included.length ? distributeKurus(totalAmount, included.map((u) => unitWeight(u, distributionKey))) : [];
 
-    const shares = distributeKurus(totalAmount, units.map((u) => unitWeight(u, distributionKey)));
+    // Kapsam/muafiyet varsa idempotency parmak izine girer: ayni anahtar farkli kapsamla
+    // kullanilirsa 409 doner. Kapsamsiz isteklerin parmak izi eskisiyle aynidir.
+    const scopeFp = {
+      ...(blockIds ? { blockIds: [...blockIds].sort() } : {}),
+      ...(expenseCategory ? { expenseCategory } : {}),
+    };
+    return { party, totalAmount, distributionKey, date, dueDate, description, expenseCategory, included, shares, exempt, scopeFp };
+  }
+
+  /** Onizleme: toplu tahakkukta kime ne kadar dusecegi ve kimin neden muaf oldugu. Yazmaz. */
+  async function previewBulk(ctx: FinanceContext, body: unknown) {
+    const plan = await planBulk(ctx, asObject(body));
+    const items = plan.included.map((u, i) => ({
+      unitId: u.unitId,
+      blockId: u.blockId,
+      number: u.number,
+      amount: toKurus(plan.shares[i] ?? 0),
+    }));
+    return {
+      distributionKey: plan.distributionKey,
+      expenseCategory: plan.expenseCategory,
+      totalAmount: toKurus(plan.totalAmount),
+      distributedAmount: toKurus(items.reduce((s, i) => s + i.amount, 0)),
+      count: items.length,
+      items,
+      exempt: plan.exempt,
+    };
+  }
+
+  async function chargeBulk(ctx: FinanceContext, body: unknown) {
+    const o = asObject(body);
+    const key = reqKey(o);
+    const plan = await planBulk(ctx, o);
+    const { party, totalAmount, distributionKey, date, dueDate, description, shares } = plan;
+    const units = plan.included;
+    if (units.length === 0) {
+      throw new FinanceError(
+        'unprocessable',
+        plan.exempt.length ? 'Kapsamdaki tum bagimsiz bolumler bu gider kaleminden muaf' : 'Tahakkuk icin aktif bagimsiz bolum yok',
+      );
+    }
     await ensureSystemAccounts(ctx);
 
     const batchId = `${compact(date)}-${key}`;
@@ -568,7 +650,7 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
       if (amount < 1) continue; // cok kucuk pay: 0 kurus borc yazilmaz
       const r = await postDues(ctx, {
         idemId: `${key}_${unit.unitId}`,
-        fp: fingerprint({ op: 'bulk', unitId: unit.unitId, party, amount, date, dueDate, description, distributionKey, totalAmount }),
+        fp: fingerprint({ op: 'bulk', unitId: unit.unitId, party, amount, date, dueDate, description, distributionKey, totalAmount, ...plan.scopeFp }),
         unitId: unit.unitId,
         party,
         amount: toKurus(amount),
@@ -615,14 +697,16 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
       count: results.length,
       replayed: results.length > 0 && results.every((r) => r.replayed),
       items: results,
+      ...(plan.expenseCategory ? { expenseCategory: plan.expenseCategory } : {}),
+      exempt: plan.exempt,
     };
   }
 
-  function parseUnitIds(value: unknown): string[] {
+  function parseIdList(value: unknown, field: 'unitIds' | 'blockIds'): string[] {
     if (!Array.isArray(value) || value.length === 0 || value.length > MAX_BULK_UNITS) {
-      throw new ValidationError(`unitIds 1-${MAX_BULK_UNITS} ogeli dizi olmalidir`, 'unitIds');
+      throw new ValidationError(`${field} 1-${MAX_BULK_UNITS} ogeli dizi olmalidir`, field);
     }
-    return [...new Set(value.map((v, i) => assertId(v, `unitIds[${i}]`)))];
+    return [...new Set(value.map((v, i) => assertId(v, `${field}[${i}]`)))];
   }
 
   /** `dues` govdesinde `unitId` varsa tekil, yoksa toplu tahakkuk. */
@@ -1216,6 +1300,7 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
     charge,
     chargeUnit,
     chargeBulk,
+    previewBulk,
     recordPayment,
     recordExpense,
     reverseTransaction,
