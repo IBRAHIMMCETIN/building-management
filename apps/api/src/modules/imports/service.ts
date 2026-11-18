@@ -157,6 +157,28 @@ export function createImportsService(overrides: Partial<ImportsServiceDeps> & Pi
     return { blocks, units, unitsByKey };
   }
 
+  /**
+   * Defterde iptal edilmemis devir bakiyeleri: `${unitId}|${party}` -> yazan aktarimlarin
+   * batchId'leri. Ayni dosya yeni bir aktarim kimligiyle tekrar yuklenirse (sekme kapandi,
+   * yeniden baslatildi) devir borclari ikinci kez yazilmasin diye kullanilir.
+   */
+  async function postedOpenings(apartmentId: string): Promise<Map<string, Set<string | undefined>>> {
+    const { items: ledger } = await deps.financeRepo.listTransactions(apartmentId);
+    const cancelled = cancelledTransactions(ledger);
+    const out = new Map<string, Set<string | undefined>>();
+    for (const tx of ledger) {
+      if (tx.kind !== 'opening_balance' || cancelled.has(tx.transactionId)) continue;
+      for (const line of tx.lines) {
+        if (!line.unitId || !line.liableParty) continue;
+        const key = `${line.unitId}|${line.liableParty}`;
+        const batches = out.get(key) ?? new Set<string | undefined>();
+        batches.add(tx.batchId);
+        out.set(key, batches);
+      }
+    }
+    return out;
+  }
+
   // -------------------------------------------------------------------------
   // Onizleme (yazmaz)
   // -------------------------------------------------------------------------
@@ -237,12 +259,14 @@ export function createImportsService(overrides: Partial<ImportsServiceDeps> & Pi
 
     // --- Acilis bakiyeleri ---
     const seenBalances = new Set<string>();
+    const openings = sheets.balances.length ? await postedOpenings(ctx.apartmentId) : new Map();
     for (const input of sheets.balances) {
       push<BalanceRow>('balances', input, parseBalanceRow(input, asOfDate), (b) => {
         if (!knownUnit(b.unitKey)) return { field: 'number', message: 'Daire bulunamadı (Daireler sayfasında veya sistemde yok)' };
         if (seenBalances.has(b.key)) return { field: 'party', message: 'Aynı daire ve cari için dosyada birden fazla bakiye var' };
         seenBalances.add(b.key);
-        return 'create';
+        const unitId = unitIdOf(b.unitKey);
+        return unitId && openings.has(`${unitId}|${b.party}`) ? 'exists' : 'create';
       });
     }
 
@@ -455,6 +479,8 @@ export function createImportsService(overrides: Partial<ImportsServiceDeps> & Pi
       record('people', item);
     }
 
+    const batchId = `import-${job.importId}`;
+    let openings: Map<string, Set<string | undefined>> | undefined;
     for (const input of sheets.balances) {
       const parsed = parseBalanceRow(input, job.asOfDate);
       const label = `${input.block ?? ''} · ${input.number ?? ''}`;
@@ -465,6 +491,12 @@ export function createImportsService(overrides: Partial<ImportsServiceDeps> & Pi
       const b = parsed.value;
       const item = await once(ctx, job, 'balance', b.key, b.row, `${b.block} · ${b.number} · ${b.party === 'owner' ? 'Malik' : 'Oturan'}`, async () => {
         const unit = activeUnit(b.unitKey);
+        // Baska bir aktarimin (iptal edilmemis) devir bakiyesi varsa ikinci kez yazilmaz.
+        // Bu aktarimin kendi kaydi ise (ornek: kayit yazildi, item yazilamadi) asagidaki
+        // idempotent yazim ayni islemi doner.
+        openings ??= await postedOpenings(ctx.apartmentId);
+        const batches = openings.get(`${unit.unitId}|${b.party}`);
+        if (batches && !batches.has(batchId)) return { outcome: 'exists', unitId: unit.unitId };
         const r = await deps.finance.postOpeningBalance(financeCtx, {
           idemId: `imp-${job.importId}-${unit.unitId}-${b.party === 'owner' ? 'o' : 't'}`.slice(0, 128),
           unitId: unit.unitId,
@@ -473,7 +505,7 @@ export function createImportsService(overrides: Partial<ImportsServiceDeps> & Pi
           date: job.asOfDate,
           dueDate: b.dueDate,
           description: b.description,
-          batchId: `import-${job.importId}`,
+          batchId,
         });
         return { outcome: 'created', unitId: unit.unitId, transactionId: r.transaction.transactionId };
       });

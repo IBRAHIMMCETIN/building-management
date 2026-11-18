@@ -175,7 +175,11 @@ export function createDocumentsService(overrides: Partial<DocumentsServiceDeps> 
     if (size > MAX_INVOICE_BYTES) throw new DocumentError('unprocessable', 'Dosya en fazla 10 MB olabilir');
 
     const uploadId = deps.newId();
-    const url = await store.presignPut(pendingUploadKey(apartmentId, uploadId), { contentType, expiresIn: URL_TTL_SECONDS });
+    const url = await store.presignPut(pendingUploadKey(apartmentId, uploadId), {
+      contentType,
+      contentLength: size,
+      expiresIn: URL_TTL_SECONDS,
+    });
     return {
       uploadId,
       fileName,

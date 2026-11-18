@@ -359,6 +359,27 @@ describe('aktarim - yazim', () => {
     expect(t.units.size).toBe(3);
   });
 
+  it('ayni dosya yeni aktarim kimligiyle tekrar yuklenirse devir bakiyeleri ikinci kez yazilmaz', async () => {
+    const t = await seeded();
+    await runAll(t);
+    const u1 = [...t.units.values()].find((u) => u.number === '1')!;
+    const postedBefore = t.fin.posted.length;
+
+    const p = await t.service.preview(t.ctx, { asOfDate: '2026-10-31', balances: balancesSheet });
+    expect(p.counts.balances).toEqual({ create: 0, exists: 2, error: 0 });
+
+    await t.service.start(t.ctx, { importId: 'imp2', asOfDate: '2026-10-31' });
+    const r = await t.service.processRows(t.ctx, 'imp2', { balances: balancesSheet });
+    expect(r.results.map((x) => x.outcome)).toEqual(['exists', 'exists']);
+    expect(t.fin.posted).toHaveLength(postedBefore);
+    expect(t.fin.balanceOf(`recv-${u1.unitId}-owner`, t.ctx.apartmentId)).toBe(100000);
+
+    // Ilk aktarim geri alinirsa ayni bakiyeler yeniden aktarilabilir.
+    await t.service.rollback(t.ctx, 'imp1', {});
+    const again = await t.service.preview(t.ctx, { asOfDate: '2026-10-31', units: unitsSheet, balances: balancesSheet });
+    expect(again.counts.balances.exists).toBe(0);
+  });
+
   it('mevcut daire atlanir (exists); is kurali hatasi satira yazilir, parca devam eder', async () => {
     const t = await seeded();
     await t.service.start(t.ctx, { importId: 'imp1', asOfDate: '2026-10-31' });
