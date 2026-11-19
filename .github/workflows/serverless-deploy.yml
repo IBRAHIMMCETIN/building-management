@@ -1,40 +1,61 @@
 name: Serverless deploy
 
-# Lambda + API Gateway + DynamoDB + Cognito + SNS/SQS yigini (infra/*.tf).
-#   - Her push / PR: typecheck, test, build:lambda, terraform fmt/validate/test (kimlik bilgisiz)
-#   - Kimlik bilgisi varsa: terraform plan (adim ozetine yazilir)
-#   - Yalnizca main'e push: terraform apply + saglik kontrolu (environment: production)
+# Lambda + API Gateway + DynamoDB + Cognito + SNS/SQS + S3 + Scheduler yigini (infra/*.tf).
+#
+# Hedef ortamlar:
+#   - PR (main'e)      : build/test/terraform test + dev'e karsi salt-okunur plan (kilit alinmaz).
+#   - main'e push      : dev yigini -> infra/dev.tfvars + serverless-dev state (environment: dev).
+#                        Cloudflare Pages (building-management-apx.pages.dev) bu yigina baglidir.
+#   - v* etiketi       : prod yigini -> serverless state (environment: production).
+#                        git tag v0.1.0 && git push origin v0.1.0
+#   - workflow_dispatch: target=dev | prod (prod yalnizca main veya v* etiketinden).
 #
 # AWS kimlik bilgileri (oncelik sirasiyla):
 #   1. OIDC: repo variable AWS_DEPLOY_ROLE_ARN (bkz. infra/github-oidc) - onerilen
 #   2. Secrets: AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY
-# Opsiyonel repo variable'lari: AWS_REGION, ALERT_EMAIL, CORS_ALLOW_ORIGINS (JSON liste),
-# COGNITO_USER_POOL_TIER (LITE | ESSENTIALS), SES_IDENTITY_ARN, SES_FROM_ADDRESS.
+# Repo variable'lari: AWS_REGION (eu-north-1). Opsiyonel (iki ortam): ALERT_EMAIL,
+# SES_IDENTITY_ARN, SES_FROM_ADDRESS. Yalnizca prod: CORS_ALLOW_ORIGINS (JSON liste),
+# COGNITO_USER_POOL_TIER. dev'in ortam adi, CORS listesi vb. infra/dev.tfvars'tadir.
 
 on:
   push:
-    branches: [main, feature/aws-entegrasyonu]
+    branches: [main]
+    # Etiket push'larinda path filtresi uygulanmaz; her v* etiketi prod dagitimini tetikler.
+    tags: ["v*"]
     paths:
       - "apps/api/**"
       - "infra/*.tf"
+      - "infra/*.tfvars"
+      - "infra/*.tfbackend"
       - "infra/tests/**"
       - "package.json"
       - "package-lock.json"
+      - "scripts/ci/**"
       - ".github/workflows/serverless-deploy.yml"
   pull_request:
-    branches: [main, feature/aws-entegrasyonu]
+    branches: [main]
     paths:
       - "apps/api/**"
       - "infra/*.tf"
+      - "infra/*.tfvars"
+      - "infra/*.tfbackend"
       - "infra/tests/**"
       - "package.json"
       - "package-lock.json"
+      - "scripts/ci/**"
       - ".github/workflows/serverless-deploy.yml"
   workflow_dispatch:
+    inputs:
+      target:
+        description: "Hedef ortam (prod yalnizca main dalindan veya v* etiketinden)"
+        type: choice
+        options: [dev, prod]
+        default: dev
 
 concurrency:
-  group: serverless-${{ github.ref }}
-  # PR'larda eski calisma iptal edilir; main'de bir apply asla yarida kesilmez.
+  # PR'lar kendi grubunda (eski calisma iptal edilir). Tum apply'lar (dev ve prod) tek
+  # sirada calisir ve asla yarida kesilmez.
+  group: ${{ github.event_name == 'pull_request' && format('serverless-pr-{0}', github.ref) || 'serverless-apply' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -44,19 +65,53 @@ env:
   NODE_VERSION: "24.22.2"
   TF_VERSION: "~1.17.0"
   TF_DIR: infra
-  TF_STATE_KEY: serverless/terraform.tfstate
   TF_IN_AUTOMATION: "true"
   TF_INPUT: "false"
-  # Terraform degiskenleri (bos repo variable -> variables.tf varsayilani)
-  TF_VAR_environment: prod
+  # Iki ortamda ortak Terraform degiskenleri (bos repo variable -> variables.tf varsayilani).
+  # Ortama ozel olanlar (environment, CORS, Cognito katmani) scripts/ci/tf-init.sh'de ayarlanir.
   TF_VAR_app_version: ${{ github.sha }}
   TF_VAR_alert_email: ${{ vars.ALERT_EMAIL }}
-  TF_VAR_cors_allow_origins: ${{ vars.CORS_ALLOW_ORIGINS || '["http://localhost:5173"]' }}
-  TF_VAR_cognito_user_pool_tier: ${{ vars.COGNITO_USER_POOL_TIER || 'LITE' }}
   TF_VAR_ses_identity_arn: ${{ vars.SES_IDENTITY_ARN }}
   TF_VAR_ses_from_address: ${{ vars.SES_FROM_ADDRESS }}
+  PROD_CORS_ALLOW_ORIGINS: ${{ vars.CORS_ALLOW_ORIGINS }}
+  PROD_COGNITO_USER_POOL_TIER: ${{ vars.COGNITO_USER_POOL_TIER }}
 
 jobs:
+  # -------------------------------------------------------------------------
+  target:
+    name: Hedef ortam
+    runs-on: ubuntu-latest
+    outputs:
+      env: ${{ steps.t.outputs.env }}
+      deploy: ${{ steps.t.outputs.deploy }}
+    steps:
+      - id: t
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          INPUT_TARGET: ${{ inputs.target }}
+        run: |
+          deploy=false
+          case "$EVENT" in
+            pull_request)
+              target=dev ;;
+            push)
+              deploy=true
+              if [[ "$REF" == refs/tags/v* ]]; then target=prod; else target=dev; fi ;;
+            workflow_dispatch)
+              deploy=true
+              target="${INPUT_TARGET:-dev}"
+              if [ "$target" = prod ] && [[ "$REF" != refs/heads/main && "$REF" != refs/tags/v* ]]; then
+                echo "::error::prod yalnizca main dalindan veya v* etiketinden dagitilabilir (ref: $REF)."
+                exit 1
+              fi ;;
+            *)
+              echo "::error::Beklenmeyen olay: $EVENT"; exit 1 ;;
+          esac
+          echo "env=$target" >> "$GITHUB_OUTPUT"
+          echo "deploy=$deploy" >> "$GITHUB_OUTPUT"
+          echo "### Hedef ortam: \`$target\` (deploy: $deploy, ref: \`$REF\`)" >> "$GITHUB_STEP_SUMMARY"
+
   # -------------------------------------------------------------------------
   build:
     name: Typecheck, test, build:lambda
@@ -109,10 +164,10 @@ jobs:
 
   # -------------------------------------------------------------------------
   plan:
-    name: Terraform plan
-    needs: [build, terraform-checks]
-    # Fork PR'larinda gizli bilgiler yoktur; plan atlanir (testler yine calisir).
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    name: Terraform plan (PR -> dev)
+    needs: [target, build, terraform-checks]
+    # Yalnizca PR'larda; fork PR'larinda gizli bilgi olmadigindan atlanir.
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -143,14 +198,14 @@ jobs:
         with:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
           role-session-name: gh-plan-${{ github.run_id }}
-          aws-region: ${{ vars.AWS_REGION || secrets.AWS_REGION || 'us-east-1' }}
+          aws-region: ${{ vars.AWS_REGION || secrets.AWS_REGION || 'eu-north-1' }}
       - name: AWS (erisim anahtari)
         if: steps.creds.outputs.mode == 'keys'
         uses: aws-actions/configure-aws-credentials@v6
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ vars.AWS_REGION || secrets.AWS_REGION || 'us-east-1' }}
+          aws-region: ${{ vars.AWS_REGION || secrets.AWS_REGION || 'eu-north-1' }}
 
       - name: Detect project region
         if: steps.creds.outputs.mode != 'none'
@@ -162,32 +217,9 @@ jobs:
           terraform_version: ${{ env.TF_VERSION }}
           terraform_wrapper: false
 
-      - name: Terraform state bucket (yoksa olustur)
+      - name: terraform init (${{ needs.target.outputs.env }})
         if: steps.creds.outputs.mode != 'none'
-        run: |
-          account_id=$(aws sts get-caller-identity --query Account --output text)
-          bucket="building-management-tfstate-${account_id}-${AWS_REGION}"
-          if ! aws s3api head-bucket --bucket "$bucket" 2>/dev/null; then
-            echo "State bucket olusturuluyor"
-            if [ "$AWS_REGION" = "us-east-1" ]; then
-              aws s3api create-bucket --bucket "$bucket"
-            else
-              aws s3api create-bucket --bucket "$bucket" --create-bucket-configuration "LocationConstraint=$AWS_REGION"
-            fi
-            aws s3api put-bucket-versioning --bucket "$bucket" --versioning-configuration Status=Enabled
-            aws s3api put-public-access-block --bucket "$bucket" \
-              --public-access-block-configuration BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
-          fi
-          echo "TF_STATE_BUCKET=$bucket" >> "$GITHUB_ENV"
-
-      - name: terraform init
-        if: steps.creds.outputs.mode != 'none'
-        run: |
-          terraform -chdir=$TF_DIR init \
-            -backend-config="bucket=$TF_STATE_BUCKET" \
-            -backend-config="key=$TF_STATE_KEY" \
-            -backend-config="region=$AWS_REGION" \
-            -backend-config="use_lockfile=true"
+        run: bash scripts/ci/tf-init.sh "${{ needs.target.outputs.env }}"
 
       - name: terraform plan
         if: steps.creds.outputs.mode != 'none'
@@ -195,7 +227,7 @@ jobs:
         run: |
           terraform -chdir=$TF_DIR plan -lock=false -no-color -out=tfplan | tee plan.txt
           {
-            echo "### Terraform plan (\`${GITHUB_REF_NAME}\`)"
+            echo "### Terraform plan (\`${{ needs.target.outputs.env }}\`, PR #${{ github.event.pull_request.number }})"
             echo '```'
             grep -E '^(Plan:|No changes|  # )' plan.txt | head -100 || true
             echo '```'
@@ -203,11 +235,12 @@ jobs:
 
   # -------------------------------------------------------------------------
   deploy:
-    name: Terraform apply (main)
-    needs: plan
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    name: Terraform apply (${{ needs.target.outputs.env }})
+    needs: [target, build, terraform-checks]
+    if: needs.target.outputs.deploy == 'true'
     runs-on: ubuntu-latest
-    environment: production
+    # OIDC sub claim'i: repo:<owner>/<repo>:environment:<dev|production> (bkz. infra/github-oidc).
+    environment: ${{ needs.target.outputs.env == 'prod' && 'production' || 'dev' }}
     permissions:
       contents: read
       id-token: write
@@ -237,15 +270,15 @@ jobs:
         uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
-          role-session-name: gh-deploy-${{ github.run_id }}
-          aws-region: ${{ vars.AWS_REGION || secrets.AWS_REGION || 'us-east-1' }}
+          role-session-name: gh-deploy-${{ needs.target.outputs.env }}-${{ github.run_id }}
+          aws-region: ${{ vars.AWS_REGION || secrets.AWS_REGION || 'eu-north-1' }}
       - name: AWS (erisim anahtari)
         if: steps.creds.outputs.mode == 'keys'
         uses: aws-actions/configure-aws-credentials@v6
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ vars.AWS_REGION || secrets.AWS_REGION || 'us-east-1' }}
+          aws-region: ${{ vars.AWS_REGION || secrets.AWS_REGION || 'eu-north-1' }}
 
       - name: Detect project region
         run: bash scripts/ci/detect-aws-region.sh
@@ -255,18 +288,19 @@ jobs:
           terraform_version: ${{ env.TF_VERSION }}
           terraform_wrapper: false
 
-      - name: terraform init
-        run: |
-          account_id=$(aws sts get-caller-identity --query Account --output text)
-          terraform -chdir=$TF_DIR init \
-            -backend-config="bucket=building-management-tfstate-${account_id}-${AWS_REGION}" \
-            -backend-config="key=$TF_STATE_KEY" \
-            -backend-config="region=$AWS_REGION" \
-            -backend-config="use_lockfile=true"
+      - name: terraform init (${{ needs.target.outputs.env }})
+        run: bash scripts/ci/tf-init.sh "${{ needs.target.outputs.env }}"
 
       # Plan ve apply ayni iste: uygulanan, tam olarak incelenen plandir.
       - name: terraform plan
-        run: terraform -chdir=$TF_DIR plan -no-color -out=tfplan
+        run: |
+          terraform -chdir=$TF_DIR plan -no-color -out=tfplan | tee plan.txt
+          {
+            echo "### Terraform plan (\`${{ needs.target.outputs.env }}\`)"
+            echo '```'
+            grep -E '^(Plan:|No changes|  # )' plan.txt | head -100 || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: terraform apply
         run: terraform -chdir=$TF_DIR apply -auto-approve tfplan
@@ -287,6 +321,6 @@ jobs:
           code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$url/api/portal/my-unit")
           [ "$code" = "401" ] || { echo "::error::Korumali uc $code dondu (401 bekleniyordu)"; exit 1; }
           {
-            echo "### Yayinda: $url"
+            echo "### Yayinda (\`${{ needs.target.outputs.env }}\`): $url"
             echo "Cognito token turu: \`$(terraform -chdir=$TF_DIR output -raw api_token_use)\`"
           } >> "$GITHUB_STEP_SUMMARY"
