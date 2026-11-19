@@ -8,7 +8,10 @@
 #   terraform init -backend-config="bucket=building-management-tfstate-<hesap>-<region>" \
 #                  -backend-config="key=github-oidc/terraform.tfstate" \
 #                  -backend-config="region=<region>" -backend-config="use_lockfile=true"
-#   terraform apply -var="github_repository=<owner>/<repo>"
+#   terraform apply -var="github_repository=IBRAHIMMCETIN/building-management"
+#
+# Repo tasinirsa (owner/ad degisirse) ayni komutla yeni deger verilerek yeniden uygulanir;
+# trust policy eski repoya ait token'lari artik kabul etmez.
 #
 # Ciktidaki `deploy_role_arn` degerini GitHub'da repo variable AWS_DEPLOY_ROLE_ARN olarak
 # kaydedin. Workflow bu degiskeni gorurse OIDC, gormezse AWS_ACCESS_KEY_ID/SECRET kullanir.
@@ -83,8 +86,12 @@ locals {
   oidc_provider_arn = var.create_oidc_provider ? aws_iam_openid_connect_provider.github[0].arn : data.aws_iam_openid_connect_provider.github[0].arn
 }
 
-# Yalnizca bu repo; `environment: production` kullanan isler (apply), main ve
-# feature/aws-entegrasyonu dallari ile PR'lar (plan) rolu ustlenebilir.
+# Yalnizca bu repo ve serverless-deploy.yml'deki isler rolu ustlenebilir:
+#   - environment: dev        -> main'e push (dev apply) / workflow_dispatch target=dev
+#   - environment: production -> v* etiketi / workflow_dispatch target=prod
+#   - pull_request            -> PR'larda dev'e karsi salt-okunur plan
+# Dal bazli (ref:refs/heads/...) ustlenme kaldirildi: apply yapan her is bir environment
+# kullanir, boylece GitHub'daki environment koruma kurallari (onayci, dal kisiti) devreye girer.
 data "aws_iam_policy_document" "trust" {
   statement {
     actions = ["sts:AssumeRoleWithWebIdentity"]
@@ -105,8 +112,7 @@ data "aws_iam_policy_document" "trust" {
       variable = "${local.oidc_host}:sub"
       values = [
         "repo:${local.repo}:environment:production",
-        "repo:${local.repo}:ref:refs/heads/main",
-        "repo:${local.repo}:ref:refs/heads/feature/aws-entegrasyonu",
+        "repo:${local.repo}:environment:dev",
         "repo:${local.repo}:pull_request",
       ]
     }
@@ -168,6 +174,26 @@ data "aws_iam_policy_document" "deploy" {
     resources = ["*"]
   }
 
+  # Belge deposu (storage.tf): <proje>[-<ortam>]-documents-<hesap>-<region>
+  statement {
+    sid     = "DocumentsBucket"
+    actions = ["s3:*"]
+    resources = [
+      "arn:${local.partition}:s3:::${var.project}*-documents-${local.account}-*",
+      "arn:${local.partition}:s3:::${var.project}*-documents-${local.account}-*/*",
+    ]
+  }
+
+  # Zamanlanmis gorevler (scheduler.tf): grup adi <proje>[-<ortam>].
+  statement {
+    sid     = "Scheduler"
+    actions = ["scheduler:*"]
+    resources = [
+      "arn:${local.partition}:scheduler:*:${local.account}:schedule-group/${var.project}*",
+      "arn:${local.partition}:scheduler:*:${local.account}:schedule/${var.project}*/*",
+    ]
+  }
+
   statement {
     sid       = "LambdaFunctions"
     actions   = ["lambda:*"]
@@ -201,9 +227,13 @@ data "aws_iam_policy_document" "deploy" {
       "arn:${local.partition}:iam::${local.account}:role/${var.project}-api",
       "arn:${local.partition}:iam::${local.account}:role/${var.project}-pre-token",
       "arn:${local.partition}:iam::${local.account}:role/${var.project}-notification-worker",
+      "arn:${local.partition}:iam::${local.account}:role/${var.project}-scheduler-worker",
+      "arn:${local.partition}:iam::${local.account}:role/${var.project}-scheduler",
       "arn:${local.partition}:iam::${local.account}:role/${var.project}-*-api",
       "arn:${local.partition}:iam::${local.account}:role/${var.project}-*-pre-token",
       "arn:${local.partition}:iam::${local.account}:role/${var.project}-*-notification-worker",
+      "arn:${local.partition}:iam::${local.account}:role/${var.project}-*-scheduler-worker",
+      "arn:${local.partition}:iam::${local.account}:role/${var.project}-*-scheduler",
     ]
   }
 
