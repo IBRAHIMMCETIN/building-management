@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { type FormerAccount, formerAccountSchema } from '@/lib/api/closures';
-import { summarySchema } from '@/lib/api/finance';
+import { duesPreviewSchema, summarySchema } from '@/lib/api/finance';
 import { formerPreset, formerTotals, sortFormer } from './formerAccounts';
 import { paymentSchema } from './schemas';
+import { vacancyNotes } from './vacancy';
 
 const acc = (over: Partial<FormerAccount>): FormerAccount =>
   formerAccountSchema.parse({
@@ -66,5 +67,22 @@ describe('ozet semasi', () => {
     });
     expect(s.formerReceivables).toBe(0);
     expect(s.formerDebtorCount).toBe(0);
+  });
+});
+
+describe('bos daire notlari', () => {
+  const label = (u: { blockId: string; number: string }) => `${u.blockId}-${u.number}`;
+  it('bos ve kaydi olmayan daireler ayri not; 5ten fazlasi kisaltilir', () => {
+    expect(vacancyNotes({ vacant: [], unknownOccupancy: [] }, label)).toEqual([]);
+    const many = Array.from({ length: 7 }, (_, i) => ({ blockId: 'A', number: String(i + 1) }));
+    expect(vacancyNotes({ vacant: many, unknownOccupancy: [{ blockId: 'B', number: '9' }] }, label)).toEqual([
+      '7 boş daire kat malikine yazılacak: A-1, A-2, A-3, A-4, A-5 ve 2 daire daha',
+      '1 dairede sakin/malik kaydı yok, sakin carisine yazılacak: B-9',
+    ]);
+  });
+  it('eski API yanitinda alanlar bos gelir', () => {
+    const p = duesPreviewSchema.parse({ count: 1, totalAmount: 100, distributedAmount: 100, items: [{ unitId: 'u', blockId: 'b', number: '1', amount: 100 }], exempt: [] });
+    expect(p.vacant).toEqual([]);
+    expect(p.unknownOccupancy).toEqual([]);
   });
 });

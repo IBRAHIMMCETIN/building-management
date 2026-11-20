@@ -17,6 +17,7 @@ import { type FinanceService, createFinanceService } from './modules/finance/ser
 import { healthRoutes } from './modules/health/routes.js';
 import { meRoutes } from './modules/me/routes.js';
 import { type MeService, createMeService } from './modules/me/service.js';
+import { membershipRepository } from './modules/memberships/repository.js';
 import { membershipRoutes } from './modules/memberships/routes.js';
 import { type MembershipService, createMembershipService } from './modules/memberships/service.js';
 import { loadPaymentsConfig } from './modules/payments/config.js';
@@ -108,7 +109,13 @@ export function createApp(config: AppConfig) {
   app.route('/api/documents', documentRoutes({ authenticate, service: documentsService }));
 
   const financeService =
-    config.financeService ?? createFinanceService({ events, attachments: { promote: documentsService.promoteInvoice } });
+    config.financeService ??
+    createFinanceService({
+      events,
+      attachments: { promote: documentsService.promoteInvoice },
+      // Bos daire kurali: tahakkuk tarihinde oturan yoksa sakin gideri malike.
+      memberships: membershipRepository,
+    });
   // Online odeme (Adim 8b). Yonetici uclari finans rotalarindan, sakin uclari portal
   // rotalarindan ONCE baglanir (daha ozel yol); callback/webhook kimliksizdir.
   let paymentsService = config.paymentsService;

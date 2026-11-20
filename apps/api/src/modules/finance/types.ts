@@ -149,6 +149,8 @@ export type Transaction = TableKeys & {
   invoice?: { expenseId: string; fileName: string };
   /** Cari devri ayrintisi (`kind: 'transfer'`). */
   transfer?: TransferInfo;
+  /** Bos daire kurali: sakin gideri tahakkuk tarihinde dairede oturan olmadigi icin malike yazildi. */
+  vacant?: true;
 };
 
 /**

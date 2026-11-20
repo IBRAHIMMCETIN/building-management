@@ -192,8 +192,14 @@ export const duesPreviewSchema = z.object({
   count: z.number().int(),
   totalAmount: kurus,
   distributedAmount: kurus,
-  items: z.array(z.object({ unitId: z.string(), blockId: z.string(), number: z.string(), amount: kurus })),
+  items: z.array(
+    z.object({ unitId: z.string(), blockId: z.string(), number: z.string(), amount: kurus, liableParty: party.optional() }),
+  ),
   exempt: z.array(exemptUnitSchema),
+  /** Bos daire kurali: tahakkuk tarihinde oturan olmadigi icin kat malikine yazilacak bolumler. */
+  vacant: z.array(z.object({ unitId: z.string(), blockId: z.string(), number: z.string() })).default([]),
+  /** Uyelik kaydi olmadigi icin kuralin uygulanamadigi bolumler (sakin carisinde kalir). */
+  unknownOccupancy: z.array(z.object({ unitId: z.string(), blockId: z.string(), number: z.string() })).default([]),
 });
 export type DuesPreview = z.infer<typeof duesPreviewSchema>;
 
@@ -203,13 +209,18 @@ const paymentResultSchema = z.object({
 });
 const expenseResultSchema = z.object({ replayed: z.boolean(), expense: z.object({ expenseId: z.string(), amount: kurus }) });
 const duesResultSchema = z.union([
-  z.object({ mode: z.literal('single'), replayed: z.boolean(), transaction: z.object({ transactionId: z.string() }) }),
+  z.object({
+    mode: z.literal('single'),
+    replayed: z.boolean(),
+    transaction: z.object({ transactionId: z.string(), vacant: z.boolean().optional() }),
+  }),
   z.object({
     mode: z.literal('bulk'),
     replayed: z.boolean(),
     count: z.number().int(),
     distributedAmount: kurus,
     exempt: z.array(exemptUnitSchema).default([]),
+    vacant: z.array(z.object({ unitId: z.string() })).default([]),
   }),
 ]);
 

@@ -47,7 +47,8 @@ export function unit(id: string): Unit {
   };
 }
 
-export function cariWorld(start = '2026-09-01') {
+/** vacancyRule: finans servisine uyelikler verilir (bos daire kurali acik). */
+export function cariWorld(start = '2026-09-01', opts: { vacancyRule?: boolean } = {}) {
   const fake = createFakeFinanceRepo();
   let n = 0;
   let now = new Date(`${start}T09:00:00.000Z`);
@@ -58,13 +59,18 @@ export function cariWorld(start = '2026-09-01') {
     getSite: async () => ({ settings: { lateFeeMonthlyBasisPoints: RATE } }),
   } as unknown as Pick<CoreRepository, 'getUnit' | 'listUnits'>;
   const newId = () => `id${String(++n).padStart(4, '0')}`;
-  const finance = createFinanceService({ repository: fake.repo, core, now: () => now, newId });
-
   // Uyelikler ve kapama kayitlari sahte defterin belge deposunda (atomik yazimla ayni yer).
   const docsOf = <T>(type: string) => [...fake.docs.values()].filter((d) => d.entityType === type) as unknown as T[];
   const memberships: Pick<MembershipRepository, 'list'> = {
     list: async (apt, f = {}) => docsOf<UnitMembership>('UNIT_MEMBERSHIP').filter((m) => m.apartmentId === apt && (!f.unitId || m.unitId === f.unitId)),
   };
+  const finance = createFinanceService({
+    repository: fake.repo,
+    core,
+    now: () => now,
+    newId,
+    ...(opts.vacancyRule ? { memberships } : {}),
+  });
   const closuresRepo: ClosureRepository = {
     get: async (apt, id) => docsOf<CariClosure>('CARI_CLOSURE').find((c) => c.apartmentId === apt && c.closureId === id),
     list: async (apt) => docsOf<CariClosure>('CARI_CLOSURE').filter((c) => c.apartmentId === apt),
@@ -111,7 +117,7 @@ export function cariWorld(start = '2026-09-01') {
   const member = (userId: string, over: Partial<UnitMembership>) => {
     const ts = '2026-01-01T00:00:00.000Z';
     const m: UnitMembership = {
-      ...membershipKeys.membership(APT, userId, 'u1'),
+      ...membershipKeys.membership(APT, userId, over.unitId ?? 'u1'),
       entityType: 'UNIT_MEMBERSHIP',
       userId,
       apartmentId: APT,
@@ -141,6 +147,7 @@ export function cariWorld(start = '2026-09-01') {
   const setNow = (d: string) => {
     now = new Date(`${d}T09:00:00.000Z`);
   };
-  return { fake, finance, closures, portal, call, member, memberOf, charge, pay, txs, acc, setNow, ctx };
+  const addUnit = (id: string, number: string) => units.push({ ...unit(id), number });
+  return { fake, finance, closures, portal, call, member, memberOf, charge, pay, txs, acc, setNow, ctx, addUnit };
 }
 

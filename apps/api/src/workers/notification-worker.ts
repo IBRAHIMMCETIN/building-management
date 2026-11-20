@@ -153,7 +153,7 @@ export function buildNotifications(
       const p = event.payload;
       for (const item of p.items) {
         for (const m of current) {
-          if (m.unitId === item.unitId && seesParty(m, p.liableParty)) {
+          if (m.unitId === item.unitId && seesParty(m, item.liableParty ?? p.liableParty)) {
             add(m.userId, 'due_generated', {
               unitId: item.unitId,
               amount: item.amount,

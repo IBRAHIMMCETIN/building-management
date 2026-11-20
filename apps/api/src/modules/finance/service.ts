@@ -50,6 +50,8 @@ import {
   type TransactionLine,
   mainReceivableId,
 } from './types.js';
+import type { MembershipRepository } from '../memberships/repository.js';
+import { type Occupancy, VACANT_SUFFIX, liablePartyFor, occupancyOn } from './occupancy.js';
 
 // ---------------------------------------------------------------------------
 // Hatalar ve sabitler
@@ -175,6 +177,11 @@ export type FinanceServiceDeps = {
    * Gider faturasi: gecici yuklemeyi dogrulayip kalici yere tasir (documents modulu).
    * Verilmezse fatura ekli gider reddedilir.
    */
+  /**
+   * Bos daire kurali icin uyelikler (tahakkuk tarihinde dairede kim oturuyor). Verilmezse kural
+   * uygulanmaz (testler / eski cagiranlar); uygulama (app.ts) uyelik deposunu verir.
+   */
+  memberships?: Pick<MembershipRepository, 'list'>;
   attachments?: {
     promote(
       apartmentId: string,
@@ -396,6 +403,7 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
       reversalOf?: string;
       reason?: string;
       invoice?: Transaction['invoice'];
+      vacant?: true;
     },
   ): Transaction {
     const transactionId = `${compact(p.date)}-${deps.newId()}`;
@@ -414,6 +422,7 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
       reversalOf: p.reversalOf,
       reason: p.reason,
       invoice: p.invoice,
+      ...(p.vacant ? { vacant: p.vacant } : {}),
       lines: p.lines,
       totalAmount: toKurus(total),
       createdAt: stamp(),
@@ -492,7 +501,23 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
   // Aidat tahakkuku (tekil / toplu)
   // -------------------------------------------------------------------------
 
-  type DuesResult = { transaction: Transaction; replayed: boolean };
+  /** liableParty: gercekte borclanan taraf; vacant: bos daire kuraliyla malike yazildi. */
+  type DuesResult = { transaction: Transaction; replayed: boolean; liableParty: LiableParty; vacant: boolean };
+
+  /**
+   * Bos daire kurali: `date` gununde dairelerin doluluk durumu. Uyelik deposu verilmemisse
+   * herkes `unknown` (kural kapali).
+   */
+  async function occupancyResolver(ctx: FinanceContext, unitId?: string): Promise<(unitId: string, date: IsoDate) => Occupancy> {
+    if (!deps.memberships) return () => 'unknown';
+    const list = await deps.memberships.list(ctx.apartmentId, unitId ? { unitId } : {});
+    const mine = list.filter((m) => m.apartmentId === ctx.apartmentId);
+    return (id, date) => occupancyOn(mine, id, date);
+  }
+
+  /** Islemin borclu satirindaki taraf (replay'de kayittan okunur). */
+  const chargedParty = (tx: Transaction, fallback: LiableParty): LiableParty =>
+    tx.lines.find((l) => l.side === 'debit' && l.liableParty)?.liableParty ?? fallback;
 
   async function postDues(
     ctx: FinanceContext,
@@ -506,10 +531,16 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
       dueDate: IsoDate;
       description: string;
       batchId?: string;
+      /** Bos daire kurali: `party` malik, istenen taraf sakin idi. */
+      vacant?: boolean;
     },
   ): Promise<DuesResult> {
+    const replayed = async (transactionId: string): Promise<DuesResult> => {
+      const t = await loadTx(ctx, transactionId);
+      return { transaction: t, replayed: true, liableParty: chargedParty(t, p.party), vacant: t.vacant === true };
+    };
     const replay = await replayOf(ctx, p.idemId, p.fp);
-    if (replay) return { transaction: await loadTx(ctx, replay.transactionId), replayed: true };
+    if (replay) return replayed(replay.transactionId);
 
     const recv = receivable(ctx, p.unitId, p.party);
     await repo.ensureAccounts([recv]);
@@ -517,8 +548,9 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
       kind: 'dues_charge',
       date: p.date,
       dueDate: p.dueDate,
-      description: p.description,
+      description: p.vacant ? `${p.description}${VACANT_SUFFIX}` : p.description,
       batchId: p.batchId,
+      ...(p.vacant ? { vacant: true as const } : {}),
       lines: [
         { accountId: recv.accountId, side: 'debit', amount: p.amount, unitId: p.unitId, liableParty: p.party },
         { accountId: SYSTEM_ACCOUNTS.incomeDues, side: 'credit', amount: p.amount },
@@ -526,11 +558,11 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
     });
     try {
       await repo.postTransaction({ transaction: tx, idempotency: { id: p.idemId, fingerprint: p.fp } });
-      return { transaction: tx, replayed: false };
+      return { transaction: tx, replayed: false, liableParty: p.party, vacant: p.vacant === true };
     } catch (err) {
       if (err instanceof LedgerConflictError && err.reason === 'duplicate') {
         const again = await replayOf(ctx, p.idemId, p.fp);
-        if (again) return { transaction: await loadTx(ctx, again.transactionId), replayed: true };
+        if (again) return replayed(again.transactionId);
       }
       throw mapConflict(err);
     }
@@ -556,12 +588,15 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
     const unit = await requireUnit(ctx, unitId);
     if (unit.status !== 'active') throw new FinanceError('unprocessable', 'Bagimsiz bolum aktif degil');
     await ensureSystemAccounts(ctx);
+    const target = party === 'occupant' ? liablePartyFor(party, (await occupancyResolver(ctx, unitId))(unitId, date)) : { party, vacant: false };
 
     const result = await postDues(ctx, {
+      // Parmak izi istenen tarafla hesaplanir: ayni istek, doluluk degisse de ayni istektir.
       idemId: key,
       fp: fingerprint({ op: 'dues', unitId, party, amount, date, dueDate, description }),
       unitId,
-      party,
+      party: target.party,
+      vacant: target.vacant,
       amount,
       date,
       dueDate,
@@ -581,9 +616,9 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
           date,
           dueDate,
           description,
-          liableParty: party,
+          liableParty: result.liableParty,
           totalAmount: amount,
-          items: [{ unitId, amount, transactionId }],
+          items: [{ unitId, amount, transactionId, liableParty: result.liableParty }],
         },
       });
     }
@@ -636,13 +671,35 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
     }
     const shares = included.length ? distributeKurus(totalAmount, included.map((u) => unitWeight(u, distributionKey))) : [];
 
+    // Bos daire kurali (yalnizca sakin tarafi): pay dagitimi degismez, yalnizca borclu taraf.
+    const occupancy = party === 'occupant' ? await occupancyResolver(ctx) : () => 'occupied' as Occupancy;
+    const targets = included.map((u) => liablePartyFor(party, occupancy(u.unitId, date)));
+    const brief = (u: Unit) => ({ unitId: u.unitId, blockId: u.blockId, number: u.number });
+    const vacant = included.filter((_, i) => targets[i]?.vacant).map(brief);
+    const unknownOccupancy = party === 'occupant' ? included.filter((u) => occupancy(u.unitId, date) === 'unknown').map(brief) : [];
+
     // Kapsam/muafiyet varsa idempotency parmak izine girer: ayni anahtar farkli kapsamla
     // kullanilirsa 409 doner. Kapsamsiz isteklerin parmak izi eskisiyle aynidir.
     const scopeFp = {
       ...(blockIds ? { blockIds: [...blockIds].sort() } : {}),
       ...(expenseCategory ? { expenseCategory } : {}),
     };
-    return { party, totalAmount, distributionKey, date, dueDate, description, expenseCategory, included, shares, exempt, scopeFp };
+    return {
+      party,
+      totalAmount,
+      distributionKey,
+      date,
+      dueDate,
+      description,
+      expenseCategory,
+      included,
+      shares,
+      targets,
+      vacant,
+      unknownOccupancy,
+      exempt,
+      scopeFp,
+    };
   }
 
   /** Onizleme: toplu tahakkukta kime ne kadar dusecegi ve kimin neden muaf oldugu. Yazmaz. */
@@ -653,6 +710,7 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
       blockId: u.blockId,
       number: u.number,
       amount: toKurus(plan.shares[i] ?? 0),
+      liableParty: plan.targets[i]?.party ?? plan.party,
     }));
     return {
       distributionKey: plan.distributionKey,
@@ -662,6 +720,10 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
       count: items.length,
       items,
       exempt: plan.exempt,
+      /** Bos daire kuraliyla kat malikine yazilacak bolumler. */
+      vacant: plan.vacant,
+      /** Tahakkuk tarihinde uyelik kaydi olmayan (kural uygulanamayan) bolumler. */
+      unknownOccupancy: plan.unknownOccupancy,
     };
   }
 
@@ -680,7 +742,7 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
     await ensureSystemAccounts(ctx);
 
     const batchId = `${compact(date)}-${key}`;
-    const results: { unitId: string; amount: Kurus; transactionId: string; replayed: boolean }[] = [];
+    const results: { unitId: string; amount: Kurus; transactionId: string; replayed: boolean; liableParty: LiableParty; vacant: boolean }[] = [];
     for (const [i, unit] of units.entries()) {
       const amount = shares[i] ?? 0;
       if (amount < 1) continue; // cok kucuk pay: 0 kurus borc yazilmaz
@@ -688,7 +750,8 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
         idemId: `${key}_${unit.unitId}`,
         fp: fingerprint({ op: 'bulk', unitId: unit.unitId, party, amount, date, dueDate, description, distributionKey, totalAmount, ...plan.scopeFp }),
         unitId: unit.unitId,
-        party,
+        party: plan.targets[i]?.party ?? party,
+        vacant: plan.targets[i]?.vacant ?? false,
         amount: toKurus(amount),
         date,
         dueDate,
@@ -700,6 +763,8 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
         amount: toKurus(amount),
         transactionId: r.transaction.transactionId,
         replayed: r.replayed,
+        liableParty: r.liableParty,
+        vacant: r.vacant,
       });
     }
     // Yalnizca bu istekte YENI yazilan kalemler icin tek bir toplu olay (yarim kalan toplu
@@ -720,7 +785,7 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
           description,
           liableParty: party,
           totalAmount: toKurus(fresh.reduce((s, r) => s + r.amount, 0)),
-          items: fresh.map(({ unitId, amount, transactionId }) => ({ unitId, amount, transactionId })),
+          items: fresh.map(({ unitId, amount, transactionId, liableParty }) => ({ unitId, amount, transactionId, liableParty })),
         },
       });
     }
@@ -735,6 +800,7 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
       items: results,
       ...(plan.expenseCategory ? { expenseCategory: plan.expenseCategory } : {}),
       exempt: plan.exempt,
+      vacant: results.filter((r) => r.vacant).map((r) => plan.vacant.find((v) => v.unitId === r.unitId) ?? { unitId: r.unitId }),
     };
   }
 

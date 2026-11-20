@@ -40,7 +40,8 @@ export type DueGeneratedPayload = {
   description: string;
   liableParty: LiableParty;
   totalAmount: Kurus;
-  items: { unitId: string; amount: Kurus; transactionId: string }[];
+  /** liableParty: kalemin gercek borclu tarafi (bos daire kurali); yoksa ust duzeydeki taraf. */
+  items: { unitId: string; amount: Kurus; transactionId: string; liableParty?: LiableParty }[];
 };
 
 export type PaymentReceivedPayload = {
