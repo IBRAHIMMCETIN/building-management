@@ -103,7 +103,7 @@ describe('cari kapama - kiraci cikisi', () => {
       name: 'Daire 5 - Ayrılan sakin (31.10.2026)',
     });
     expect((await s.acc('transfer-clearing'))!.balance).toBe(0);
-    expect(s.memberOf('tenant-a')).toMatchObject({ endDate: '2026-10-31', version: 2 });
+    expect(s.memberOf('tenant-a')).toMatchObject({ endDate: '2026-10-31', status: 'inactive', endedByClosureId: c.closureId, version: 2 });
     expect(readSubledger(linesOfAccount(MAIN, await s.txs())).balance).toBe(0);
 
     // Listeleme / tekil okuma
@@ -247,8 +247,10 @@ describe('cari kapama - geri alma', () => {
     // Ana cari: Eylul 600 + Ekim 1000 + kapamada kesinlesen tazminat geri geldi.
     expect(main!.balance).toBe(TL(1600) + c.lateFee);
     expect(readSubledger(linesOfAccount(MAIN, await s.txs())).cutoff).toBeUndefined();
-    // Uyelik geri alinmaz (bilgi): yonetici gerekirse daireler ekranindan duzeltir.
-    expect(s.memberOf('tenant-a').endDate).toBe('2026-10-31');
+    // Uyelik kapamadan onceki haline doner (aktif, bitis tarihi yok, kapama izi silinir).
+    expect(s.memberOf('tenant-a')).toMatchObject({ status: 'active', version: 3 });
+    expect(s.memberOf('tenant-a').endDate).toBeUndefined();
+    expect(s.memberOf('tenant-a').endedByClosureId).toBeUndefined();
     expect((await s.call('POST', `/api/finance/closures/${c.closureId}/reverse`, manager, { reason: 'Tekrar deneme' })).status).toBe(409);
   });
 

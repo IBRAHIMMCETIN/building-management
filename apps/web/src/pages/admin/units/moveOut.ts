@@ -125,6 +125,6 @@ export function canOfferReverse(c: CariClosure, all: readonly CariClosure[]): bo
 }
 
 export const MEMBERSHIP_CHANGE_LABELS = {
-  ended: 'Üyeliği çıkış tarihinde sona erer',
+  ended: 'Üyeliği çıkış tarihiyle sona erer; daire listesinden ve portaldan hemen düşer',
   not_resident: 'Malik olarak kalır, “oturmuyor” olarak işaretlenir',
 } as const;

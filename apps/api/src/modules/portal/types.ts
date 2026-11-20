@@ -42,6 +42,12 @@ export type UnitMembership = TableKeys &
     startDate: IsoDate;
     /** Tasinma/devir tarihi; sonrasinda erisim kapanir. */
     endDate?: IsoDate;
+    /**
+     * Uyelik bir cari kapamasiyla sona erdirildi (`status = inactive`, `endDate = cikis tarihi`).
+     * Gecmise donuk doluluk hesaplarinda (bos daire kurali) `endDate`'e kadar sayilmaya devam
+     * eder; kapama geri alininca kaldirilir ve uyelik yeniden aktif olur.
+     */
+    endedByClosureId?: string;
   };
 
 export const ANNOUNCEMENT_STATUSES = ['draft', 'published', 'archived'] as const;

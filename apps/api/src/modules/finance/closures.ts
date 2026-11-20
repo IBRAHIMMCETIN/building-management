@@ -28,6 +28,7 @@ import { ValidationError, asObject, assertId, isIsoDate, optString, reqEnum, req
 import { type MembershipRepository, membershipGsi1, membershipRepository } from '../memberships/repository.js';
 import type { UnitMembership } from '../portal/types.js';
 import { feeLedgerFor, unpostedLateFee } from './lateFee.js';
+import { coversDay } from './occupancy.js';
 import { type FinanceRepository, LedgerConflictError, type ReplaceRecord, financeKeys, financeRepository } from './repository.js';
 import { DEFAULT_LATE_FEE_BASIS_POINTS, FinanceError, type FinanceService, SYSTEM_ACCOUNTS } from './service.js';
 import { allocate, cancelledIn, linesOfAccount, readSubledger, transferItemId } from './subledger.js';
@@ -44,6 +45,8 @@ export type MembershipChange = {
   relation: UnitMembership['relation'];
   change: 'ended' | 'not_resident';
   previousEndDate?: IsoDate;
+  /** Kapamadan onceki oturma bilgisi (`not_resident` geri alinirken). */
+  previousResidesInUnit?: boolean;
 };
 
 /**
@@ -275,7 +278,6 @@ export function createClosureService(overrides: Partial<ClosureServiceDeps> & Pi
 
   // ----- Uyelik kurallari -----
 
-  const coversDay = (m: UnitMembership, day: IsoDate) => m.status === 'active' && m.startDate <= day && (!m.endDate || m.endDate >= day);
 
   /** Bu tarafin cikabilecek uyelikleri (D gunu dairede/malik olan). */
   function leavers(memberships: UnitMembership[], party: LiableParty, day: IsoDate): UnitMembership[] {
@@ -286,7 +288,9 @@ export function createClosureService(overrides: Partial<ClosureServiceDeps> & Pi
 
   function changeOf(m: UnitMembership, party: LiableParty): MembershipChange {
     // Oturan malik sakin carisini kapatiyorsa (kiraya veriyor) malik olarak kalir.
-    if (party === 'occupant' && m.relation === 'owner') return { userId: m.userId, relation: m.relation, change: 'not_resident' };
+    if (party === 'occupant' && m.relation === 'owner') {
+      return { userId: m.userId, relation: m.relation, change: 'not_resident', previousResidesInUnit: m.residesInUnit };
+    }
     return { userId: m.userId, relation: m.relation, change: 'ended', ...(m.endDate ? { previousEndDate: m.endDate } : {}) };
   }
 
@@ -554,7 +558,11 @@ export function createClosureService(overrides: Partial<ClosureServiceDeps> & Pi
       const change = changeOf(m, party);
       const next: UnitMembership = {
         ...m,
-        ...(change.change === 'ended' ? { endDate: !m.endDate || m.endDate > D ? D : m.endDate } : { residesInUnit: false }),
+        // Ayrilan uyelik kapamayla hemen sona erer: pasif + bitis = cikis tarihi (cikis bugun olsa
+        // bile daire listesinde "aktif kiraci" olarak kalmaz). Kapama kimligi geri alma icin tutulur.
+        ...(change.change === 'ended'
+          ? { endDate: !m.endDate || m.endDate > D ? D : m.endDate, status: 'inactive' as const, endedByClosureId: closureId }
+          : { residesInUnit: false }),
         updatedAt: ts,
         updatedBy: ctx.userId,
         version: m.version + 1,
@@ -634,6 +642,35 @@ export function createClosureService(overrides: Partial<ClosureServiceDeps> & Pi
 
   // ----- Geri alma -----
 
+  /**
+   * Kapamanin uyelik degisikliklerini geri yukler (ayni atomik yazimda, surum kosullu):
+   * `ended` -> yeniden aktif, onceki bitis tarihi; `not_resident` -> onceki oturma bilgisi.
+   * Kapamadan sonra elle degistirilmis (artik bu kapamayla bitmis gorunmeyen) uyelige dokunulmaz.
+   * Bu duzeltmeden once yapilmis kapamalar (uyelik aktif, bitis = cikis tarihi) de geri yuklenir.
+   */
+  function restoreMemberships(closure: CariClosure, members: UnitMembership[], ts: IsoDateTime, userId: string): ReplaceRecord[] {
+    const out: ReplaceRecord[] = [];
+    for (const change of closure.membershipChanges) {
+      const m = members.find((x) => x.userId === change.userId && x.unitId === closure.unitId && x.apartmentId === closure.apartmentId);
+      if (!m) continue;
+      let next: UnitMembership | undefined;
+      if (change.change === 'ended') {
+        const endedHere =
+          m.endedByClosureId === closure.closureId || (!m.endedByClosureId && m.status === 'active' && m.endDate === closure.moveOutDate);
+        if (!endedHere) continue;
+        const { endDate: _e, endedByClosureId: _c, ...rest } = m;
+        next = { ...rest, status: 'active', ...(change.previousEndDate ? { endDate: change.previousEndDate } : {}) } as UnitMembership;
+      } else {
+        const resides = change.previousResidesInUnit ?? true;
+        if (m.residesInUnit === resides) continue;
+        next = { ...m, residesInUnit: resides };
+      }
+      next = { ...next, updatedAt: ts, updatedBy: userId, version: m.version + 1 };
+      out.push({ item: { ...next, ...membershipGsi1(next) }, expectedVersion: m.version, label: `membership:${m.userId}` });
+    }
+    return out;
+  }
+
   async function reverse(ctx: ClosureContext, closureId: string, body: unknown): Promise<CariClosure> {
     const o = asObject(body);
     const reason = (optString(o, 'reason', 300) ?? '').trim();
@@ -644,9 +681,10 @@ export function createClosureService(overrides: Partial<ClosureServiceDeps> & Pi
       throw new FinanceError('unprocessable', 'Avans iade edildigi icin kapama geri alinamaz; duzeltmeyi elle kayitla yapin');
     }
 
-    const [txPage, source] = await Promise.all([
+    const [txPage, source, unitMembers] = await Promise.all([
       repo.listTransactions(ctx.apartmentId),
       repo.getAccount(ctx.apartmentId, closure.sourceAccountId),
+      deps.memberships.list(ctx.apartmentId, { unitId: closure.unitId }),
     ]);
     const all = txPage.items;
     const byId = new Map(all.map((t) => [t.transactionId, t]));
@@ -700,6 +738,7 @@ export function createClosureService(overrides: Partial<ClosureServiceDeps> & Pi
       }),
     );
     const ts = stamp();
+    const membershipRestores = restoreMemberships(closure, unitMembers, ts, ctx.userId);
     const next: CariClosure = {
       ...closure,
       status: 'reversed',
@@ -712,7 +751,7 @@ export function createClosureService(overrides: Partial<ClosureServiceDeps> & Pi
       await repo.postBatch({
         transactions: reversals,
         idempotency: { id: `CLS_REV_${closure.closureId}`, fingerprint: fingerprint({ op: 'closure_reverse', closureId }), recordId: closure.closureId },
-        replaceRecords: [{ item: next, expectedVersion: closure.version, label: 'closure' }],
+        replaceRecords: [{ item: next, expectedVersion: closure.version, label: 'closure' }, ...membershipRestores],
         accountPatches: {
           [closure.sourceAccountId]: { closedThrough: closure.previousClosedThrough ?? null, bypassLock: true },
         },

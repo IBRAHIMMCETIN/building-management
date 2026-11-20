@@ -144,12 +144,11 @@ describe('sakin tarafinda ayrim (portal + online odeme teklifi)', () => {
     await expect(w.portal.getMySummary({ apartmentId: APT, userId: 'tenant-a', role: 'resident' as const })).rejects.toMatchObject({ httpStatus: 403 });
   });
 
-  it('cikis gunu eski kiracinin ekraninda borc kapanmis gorunur (devredildi)', async () => {
+  it('kapamadan sonra eski kiracinin portal erisimi cikis gunu dahil kapanir (karar 5)', async () => {
     const w = cariWorld();
     await moveOutAndIn(w);
     w.setNow('2026-10-31');
-    const a = await w.portal.getMySummary({ apartmentId: APT, userId: 'tenant-a', role: 'resident' as const });
-    expect(a).toMatchObject({ balance: 0, debt: 0, openCount: 0, accruedLateFee: 0 });
+    await expect(w.portal.getMySummary({ apartmentId: APT, userId: 'tenant-a', role: 'resident' as const })).rejects.toMatchObject({ httpStatus: 403 });
   });
 });
 
