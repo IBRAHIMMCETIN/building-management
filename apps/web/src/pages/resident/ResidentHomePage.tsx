@@ -1,11 +1,20 @@
 import { ArrowRight, CircleCheck, TriangleAlert } from 'lucide-react';
 import { Link } from 'react-router';
+import { PayOnlineButton } from '@/components/portal/PayOnlineButton';
 import { ChangeUnitLink, PortalQueryState } from '@/components/portal/PortalQueryState';
 import { PortalStatusBadge } from '@/components/portal/PortalStatusBadge';
 import { Card, CardTitle, Skeleton } from '@/components/ui';
+import { usePaymentQuote } from '@/hooks/usePayments';
 import { useMyAnnouncements, useMySummary } from '@/hooks/usePortal';
 import { formatDate, formatDateTime } from '@/lib/dates';
 import { formatTRY } from '@/lib/money';
+
+/** Online odeme aciksa buton; degilse elden/havale notu. */
+function OnlinePayHint() {
+  const quote = usePaymentQuote();
+  if (quote.data?.onlinePaymentEnabled && quote.data.totalDue > 0) return <PayOnlineButton className="self-start" />;
+  return <p className="text-small text-muted">Ödemelerinizi apartman yöneticinize elden veya banka havalesiyle yapabilirsiniz.</p>;
+}
 
 function DebtCard() {
   const summary = useMySummary();
@@ -62,7 +71,7 @@ function DebtCard() {
               {s.nextDue.description} · son ödeme <strong>{formatDate(s.nextDue.dueDate)}</strong>
             </p>
           ) : null}
-          <p className="text-small text-muted">Ödemelerinizi apartman yöneticinize elden veya banka havalesiyle yapabilirsiniz.</p>
+          <OnlinePayHint />
         </div>
       )}
 

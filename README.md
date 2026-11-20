@@ -2,7 +2,7 @@
 
 Türkiye'deki apartman, site ve profesyonel yönetim firmaları için çok kiracılı (multi-tenant), sunucusuz bir site ve aidat yönetim platformu. Kat Mülkiyeti Kanunu'na uygun alt cari (malik / kiracı) ayrımı, dağıtım anahtarlarıyla toplu tahakkuk ve değişmez (append-only) finansal defter üzerine kuruludur.
 
-> **Durum:** Aktif geliştirme. Backend çekirdeği (Faz 1–5) `feature/aws-entegrasyonu` dalında; frontend henüz iskelet aşamasında. Ayrıntılar için [Yol Haritası](#yol-haritası).
+> **Durum (20.11.2026):** Aktif geliştirme. Backend çekirdeği, yönetici ve sakin web ekranları, kıstelyevm, belge deposu ve toplu aktarım `main` dalında; `dev` ortamı AWS `eu-north-1` bölgesinde, web Cloudflare Pages üzerinde canlı. Online ödeme (Adım 8b) `feature/adim-8b-online-odeme` dalında geliştiriliyor. Ayrıntılar için [Yol Haritası](#yol-haritası).
 
 ---
 
@@ -292,30 +292,84 @@ Yedi rol: `platform_admin`, `management_company`, `apartment_manager`, `resident
 
 ## Yol Haritası
 
-### Tamamlanan (Faz 1–5)
+### Tamamlanan
 
-- [x] DynamoDB yardımcıları, core modül, JWT doğrulama
-- [x] Çift taraflı defter, aidat tahakkuku, makbuz kaydı
+**Backend çekirdeği (Faz 1–5)**
+
+- [x] DynamoDB yardımcıları, core modül (site, blok, bağımsız bölüm), JWT doğrulama
+- [x] Çift taraflı, append-only defter; aidat tahakkuku, tahsilat, gider, ters kayıt, makbuz
 - [x] Sakin portalı, SNS/EventBridge olay yayıncısı
 - [x] Üyelik, duyuru ve apartman rol yönetimi
 - [x] Serverless Terraform altyapısı, Lambda ESM build
-- [x] CI/CD pipeline, bildirim worker'ı, bootstrap betiği
+- [x] CI pipeline, bildirim worker'ı, bootstrap betiği
+
+**Web arayüzü (Faz 6–7)**
+
+- [x] React + Vite iskeleti, Cognito girişi, apartman/rol bağlamı seçimi
+- [x] Yönetici paneli: daireler ve sakin daveti, finans (tahakkuk, tahsilat, gider, hareketler, aidat durumu), duyurular, ayarlar
+- [x] Sakin ekranları: ana sayfa, Borçlarım (özet kart + hesap ekstresi), duyurular
+
+**Finans ve otomasyon**
+
+- [x] Kıstelyevm gecikme tazminatı: ekranda canlı, deftere her ayın 1'inde kesinleşir; kısmi ödeme önce en eski anaparayı kapatır
+- [x] EventBridge Scheduler: aylık tazminat kesinleştirme, aylık aidat planı ile otomatik tahakkuk, borç hatırlatmaları (vadeden 3 gün önce, 1 ve 7 gün sonra)
+- [x] Blok kapsamlı ve daire muafiyetli toplu tahakkuk (önizlemeli)
+- [x] S3 belge deposu + kısa ömürlü pre-signed URL: makbuz PDF'i, gider faturası yükleme
+- [x] Excel/CSV toplu aktarım: daireler, kişiler, açılış bakiyeleri
+
+**Dağıtım (Adım 8a)**
+
+- [x] Web Cloudflare Pages'te canlı: https://building-management-apx.pages.dev (`dev` yığınına bağlı)
+- [x] CI/CD: `main`'e push `dev` yığınını günceller; `prod` yalnızca `v*` etiketi veya elle tetiklemeyle
+- [x] AWS bölgesi Terraform'da `eu-north-1` olarak sabit (hesap SCP'si diğer bölgeleri reddeder)
+
+**Online ödeme — Adım 8b (`feature/adim-8b-online-odeme`, henüz `main`'de değil)**
+
+- [x] Ödeme niyeti, ödenebilir tutar hesabı (toplam borç veya en eskiden başlayan seçili kalemler), ödeme anında tazminat kesinleştirme
+- [x] Atomik tahsilat yazımı (`postBatch`): tazminat + tahsilat + makbuz + niyet durumu tek `TransactWriteItems`'ta
+- [x] iyzico Checkout Form + Pazaryeri istemcisi: IYZWSv2 imzası, yanıt imzası, webhook V3 imzası, alt üye işyeri kaydı (`platform_admin`)
+- [x] Callback, imzalı webhook ve 15 dakikalık mutabakat (`payment_reconcile`); şüpheli ödemeler `NEEDS_REVIEW` + alarm
+- [x] Altyapı: iyzico anahtarları Secrets Manager'da, yalnızca iki kimliksiz rota (callback/webhook), `dev`'e uygulandı
+- [x] Ortak dağıtım politikası modülü ve `github-deploy` kullanıcısına en az yetki
+- [x] Web ekranları: sakin ödeme seçimi (`/app/odeme`) ve sonuç sayfası (`/app/odeme/sonuc`), yönetici Finans → "Online ödemeler" sekmesi, platform yöneticisi ödeme hesapları (`/admin/payments`)
 
 ### Sırada
 
-- [ ] Kıstelyevm gecikme tazminatı hesaplaması ve günlük zamanlanmış görev (EventBridge Scheduler)
-- [ ] S3 + pre-signed URL; makbuz PDF, fatura ve sayaç görselleri
-- [ ] Sanal POS, ödeme webhook'u, şifresiz ödeme linki, banka hareketi eşleştirme
-- [ ] Sayaç/endeks dağıtımı, blok/grup muafiyetleri
-- [ ] Avans mahsubu, iade, borç yapılandırma, mülk devri, hisseli mülkiyet
-- [ ] Excel/CSV migrasyonu (açılış bakiyesi)
+**Adım 8b'nin kalanı**
+
+- [ ] iyzico sandbox Pazaryeri yetkisi ve ilk uçtan uca ödeme — tüm modüller tamamlandıktan sonra (bkz. [Canlıya Geçiş Kontrol Listesi](#canlıya-geçiş-kontrol-listesi))
+- [ ] `github-deploy` kullanıcısından geniş politikaların kaldırılması ve CI ile doğrulanması
+- [ ] `NEEDS_REVIEW` ödemelerini elle sonuçlandırma aracı (deftere yazma / iade)
+- [ ] Dalın `main`'e alınması
+
+**Ödeme ve tahsilatın devamı**
+
+- [ ] Online tahsilatın banka hesabına aktarım (settlement) mutabakatı
+- [ ] Taksit, otomatik ödeme talimatı, şifresiz ödeme linki, iade
+- [ ] Banka hareketi eşleştirme
+
+**Finans**
+
+- [ ] Taşınmada cari kapama ve eski/yeni kiracı borç devri
+- [ ] Sayaç/endeks dağıtımı ve sayaç görselleri
+- [ ] Avans mahsubu, borç yapılandırma, mülk devri, hisseli mülkiyet
 - [ ] Dönem kapama, bütçe / yıllık işletme projesi
-- [ ] Frontend: giriş, rol seçimi, yönetici paneli, sakin ekranları
+
+**Platform ve operasyon**
+
+- [ ] Eski soneksiz `building-management` (prod) yığını hakkında karar ve ilk `prod` sürümü
+- [ ] Platform yöneticisi menüsünün apartmana özel sayfalardan ayrılması
 - [ ] Transactional outbox (`events/publisher.ts`)
 - [ ] Arıza/görev, ziyaretçi QR, anket/oylama, rezervasyon, ihale
 - [ ] Yönetim firması portföyü, abonelik/lisans
-- [ ] AWS WAF, Cloudflare Pages Terraform modülü, audit log
+- [ ] Özel alan adı + Cloudflare WAF (HTTP API'ye AWS WAF bağlanamaz), Cloudflare Pages Terraform modülü, audit log
 - [ ] Rapor/PDF, banka ve OCR worker'ları
+
+### Canlıya Geçiş Kontrol Listesi
+
+Bilinen, bilerek ertelenmiş adımlar:
+
+- [ ] iyzico Sandbox hesabındaki (Üye İşyeri No: `3438668`) Pazaryeri (Marketplace / SubMerchant) yetki başvurusu ve test kartıyla ilk uçtan uca online ödeme doğrulaması, projenin tüm modülleri tamamlandıktan sonra hayata geçirilecektir. Yetki açılana kadar alt üye işyeri kaydı `provider_rejected` döner; doğrulamada `paymentStatus` / `fraudStatus` eşlemeleri ve webhook imzası da kontrol edilecektir.
 
 ---
 

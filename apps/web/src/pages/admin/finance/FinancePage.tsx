@@ -7,6 +7,7 @@ import { cn } from '@/lib/cn';
 import { ChargeDuesDialog } from './ChargeDuesDialog';
 import { DuesPanel } from './DuesPanel';
 import { ExpenseDialog } from './ExpenseDialog';
+import { OnlinePaymentsPanel } from './OnlinePaymentsPanel';
 import { PaymentDialog, type PaymentPreset } from './PaymentDialog';
 import { SummaryCards } from './SummaryCards';
 import { TransactionsPanel } from './TransactionsPanel';
@@ -14,6 +15,7 @@ import { TransactionsPanel } from './TransactionsPanel';
 const TABS = [
   { id: 'transactions', label: 'Hareketler' },
   { id: 'dues', label: 'Aidat durumu' },
+  { id: 'online', label: 'Online ödemeler' },
 ] as const;
 type TabId = (typeof TABS)[number]['id'];
 
@@ -22,7 +24,7 @@ type Modal = { kind: 'payment'; preset?: PaymentPreset } | { kind: 'expense' } |
 export function FinancePage() {
   const { canRead, canWrite } = useFinancePermissions();
   const [params, setParams] = useSearchParams();
-  const tab: TabId = params.get('tab') === 'dues' ? 'dues' : 'transactions';
+  const tab: TabId = TABS.find((t) => t.id === params.get('tab'))?.id ?? 'transactions';
   const [modal, setModal] = useState<Modal>(null);
 
   if (!canRead) {
@@ -86,11 +88,9 @@ export function FinancePage() {
           ))}
         </div>
         <div id={`panel-${tab}`} role="tabpanel" aria-labelledby={`tab-${tab}`}>
-          {tab === 'transactions' ? (
-            <TransactionsPanel />
-          ) : (
-            <DuesPanel canWrite={canWrite} onCollect={(preset) => setModal({ kind: 'payment', preset })} />
-          )}
+          {tab === 'transactions' && <TransactionsPanel />}
+          {tab === 'dues' && <DuesPanel canWrite={canWrite} onCollect={(preset) => setModal({ kind: 'payment', preset })} />}
+          {tab === 'online' && <OnlinePaymentsPanel />}
         </div>
       </div>
 

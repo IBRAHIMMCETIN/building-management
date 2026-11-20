@@ -20,7 +20,12 @@ import { membershipRoutes } from './modules/memberships/routes.js';
 import { type MembershipService, createMembershipService } from './modules/memberships/service.js';
 import { loadPaymentsConfig } from './modules/payments/config.js';
 import type { FakePaymentProvider } from './modules/payments/fakeProvider.js';
-import { paymentAdminRoutes, paymentCallbackRoutes, paymentPortalRoutes } from './modules/payments/routes.js';
+import {
+  paymentAdminRoutes,
+  paymentCallbackRoutes,
+  paymentManagerRoutes,
+  paymentPortalRoutes,
+} from './modules/payments/routes.js';
 import { type PaymentsService, createPaymentsService } from './modules/payments/service.js';
 import { portalRepository } from './modules/portal/repository.js';
 import { portalRoutes } from './modules/portal/routes.js';
@@ -105,7 +110,27 @@ export function createApp(config: AppConfig) {
 
   const financeService =
     config.financeService ?? createFinanceService({ events, attachments: { promote: documentsService.promoteInvoice } });
+  // Online odeme (Adim 8b). Yonetici uclari finans rotalarindan, sakin uclari portal
+  // rotalarindan ONCE baglanir (daha ozel yol); callback/webhook kimliksizdir.
+  let paymentsService = config.paymentsService;
+  let fakePaymentProvider = config.fakePaymentProvider;
+  if (!paymentsService) {
+    const payments = loadPaymentsConfig();
+    fakePaymentProvider = payments.fake;
+    paymentsService = createPaymentsService({
+      portal: portalService,
+      ledger: portalRepository,
+      finance: financeService,
+      provider: payments.provider,
+      apiBaseUrl: payments.apiBaseUrl,
+      webAppUrl: payments.webAppUrl,
+      intentTtlMinutes: payments.intentTtlMinutes,
+    });
+  }
+  app.route('/api/finance/online-payments', paymentManagerRoutes({ authenticate, service: paymentsService }));
   app.route('/api/finance', financeRoutes({ authenticate, service: financeService }));
+  app.route('/api/payments', paymentCallbackRoutes({ service: paymentsService, fake: fakePaymentProvider }));
+  app.route('/api/admin/payments', paymentAdminRoutes({ authenticate, service: paymentsService }));
 
   const membershipService = config.membershipService ?? createMembershipService();
   app.route('/api/memberships', membershipRoutes({ authenticate, service: membershipService }));
@@ -140,26 +165,8 @@ export function createApp(config: AppConfig) {
     }),
   );
 
-  // Online odeme: sakin uclari portal'dan ONCE baglanir (daha ozel yol); callback kimliksizdir.
-  let paymentsService = config.paymentsService;
-  let fakePaymentProvider = config.fakePaymentProvider;
-  if (!paymentsService) {
-    const payments = loadPaymentsConfig();
-    fakePaymentProvider = payments.fake;
-    paymentsService = createPaymentsService({
-      portal: portalService,
-      ledger: portalRepository,
-      finance: financeService,
-      provider: payments.provider,
-      apiBaseUrl: payments.apiBaseUrl,
-      webAppUrl: payments.webAppUrl,
-      intentTtlMinutes: payments.intentTtlMinutes,
-    });
-  }
-  app.route('/api/portal/payments', paymentPortalRoutes({ authenticate, service: paymentsService }));
-  app.route('/api/payments', paymentCallbackRoutes({ service: paymentsService, fake: fakePaymentProvider }));
-  app.route('/api/admin/payments', paymentAdminRoutes({ authenticate, service: paymentsService }));
 
+  app.route('/api/portal/payments', paymentPortalRoutes({ authenticate, service: paymentsService }));
   app.route(
     '/api/portal',
     portalRoutes({

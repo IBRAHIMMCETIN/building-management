@@ -1,15 +1,22 @@
-import { ArrowLeftRight, Building2, FileUp, LayoutDashboard, Megaphone, Menu, Settings, Users, Wallet } from 'lucide-react';
+import { ArrowLeftRight, Building2, CreditCard, FileUp, LayoutDashboard, Megaphone, Menu, Settings, Users, Wallet } from 'lucide-react';
 import { type ComponentType, useEffect, useState } from 'react';
 import { NavLink, Outlet, useLocation } from 'react-router';
 import { ContextSwitchDialog, useCanSwitchContext } from '@/components/context/ContextSwitcher';
 import { Button, Dialog } from '@/components/ui';
 import { useActiveApartmentName } from '@/hooks/useActiveContextLabel';
 import { useAuth } from '@/hooks/useAuth';
-import { ROLE_LABELS } from '@/types/roles';
+import { PLATFORM_ROLES, ROLE_LABELS, type Role } from '@/types/roles';
 import { cn } from '@/lib/cn';
 import { UserMenu } from './UserMenu';
 
-type NavItem = { to: string; label: string; icon: ComponentType<{ className?: string }>; end?: boolean };
+type NavItem = {
+  to: string;
+  label: string;
+  icon: ComponentType<{ className?: string }>;
+  end?: boolean;
+  /** Verilirse yalnizca bu roller gorur. */
+  roles?: readonly Role[];
+};
 
 // Henuz ekrani olmayan ogeler router'da PlaceholderPage'e bagli; ekran yazildikca degistirilir.
 const NAV: NavItem[] = [
@@ -19,13 +26,16 @@ const NAV: NavItem[] = [
   { to: '/admin/announcements', label: 'Duyurular', icon: Megaphone },
   { to: '/admin/import', label: 'Toplu Aktarım', icon: FileUp },
   { to: '/admin/settings', label: 'Ayarlar', icon: Settings },
+  { to: '/admin/payments', label: 'Ödeme Hesapları', icon: CreditCard, roles: PLATFORM_ROLES },
 ];
 
 /** Masaustu yan menu ve mobil cekmece ayni listeyi kullanir. */
 function AdminNav({ onNavigate }: { onNavigate?: () => void }) {
+  const { user } = useAuth();
+  const items = NAV.filter((n) => !n.roles || (!!user?.role && n.roles.includes(user.role)));
   return (
     <nav aria-label="Yönetim menüsü" className="flex flex-col gap-1">
-      {NAV.map(({ to, label, icon: Icon, end }) => (
+      {items.map(({ to, label, icon: Icon, end }) => (
         <NavLink
           key={to}
           to={to}

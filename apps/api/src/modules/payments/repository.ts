@@ -11,7 +11,7 @@ import {
   toDataAccessError,
 } from '../../config/dynamodb.js';
 import type { TableKeys } from '../core/types.js';
-import type { IntentKeyRecord, PaymentAccount, PaymentIntent, PaymentProviderName } from './types.js';
+import type { IntentKeyRecord, IntentStatus, PaymentAccount, PaymentIntent, PaymentProviderName } from './types.js';
 
 export const paymentKeys = {
   intent: (apartmentId: string, intentId: string): TableKeys => ({
@@ -36,6 +36,15 @@ export class PaymentsConflictError extends Error {
   }
 }
 
+export class InvalidIntentCursorError extends Error {
+  constructor() {
+    super('Gecersiz sayfa imleci');
+    this.name = 'InvalidIntentCursorError';
+  }
+}
+
+export type IntentListQuery = { status?: IntentStatus; limit: number; cursor?: string };
+
 export type PaymentsRepository = {
   getIntent(apartmentId: string, intentId: string): Promise<PaymentIntent | undefined>;
   /** Niyet + idempotency anahtari tek atomik yazimla; biri varsa `PaymentsConflictError`. */
@@ -45,6 +54,8 @@ export type PaymentsRepository = {
   updateIntent(intent: PaymentIntent, expectedVersion: number): Promise<void>;
   /** `PI#<fromId>` <= SK <= `PI#<toId>` (zamana gore sirali niyetler). */
   listIntentsBetween(apartmentId: string, fromId: string, toId: string): Promise<PaymentIntent[]>;
+  /** Yonetici listesi: en yeni once, opsiyonel durum filtresi, sayfali. */
+  listIntents(apartmentId: string, query: IntentListQuery): Promise<{ items: PaymentIntent[]; cursor?: string }>;
   getAccount(apartmentId: string, provider: PaymentProviderName): Promise<PaymentAccount | undefined>;
   /** Yeni hesap (`expectedVersion` yok) veya surum kosullu guncelleme. */
   putAccount(account: PaymentAccount, expectedVersion?: number): Promise<void>;
@@ -119,6 +130,45 @@ export function createPaymentsRepository(): PaymentsRepository {
       }
       // Savunma: yalnizca bu tenant'in niyetleri.
       return items.filter((i) => i.entityType === 'PAYMENT_INTENT' && i.apartmentId === apartmentId);
+    },
+
+    async listIntents(apartmentId, q) {
+      const { client, tableName } = getDynamo();
+      const pk = tenantPk(apartmentId);
+      let startKey: Record<string, unknown> | undefined;
+      if (q.cursor) {
+        try {
+          const key = JSON.parse(Buffer.from(q.cursor, 'base64url').toString('utf8')) as Record<string, unknown>;
+          // Imlec istemciden gelir: baska apartmanin veya baska kayit turunun anahtari kabul edilmez.
+          if (key.PK !== pk || typeof key.SK !== 'string' || !key.SK.startsWith('PI#')) throw new Error('tenant');
+          startKey = { PK: key.PK, SK: key.SK };
+        } catch {
+          throw new InvalidIntentCursorError();
+        }
+      }
+      const items: PaymentIntent[] = [];
+      try {
+        do {
+          const out: QueryCommandOutput = await client.send(
+            new QueryCommand({
+              TableName: tableName,
+              KeyConditionExpression: '#pk = :pk AND begins_with(#sk, :pfx)',
+              ...(q.status ? { FilterExpression: '#status = :status' } : {}),
+              ExpressionAttributeNames: { '#pk': 'PK', '#sk': 'SK', ...(q.status ? { '#status': 'status' } : {}) },
+              ExpressionAttributeValues: { ':pk': pk, ':pfx': 'PI#', ...(q.status ? { ':status': q.status } : {}) },
+              ScanIndexForward: false,
+              Limit: q.limit - items.length,
+              ...(startKey ? { ExclusiveStartKey: startKey } : {}),
+            }),
+          );
+          items.push(...((out.Items ?? []) as PaymentIntent[]));
+          startKey = out.LastEvaluatedKey;
+        } while (startKey && items.length < q.limit);
+      } catch (err) {
+        throw toDataAccessError(err);
+      }
+      const cursor = startKey ? Buffer.from(JSON.stringify(startKey)).toString('base64url') : undefined;
+      return { items: items.filter((i) => i.entityType === 'PAYMENT_INTENT' && i.apartmentId === apartmentId), cursor };
     },
 
     getAccount: (apartmentId, provider) => getTenantItem<PaymentAccount>(paymentKeys.account(apartmentId, provider)),

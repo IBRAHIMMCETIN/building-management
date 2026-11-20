@@ -26,6 +26,9 @@ export const ADMIN_ROLES = [
 
 export const RESIDENT_ROLES = ['resident'] as const satisfies readonly Role[];
 
+/** Yalnizca platform ekibinin ekranlari (/admin/payments). */
+export const PLATFORM_ROLES = ['platform_admin'] as const satisfies readonly Role[];
+
 export const ROLE_LABELS: Record<Role, string> = {
   platform_admin: 'Platform Yöneticisi',
   management_company: 'Yönetim Firması',

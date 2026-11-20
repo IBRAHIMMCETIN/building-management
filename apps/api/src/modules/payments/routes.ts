@@ -2,7 +2,7 @@ import { type Context, Hono } from 'hono';
 import type { Authenticator } from '../../auth/claims.js';
 import { type Env, authenticateWith, handleError, readJson, requireRole } from '../../http/helpers.js';
 import type { FakePaymentProvider } from './fakeProvider.js';
-import { PAYMENT_ADMIN_ROLES, PAYMENT_ROLES, type PaymentsContext, type PaymentsService } from './service.js';
+import { PAYMENT_ADMIN_ROLES, PAYMENT_MANAGER_ROLES, PAYMENT_ROLES, type PaymentsContext, type PaymentsService } from './service.js';
 
 /**
  * Sakin: `/api/portal/payments/*` (JWT + `resident` rolu; apartman yalnizca JWT claim'inden)
@@ -149,6 +149,7 @@ function page(title: string, body: string): string {
 /**
  * Platform ekibi: `/api/admin/payments/*` (JWT + `platform_admin`; apartman yoldan gelir cunku
  * platform rolunun apartman claim'i yoktur). Her yazim AUDIT logu uretir.
+ *   GET   /apartments                        tum apartmanlar + alt uye isyeri durumu
  *   GET   /apartments/:apartmentId/account   alt uye isyeri kaydi
  *   POST  /apartments/:apartmentId/account   saglayicida alt uye isyeri olustur (KYC)
  *   PATCH /apartments/:apartmentId/account   durum (active/disabled) ve platform payi
@@ -163,6 +164,7 @@ export function paymentAdminRoutes({ authenticate, service }: { authenticate: Au
     c.header('Cache-Control', 'no-store');
   });
 
+  r.get('/apartments', async (c) => c.json(await service.listApartmentAccounts()));
   r.get('/apartments/:apartmentId/account', async (c) => c.json(await service.getAccount(c.req.param('apartmentId'))));
   r.post('/apartments/:apartmentId/account', async (c) =>
     c.json(await service.onboardSubMerchant({ userId: c.get('claims').userId }, c.req.param('apartmentId'), await readJson(c)), 201),
@@ -170,5 +172,37 @@ export function paymentAdminRoutes({ authenticate, service }: { authenticate: Au
   r.patch('/apartments/:apartmentId/account', async (c) =>
     c.json(await service.updateAccount({ userId: c.get('claims').userId }, c.req.param('apartmentId'), await readJson(c))),
   );
+  return r;
+}
+
+/**
+ * Yonetici (salt okunur): `/api/finance/online-payments/*` (JWT; apartman YALNIZCA claim'den).
+ *   GET /?status=&limit=&cursor=   apartmanin odeme niyetleri, en yeni once
+ *   GET /account                   online odeme durumu (alt uye anahtari gosterilmez)
+ */
+export function paymentManagerRoutes({ authenticate, service }: { authenticate: Authenticator; service: PaymentsService }) {
+  const r = new Hono<Env>();
+  r.onError(handleError);
+  r.use('*', authenticateWith(authenticate));
+  r.use('*', requireRole(PAYMENT_MANAGER_ROLES));
+  r.use('*', async (c, next) => {
+    if (!c.get('claims').apartmentId) {
+      return c.json({ error: 'forbidden', message: 'Aktif apartman baglami gerekli' }, 403);
+    }
+    await next();
+    c.header('Cache-Control', 'no-store');
+  });
+  const apt = (c: Context<Env>) => c.get('claims').apartmentId as string;
+
+  r.get('/', async (c) =>
+    c.json(
+      await service.listIntentsForManager(apt(c), {
+        status: c.req.query('status'),
+        limit: c.req.query('limit'),
+        cursor: c.req.query('cursor'),
+      }),
+    ),
+  );
+  r.get('/account', async (c) => c.json(await service.accountSummary(apt(c))));
   return r;
 }

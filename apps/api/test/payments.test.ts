@@ -21,6 +21,7 @@ import { loadPaymentsConfig } from '../src/modules/payments/config.js';
 import { createFakePaymentProvider } from '../src/modules/payments/fakeProvider.js';
 import { allocateSelection, buildQuote, platformFeeOf } from '../src/modules/payments/quote.js';
 import {
+  InvalidIntentCursorError,
   PaymentsConflictError,
   createPaymentsRepository,
   paymentKeys,
@@ -129,7 +130,8 @@ function setup(options: { provider?: boolean | 'live'; at?: string; customProvid
   const newId = () => `id${String(++n).padStart(4, '0')}`;
   const now = () => clock.now;
 
-  const core: Pick<CoreRepository, 'getUnit' | 'listUnits' | 'getBlock' | 'getSite'> = {
+  const core: Pick<CoreRepository, 'getUnit' | 'listUnits' | 'getBlock' | 'getSite' | 'listSiteIds'> = {
+    listSiteIds: async () => [APT, 'apt-yok'],
     getUnit: async (apt, id) => units.find((u) => u.siteId === apt && u.unitId === id),
     listUnits: async (apt) => units.filter((u) => u.siteId === apt),
     getBlock: async () => undefined,
@@ -393,7 +395,7 @@ describe('odeme - uctan uca (sahte saglayici)', () => {
 
     const cb = await w.payThroughProvider(intentId);
     expect(cb.status).toBe(303);
-    expect(cb.headers.get('location')).toBe(`https://web.test/portal/odeme/sonuc?intent=${intentId}`);
+    expect(cb.headers.get('location')).toBe(`https://web.test/app/odeme/sonuc?intent=${intentId}`);
 
     const status = await w.call('GET', `/api/portal/payments/${intentId}`, w.token('tenant-1'));
     expect(status.body).toMatchObject({ status: 'SUCCEEDED', paidAt: '2026-11-06', receiptNumbers: ['MKB-000001'] });
@@ -635,7 +637,7 @@ describe('odeme - idempotency ve dogrulama', () => {
       body,
     });
     expect(res.status).toBe(303);
-    expect(res.headers.get('location')).toBe(`https://web.test/portal/odeme/sonuc?${query}`);
+    expect(res.headers.get('location')).toBe(`https://web.test/app/odeme/sonuc?${query}`);
   });
 
   it('gecersiz TCKN 400; gecerli TCKN sandbox saglayicida test numarasiyla degisir ve hic saklanmaz', async () => {
@@ -1211,5 +1213,165 @@ describe('odeme - alt uye isyeri yonetimi (platform_admin)', () => {
     const down: PaymentProvider = { ...reject, registerSubMerchant: async () => { throw new PaymentProviderError('unavailable', 'x', true); } };
     const w2 = setup({ customProvider: down });
     expect((await w2.call('POST', `/api/admin/payments/apartments/${APT}/account`, admin, body)).status).toBe(502);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Web icin ekler: requiresGsmNumber, yonetici listesi/durum karti, platform apartman listesi
+// ---------------------------------------------------------------------------
+
+describe('odeme - web ekleri', () => {
+  it('quote: sandbox saglayicida telefon istenmez, canlida istenir', async () => {
+    const sandbox = setup();
+    await sandbox.charge('u1', 'occupant', TL(100), '2026-11-10', 'c1', '2026-11-01');
+    expect((await sandbox.call('GET', '/api/portal/payments/quote', sandbox.token('tenant-1'))).body.requiresGsmNumber).toBe(false);
+    const live = setup({ provider: 'live' });
+    await live.charge('u1', 'occupant', TL(100), '2026-11-10', 'c1', '2026-11-01');
+    expect((await live.call('GET', '/api/portal/payments/quote', live.token('tenant-1'))).body.requiresGsmNumber).toBe(true);
+    const off = setup({ provider: false });
+    await off.charge('u1', 'occupant', TL(100), '2026-11-10', 'c1', '2026-11-01');
+    expect((await off.call('GET', '/api/portal/payments/quote', off.token('tenant-1'))).body).toMatchObject({ onlinePaymentEnabled: false, requiresGsmNumber: false });
+  });
+
+  async function withIntents() {
+    const w = setup();
+    await w.charge('u1', 'occupant', TL(1000), '2026-11-10', 'c1', '2026-11-01');
+    await w.charge('u2', 'owner', TL(500), '2026-11-10', 'c2', '2026-11-01');
+    const a = (await w.call('POST', '/api/portal/payments', w.token('tenant-1'), { idempotencyKey: 'k-1', mode: 'total' })).body.intentId as string;
+    await w.payThroughProvider(a);
+    w.clock.now = new Date('2026-11-06T10:05:00.000Z');
+    const b = (await w.call('POST', '/api/portal/payments', w.token('owner-2'), { idempotencyKey: 'k-2', mode: 'total' })).body.intentId as string;
+    await w.payThroughProvider(b, 'failure');
+    w.clock.now = new Date('2026-11-06T10:10:00.000Z');
+    await w.charge('u1', 'occupant', TL(300), '2026-11-20', 'c3', '2026-11-06');
+    const c = (await w.call('POST', '/api/portal/payments', w.token('tenant-1'), { idempotencyKey: 'k-3', mode: 'total' })).body.intentId as string;
+    return { w, a, b, c };
+  }
+
+  it('yonetici listesi: en yeni once, durum filtresi, sayfalama; sakin ve platform rolu 403', async () => {
+    const { w, a, b, c } = await withIntents();
+    const mgr = w.token('mgr-1', 'apartment_manager');
+    const all = await w.call('GET', '/api/finance/online-payments', mgr);
+    expect(all.status).toBe(200);
+    expect(all.headers.get('cache-control')).toBe('no-store');
+    expect(all.body.items.map((i: { intentId: string }) => i.intentId)).toEqual([c, b, a]);
+    expect(all.body.items[2]).toMatchObject({
+      status: 'SUCCEEDED',
+      unitId: 'u1',
+      userId: 'tenant-1',
+      amount: TL(1000),
+      platformFee: 0,
+      providerPaymentId: 'fakepay-1',
+      receiptNumbers: ['MKB-000001'],
+      allocations: [{ liableParty: 'occupant', principal: TL(1000), lateFee: 0, amount: TL(1000) }],
+    });
+    expect(all.body.items[1]).toMatchObject({ status: 'FAILED', failure: { code: 'card_declined' } });
+    expect(JSON.stringify(all.body)).not.toMatch(/subMerchantKey|checkout|token/);
+
+    const failed = await w.call('GET', '/api/finance/online-payments?status=FAILED', mgr);
+    expect(failed.body.items.map((i: { intentId: string }) => i.intentId)).toEqual([b]);
+
+    const p1 = await w.call('GET', '/api/finance/online-payments?limit=2', mgr);
+    expect(p1.body.items).toHaveLength(2);
+    const p2 = await w.call('GET', `/api/finance/online-payments?limit=2&cursor=${p1.body.nextCursor}`, mgr);
+    expect(p2.body.items.map((i: { intentId: string }) => i.intentId)).toEqual([a]);
+    expect(p2.body.nextCursor).toBeUndefined();
+
+    expect((await w.call('GET', '/api/finance/online-payments?status=X', mgr)).status).toBe(400);
+    expect((await w.call('GET', '/api/finance/online-payments?limit=500', mgr)).status).toBe(400);
+    expect((await w.call('GET', '/api/finance/online-payments', w.token('obs-1', 'observer'))).status).toBe(200);
+    expect((await w.call('GET', '/api/finance/online-payments', w.token('tenant-1'))).status).toBe(403);
+    expect((await w.call('GET', '/api/finance/online-payments', w.token('ops-1', 'platform_admin', ''))).status).toBe(403);
+    expect((await w.call('GET', '/api/finance/online-payments')).status).toBe(401);
+  });
+
+  it('yonetici listesi tenant izolasyonlu: baska apartmanin yoneticisi bos liste gorur', async () => {
+    const { w } = await withIntents();
+    const other = await w.call('GET', '/api/finance/online-payments', w.token('mgr-2', 'apartment_manager', OTHER_APT));
+    expect(other.body.items).toEqual([]);
+  });
+
+  it('yonetici durum karti: kayit yok / aktif; alt uye anahtari donmez', async () => {
+    const w = setup();
+    const mgr = w.token('mgr-1', 'apartment_manager');
+    expect((await w.call('GET', '/api/finance/online-payments/account', mgr)).body).toEqual({
+      configured: true,
+      provider: 'fake',
+      sandbox: true,
+      status: 'not_registered',
+    });
+    await w.call('POST', `/api/admin/payments/apartments/${APT}/account`, w.token('ops-1', 'platform_admin', ''), {
+      email: 'yonetim@lale.test',
+      gsmNumber: '05321234567',
+      address: 'Lale Sk. 1, Kadıköy',
+      iban: 'TR330006100519786457841326',
+      taxOffice: 'Kadıköy',
+      legalCompanyTitle: 'Lale Apartmanı Yönetimi',
+      platformFeeBasisPoints: 150,
+    });
+    const res = await w.call('GET', '/api/finance/online-payments/account', mgr);
+    expect(res.body).toMatchObject({ status: 'active', ibanMasked: 'TR** **** **** **** **** **13 26', platformFeeBasisPoints: 150, subMerchantType: 'PRIVATE_COMPANY' });
+    expect(res.body.subMerchantKey).toBeUndefined();
+    const off = setup({ provider: false });
+    expect((await off.call('GET', '/api/finance/online-payments/account', off.token('mgr-1', 'apartment_manager'))).body).toEqual({
+      configured: false,
+      status: 'not_registered',
+    });
+  });
+
+  it('platform apartman listesi: siteler + hesap durumu, olmayan site atlanir; yalnizca platform_admin', async () => {
+    const w = setup();
+    const admin = w.token('ops-1', 'platform_admin', '');
+    const empty = await w.call('GET', '/api/admin/payments/apartments', admin);
+    expect(empty.body).toEqual({
+      provider: 'fake',
+      sandbox: true,
+      items: [{ apartmentId: APT, name: 'Lale Apartmani', city: 'Istanbul', district: 'Kadikoy', siteStatus: 'active', account: null }],
+    });
+    await w.payRepo.repo.putAccount({ ...paymentKeys.account(APT, 'fake'), entityType: 'PAYMENT_ACCOUNT', apartmentId: APT, provider: 'fake', subMerchantKey: 'sm-1', subMerchantType: 'PRIVATE_COMPANY', status: 'disabled', platformFeeBasisPoints: 0, ...audit });
+    const list = await w.call('GET', '/api/admin/payments/apartments', admin);
+    expect(list.body.items[0].account).toMatchObject({ status: 'disabled', subMerchantKey: 'sm-1' });
+    expect(list.body.items[0].account.PK).toBeUndefined();
+    expect((await w.call('GET', '/api/admin/payments/apartments', w.token('mgr-1', 'apartment_manager'))).status).toBe(403);
+  });
+});
+
+describe('odeme deposu - yonetici listesi (DynamoDB)', () => {
+  const ddbMock = mockClient(DynamoDBDocumentClient);
+  const repo = createPaymentsRepository();
+  beforeEach(() => {
+    ddbMock.reset();
+    resetDynamoCache();
+    process.env.DYNAMODB_TABLE_NAME = 'bm-test-table';
+    process.env.AWS_REGION = 'eu-north-1';
+    process.env.DYNAMODB_ENDPOINT = '';
+  });
+  const intent = (id: string, apt = APT) => ({ PK: `APT#${apt}`, SK: `PI#${id}`, entityType: 'PAYMENT_INTENT', intentId: id, apartmentId: apt });
+
+  it('en yeni once, durum filtresiyle, limit dolana kadar sayfalar; imlec doner', async () => {
+    ddbMock
+      .on(QueryCommand)
+      .resolvesOnce({ Items: [intent('3')], LastEvaluatedKey: { PK: `APT#${APT}`, SK: 'PI#3' } })
+      .resolvesOnce({ Items: [intent('1')], LastEvaluatedKey: { PK: `APT#${APT}`, SK: 'PI#1' } });
+    const out = await repo.listIntents(APT, { status: 'FAILED', limit: 2 });
+    expect(out.items.map((i) => i.intentId)).toEqual(['3', '1']);
+    expect(Buffer.from(out.cursor!, 'base64url').toString()).toBe(JSON.stringify({ PK: `APT#${APT}`, SK: 'PI#1' }));
+    const input = ddbMock.commandCalls(QueryCommand)[0]!.args[0].input;
+    expect(input).toMatchObject({
+      KeyConditionExpression: '#pk = :pk AND begins_with(#sk, :pfx)',
+      FilterExpression: '#status = :status',
+      ExpressionAttributeValues: { ':pk': `APT#${APT}`, ':pfx': 'PI#', ':status': 'FAILED' },
+      ScanIndexForward: false,
+      Limit: 2,
+    });
+    expect(ddbMock.commandCalls(QueryCommand)[1]!.args[0].input).toMatchObject({ Limit: 1, ExclusiveStartKey: { PK: `APT#${APT}`, SK: 'PI#3' } });
+  });
+
+  it('baska apartmanin veya baska kayit turunun imleci reddedilir', async () => {
+    const enc = (k: object) => Buffer.from(JSON.stringify(k)).toString('base64url');
+    await expect(repo.listIntents(APT, { limit: 5, cursor: enc({ PK: 'APT#apt-2', SK: 'PI#1' }) })).rejects.toBeInstanceOf(InvalidIntentCursorError);
+    await expect(repo.listIntents(APT, { limit: 5, cursor: enc({ PK: `APT#${APT}`, SK: 'TX#1' }) })).rejects.toBeInstanceOf(InvalidIntentCursorError);
+    await expect(repo.listIntents(APT, { limit: 5, cursor: 'bozuk' })).rejects.toBeInstanceOf(InvalidIntentCursorError);
+    expect(ddbMock.commandCalls(QueryCommand)).toHaveLength(0);
   });
 });

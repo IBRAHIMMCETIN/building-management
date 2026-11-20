@@ -1,6 +1,7 @@
 import { ReceiptText } from 'lucide-react';
 import { useMemo } from 'react';
 import { ChangeUnitLink, PortalQueryState } from '@/components/portal/PortalQueryState';
+import { PayOnlineButton } from '@/components/portal/PayOnlineButton';
 import { PortalStatusBadge } from '@/components/portal/PortalStatusBadge';
 import { Alert, Badge, Button, Card, Skeleton } from '@/components/ui';
 import { usePortalUnit } from '@/context/PortalUnitContext';
@@ -81,8 +82,11 @@ function SummaryCard() {
           </div>
         ) : null}
       </dl>
-      <div className="flex justify-end">
-        <ChangeUnitLink />
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <PayOnlineButton />
+        <span className="ml-auto">
+          <ChangeUnitLink />
+        </span>
       </div>
     </Card>
   );

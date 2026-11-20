@@ -27,9 +27,17 @@ import {
   buildQuote,
   receivableAccountId,
 } from './quote.js';
-import { type PaymentsRepository, PaymentsConflictError, paymentKeys, paymentsRepository } from './repository.js';
 import {
+  InvalidIntentCursorError,
+  type PaymentsRepository,
+  PaymentsConflictError,
+  paymentKeys,
+  paymentsRepository,
+} from './repository.js';
+import {
+  INTENT_STATUSES,
   type IntentKeyRecord,
+  type IntentStatus,
   MAX_PLATFORM_FEE_BASIS_POINTS,
   PAYMENT_MODES,
   type PaymentAccount,
@@ -83,6 +91,12 @@ export class PaymentsError extends Error {
 export const PAYMENT_ROLES: readonly Role[] = ['resident'];
 /** Alt uye isyeri (KYC) kaydi yalnizca platform ekibi tarafindan yapilir. */
 export const PAYMENT_ADMIN_ROLES: readonly Role[] = ['platform_admin'];
+/** Apartmanin online odemelerini goren roller (finans okuma rolleriyle ayni; salt okunur). */
+export const PAYMENT_MANAGER_ROLES: readonly Role[] = ['apartment_manager', 'management_company', 'observer'];
+
+/** Odeme sonrasi donus sayfasi (web: sakin rotalari /app altinda). */
+export const PAYMENT_RESULT_PATH = '/app/odeme/sonuc';
+const MAX_INTENT_PAGE = 100;
 
 export type PaymentsContext = { apartmentId: string; userId: string; role: Role };
 
@@ -97,7 +111,7 @@ export type PaymentsServiceDeps = {
   finance: Pick<FinanceService, 'recordOnlinePayment'>;
   /** Alici adi/e-postasi (sakin dizini, `PERSON#`) ve apartman adresi. */
   people: Pick<PersonRepository, 'get'>;
-  core: Pick<CoreRepository, 'getSite'>;
+  core: Pick<CoreRepository, 'getSite' | 'listSiteIds'>;
   /** Verilmezse online odeme kapali (quote calisir, odeme baslatilamaz). */
   provider?: PaymentProvider;
   /** API'nin disaridan erisilen adresi (saglayici callback'i buraya POST eder). */
@@ -355,7 +369,14 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
       lateFeeMonthlyBasisPoints: data.lateFeeMonthlyBasisPoints,
     });
     const account = await activeAccount(ctx.apartmentId);
-    return { unitId: data.unit.unitId, currency: 'TRY' as const, onlinePaymentEnabled: Boolean(account), ...q };
+    return {
+      unitId: data.unit.unitId,
+      currency: 'TRY' as const,
+      onlinePaymentEnabled: Boolean(account),
+      // Canli saglayicida telefon zorunlu; sandbox'ta test degeri kullanilir (alan gizlenir).
+      requiresGsmNumber: Boolean(provider && !provider.sandbox),
+      ...q,
+    };
   }
 
   // ----- Niyet olusturma -----
@@ -664,7 +685,7 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
   // ----- Saglayici callback'i (kimliksiz; tarayici POST eder) -----
 
   const resultUrl = (params: Record<string, string>) =>
-    `${webBase}/portal/odeme/sonuc?${new URLSearchParams(params).toString()}`;
+    `${webBase}${PAYMENT_RESULT_PATH}?${new URLSearchParams(params).toString()}`;
 
   /**
    * Kimlik dogrulamasi yoktur; guven, sonucun saglayicidan token ile SORGULANMASINDAN ve
@@ -926,9 +947,111 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
     return accountView(next);
   }
 
+  // ----- Yonetici: apartmanin online odemeleri (salt okunur) -----
+
+  /** Yonetici gorunumu: sakin goruntusundan farkli olarak niyet sahibi, platform payi ve inceleme nedeni de doner. */
+  function managerView(i: PaymentIntent) {
+    return {
+      intentId: i.intentId,
+      status: i.status,
+      mode: i.mode,
+      unitId: i.unitId,
+      userId: i.userId,
+      currency: 'TRY' as const,
+      amount: i.amount,
+      platformFee: i.platformFee,
+      allocations: i.allocations.map((a) => ({
+        liableParty: a.liableParty,
+        principal: a.principal,
+        lateFee: a.lateFee,
+        amount: a.amount,
+      })),
+      provider: i.provider,
+      providerPaymentId: i.providerPaymentId,
+      paidAt: i.paidAt,
+      paymentIds: i.paymentIds,
+      receiptNumbers: i.receiptNumbers,
+      failure: i.failure ? { code: i.failure.code, message: i.failure.message, at: i.failure.at } : undefined,
+      review: i.review ? { reason: i.review.reason, at: i.review.at } : undefined,
+      createdAt: i.createdAt,
+      updatedAt: i.updatedAt,
+    };
+  }
+
+  async function listIntentsForManager(
+    apartmentId: string,
+    query: { status?: string; limit?: string; cursor?: string } = {},
+  ) {
+    let status: IntentStatus | undefined;
+    if (query.status !== undefined && query.status !== '') {
+      if (!(INTENT_STATUSES as readonly string[]).includes(query.status)) {
+        throw new ValidationError(`status şu değerlerden biri olmalıdır: ${INTENT_STATUSES.join(', ')}`, 'status');
+      }
+      status = query.status as IntentStatus;
+    }
+    const limit = query.limit === undefined || query.limit === '' ? 25 : Number(query.limit);
+    if (!Number.isInteger(limit) || limit < 1 || limit > MAX_INTENT_PAGE) {
+      throw new ValidationError(`limit 1-${MAX_INTENT_PAGE} arasında olmalıdır`, 'limit');
+    }
+    try {
+      const page = await repo.listIntents(apartmentId, { status, limit, cursor: query.cursor || undefined });
+      return { items: page.items.map(managerView), nextCursor: page.cursor };
+    } catch (err) {
+      if (err instanceof InvalidIntentCursorError) throw new ValidationError('Geçersiz sayfa imleci', 'cursor');
+      throw err;
+    }
+  }
+
+  /** Yonetici icin online odeme durumu: anahtar (subMerchantKey) gosterilmez. */
+  async function accountSummary(apartmentId: string) {
+    if (!provider) return { configured: false as const, status: 'not_registered' as const };
+    const account = await repo.getAccount(apartmentId, provider.name);
+    if (!account) return { configured: true as const, provider: provider.name, sandbox: provider.sandbox, status: 'not_registered' as const };
+    return {
+      configured: true as const,
+      provider: provider.name,
+      sandbox: provider.sandbox,
+      status: account.status,
+      subMerchantType: account.subMerchantType,
+      ibanMasked: account.ibanMasked,
+      platformFeeBasisPoints: account.platformFeeBasisPoints,
+      updatedAt: account.updatedAt,
+    };
+  }
+
+  // ----- Platform: apartman listesi + alt uye isyeri durumu -----
+
+  async function listApartmentAccounts() {
+    const ids = await deps.core.listSiteIds();
+    const rows = await Promise.all(
+      ids.map(async (apartmentId) => {
+        const [site, account] = await Promise.all([
+          deps.core.getSite(apartmentId),
+          provider ? repo.getAccount(apartmentId, provider.name) : Promise.resolve(undefined),
+        ]);
+        if (!site) return undefined;
+        return {
+          apartmentId,
+          name: site.name,
+          city: site.address.city,
+          district: site.address.district,
+          siteStatus: site.status,
+          account: account ? accountView(account) : null,
+        };
+      }),
+    );
+    const items = rows
+      .filter((r): r is NonNullable<typeof r> => Boolean(r))
+      .sort((a, b) => a.name.localeCompare(b.name, 'tr'));
+    return { provider: provider?.name ?? null, sandbox: provider?.sandbox ?? null, items };
+  }
+
   return {
     provider,
     quote,
+    listIntentsForManager,
+    accountSummary,
+    listApartmentAccounts,
     createIntent,
     getIntent,
     handleCallback,

@@ -13,10 +13,13 @@ import { LoginPage } from '@/pages/auth/LoginPage';
 import { SelectContextPage } from '@/pages/auth/SelectContextPage';
 import { ForbiddenPage, NotFoundPage, RouteErrorPage } from '@/pages/errors/ErrorPages';
 import { PlaceholderPage } from '@/pages/PlaceholderPage';
+import { PlatformPaymentsPage } from '@/pages/platform/payments/PlatformPaymentsPage';
 import { ResidentAnnouncementsPage } from '@/pages/resident/AnnouncementsPage';
 import { DuesPage } from '@/pages/resident/DuesPage';
+import { PaymentPage } from '@/pages/resident/payment/PaymentPage';
+import { PaymentResultPage } from '@/pages/resident/payment/PaymentResultPage';
 import { ResidentHomePage } from '@/pages/resident/ResidentHomePage';
-import { ADMIN_ROLES, RESIDENT_ROLES } from '@/types/roles';
+import { ADMIN_ROLES, PLATFORM_ROLES, RESIDENT_ROLES } from '@/types/roles';
 import { RedirectIfAuthenticated, RequireRole, RequireSession, RootRedirect } from './guards';
 
 export const router = createBrowserRouter([
@@ -55,6 +58,10 @@ export const router = createBrowserRouter([
               { path: 'announcements', element: <AnnouncementsPage /> },
               { path: 'import', element: <ImportPage /> },
               { path: 'settings', element: <SettingsPage /> },
+              {
+                element: <RequireRole roles={PLATFORM_ROLES} />,
+                children: [{ path: 'payments', element: <PlatformPaymentsPage /> }],
+              },
             ],
           },
         ],
@@ -68,6 +75,8 @@ export const router = createBrowserRouter([
             children: [
               { index: true, element: <ResidentHomePage /> },
               { path: 'dues', element: <DuesPage /> },
+              { path: 'odeme', element: <PaymentPage /> },
+              { path: 'odeme/sonuc', element: <PaymentResultPage /> },
               { path: 'announcements', element: <ResidentAnnouncementsPage /> },
             ],
           },

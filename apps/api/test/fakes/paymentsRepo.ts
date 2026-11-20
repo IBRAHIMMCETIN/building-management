@@ -34,6 +34,14 @@ export function createFakePaymentsRepo(docs: Map<string, Doc>) {
       [...docs.values()]
         .filter((d) => d.PK === `APT#${apt}` && d.SK >= `PI#${from}` && d.SK <= `PI#${to}`)
         .sort((a, b) => a.SK.localeCompare(b.SK)) as unknown as PaymentIntent[],
+    listIntents: async (apt, q) => {
+      const all = [...docs.values()]
+        .filter((d) => d.PK === `APT#${apt}` && d.SK.startsWith('PI#') && (!q.status || d.status === q.status))
+        .sort((a, b) => b.SK.localeCompare(a.SK)) as unknown as PaymentIntent[];
+      const start = q.cursor ? Number(q.cursor) : 0;
+      const end = start + q.limit;
+      return { items: all.slice(start, end), cursor: end < all.length ? String(end) : undefined };
+    },
     getAccount: async (apt, provider) => docs.get(`APT#${apt}|PAYACCT#${provider}`) as PaymentAccount | undefined,
     putAccount: async (account, expectedVersion) => {
       const cur = docs.get(key(account));
