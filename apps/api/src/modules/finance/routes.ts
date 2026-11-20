@@ -1,21 +1,26 @@
 import { type Context, Hono } from 'hono';
 import type { Authenticator, Role } from '../../auth/claims.js';
 import { type Env, authenticateWith, handleError, publicView, readJson, requireRole } from '../../http/helpers.js';
+import type { CariClosure, ClosureService } from './closures.js';
 import type { FinanceContext, FinanceService } from './service.js';
 
 const READ_ROLES: readonly Role[] = ['apartment_manager', 'management_company', 'observer'];
 const WRITE_ROLES: readonly Role[] = ['apartment_manager', 'management_company'];
 
-export type FinanceRoutesDeps = { authenticate: Authenticator; service: FinanceService };
+export type FinanceRoutesDeps = { authenticate: Authenticator; service: FinanceService; closures?: ClosureService };
 
 /**
- * Uclar: GET /accounts, /summary, /dues-status, /transactions?from&to&limit&cursor, /balance/:unitId
+ * Uclar: GET /accounts, /summary, /dues-status, /former-accounts, /transactions?from&to&limit&cursor, /balance/:unitId
  *        POST /accounts, /dues, /payments, /expenses, /transactions/:id/reversal
+ * Tasinmada cari kapama:
+ *        GET  /units/:unitId/closures/preview?party&moveOutDate&userIds   (yazmaz)
+ *        GET  /units/:unitId/closures, /closures/:closureId
+ *        POST /units/:unitId/closures, /closures/:closureId/reverse
  *
  * Tenant izolasyonu: `apartmentId` YALNIZCA JWT claim'inden gelir; URL/govde ile
  * degistirilemez. Claim'de apartmentId yoksa (ornegin apartman secilmemis) 403 doner.
  */
-export function financeRoutes({ authenticate, service }: FinanceRoutesDeps) {
+export function financeRoutes({ authenticate, service, closures }: FinanceRoutesDeps) {
   const r = new Hono<Env>();
   r.use('*', authenticateWith(authenticate));
   r.use('*', async (c, next) => {
@@ -96,6 +101,9 @@ export function financeRoutes({ authenticate, service }: FinanceRoutesDeps) {
 
   r.get('/dues-status', requireRole(READ_ROLES), async (c) => c.json(await service.duesStatus(ctx(c))));
 
+  // Ayrilan sakin/malik carileri (tasinmada kapama); `?all=true` kapanmis olanlar dahil.
+  r.get('/former-accounts', requireRole(READ_ROLES), async (c) => c.json(await service.formerAccounts(ctx(c), { all: c.req.query('all') })));
+
   r.get('/transactions', requireRole(READ_ROLES), async (c) =>
     c.json(
       await service.listTransactions(ctx(c), {
@@ -110,6 +118,31 @@ export function financeRoutes({ authenticate, service }: FinanceRoutesDeps) {
   r.get('/balance/:unitId', requireRole(READ_ROLES), async (c) => {
     return c.json(await service.getUnitBalance(ctx(c), c.req.param('unitId')));
   });
+
+  // ----- Tasinmada cari kapama -----
+  if (closures) {
+    const view = (c: CariClosure) => publicView(c);
+    r.get('/units/:unitId/closures/preview', requireRole(WRITE_ROLES), async (c) =>
+      c.json(
+        await closures.preview(ctx(c), c.req.param('unitId'), {
+          party: c.req.query('party'),
+          moveOutDate: c.req.query('moveOutDate'),
+          userIds: c.req.query('userIds'),
+        }),
+      ),
+    );
+    r.get('/units/:unitId/closures', requireRole(READ_ROLES), async (c) =>
+      c.json({ items: (await closures.listForUnit(ctx(c), c.req.param('unitId'))).map(view) }),
+    );
+    r.post('/units/:unitId/closures', requireRole(WRITE_ROLES), async (c) => {
+      const result = await closures.create(ctx(c), c.req.param('unitId'), await readJson(c));
+      return c.json({ replayed: result.replayed, closure: view(result.closure) }, result.replayed ? 200 : 201);
+    });
+    r.get('/closures/:closureId', requireRole(READ_ROLES), async (c) => c.json(view(await closures.get(ctx(c), c.req.param('closureId')))));
+    r.post('/closures/:closureId/reverse', requireRole(WRITE_ROLES), async (c) =>
+      c.json({ closure: view(await closures.reverse(ctx(c), c.req.param('closureId'), await readJson(c))) }),
+    );
+  }
 
   return r;
 }

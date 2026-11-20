@@ -18,7 +18,7 @@ import {
   tenantPk,
   toDataAccessError,
 } from '../../config/dynamodb.js';
-import type { TableKeys } from '../core/types.js';
+import type { IsoDate, TableKeys } from '../core/types.js';
 import type {
   Account,
   Expense,
@@ -71,18 +71,25 @@ const MAX_ATTEMPTS = 3;
  * precondition: `replaceRecords` icindeki bir belgenin surumu degismis (ornegin odeme niyeti
  * baska bir istekle sonuclandirilmis). `label` hangi belge oldugunu soyler.
  */
-export type LedgerConflictReason = 'duplicate' | 'version' | 'counter' | 'account_missing' | 'precondition';
+/**
+ * closed: hesap `closedThrough` tarihine kadar kapatilmis (cari kapama); o tarih ve oncesine
+ * kayit yazilamaz. `label` hesap kimligidir.
+ */
+export type LedgerConflictReason = 'duplicate' | 'version' | 'counter' | 'account_missing' | 'precondition' | 'closed';
 
 /** Beklenen, servis katmaninin ele alacagi yazim cakismalari. */
 export class LedgerConflictError extends Error {
   readonly reason: LedgerConflictReason;
   readonly label?: string;
+  /** reason=closed: hesabin kapatildigi tarih. */
+  readonly closedThrough?: string;
 
-  constructor(reason: LedgerConflictReason, message = `Defter cakismasi: ${reason}`, label?: string) {
+  constructor(reason: LedgerConflictReason, message = `Defter cakismasi: ${reason}`, label?: string, closedThrough?: string) {
     super(message);
     this.name = 'LedgerConflictError';
     this.reason = reason;
     this.label = label;
+    this.closedThrough = closedThrough;
   }
 }
 
@@ -127,6 +134,13 @@ export type PostBatchInput = {
   counter?: { name: string; expected: number; increment?: number };
   records?: (Payment | Expense)[];
   replaceRecords?: ReplaceRecord[];
+  /** Yeni belgeler (ornegin cari kapama kaydi): yalnizca yoksa yazilir. */
+  newDocs?: (TableKeys & { entityType: string })[];
+  /**
+   * Hesap alanlari (cari kapama kilidi). `closedThrough: null` alani kaldirir. `bypassLock`:
+   * bu yazimda o hesabin kilit kosulu uygulanmaz (yalnizca kapamanin geri alinmasi).
+   */
+  accountPatches?: Record<string, { closedThrough: IsoDate | null; bypassLock?: boolean }>;
 };
 
 /** DynamoDB TransactWriteItems ust siniri. */
@@ -207,9 +221,10 @@ export async function postTransaction(input: PostInput): Promise<void> {
  * surumlu belgeler. Tek islemde `postTransaction` ile birebir aynidir.
  */
 export async function postBatch(input: PostBatchInput): Promise<void> {
-  const { transactions, idempotency, expectedVersions = {}, counter, records = [], replaceRecords = [] } = input;
-  if (transactions.length === 0) throw new Error('En az bir islem gerekli');
-  const apartmentId = transactions[0]!.siteId;
+  const { transactions, idempotency, expectedVersions = {}, counter, records = [], replaceRecords = [], newDocs = [], accountPatches = {} } = input;
+  const anchor = transactions[0] ?? newDocs[0] ?? replaceRecords[0]?.item;
+  if (!anchor) throw new Error('En az bir islem veya belge gerekli');
+  const apartmentId = transactions[0]?.siteId ?? anchor.PK.slice(anchor.PK.indexOf('#') + 1);
   const pk = tenantPk(apartmentId);
   const ids = new Set<string>();
   for (const tx of transactions) {
@@ -220,21 +235,27 @@ export async function postBatch(input: PostBatchInput): Promise<void> {
     if (ids.has(tx.transactionId)) throw new Error(`Ayni islem iki kez verildi: ${tx.transactionId}`);
     ids.add(tx.transactionId);
   }
-  for (const doc of [...records, ...replaceRecords.map((r) => r.item)]) {
+  for (const doc of [...records, ...replaceRecords.map((r) => r.item), ...newDocs]) {
     if (doc.PK !== pk) throw new Error('Belge anahtari tenant ile uyusmuyor');
   }
   const increment = counter?.increment ?? 1;
   if (counter && (!Number.isSafeInteger(increment) || increment < 1)) throw new Error('Gecersiz sayac artisi');
 
   const deltas = new Map<string, number>();
+  /** Hesap basina bu yazimdaki en erken islem tarihi (kapama kilidi kosulu). */
+  const minDate = new Map<string, IsoDate>();
   for (const tx of transactions) {
     for (const line of tx.lines) {
       const signed = line.side === 'debit' ? line.amount : -line.amount;
       deltas.set(line.accountId, (deltas.get(line.accountId) ?? 0) + signed);
+      const cur = minDate.get(line.accountId);
+      if (!cur || tx.date < cur) minDate.set(line.accountId, tx.date);
     }
   }
+  for (const accountId of Object.keys(accountPatches)) if (!deltas.has(accountId)) deltas.set(accountId, 0);
 
-  const first = transactions[0]!;
+  const createdAt =
+    transactions[0]?.createdAt ?? ((anchor as unknown as { updatedAt?: string; createdAt?: string }).updatedAt ?? new Date().toISOString());
   const { client, tableName } = getDynamo();
   const items: NonNullable<TransactWriteCommandInput['TransactItems']> = [];
   const labels: Label[] = [];
@@ -252,12 +273,12 @@ export async function postBatch(input: PostBatchInput): Promise<void> {
         Item: {
           ...financeKeys.idempotency(apartmentId, idempotency.id),
           entityType: 'IDEMPOTENCY',
-          transactionId: first.transactionId,
+          transactionId: transactions[0]?.transactionId,
           recordId: idempotency.recordId,
           ...(idempotency.transactionIds ? { transactionIds: idempotency.transactionIds } : {}),
           ...(idempotency.recordIds ? { recordIds: idempotency.recordIds } : {}),
           fingerprint: idempotency.fingerprint,
-          createdAt: first.createdAt,
+          createdAt,
         },
         ConditionExpression: notExists,
       },
@@ -272,27 +293,40 @@ export async function postBatch(input: PostBatchInput): Promise<void> {
 
   for (const [accountId, delta] of deltas) {
     const expected = expectedVersions[accountId];
+    const patch = accountPatches[accountId];
+    const lockDate = patch?.bypassLock ? undefined : minDate.get(accountId);
+    const conditions = ['attribute_exists(PK)'];
+    if (expected !== undefined) conditions.push('#version = :expectedVersion');
+    // Kapama kilidi: hesaba kapatilmis tarih (dahil) ve oncesine kayit yazilamaz.
+    if (lockDate) conditions.push('(attribute_not_exists(#closedThrough) OR #closedThrough < :lockDate)');
+    const sets = ['#updatedAt = :now'];
+    let remove = '';
+    if (patch) {
+      if (patch.closedThrough === null) remove = ' REMOVE #closedThrough';
+      else sets.push('#closedThrough = :closedThrough');
+    }
+    const usesClosed = Boolean(lockDate || patch);
     add(
       { kind: 'account', accountId },
       {
         Update: {
           TableName: tableName,
           Key: financeKeys.account(apartmentId, accountId),
-          UpdateExpression: 'SET #updatedAt = :now ADD #balance :delta, #version :one',
-          ConditionExpression:
-            expected === undefined
-              ? 'attribute_exists(PK)'
-              : 'attribute_exists(PK) AND #version = :expectedVersion',
+          UpdateExpression: `SET ${sets.join(', ')} ADD #balance :delta, #version :one${remove}`,
+          ConditionExpression: conditions.join(' AND '),
           ExpressionAttributeNames: {
             '#updatedAt': 'updatedAt',
             '#balance': 'balance',
             '#version': 'version',
+            ...(usesClosed ? { '#closedThrough': 'closedThrough' } : {}),
           },
           ExpressionAttributeValues: {
-            ':now': first.createdAt,
+            ':now': createdAt,
             ':delta': delta,
             ':one': 1,
             ...(expected === undefined ? {} : { ':expectedVersion': expected }),
+            ...(lockDate ? { ':lockDate': lockDate } : {}),
+            ...(patch && patch.closedThrough !== null ? { ':closedThrough': patch.closedThrough } : {}),
           },
         },
       },
@@ -311,7 +345,7 @@ export async function postBatch(input: PostBatchInput): Promise<void> {
           ExpressionAttributeNames: { '#value': 'value', '#updatedAt': 'updatedAt' },
           ExpressionAttributeValues: {
             ':next': counter.expected + increment,
-            ':now': first.createdAt,
+            ':now': createdAt,
             ...(counter.expected === 0 ? {} : { ':expected': counter.expected }),
           },
         },
@@ -321,6 +355,10 @@ export async function postBatch(input: PostBatchInput): Promise<void> {
 
   for (const record of records) {
     add({ kind: 'record' }, { Put: { TableName: tableName, Item: record, ConditionExpression: notExists } });
+  }
+
+  for (const doc of newDocs) {
+    add({ kind: 'record' }, { Put: { TableName: tableName, Item: doc, ConditionExpression: notExists } });
   }
 
   for (const r of replaceRecords) {
@@ -359,6 +397,17 @@ export async function postBatch(input: PostBatchInput): Promise<void> {
           throw new LedgerConflictError('precondition', `Belge degismis: ${label.label}`, label.label);
         }
         if (label?.kind === 'account') {
+          // Hangi kosul tuttu? Kilit tarihini okuyarak ayirt et (nadir yol; tek okuma).
+          const lockDate = accountPatches[label.accountId]?.bypassLock ? undefined : minDate.get(label.accountId);
+          if (lockDate) {
+            const acc = await getTenantItem<Account>(financeKeys.account(apartmentId, label.accountId)).catch(() => undefined);
+            if (acc?.closedThrough && acc.closedThrough >= lockDate) {
+              throw new LedgerConflictError('closed', `Hesap ${acc.closedThrough} tarihine kadar kapatilmis`, label.accountId, acc.closedThrough);
+            }
+            if (acc && expectedVersions[label.accountId] === undefined) {
+              throw new LedgerConflictError('version', `Hesap: ${label.accountId}`);
+            }
+          }
           throw new LedgerConflictError(
             expectedVersions[label.accountId] === undefined ? 'account_missing' : 'version',
             `Hesap: ${label.accountId}`,

@@ -12,6 +12,7 @@ import { cn } from '@/lib/cn';
 import { formatTRY, parseTRYToKurus } from '@/lib/money';
 import { type ChargeForm, type ChargeValues, chargeSchema, defaultDueDate, defaultDuesDescription, todayIstanbul } from './schemas';
 import { useUnitOptions } from './useUnitOptions';
+import { vacancyNotes } from './vacancy';
 
 type Props = { open: boolean; onClose: () => void };
 
@@ -144,6 +145,12 @@ export function ChargeDuesDialog({ open, onClose }: Props) {
           {done.mode === 'bulk' && done.exempt.length > 0 && (
             <p className="text-small text-muted">{done.exempt.length} daire muaf tutuldu.</p>
           )}
+          {done.mode === 'bulk' && done.vacant.length > 0 && (
+            <p className="text-small text-muted">{done.vacant.length} boş daire için borç kat malikine yazıldı.</p>
+          )}
+          {done.mode === 'single' && done.transaction.vacant && (
+            <p className="text-small text-muted">Tahakkuk tarihinde dairede oturan olmadığı için borç kat malikine yazıldı.</p>
+          )}
           {done.replayed && <p className="text-small text-muted">Bu tahakkuk daha önce yapılmıştı; tekrar yazılmadı.</p>}
           <Button onClick={onClose}>Tamam</Button>
         </div>
@@ -259,6 +266,7 @@ export function ChargeDuesDialog({ open, onClose }: Props) {
                                 .map((u) => (u.reason ? `${unitLabel(u)} (${u.reason})` : unitLabel(u)))
                                 .join(', ')}${preview.data.exempt.length > 5 ? ` ve ${preview.data.exempt.length - 5} daire daha` : ''}`
                             : null,
+                          ...(preview.data ? vacancyNotes(preview.data, unitLabel) : []),
                         ]
                           .filter(Boolean)
                           .join(' · ')}
@@ -311,7 +319,7 @@ export function ChargeDuesDialog({ open, onClose }: Props) {
             error={errors.liableParty?.message}
             hint={
               party === 'occupant'
-                ? 'İşletme giderleri (aidat, ısınma, temizlik): oturan kişiye yazılır.'
+                ? 'İşletme giderleri (aidat, ısınma, temizlik): oturan kişiye yazılır; tahakkuk tarihinde daire boşsa kat malikine.'
                 : 'Demirbaş ve yatırım giderleri (mantolama, asansör yenileme): kat malikine yazılır.'
             }
           >

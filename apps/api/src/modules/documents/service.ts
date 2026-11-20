@@ -110,7 +110,9 @@ export function createDocumentsService(overrides: Partial<DocumentsServiceDeps> 
         apartmentName: site?.name ?? 'Apartman Yönetimi',
         apartmentAddress: address,
         unitLabel: unit ? (block ? `${block.name} · Daire ${unit.number}` : `Daire ${unit.number}`) : payment.unitId,
-        partyLabel: PARTY_LABEL[payment.liableParty],
+        partyLabel: payment.receivableAccountId
+          ? `Ayrılan ${payment.liableParty === 'owner' ? 'kat maliki' : 'sakin (kiracı)'} carisi`
+          : PARTY_LABEL[payment.liableParty],
         payerName: payment.payerName,
         methodLabel: METHOD_LABEL[payment.method],
         paidAt: payment.paidAt,

@@ -3,7 +3,7 @@ import {
   ConditionalCheckFailedException,
   TransactionCanceledException,
 } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, TransactWriteCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, GetCommand, TransactWriteCommand } from '@aws-sdk/lib-dynamodb';
 import { mockClient } from 'aws-sdk-client-mock';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { createApp } from '../src/app.js';
@@ -185,7 +185,9 @@ describe('finance repository - postTransaction', () => {
     expect(recv.Key).toEqual({ PK: 'APT#apt-1', SK: 'ACCT#recv-u1-owner' });
     expect(recv.ExpressionAttributeValues![':delta']).toBe(150050); // borc: +
     expect(income.ExpressionAttributeValues![':delta']).toBe(-150050); // alacak: -
-    expect(recv.ConditionExpression).toBe('attribute_exists(PK)');
+    // Kapama kilidi: islem tarihi hesabin kapatildigi tarihten sonra olmali.
+    expect(recv.ConditionExpression).toBe('attribute_exists(PK) AND (attribute_not_exists(#closedThrough) OR #closedThrough < :lockDate)');
+    expect(recv.ExpressionAttributeValues![':lockDate']).toBe('2026-11-01');
     expect(income.ConditionExpression).toContain('#version = :expectedVersion');
     expect(income.ExpressionAttributeValues![':expectedVersion']).toBe(7);
   });
@@ -261,6 +263,48 @@ describe('finance repository - postTransaction', () => {
       CancellationReasons: codes.map((Code) => ({ Code })),
       ...meta,
     });
+
+  it('cari kapama: hesap yamasi (kilit SET/REMOVE) ve yeni belge ayni atomik yazimda; islemsiz yazim mumkun', async () => {
+    ddbMock.on(TransactWriteCommand).resolves({});
+    const closureDoc = { PK: 'APT#apt-1', SK: 'CLOSURE#c1', entityType: 'CARI_CLOSURE', updatedAt: NOW.toISOString() };
+    await repo.postBatch({
+      transactions: [tx()],
+      idempotency,
+      newDocs: [closureDoc],
+      accountPatches: { 'recv-u1-owner': { closedThrough: '2026-10-31' } },
+    });
+    const list = items();
+    const recv = list.find((i) => i.Update?.Key?.SK === 'ACCT#recv-u1-owner')!.Update!;
+    expect(recv.UpdateExpression).toBe('SET #updatedAt = :now, #closedThrough = :closedThrough ADD #balance :delta, #version :one');
+    expect(recv.ExpressionAttributeValues![':closedThrough']).toBe('2026-10-31');
+    // Kosul eski degere bakar: kapama kendi tarihine yazabilir (eski kilit < islem tarihi).
+    expect(recv.ConditionExpression).toContain('#closedThrough < :lockDate');
+    expect(list.find((i) => i.Put?.Item?.SK === 'CLOSURE#c1')!.Put!.ConditionExpression).toBe('attribute_not_exists(PK)');
+
+    ddbMock.reset();
+    ddbMock.on(TransactWriteCommand).resolves({});
+    await repo.postBatch({
+      transactions: [],
+      idempotency: { id: 'rev-1', fingerprint: 'fp' },
+      replaceRecords: [{ item: { PK: 'APT#apt-1', SK: 'CLOSURE#c1', version: 2 }, expectedVersion: 1, label: 'closure' }],
+      accountPatches: { 'recv-u1-owner': { closedThrough: null, bypassLock: true } },
+    });
+    const patchOnly = items().find((i) => i.Update)!.Update!;
+    expect(patchOnly.UpdateExpression).toBe('SET #updatedAt = :now ADD #balance :delta, #version :one REMOVE #closedThrough');
+    expect(patchOnly.ConditionExpression).toBe('attribute_exists(PK)');
+    expect(patchOnly.ExpressionAttributeValues![':delta']).toBe(0);
+  });
+
+  it('kilit kosulu tutmazsa (hesap kapatilmis) LedgerConflictError(closed) ve kapatma tarihi', async () => {
+    ddbMock.on(TransactWriteCommand).rejects(cancel(['None', 'None', 'None', 'None', 'ConditionalCheckFailed', 'None']));
+    ddbMock.on(GetCommand).resolves({ Item: { PK: 'APT#apt-1', SK: 'ACCT#recv-u1-owner', closedThrough: '2026-11-30' } });
+    await expect(repo.postTransaction({ transaction: tx(), idempotency })).rejects.toMatchObject({
+      name: 'LedgerConflictError',
+      reason: 'closed',
+      closedThrough: '2026-11-30',
+      label: 'recv-u1-owner',
+    });
+  });
 
   it('idempotency kosulu basarisizsa LedgerConflictError(duplicate) firlatir', async () => {
     ddbMock.on(TransactWriteCommand).rejects(cancel(['ConditionalCheckFailed', 'None', 'None', 'None', 'None', 'None']));

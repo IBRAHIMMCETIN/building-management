@@ -7,6 +7,7 @@ import { cn } from '@/lib/cn';
 import { ChargeDuesDialog } from './ChargeDuesDialog';
 import { DuesPanel } from './DuesPanel';
 import { ExpenseDialog } from './ExpenseDialog';
+import { FormerAccountsPanel } from './FormerAccountsPanel';
 import { OnlinePaymentsPanel } from './OnlinePaymentsPanel';
 import { PaymentDialog, type PaymentPreset } from './PaymentDialog';
 import { SummaryCards } from './SummaryCards';
@@ -15,6 +16,7 @@ import { TransactionsPanel } from './TransactionsPanel';
 const TABS = [
   { id: 'transactions', label: 'Hareketler' },
   { id: 'dues', label: 'Aidat durumu' },
+  { id: 'former', label: 'Ayrılan cariler' },
   { id: 'online', label: 'Online ödemeler' },
 ] as const;
 type TabId = (typeof TABS)[number]['id'];
@@ -90,6 +92,7 @@ export function FinancePage() {
         <div id={`panel-${tab}`} role="tabpanel" aria-labelledby={`tab-${tab}`}>
           {tab === 'transactions' && <TransactionsPanel />}
           {tab === 'dues' && <DuesPanel canWrite={canWrite} onCollect={(preset) => setModal({ kind: 'payment', preset })} />}
+          {tab === 'former' && <FormerAccountsPanel canWrite={canWrite} onCollect={(preset) => setModal({ kind: 'payment', preset })} />}
           {tab === 'online' && <OnlinePaymentsPanel />}
         </div>
       </div>

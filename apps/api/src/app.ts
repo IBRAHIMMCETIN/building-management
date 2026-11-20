@@ -12,10 +12,12 @@ import { type DocumentsService, createDocumentsService } from './modules/documen
 import { financeRoutes } from './modules/finance/routes.js';
 import { importRoutes } from './modules/imports/routes.js';
 import { type ImportsService, createImportsService } from './modules/imports/service.js';
+import { type ClosureService, createClosureService } from './modules/finance/closures.js';
 import { type FinanceService, createFinanceService } from './modules/finance/service.js';
 import { healthRoutes } from './modules/health/routes.js';
 import { meRoutes } from './modules/me/routes.js';
 import { type MeService, createMeService } from './modules/me/service.js';
+import { membershipRepository } from './modules/memberships/repository.js';
 import { membershipRoutes } from './modules/memberships/routes.js';
 import { type MembershipService, createMembershipService } from './modules/memberships/service.js';
 import { loadPaymentsConfig } from './modules/payments/config.js';
@@ -54,6 +56,8 @@ export type AppConfig = {
   /** Testlerde sahte repository ile servis enjekte etmek icin. */
   coreService?: CoreService;
   financeService?: FinanceService;
+  /** Tasinmada cari kapama (testlerde sahte depolarla). */
+  closureService?: ClosureService;
   portalService?: PortalService;
   documentsService?: DocumentsService;
   importsService?: ImportsService;
@@ -105,7 +109,13 @@ export function createApp(config: AppConfig) {
   app.route('/api/documents', documentRoutes({ authenticate, service: documentsService }));
 
   const financeService =
-    config.financeService ?? createFinanceService({ events, attachments: { promote: documentsService.promoteInvoice } });
+    config.financeService ??
+    createFinanceService({
+      events,
+      attachments: { promote: documentsService.promoteInvoice },
+      // Bos daire kurali: tahakkuk tarihinde oturan yoksa sakin gideri malike.
+      memberships: membershipRepository,
+    });
   // Online odeme (Adim 8b). Yonetici uclari finans rotalarindan, sakin uclari portal
   // rotalarindan ONCE baglanir (daha ozel yol); callback/webhook kimliksizdir.
   let paymentsService = config.paymentsService;
@@ -124,7 +134,14 @@ export function createApp(config: AppConfig) {
     });
   }
   app.route('/api/finance/online-payments', paymentManagerRoutes({ authenticate, service: paymentsService }));
-  app.route('/api/finance', financeRoutes({ authenticate, service: financeService }));
+  app.route(
+    '/api/finance',
+    financeRoutes({
+      authenticate,
+      service: financeService,
+      closures: config.closureService ?? (config.financeService ? undefined : createClosureService({ finance: financeService })),
+    }),
+  );
   app.route('/api/payments', paymentCallbackRoutes({ service: paymentsService, fake: fakePaymentProvider }));
   app.route('/api/admin/payments', paymentAdminRoutes({ authenticate, service: paymentsService }));
 

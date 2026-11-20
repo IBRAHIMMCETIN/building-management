@@ -27,6 +27,9 @@ export const summarySchema = z.object({
   accruedLateFees: kurus.default(0),
   overdueUnitCount: z.number().int(),
   pendingUnitCount: z.number().int(),
+  /** Tasinma kapamasiyla acilmis ayrilan sakin/malik carilerindeki borc (ayri izlenir). */
+  formerReceivables: kurus.default(0),
+  formerDebtorCount: z.number().int().default(0),
   fundsAccounts: z.array(z.object({ accountId: z.string(), name: z.string(), type: z.enum(['cash', 'bank']), balance: kurus })),
 });
 
@@ -38,7 +41,8 @@ export const transactionSchema = z.object({
   date: isoDate,
   dueDate: isoDate.optional(),
   description: z.string(),
-  kind: z.enum(['dues_charge', 'payment', 'expense', 'reversal', 'late_fee', 'opening_balance']),
+  /** transfer: tasinmada cari devri (kapama), refund: avans iadesi. */
+  kind: z.enum(['dues_charge', 'payment', 'expense', 'reversal', 'late_fee', 'opening_balance', 'transfer', 'refund']),
   category: z.enum(TRANSACTION_CATEGORIES),
   amount: kurus,
   funds: z.array(
@@ -88,6 +92,8 @@ export const duesStatusSchema = z.object({
       blockId: z.string(),
       owner: partyDues,
       occupant: partyDues,
+      /** Bu dairenin ayrilan sakin/malik carileri toplami (bakiye/gecikmeye dahil degil). */
+      former: partyDues.optional(),
       balance: kurus,
       overdue: kurus,
       lateFee: kurus.default(0),
@@ -117,6 +123,8 @@ export type RecordPaymentInput = {
   idempotencyKey: string;
   unitId: string;
   liableParty: LiableParty;
+  /** Ayrilan sakin/malik carisine tahsilat (ana cari icin bos birakilir). */
+  accountId?: string;
   amount: number;
   method: 'cash' | 'bank_transfer';
   paidAt: string;
@@ -184,8 +192,14 @@ export const duesPreviewSchema = z.object({
   count: z.number().int(),
   totalAmount: kurus,
   distributedAmount: kurus,
-  items: z.array(z.object({ unitId: z.string(), blockId: z.string(), number: z.string(), amount: kurus })),
+  items: z.array(
+    z.object({ unitId: z.string(), blockId: z.string(), number: z.string(), amount: kurus, liableParty: party.optional() }),
+  ),
   exempt: z.array(exemptUnitSchema),
+  /** Bos daire kurali: tahakkuk tarihinde oturan olmadigi icin kat malikine yazilacak bolumler. */
+  vacant: z.array(z.object({ unitId: z.string(), blockId: z.string(), number: z.string() })).default([]),
+  /** Uyelik kaydi olmadigi icin kuralin uygulanamadigi bolumler (sakin carisinde kalir). */
+  unknownOccupancy: z.array(z.object({ unitId: z.string(), blockId: z.string(), number: z.string() })).default([]),
 });
 export type DuesPreview = z.infer<typeof duesPreviewSchema>;
 
@@ -195,13 +209,18 @@ const paymentResultSchema = z.object({
 });
 const expenseResultSchema = z.object({ replayed: z.boolean(), expense: z.object({ expenseId: z.string(), amount: kurus }) });
 const duesResultSchema = z.union([
-  z.object({ mode: z.literal('single'), replayed: z.boolean(), transaction: z.object({ transactionId: z.string() }) }),
+  z.object({
+    mode: z.literal('single'),
+    replayed: z.boolean(),
+    transaction: z.object({ transactionId: z.string(), vacant: z.boolean().optional() }),
+  }),
   z.object({
     mode: z.literal('bulk'),
     replayed: z.boolean(),
     count: z.number().int(),
     distributedAmount: kurus,
     exempt: z.array(exemptUnitSchema).default([]),
+    vacant: z.array(z.object({ unitId: z.string() })).default([]),
   }),
 ]);
 

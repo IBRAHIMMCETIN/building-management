@@ -7,7 +7,8 @@
  */
 import { type IsoDate, type Kurus, type LiableParty, toKurus } from '../core/types.js';
 import { ValidationError } from '../core/validation.js';
-import { type FeeCharge, type FeeCredit, unpostedLateFee } from '../finance/lateFee.js';
+import { unpostedLateFee } from '../finance/lateFee.js';
+import { cancelledIn, feeInputsOf, linesFromEntries, readSubledger } from '../finance/subledger.js';
 import type { LedgerEntry, Transaction } from '../finance/types.js';
 import { type OpenDue, allocateOpenDues } from '../portal/service.js';
 import type { IntentAllocation, PaymentMode } from './types.js';
@@ -39,40 +40,13 @@ export type PaymentQuote = {
 
 export type PartyLedgerInput = { party: LiableParty; entries: LedgerEntry[] };
 
-/** Iptal edilen (ters kayitli) islemler ve ters kayitlarin kendisi. */
-function cancelledIds(txById: ReadonlyMap<string, Transaction>): Set<string> {
-  const cancelled = new Set<string>();
-  for (const tx of txById.values()) {
-    if (tx.reversalOf) {
-      cancelled.add(tx.reversalOf);
-      cancelled.add(tx.transactionId);
-    }
-  }
-  return cancelled;
-}
-
 /**
- * Bir alt carinin kistelyevm girdileri (portal ozetiyle ayni kurallar): taban aidat tahakkuku
- * ve devir borcu; alacak satirlari islem tarihinde mahsup edilir; yazilmis tazminat ayri.
+ * Bir alt carinin kistelyevm girdileri (portal ozetiyle ayni kurallar, `finance/subledger.ts`):
+ * taban aidat tahakkuku, devir borcu ve devredilmis anapara; alacak satirlari islem tarihinde
+ * mahsup edilir; yazilmis tazminat ayri; cari kapamadan onceki donem dikkate alinmaz.
  */
 export function feeInputsFromEntries(entries: readonly LedgerEntry[], txById: ReadonlyMap<string, Transaction>) {
-  const cancelled = cancelledIds(txById);
-  const charges: FeeCharge[] = [];
-  const credits: FeeCredit[] = [];
-  let postedFees = 0;
-  for (const e of entries) {
-    if (cancelled.has(e.transactionId)) continue;
-    const tx = txById.get(e.transactionId);
-    const kind = tx?.kind;
-    if (e.side === 'debit' && (kind === 'dues_charge' || kind === 'opening_balance')) {
-      charges.push({ id: e.transactionId, dueDate: tx?.dueDate ?? e.date, amount: e.amount });
-    } else if (e.side === 'debit' && kind === 'late_fee') {
-      postedFees += e.amount;
-    } else if (e.side === 'credit') {
-      credits.push({ date: e.date, amount: e.amount });
-    }
-  }
-  return { charges, credits, postedFees };
+  return feeInputsOf(readSubledger(linesFromEntries(entries, txById), cancelledIn(txById.values())));
 }
 
 /** `asOf` itibariyla deftere yazilmamis tazminat (oran 0 ise 0). */

@@ -4,8 +4,9 @@
  * Tum tutarlar kurus cinsinden tam sayidir.
  */
 import type { IsoDate, LiableParty, Unit } from '../core/types.js';
-import { type FeeCharge, type FeeCredit, cancelledTransactions, unpostedLateFee } from './lateFee.js';
-import type { Account, Transaction } from './types.js';
+import { cancelledTransactions, unpostedLateFee } from './lateFee.js';
+import { type AccountLine, allocate, feeInputsOf, linesOfAccount, readSubledger } from './subledger.js';
+import { type Account, type Transaction, mainReceivableId } from './types.js';
 
 // ---------------------------------------------------------------------------
 // Islem siniflandirma (hareket tablosu)
@@ -141,6 +142,11 @@ export type UnitDuesView = {
   daysOverdue: number;
   status: DuesStatus;
   lastPaymentDate?: IsoDate;
+  /**
+   * Ayrilan sakin/malik carileri (tasinmada kapama ile acilan) toplami. Daire durumuna
+   * (`status`, `balance`, `overdue`) dahil degildir; ayri takip edilir.
+   */
+  former?: PartyDues;
 };
 
 /** `fee`: deftere yazilmis gecikme tazminati; mahsupta anaparadan SONRA gelir (karar 2a). */
@@ -179,51 +185,81 @@ export function buildDuesStatus(
   today: IsoDate,
   lateFeeBasisPoints = 0,
 ): UnitDuesView[] {
-  type Acc = { charges: Charge[]; credits: number; feeCharges: FeeCharge[]; feeCredits: FeeCredit[]; postedFees: number };
-  const empty = (): Acc => ({ charges: [], credits: 0, feeCharges: [], feeCredits: [], postedFees: 0 });
-  const perUnit = new Map<string, { owner: Acc; occupant: Acc; lastPaymentDate?: IsoDate }>();
+  // Iptal edilen islem ve ters kaydi birlikte disarida birakilir; cari kapamadan onceki donem
+  // dikkate alinmaz (kurallar subledger.ts'te tek yerde).
+  const cancelled = cancelledTransactions(transactions);
+  type Meta = { unitId: string; party: LiableParty; main: boolean };
+  const meta = new Map<string, Meta>();
+  const linesByAccount = new Map<string, AccountLine[]>();
+  for (const tx of transactions) {
+    for (const line of tx.lines) {
+      if (!line.unitId || !line.liableParty || !receivableIds.has(line.accountId)) continue;
+      if (!meta.has(line.accountId)) {
+        meta.set(line.accountId, {
+          unitId: line.unitId,
+          party: line.liableParty,
+          main: line.accountId === mainReceivableId(line.unitId, line.liableParty),
+        });
+      }
+      const list = linesByAccount.get(line.accountId) ?? [];
+      list.push({ transaction: tx, side: line.side, amount: line.amount, date: tx.date });
+      linesByAccount.set(line.accountId, list);
+    }
+  }
+
+  const none = (): PartyDues => ({ charged: 0, paid: 0, balance: 0, overdue: 0, lateFee: 0 });
+  const add = (a: PartyDues, b: PartyDues): PartyDues => {
+    const oldest = [a.oldestUnpaidDueDate, b.oldestUnpaidDueDate].filter((d): d is IsoDate => Boolean(d)).sort()[0];
+    return {
+      charged: a.charged + b.charged,
+      paid: a.paid + b.paid,
+      balance: a.balance + b.balance,
+      overdue: a.overdue + b.overdue,
+      ...(oldest ? { oldestUnpaidDueDate: oldest } : {}),
+      lateFee: a.lateFee + b.lateFee,
+    };
+  };
+  type Slot = { owner: PartyDues; occupant: PartyDues; former?: PartyDues; lastPaymentDate?: IsoDate };
+  const perUnit = new Map<string, Slot>();
   const slot = (unitId: string) => {
     let s = perUnit.get(unitId);
     if (!s) {
-      s = { owner: empty(), occupant: empty() };
+      s = { owner: none(), occupant: none() };
       perUnit.set(unitId, s);
     }
     return s;
   };
 
-  // Ters kayit ve iptal ettigi islem birlikte disarida birakilir: iptal edilen tahakkuk
-  // "odeme" gibi en eski borca sayilmamali (FIFO'yu bozar), iptal edilen odeme de odeme degildir.
-  const cancelled = cancelledTransactions(transactions);
-
-  for (const tx of transactions) {
-    if (cancelled.has(tx.transactionId)) continue;
-    for (const line of tx.lines) {
-      if (!line.unitId || !line.liableParty || !receivableIds.has(line.accountId)) continue;
-      const s = slot(line.unitId);
-      const party = s[line.liableParty];
-      if (line.side === 'debit') {
-        const dueDate = tx.dueDate ?? tx.date;
-        party.charges.push({ amount: line.amount, dueDate, fee: tx.kind === 'late_fee' });
-        if (tx.kind === 'dues_charge' || tx.kind === 'opening_balance') party.feeCharges.push({ id: tx.transactionId, dueDate, amount: line.amount });
-        if (tx.kind === 'late_fee') party.postedFees += line.amount;
-      } else {
-        party.credits += line.amount;
-        party.feeCredits.push({ date: tx.date, amount: line.amount });
-        if (tx.kind === 'payment' && (!s.lastPaymentDate || tx.date > s.lastPaymentDate)) s.lastPaymentDate = tx.date;
+  for (const [accountId, lines] of linesByAccount) {
+    const m = meta.get(accountId) as Meta;
+    const sub = readSubledger(lines, cancelled);
+    const { open } = allocate(sub, today);
+    const overdueOpen = open.filter((c) => c.overdue);
+    const dues: PartyDues = {
+      charged: sub.charges.reduce((s, c) => s + c.amount, 0),
+      paid: sub.credits.reduce((s, c) => s + c.amount, 0),
+      balance: sub.balance,
+      overdue: overdueOpen.reduce((s, c) => s + c.remaining, 0),
+      ...(open[0] ? { oldestUnpaidDueDate: open[0].dueDate } : {}),
+      lateFee: lateFeeBasisPoints > 0 ? unpostedLateFee(feeInputsOf(sub), lateFeeBasisPoints, today) : 0,
+    };
+    const s = slot(m.unitId);
+    if (m.main) {
+      s[m.party] = dues;
+      for (const c of sub.credits) {
+        if (c.txKind === 'payment' && (!s.lastPaymentDate || c.date > s.lastPaymentDate)) s.lastPaymentDate = c.date;
       }
+    } else {
+      // Ayrilan sakin/malik carileri: daire durumuna karismaz, ayri gosterilir.
+      s.former = add(s.former ?? none(), dues);
     }
   }
 
   return units
     .filter((u) => u.status === 'active')
     .map((u) => {
-      const s = perUnit.get(u.unitId) ?? { owner: empty(), occupant: empty() };
-      const fee = (a: Acc) =>
-        lateFeeBasisPoints > 0
-          ? unpostedLateFee({ charges: a.feeCharges, credits: a.feeCredits, postedFees: a.postedFees }, lateFeeBasisPoints, today)
-          : 0;
-      const owner = computePartyDues(s.owner.charges, s.owner.credits, today, fee(s.owner));
-      const occupant = computePartyDues(s.occupant.charges, s.occupant.credits, today, fee(s.occupant));
+      const s = perUnit.get(u.unitId) ?? { owner: none(), occupant: none() };
+      const { owner, occupant } = s;
       const balance = owner.balance + occupant.balance;
       const overdue = owner.overdue + occupant.overdue;
       const oldest = [owner, occupant]
@@ -252,8 +288,81 @@ export function buildDuesStatus(
         daysOverdue: oldest ? Math.max(daysBetween(oldest, today), 0) : 0,
         status,
         lastPaymentDate: s.lastPaymentDate,
+        ...(s.former ? { former: s.former } : {}),
       };
     });
+}
+
+// ---------------------------------------------------------------------------
+// Ayrilan sakin / malik carileri (tasinmada kapama ile acilan)
+// ---------------------------------------------------------------------------
+
+export type FormerAccountView = {
+  accountId: string;
+  name: string;
+  unitId: string;
+  unitNumber?: string;
+  blockId?: string;
+  liableParty: LiableParty;
+  closureId?: string;
+  holder?: Account['holder'];
+  /** Pozitif borc, negatif avans (hesap bakiyesi). */
+  balance: number;
+  debt: number;
+  advance: number;
+  overdue: number;
+  oldestUnpaidDueDate?: IsoDate;
+  daysOverdue: number;
+  /** Islemis, deftere yazilmamis tazminat (bugun itibariyla). */
+  lateFee: number;
+  lastPaymentDate?: IsoDate;
+};
+
+/**
+ * Ana cari olmayan (kapamayla acilmis) alacak hesaplari. Kurallar subledger.ts ile ayni;
+ * varsayilan olarak yalnizca bakiyesi olanlar (`includeSettled` ile hepsi).
+ */
+export function buildFormerAccounts(
+  accounts: Account[],
+  units: Unit[],
+  transactions: Transaction[],
+  today: IsoDate,
+  lateFeeBasisPoints = 0,
+  includeSettled = false,
+): FormerAccountView[] {
+  const unitById = new Map(units.map((u) => [u.unitId, u]));
+  const cancelled = cancelledTransactions(transactions);
+  const former = accounts.filter(
+    (a) => a.type === 'receivable' && a.unitId && a.liableParty && a.accountId !== mainReceivableId(a.unitId, a.liableParty),
+  );
+  return former
+    .filter((a) => includeSettled || a.balance !== 0)
+    .map((a) => {
+      const sub = readSubledger(linesOfAccount(a.accountId, transactions), cancelled);
+      const { open } = allocate(sub, today);
+      const overdue = open.filter((c) => c.overdue);
+      const oldest = overdue[0]?.dueDate ?? open[0]?.dueDate;
+      const unit = unitById.get(a.unitId as string);
+      const lastPayment = sub.credits.filter((c) => c.txKind === 'payment').map((c) => c.date).sort().at(-1);
+      return {
+        accountId: a.accountId,
+        name: a.name,
+        unitId: a.unitId as string,
+        ...(unit ? { unitNumber: unit.number, blockId: unit.blockId } : {}),
+        liableParty: a.liableParty as LiableParty,
+        ...(a.closureId ? { closureId: a.closureId } : {}),
+        ...(a.holder ? { holder: a.holder } : {}),
+        balance: a.balance,
+        debt: Math.max(a.balance, 0),
+        advance: Math.max(-a.balance, 0),
+        overdue: overdue.reduce((s, c) => s + c.remaining, 0),
+        ...(oldest ? { oldestUnpaidDueDate: oldest } : {}),
+        daysOverdue: overdue[0]?.daysOverdue ?? 0,
+        lateFee: lateFeeBasisPoints > 0 ? unpostedLateFee(feeInputsOf(sub), lateFeeBasisPoints, today) : 0,
+        ...(lastPayment ? { lastPaymentDate: lastPayment } : {}),
+      };
+    })
+    .sort((x, y) => (x.unitNumber ?? x.unitId).localeCompare(y.unitNumber ?? y.unitId, 'tr', { numeric: true }) || x.accountId.localeCompare(y.accountId));
 }
 
 // ---------------------------------------------------------------------------
@@ -266,8 +375,12 @@ export type FinanceSummary = {
   bank: number;
   /** Kasa + banka (likit varlik). */
   totalFunds: number;
-  /** Sakinlerin toplam borcu (pozitif cari bakiyeler). */
+  /** Sakinlerin toplam borcu (pozitif cari bakiyeler; ayrilan carileri de icerir). */
   receivables: number;
+  /** Bunun ayrilan sakin/malik carilerindeki kismi (tasinmada devredilen borclar). */
+  formerReceivables: number;
+  /** Borcu olan ayrilan cari sayisi. */
+  formerDebtorCount: number;
   /** Sakinlerin avanslari (negatif cari bakiyeler, mutlak deger). */
   advances: number;
   /** Tedarikci borclari. */
@@ -284,6 +397,7 @@ export function buildSummary(accounts: Account[], dues: UnitDuesView[]): Finance
   const active = accounts.filter((a) => a.status === 'active' || a.balance !== 0);
   const sum = (type: Account['type']) => active.filter((a) => a.type === type).reduce((s, a) => s + a.balance, 0);
   const recv = accounts.filter((a) => a.type === 'receivable');
+  const formerRecv = recv.filter((a) => a.unitId && a.liableParty && a.accountId !== mainReceivableId(a.unitId, a.liableParty));
   const cash = sum('cash');
   const bank = sum('bank');
   return {
@@ -292,6 +406,8 @@ export function buildSummary(accounts: Account[], dues: UnitDuesView[]): Finance
     bank,
     totalFunds: cash + bank,
     receivables: recv.reduce((s, a) => s + Math.max(a.balance, 0), 0),
+    formerReceivables: formerRecv.reduce((s, a) => s + Math.max(a.balance, 0), 0),
+    formerDebtorCount: formerRecv.filter((a) => a.balance > 0).length,
     advances: recv.reduce((s, a) => s + Math.max(-a.balance, 0), 0),
     // Borc hesabinin normal tarafi alacak: bakiye (borc - alacak) negatiftir.
     payables: -sum('payable'),
@@ -337,33 +453,27 @@ export function buildDueReminders(transactions: Transaction[], receivableIds: Se
     [shiftDate(date, -7), 'overdue_7'],
   ]);
   const cancelled = cancelledTransactions(transactions);
-  type Acc = { unitId: string; party: LiableParty; charges: Charge[]; credits: number };
+  type Acc = { unitId: string; party: LiableParty; lines: AccountLine[] };
   const perAccount = new Map<string, Acc>();
 
   for (const tx of transactions) {
-    if (cancelled.has(tx.transactionId)) continue;
     for (const line of tx.lines) {
       if (!line.unitId || !line.liableParty || !receivableIds.has(line.accountId)) continue;
       let acc = perAccount.get(line.accountId);
       if (!acc) {
-        acc = { unitId: line.unitId, party: line.liableParty, charges: [], credits: 0 };
+        acc = { unitId: line.unitId, party: line.liableParty, lines: [] };
         perAccount.set(line.accountId, acc);
       }
-      if (line.side === 'debit') acc.charges.push({ amount: line.amount, dueDate: tx.dueDate ?? tx.date, fee: tx.kind === 'late_fee' });
-      else acc.credits += line.amount;
+      acc.lines.push({ transaction: tx, side: line.side, amount: line.amount, date: tx.date });
     }
   }
 
   const out: DueReminder[] = [];
   for (const acc of [...perAccount.values()].sort((a, b) => a.unitId.localeCompare(b.unitId) || a.party.localeCompare(b.party))) {
-    const sorted = [...acc.charges].sort((a, b) => Number(a.fee ?? false) - Number(b.fee ?? false) || a.dueDate.localeCompare(b.dueDate));
-    let credit = acc.credits;
+    const { open } = allocate(readSubledger(acc.lines, cancelled), date);
     const byDue = new Map<IsoDate, number>();
-    for (const c of sorted) {
-      const covered = Math.min(credit, c.amount);
-      credit -= covered;
-      const open = c.amount - covered;
-      if (open > 0 && targets.has(c.dueDate)) byDue.set(c.dueDate, (byDue.get(c.dueDate) ?? 0) + open);
+    for (const c of open) {
+      if (targets.has(c.dueDate)) byDue.set(c.dueDate, (byDue.get(c.dueDate) ?? 0) + c.remaining);
     }
     for (const [dueDate, amount] of [...byDue.entries()].sort(([a], [b]) => a.localeCompare(b))) {
       out.push({ unitId: acc.unitId, liableParty: acc.party, kind: targets.get(dueDate) as DueReminderKind, dueDate, amount });

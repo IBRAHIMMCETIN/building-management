@@ -3,6 +3,7 @@ import { type CoreRepository, coreRepository } from '../modules/core/repository.
 import { type IsoDate, toKurus } from '../modules/core/types.js';
 import { previousPeriod } from '../modules/finance/lateFee.js';
 import { type FinanceService, DEFAULT_LATE_FEE_BASIS_POINTS, SYSTEM_ACTOR, createFinanceService } from '../modules/finance/service.js';
+import { membershipRepository } from '../modules/memberships/repository.js';
 import { loadPaymentsConfig } from '../modules/payments/config.js';
 import { type PaymentsService, createPaymentsService } from '../modules/payments/service.js';
 import { portalRepository } from '../modules/portal/repository.js';
@@ -95,7 +96,7 @@ export function createSchedulerWorker(overrides: Partial<SchedulerDeps> = {}) {
   const lazy: { events?: EventPublisher; finance?: SchedulerDeps['finance']; payments?: SchedulerDeps['payments'] } = {};
   const now = overrides.now ?? (() => new Date());
   const events = () => (lazy.events ??= overrides.events ?? createEventPublisherFromEnv());
-  const finance = () => (lazy.finance ??= overrides.finance ?? createFinanceService({ events: events(), now }));
+  const finance = () => (lazy.finance ??= overrides.finance ?? createFinanceService({ events: events(), now, memberships: membershipRepository }));
   const payments = (): SchedulerDeps['payments'] => {
     if (lazy.payments !== undefined) return lazy.payments;
     if (overrides.payments !== undefined) return (lazy.payments = overrides.payments);
@@ -104,7 +105,7 @@ export function createSchedulerWorker(overrides: Partial<SchedulerDeps> = {}) {
     return (lazy.payments = createPaymentsService({
       portal: createPortalService({ now }),
       ledger: portalRepository,
-      finance: createFinanceService({ events: events(), now }),
+      finance: createFinanceService({ events: events(), now, memberships: membershipRepository }),
       provider: config.provider,
       apiBaseUrl: config.apiBaseUrl,
       webAppUrl: config.webAppUrl,

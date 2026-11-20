@@ -55,14 +55,64 @@ export type Account = TableKeys &
     balance: Kurus;
     unitId?: string;
     liableParty?: LiableParty;
+    /**
+     * Cari kapama (tasinma) kesim tarihi: bu tarih ve oncesine ait hareketler kapatilip devredildi.
+     * Hesaba bu tarihe kadar (dahil) tarihli yeni kayit yazilamaz; ters kayit yapilamaz.
+     */
+    closedThrough?: IsoDate;
+    /** Ayrilan sakin/malik carisi: hangi kapamayla acildi ve kime ait. */
+    closureId?: string;
+    holder?: { userIds: string[]; periodStart?: IsoDate; periodEnd: IsoDate };
   };
+
+/** Daire + taraf ana alt carisi (tahakkuklarin hedefi). Ayrilan carileri `-c<kapamaId>` ekini tasir. */
+export const mainReceivableId = (unitId: string, party: LiableParty) => `recv-${unitId}-${party}`;
 
 /**
  * late_fee: kistelyevm gecikme tazminati kesinlestirmesi (ayin 1'inde, alt cari basina tek
  * kayit). `reference` = `LATE_FEE:<YYYY-MM>` (kesinlestirilen donem).
  * opening_balance: sisteme gecis (toplu aktarim) devir bakiyesi; karsi hesap `opening-balance`.
  */
-export type TransactionKind = 'dues_charge' | 'payment' | 'expense' | 'reversal' | 'late_fee' | 'opening_balance';
+export type TransactionKind =
+  | 'dues_charge'
+  | 'payment'
+  | 'expense'
+  | 'reversal'
+  | 'late_fee'
+  | 'opening_balance'
+  | 'transfer'
+  | 'refund';
+
+/**
+ * Cari devri kalemi (yalnizca `transfer` + `role: 'open'`): hedef caride orijinal vadesiyle
+ * acik borc olarak gorunur. Anaparanin tazminati hedefte devir tarihinden itibaren isler
+ * (oncesi kaynakta kesinlestirildi); tazminat kalemleri tazminat dogurmaz.
+ */
+export type TransferItem = {
+  /** Kaynak caride kalemin kimligi (islem kimligi veya devredilmis kalem kimligi). */
+  sourceChargeId: string;
+  category: 'principal' | 'late_fee';
+  description: string;
+  date: IsoDate;
+  dueDate: IsoDate;
+  amount: Kurus;
+};
+
+/**
+ * Cari devri (tasinmada kapama). Iki islem tek atomik yazimda, ara hesap (`transfer-clearing`)
+ * uzerinden:
+ *   close: kaynak alt cari `cutoff` tarihine kadarki net bakiyesiyle kapatilir (bu tarih ve
+ *          oncesi hesap genelindeki hesaplamalarda artik dikkate alinmaz).
+ *   open : hedef cariye (ayrilan sakin carisi / malik carisi / yeni malik) kalemleriyle acilir.
+ */
+export type TransferInfo = {
+  closureId: string;
+  role: 'close' | 'open';
+  /** role=close: kesim tarihi (cikis tarihi). */
+  cutoff?: IsoDate;
+  /** role=open: devredilen borc kalemleri (toplam = borc satiri). Avans devri kalemsizdir. */
+  items?: TransferItem[];
+};
 
 export type TransactionLine = {
   accountId: string;
@@ -97,6 +147,10 @@ export type Transaction = TableKeys & {
   createdBy: string;
   /** Gider islemine bagli fatura (kayit aninda yazilir; sonradan degismez). */
   invoice?: { expenseId: string; fileName: string };
+  /** Cari devri ayrintisi (`kind: 'transfer'`). */
+  transfer?: TransferInfo;
+  /** Bos daire kurali: sakin gideri tahakkuk tarihinde dairede oturan olmadigi icin malike yazildi. */
+  vacant?: true;
 };
 
 /**
@@ -138,6 +192,11 @@ export type Payment = TableKeys & {
   paidAt: IsoDate;
   payerName?: string;
   note?: string;
+  /**
+   * Tahsilatin alacak yazildigi alt cari; yalnizca ana cari DISINDA (tasinmada acilan ayrilan
+   * sakin/malik carisi) doldurulur. Bu makbuzlar dairenin bugunku sakinine gosterilmez.
+   */
+  receivableAccountId?: string;
   /** Online odeme: odeme niyeti ve saglayici islem numarasi (makbuz/mutabakat icin). */
   intentId?: string;
   provider?: string;

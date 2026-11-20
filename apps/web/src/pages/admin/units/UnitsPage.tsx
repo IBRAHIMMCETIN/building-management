@@ -1,11 +1,13 @@
 import { Building, Plus, Search, SearchX, TriangleAlert, X } from 'lucide-react';
 import { useDeferredValue, useMemo, useState } from 'react';
 import { Alert, Button, Card, Input } from '@/components/ui';
+import { useFinancePermissions } from '@/hooks/useFinance';
 import { useBlocks, useCurrentMemberships, usePeople, useUnitPermissions, useUnits } from '@/hooks/useUnits';
 import { errorMessage } from '@/lib/api/errors';
 import { CreateUnitDialog } from './CreateUnitDialog';
 import { ExemptionsDialog } from './ExemptionsDialog';
 import { InviteResidentDialog } from './InviteResidentDialog';
+import { UnitCariDialog } from './UnitCariDialog';
 import { UnitsTable, UnitsTableSkeleton } from './UnitsTable';
 import { type UnitRow, buildUnitRows, filterRows } from './unitRows';
 
@@ -23,6 +25,9 @@ export function UnitsPage() {
   const [createOpen, setCreateOpen] = useState(false);
   const [inviteRow, setInviteRow] = useState<UnitRow | null>(null);
   const [exemptionsRow, setExemptionsRow] = useState<UnitRow | null>(null);
+  const [cari, setCari] = useState<{ row: UnitRow; wizard: boolean } | null>(null);
+  const { canRead: canViewCari } = useFinancePermissions();
+  const names = useMemo(() => new Map((people.data ?? []).map((p) => [p.userId, p.fullName])), [people.data]);
 
   // Kisi/uyelik sorgusu basarisiz olsa da daire listesi gosterilir (kisi sutunlari "—").
   const residentsLoading = canReadResidents && (memberships.isPending || people.isPending);
@@ -166,9 +171,30 @@ export function UnitsPage() {
               </Button>
             </Card>
           ) : (
-            <UnitsTable rows={visible} showResidents={canReadResidents} canManage={canManage} onInvite={setInviteRow} onExemptions={setExemptionsRow} />
+            <UnitsTable
+              rows={visible}
+              showResidents={canReadResidents}
+              canManage={canManage}
+              onInvite={setInviteRow}
+              onExemptions={setExemptionsRow}
+              canViewCari={canViewCari}
+              onCari={(row, wizard) => setCari({ row, wizard })}
+            />
           )}
         </>
+      )}
+
+      {canViewCari && (
+        <UnitCariDialog
+          row={cari?.row ?? null}
+          startWithWizard={cari?.wizard ?? false}
+          names={names}
+          onClose={() => setCari(null)}
+          onInvite={(row) => {
+            setCari(null);
+            setInviteRow(row);
+          }}
+        />
       )}
 
       {canManage && (

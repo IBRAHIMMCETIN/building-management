@@ -37,7 +37,7 @@ import {
   periodLabel,
   unpostedLateFee,
 } from './lateFee.js';
-import { buildDueReminders, buildDuesStatus, buildSummary, toTransactionView } from './reports.js';
+import { buildDueReminders, buildDuesStatus, buildFormerAccounts, buildSummary, toTransactionView } from './reports.js';
 import {
   ACCOUNT_TYPES,
   type Account,
@@ -48,7 +48,10 @@ import {
   type PaymentMethod,
   type Transaction,
   type TransactionLine,
+  mainReceivableId,
 } from './types.js';
+import type { MembershipRepository } from '../memberships/repository.js';
+import { type Occupancy, VACANT_SUFFIX, liablePartyFor, occupancyOn } from './occupancy.js';
 
 // ---------------------------------------------------------------------------
 // Hatalar ve sabitler
@@ -98,6 +101,11 @@ export const SYSTEM_ACCOUNTS = {
    * aktarana kadar burada bekler. Banka hesabina aktarim (settlement) mutabakati sonraki fazda.
    */
   onlineCollection: 'online-collection',
+  /**
+   * Cari devri ara hesabi (tasinmada kapama): kapama ve acilis islemleri bu hesap uzerinden
+   * dengelenir; bakiyesi her zaman sifirdir. Ilk kapamada olusturulur.
+   */
+  transferClearing: 'transfer-clearing',
 } as const;
 
 /** KMK m.20 varsayilani: aylik %5. Apartman ayari okunamazsa kullanilir. */
@@ -169,6 +177,11 @@ export type FinanceServiceDeps = {
    * Gider faturasi: gecici yuklemeyi dogrulayip kalici yere tasir (documents modulu).
    * Verilmezse fatura ekli gider reddedilir.
    */
+  /**
+   * Bos daire kurali icin uyelikler (tahakkuk tarihinde dairede kim oturuyor). Verilmezse kural
+   * uygulanmaz (testler / eski cagiranlar); uygulama (app.ts) uyelik deposunu verir.
+   */
+  memberships?: Pick<MembershipRepository, 'list'>;
   attachments?: {
     promote(
       apartmentId: string,
@@ -277,7 +290,7 @@ const fingerprint = (value: unknown): string =>
 
 const compact = (d: IsoDate) => d.replaceAll('-', '');
 
-const receivableId = (unitId: string, party: LiableParty) => `recv-${unitId}-${party}`;
+const receivableId = mainReceivableId;
 
 function parseInvoiceUpload(value: unknown): { uploadId: string; fileName: string } | undefined {
   if (value === undefined || value === null) return undefined;
@@ -390,6 +403,7 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
       reversalOf?: string;
       reason?: string;
       invoice?: Transaction['invoice'];
+      vacant?: true;
     },
   ): Transaction {
     const transactionId = `${compact(p.date)}-${deps.newId()}`;
@@ -408,6 +422,7 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
       reversalOf: p.reversalOf,
       reason: p.reason,
       invoice: p.invoice,
+      ...(p.vacant ? { vacant: p.vacant } : {}),
       lines: p.lines,
       totalAmount: toKurus(total),
       createdAt: stamp(),
@@ -486,7 +501,23 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
   // Aidat tahakkuku (tekil / toplu)
   // -------------------------------------------------------------------------
 
-  type DuesResult = { transaction: Transaction; replayed: boolean };
+  /** liableParty: gercekte borclanan taraf; vacant: bos daire kuraliyla malike yazildi. */
+  type DuesResult = { transaction: Transaction; replayed: boolean; liableParty: LiableParty; vacant: boolean };
+
+  /**
+   * Bos daire kurali: `date` gununde dairelerin doluluk durumu. Uyelik deposu verilmemisse
+   * herkes `unknown` (kural kapali).
+   */
+  async function occupancyResolver(ctx: FinanceContext, unitId?: string): Promise<(unitId: string, date: IsoDate) => Occupancy> {
+    if (!deps.memberships) return () => 'unknown';
+    const list = await deps.memberships.list(ctx.apartmentId, unitId ? { unitId } : {});
+    const mine = list.filter((m) => m.apartmentId === ctx.apartmentId);
+    return (id, date) => occupancyOn(mine, id, date);
+  }
+
+  /** Islemin borclu satirindaki taraf (replay'de kayittan okunur). */
+  const chargedParty = (tx: Transaction, fallback: LiableParty): LiableParty =>
+    tx.lines.find((l) => l.side === 'debit' && l.liableParty)?.liableParty ?? fallback;
 
   async function postDues(
     ctx: FinanceContext,
@@ -500,10 +531,16 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
       dueDate: IsoDate;
       description: string;
       batchId?: string;
+      /** Bos daire kurali: `party` malik, istenen taraf sakin idi. */
+      vacant?: boolean;
     },
   ): Promise<DuesResult> {
+    const replayed = async (transactionId: string): Promise<DuesResult> => {
+      const t = await loadTx(ctx, transactionId);
+      return { transaction: t, replayed: true, liableParty: chargedParty(t, p.party), vacant: t.vacant === true };
+    };
     const replay = await replayOf(ctx, p.idemId, p.fp);
-    if (replay) return { transaction: await loadTx(ctx, replay.transactionId), replayed: true };
+    if (replay) return replayed(replay.transactionId);
 
     const recv = receivable(ctx, p.unitId, p.party);
     await repo.ensureAccounts([recv]);
@@ -511,8 +548,9 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
       kind: 'dues_charge',
       date: p.date,
       dueDate: p.dueDate,
-      description: p.description,
+      description: p.vacant ? `${p.description}${VACANT_SUFFIX}` : p.description,
       batchId: p.batchId,
+      ...(p.vacant ? { vacant: true as const } : {}),
       lines: [
         { accountId: recv.accountId, side: 'debit', amount: p.amount, unitId: p.unitId, liableParty: p.party },
         { accountId: SYSTEM_ACCOUNTS.incomeDues, side: 'credit', amount: p.amount },
@@ -520,11 +558,11 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
     });
     try {
       await repo.postTransaction({ transaction: tx, idempotency: { id: p.idemId, fingerprint: p.fp } });
-      return { transaction: tx, replayed: false };
+      return { transaction: tx, replayed: false, liableParty: p.party, vacant: p.vacant === true };
     } catch (err) {
       if (err instanceof LedgerConflictError && err.reason === 'duplicate') {
         const again = await replayOf(ctx, p.idemId, p.fp);
-        if (again) return { transaction: await loadTx(ctx, again.transactionId), replayed: true };
+        if (again) return replayed(again.transactionId);
       }
       throw mapConflict(err);
     }
@@ -550,12 +588,15 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
     const unit = await requireUnit(ctx, unitId);
     if (unit.status !== 'active') throw new FinanceError('unprocessable', 'Bagimsiz bolum aktif degil');
     await ensureSystemAccounts(ctx);
+    const target = party === 'occupant' ? liablePartyFor(party, (await occupancyResolver(ctx, unitId))(unitId, date)) : { party, vacant: false };
 
     const result = await postDues(ctx, {
+      // Parmak izi istenen tarafla hesaplanir: ayni istek, doluluk degisse de ayni istektir.
       idemId: key,
       fp: fingerprint({ op: 'dues', unitId, party, amount, date, dueDate, description }),
       unitId,
-      party,
+      party: target.party,
+      vacant: target.vacant,
       amount,
       date,
       dueDate,
@@ -575,9 +616,9 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
           date,
           dueDate,
           description,
-          liableParty: party,
+          liableParty: result.liableParty,
           totalAmount: amount,
-          items: [{ unitId, amount, transactionId }],
+          items: [{ unitId, amount, transactionId, liableParty: result.liableParty }],
         },
       });
     }
@@ -630,13 +671,35 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
     }
     const shares = included.length ? distributeKurus(totalAmount, included.map((u) => unitWeight(u, distributionKey))) : [];
 
+    // Bos daire kurali (yalnizca sakin tarafi): pay dagitimi degismez, yalnizca borclu taraf.
+    const occupancy = party === 'occupant' ? await occupancyResolver(ctx) : () => 'occupied' as Occupancy;
+    const targets = included.map((u) => liablePartyFor(party, occupancy(u.unitId, date)));
+    const brief = (u: Unit) => ({ unitId: u.unitId, blockId: u.blockId, number: u.number });
+    const vacant = included.filter((_, i) => targets[i]?.vacant).map(brief);
+    const unknownOccupancy = party === 'occupant' ? included.filter((u) => occupancy(u.unitId, date) === 'unknown').map(brief) : [];
+
     // Kapsam/muafiyet varsa idempotency parmak izine girer: ayni anahtar farkli kapsamla
     // kullanilirsa 409 doner. Kapsamsiz isteklerin parmak izi eskisiyle aynidir.
     const scopeFp = {
       ...(blockIds ? { blockIds: [...blockIds].sort() } : {}),
       ...(expenseCategory ? { expenseCategory } : {}),
     };
-    return { party, totalAmount, distributionKey, date, dueDate, description, expenseCategory, included, shares, exempt, scopeFp };
+    return {
+      party,
+      totalAmount,
+      distributionKey,
+      date,
+      dueDate,
+      description,
+      expenseCategory,
+      included,
+      shares,
+      targets,
+      vacant,
+      unknownOccupancy,
+      exempt,
+      scopeFp,
+    };
   }
 
   /** Onizleme: toplu tahakkukta kime ne kadar dusecegi ve kimin neden muaf oldugu. Yazmaz. */
@@ -647,6 +710,7 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
       blockId: u.blockId,
       number: u.number,
       amount: toKurus(plan.shares[i] ?? 0),
+      liableParty: plan.targets[i]?.party ?? plan.party,
     }));
     return {
       distributionKey: plan.distributionKey,
@@ -656,6 +720,10 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
       count: items.length,
       items,
       exempt: plan.exempt,
+      /** Bos daire kuraliyla kat malikine yazilacak bolumler. */
+      vacant: plan.vacant,
+      /** Tahakkuk tarihinde uyelik kaydi olmayan (kural uygulanamayan) bolumler. */
+      unknownOccupancy: plan.unknownOccupancy,
     };
   }
 
@@ -674,7 +742,7 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
     await ensureSystemAccounts(ctx);
 
     const batchId = `${compact(date)}-${key}`;
-    const results: { unitId: string; amount: Kurus; transactionId: string; replayed: boolean }[] = [];
+    const results: { unitId: string; amount: Kurus; transactionId: string; replayed: boolean; liableParty: LiableParty; vacant: boolean }[] = [];
     for (const [i, unit] of units.entries()) {
       const amount = shares[i] ?? 0;
       if (amount < 1) continue; // cok kucuk pay: 0 kurus borc yazilmaz
@@ -682,7 +750,8 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
         idemId: `${key}_${unit.unitId}`,
         fp: fingerprint({ op: 'bulk', unitId: unit.unitId, party, amount, date, dueDate, description, distributionKey, totalAmount, ...plan.scopeFp }),
         unitId: unit.unitId,
-        party,
+        party: plan.targets[i]?.party ?? party,
+        vacant: plan.targets[i]?.vacant ?? false,
         amount: toKurus(amount),
         date,
         dueDate,
@@ -694,6 +763,8 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
         amount: toKurus(amount),
         transactionId: r.transaction.transactionId,
         replayed: r.replayed,
+        liableParty: r.liableParty,
+        vacant: r.vacant,
       });
     }
     // Yalnizca bu istekte YENI yazilan kalemler icin tek bir toplu olay (yarim kalan toplu
@@ -714,7 +785,7 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
           description,
           liableParty: party,
           totalAmount: toKurus(fresh.reduce((s, r) => s + r.amount, 0)),
-          items: fresh.map(({ unitId, amount, transactionId }) => ({ unitId, amount, transactionId })),
+          items: fresh.map(({ unitId, amount, transactionId, liableParty }) => ({ unitId, amount, transactionId, liableParty })),
         },
       });
     }
@@ -729,6 +800,7 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
       items: results,
       ...(plan.expenseCategory ? { expenseCategory: plan.expenseCategory } : {}),
       exempt: plan.exempt,
+      vacant: results.filter((r) => r.vacant).map((r) => plan.vacant.find((v) => v.unitId === r.unitId) ?? { unitId: r.unitId }),
     };
   }
 
@@ -754,7 +826,17 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
     const o = asObject(body);
     const key = reqKey(o);
     const unitId = assertId(o.unitId, 'unitId');
-    const party = reqEnum(o, 'liableParty', LIABLE_PARTIES);
+    // Ayrilan sakin/malik carisinden tahsilat: `accountId` (taraf hesaptan gelir).
+    const accountId = o.accountId === undefined ? undefined : assertId(o.accountId, 'accountId');
+    const target = accountId ? await repo.getAccount(ctx.apartmentId, accountId) : undefined;
+    if (accountId && (!target || target.type !== 'receivable' || target.unitId !== unitId || !target.liableParty)) {
+      throw new ValidationError('accountId bu daireye ait bir cari hesap olmali', 'accountId');
+    }
+    const party: LiableParty = target?.liableParty ?? reqEnum(o, 'liableParty', LIABLE_PARTIES);
+    if (target && o.liableParty !== undefined && o.liableParty !== party) {
+      throw new ValidationError('liableParty secilen cari hesapla uyusmuyor', 'liableParty');
+    }
+    const former = target && target.accountId !== receivableId(unitId, party) ? target : undefined;
     const amount = reqAmount(o, 'amount');
     const method: PaymentMethod = reqEnum(o, 'method', PAYMENT_METHODS);
     const paidAt = optDate(o, 'paidAt') ?? today();
@@ -767,7 +849,19 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
           : SYSTEM_ACCOUNTS.bank
         : assertId(o.depositAccountId, 'depositAccountId');
 
-    const fp = fingerprint({ op: 'payment', unitId, party, amount, method, paidAt, depositAccountId, payerName, note });
+    const fp = fingerprint({
+      op: 'payment',
+      unitId,
+      party,
+      amount,
+      method,
+      paidAt,
+      depositAccountId,
+      payerName,
+      note,
+      // Ana cariye tahsilatin parmak izi eskisiyle ayni kalir.
+      ...(former ? { accountId: former.accountId } : {}),
+    });
     const replay = await replayOf(ctx, key, fp);
     if (replay) return paymentResult(ctx, replay, true);
 
@@ -780,8 +874,8 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
     if ((deposit.type !== 'cash' && deposit.type !== 'bank') || deposit.status !== 'active') {
       throw new FinanceError('unprocessable', 'Tahsilat hesabi aktif bir kasa/banka hesabi olmali');
     }
-    const recv = receivable(ctx, unitId, party);
-    await repo.ensureAccounts([recv]);
+    const recv = former ?? receivable(ctx, unitId, party);
+    if (!former) await repo.ensureAccounts([recv]);
 
     for (let attempt = 1; ; attempt++) {
       const counterValue = await repo.getCounter(ctx.apartmentId, 'receipt');
@@ -789,7 +883,7 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
       const tx = buildTx(ctx, {
         kind: 'payment',
         date: paidAt,
-        description: `Tahsilat - Daire ${unit.number}`,
+        description: former ? `Tahsilat - Daire ${unit.number} (ayrılan ${party === 'owner' ? 'malik' : 'sakin'})` : `Tahsilat - Daire ${unit.number}`,
         lines: [
           { accountId: depositAccountId, side: 'debit', amount },
           { accountId: recv.accountId, side: 'credit', amount, unitId, liableParty: party },
@@ -810,6 +904,7 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
         paidAt,
         payerName,
         note,
+        ...(former ? { receivableAccountId: former.accountId } : {}),
         createdAt: tx.createdAt,
         createdBy: ctx.userId,
       };
@@ -835,6 +930,7 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
             amount,
             method,
             paidAt,
+            ...(former ? { receivableAccountId: former.accountId } : {}),
           },
         });
         return { payment, transaction: tx, replayed: false };
@@ -1177,6 +1273,19 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
     if (original.kind === 'reversal') {
       throw new FinanceError('unprocessable', 'Ters kayit tekrar ters cevrilemez');
     }
+    if (original.kind === 'transfer') {
+      throw new FinanceError('unprocessable', 'Cari devri islemleri yalnizca kapamanin geri alinmasiyla cevrilebilir');
+    }
+    // Kapatilmis doneme ait kayit: kalemi devredildi; ters kayit kaynakta etkisiz kalir.
+    for (const accountId of new Set(original.lines.filter((l) => l.unitId && l.liableParty).map((l) => l.accountId))) {
+      const acc = await repo.getAccount(ctx.apartmentId, accountId);
+      if (acc?.closedThrough && original.date <= acc.closedThrough) {
+        throw new FinanceError(
+          'unprocessable',
+          `Bu islem tasinma kapamasiyla ${acc.closedThrough} tarihinde kapatilan doneme ait; duzeltmeyi borcun devredildigi caride yapin`,
+        );
+      }
+    }
     const idemId = `REV_${transactionId}`;
     const fp = fingerprint({ op: 'reversal', transactionId, reason, date });
     const replay = await replayOf(ctx, idemId, fp).catch((err) => {
@@ -1221,11 +1330,14 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
     const accounts = (await repo.listAccounts(ctx.apartmentId)).filter(
       (a) => a.type === 'receivable' && a.unitId === unitId,
     );
+    // Daire bakiyesi ana carilerden olusur; ayrilan sakin/malik carileri ayri gosterilir.
+    const main = (a: Account) => a.liableParty !== undefined && a.accountId === mainReceivableId(unitId, a.liableParty);
     const of = (party: LiableParty) =>
-      accounts.filter((a) => a.liableParty === party).reduce((s, a) => s + a.balance, 0);
+      accounts.filter((a) => main(a) && a.liableParty === party).reduce((s, a) => s + a.balance, 0);
     const owner = of('owner');
     const occupant = of('occupant');
     const net = owner + occupant;
+    const formerAccounts = accounts.filter((a) => !main(a));
     const split = (n: number) => ({
       balance: toKurus(n),
       debt: toKurus(Math.max(n, 0)),
@@ -1237,6 +1349,13 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
       owner: split(owner),
       occupant: split(occupant),
       ...split(net),
+      ...(formerAccounts.length
+        ? {
+            former: formerAccounts
+              .map((a) => ({ accountId: a.accountId, name: a.name, liableParty: a.liableParty, closureId: a.closureId, ...split(a.balance) }))
+              .sort((a, b) => a.accountId.localeCompare(b.accountId)),
+          }
+        : {}),
     };
   }
 
@@ -1267,6 +1386,15 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
       a.unitNumber.localeCompare(b.unitNumber, 'tr', { numeric: true }),
     );
     return { asOf: today(), lateFeeMonthlyBasisPoints: rate, items };
+  }
+
+  /** Ayrilan sakin/malik carileri (tasinmada kapama ile acilan), varsayilan: bakiyesi olanlar. */
+  async function formerAccounts(ctx: FinanceContext, opts: { all?: string } = {}) {
+    const [{ accounts, units, transactions }, rate] = await Promise.all([loadReportData(ctx), lateFeeRate(ctx.apartmentId)]);
+    return {
+      asOf: today(),
+      items: buildFormerAccounts(accounts, units, transactions, today(), rate, opts.all === 'true'),
+    };
   }
 
   /** Kasa/banka bakiyeleri + alacak/gecikme ozeti. */
@@ -1341,7 +1469,13 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
     for (const account of receivables) {
       const unitId = account.unitId as string;
       const party = account.liableParty as LiableParty;
-      const idemId = `lf-${p.period}-${unitId}-${party === 'owner' ? 'o' : 't'}`;
+      // Ana cari anahtari geriye uyumlu; ayrilan sakin carileri hesap kimligiyle ayrisir.
+      const idemId =
+        account.accountId === mainReceivableId(unitId, party)
+          ? `lf-${p.period}-${unitId}-${party === 'owner' ? 'o' : 't'}`
+          : `lf-${p.period}-${account.accountId}`;
+      // Kapama, kesim tarihine kadarki tazminati zaten kesinlestirdi; o donemin tazminati yazilmaz.
+      if (account.closedThrough && postDate <= account.closedThrough) continue;
       const existing = await repo.getIdempotency(apartmentId, idemId);
       if (existing) {
         const tx = await repo.getTransaction(apartmentId, existing.transactionId);
@@ -1495,12 +1629,19 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
   async function dueReminders(apartmentId: string, date: IsoDate) {
     if (!isIsoDate(date)) throw new ValidationError('date YYYY-MM-DD olmali', 'date');
     const [accounts, txPage] = await Promise.all([repo.listAccounts(apartmentId), repo.listTransactions(apartmentId)]);
-    const receivables = new Set(accounts.filter((a) => a.type === 'receivable').map((a) => a.accountId));
+    // Yalnizca daire ana carileri: ayrilan sakin carilerinin sahibine portal/bildirim erisimi yok
+    // (ilk surum); hatirlatma dairedeki bugunku sakine gitmemeli.
+    const receivables = new Set(
+      accounts
+        .filter((a) => a.type === 'receivable' && a.unitId && a.liableParty && a.accountId === mainReceivableId(a.unitId, a.liableParty))
+        .map((a) => a.accountId),
+    );
     return buildDueReminders(txPage.items, receivables, date);
   }
 
   return {
     duesStatus,
+    formerAccounts,
     summary,
     autoChargeDues,
     postLateFees,
@@ -1520,6 +1661,8 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
     recordExpense,
     reverseTransaction,
     getUnitBalance,
+    /** Sistem hesaplari (kasa, banka, gelir...) yoksa olusturur (cari kapama servisi kullanir). */
+    ensureSystemAccounts,
   };
 }
 
@@ -1541,6 +1684,11 @@ function mapConflict(err: unknown): unknown {
         return new FinanceError('not_found', 'Hesap bulunamadi');
       case 'duplicate':
         return new FinanceError('conflict', 'Islem zaten kaydedilmis');
+      case 'closed':
+        return new FinanceError(
+          'conflict',
+          `Bu cari tasinma kapamasiyla ${err.closedThrough ?? ''} tarihine kadar kapatildi; bu tarih ve oncesine kayit girilemez`.replace('  ', ' '),
+        );
       default:
         return new FinanceError('conflict', 'Es zamanli bir islem cakismasi oldu, tekrar deneyin');
     }

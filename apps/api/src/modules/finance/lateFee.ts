@@ -18,9 +18,14 @@
  * kesinlestirmede kendiliginden dengelenir (eksi fark yazilmaz, sifirlanir).
  */
 import type { IsoDate } from '../core/types.js';
+import { cancelledIn, feeInputsOf, linesOfAccount, readSubledger } from './subledger.js';
 import type { Transaction } from './types.js';
 
-export type FeeCharge = { id: string; dueDate: IsoDate; amount: number };
+/**
+ * `accrueFrom`: tazminatin baslayacagi gun (dahil degil; vadeyle ayni anlam). Cari devrinde
+ * hedefteki anapara icin devir tarihidir: o gune kadarki tazminat kaynakta kesinlestirildi.
+ */
+export type FeeCharge = { id: string; dueDate: IsoDate; amount: number; accrueFrom?: IsoDate };
 export type FeeCredit = { date: IsoDate; amount: number };
 
 export type LateFeeInput = {
@@ -61,11 +66,15 @@ export function computeLateFee({ charges, credits, monthlyBasisPoints, asOf }: L
   const open = [...charges]
     .filter((c) => c.amount > 0)
     .sort((a, b) => a.dueDate.localeCompare(b.dueDate) || a.id.localeCompare(b.id))
-    .map((c) => ({ due: dayNumber(c.dueDate), remaining: c.amount }));
+    .map((c) => {
+      const due = dayNumber(c.dueDate);
+      // Tazminat vadeden (veya devir tarihinden, hangisi sonraysa) sonraki gunden itibaren isler.
+      return { due, start: c.accrueFrom ? Math.max(due, dayNumber(c.accrueFrom)) : due, remaining: c.amount };
+    });
 
   let principalDays = 0n;
-  const accrue = (amount: number, due: number, closedOn: number) => {
-    const days = Math.min(closedOn, end) - due;
+  const accrue = (amount: number, start: number, closedOn: number) => {
+    const days = Math.min(closedOn, end) - start;
     if (days > 0 && amount > 0) principalDays += BigInt(amount) * BigInt(days);
   };
 
@@ -78,7 +87,7 @@ export function computeLateFee({ charges, credits, monthlyBasisPoints, asOf }: L
     while (left > 0 && i < open.length) {
       const c = open[i] as (typeof open)[number];
       const applied = Math.min(left, c.remaining);
-      accrue(applied, c.due, paidOn);
+      accrue(applied, c.start, paidOn);
       c.remaining -= applied;
       left -= applied;
       if (c.remaining === 0) i++;
@@ -87,7 +96,7 @@ export function computeLateFee({ charges, credits, monthlyBasisPoints, asOf }: L
 
   let overduePrincipal = 0;
   for (const c of open.slice(i)) {
-    accrue(c.remaining, c.due, end);
+    accrue(c.remaining, c.start, end);
     if (c.due < end) overduePrincipal += c.remaining;
   }
 
@@ -107,40 +116,19 @@ export type AccountFeeLedger = {
 };
 
 /** Ters kayitla iptal edilen islemler ve ters kayitlarin kendisi. */
-export function cancelledTransactions(transactions: Iterable<Transaction>): Set<string> {
-  const cancelled = new Set<string>();
-  for (const tx of transactions) {
-    if (tx.kind === 'reversal' && tx.reversalOf) {
-      cancelled.add(tx.reversalOf);
-      cancelled.add(tx.transactionId);
-    }
-  }
-  return cancelled;
-}
+export const cancelledTransactions = cancelledIn;
 
 /**
- * Bir alacak (alt cari) hesabinin tazminat girdileri. Taban aidat tahakkuklari ve devir borclari;
- * alacak satirlari (tahsilat vb.) islem tarihinde mahsup edilir.
+ * Bir alacak (alt cari) hesabinin tazminat girdileri. Kurallar `subledger.ts`'te (tek kaynak):
+ * taban aidat tahakkuklari, devir borclari ve devredilmis anapara kalemleri; alacak satirlari
+ * islem tarihinde mahsup edilir; cari kapamadan onceki donem dikkate alinmaz.
  */
 export function feeLedgerFor(
   accountId: string,
   transactions: Iterable<Transaction>,
   cancelled: ReadonlySet<string> = cancelledTransactions(transactions),
 ): AccountFeeLedger {
-  const out: AccountFeeLedger = { charges: [], credits: [], postedFees: 0 };
-  for (const tx of transactions) {
-    if (cancelled.has(tx.transactionId)) continue;
-    for (const line of tx.lines) {
-      if (line.accountId !== accountId) continue;
-      if (line.side === 'debit') {
-        if (tx.kind === 'dues_charge' || tx.kind === 'opening_balance') out.charges.push({ id: tx.transactionId, dueDate: tx.dueDate ?? tx.date, amount: line.amount });
-        else if (tx.kind === 'late_fee') out.postedFees += line.amount;
-      } else {
-        out.credits.push({ date: tx.date, amount: line.amount });
-      }
-    }
-  }
-  return out;
+  return feeInputsOf(readSubledger(linesOfAccount(accountId, transactions), cancelled));
 }
 
 /** `asOf` itibariyla henuz deftere yazilmamis tazminat (negatif fark 0 sayilir). */

@@ -40,7 +40,8 @@ export type DueGeneratedPayload = {
   description: string;
   liableParty: LiableParty;
   totalAmount: Kurus;
-  items: { unitId: string; amount: Kurus; transactionId: string }[];
+  /** liableParty: kalemin gercek borclu tarafi (bos daire kurali); yoksa ust duzeydeki taraf. */
+  items: { unitId: string; amount: Kurus; transactionId: string; liableParty?: LiableParty }[];
 };
 
 export type PaymentReceivedPayload = {
@@ -52,6 +53,8 @@ export type PaymentReceivedPayload = {
   amount: Kurus;
   method: string;
   paidAt: IsoDate;
+  /** Ayrilan sakin/malik carisine tahsilat: dairenin bugunku sakinlerine bildirim gitmez. */
+  receivableAccountId?: string;
 };
 
 /** Bildirim worker'i sakinlere SMS/push gonderir; govde tasinmaz, worker kaydi okur. */

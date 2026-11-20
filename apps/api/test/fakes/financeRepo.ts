@@ -30,7 +30,11 @@ export function createFakeFinanceRepo(defaultApartmentId = 'apt-1') {
       failNextPost = undefined;
       throw e;
     }
-    const apt = input.transactions[0]!.siteId;
+    const newDocs = input.newDocs ?? [];
+    const patches = input.accountPatches ?? {};
+    const anchor = input.transactions[0] ?? newDocs[0] ?? input.replaceRecords?.[0]?.item;
+    if (!anchor) throw new Error('En az bir islem veya belge gerekli');
+    const apt = input.transactions[0]?.siteId ?? anchor.PK.slice('APT#'.length);
     // 1) Tum kosullar (atomiklik: hicbir sey yazilmadan once)
     for (const tx of input.transactions) {
       let debit = 0;
@@ -50,7 +54,17 @@ export function createFakeFinanceRepo(defaultApartmentId = 'apt-1') {
         if (!acc) throw new LedgerConflictError('account_missing');
         const exp = input.expectedVersions?.[l.accountId];
         if (exp !== undefined && acc.version !== exp) throw new LedgerConflictError('version');
+        // Kapama kilidi (repository.ts ile ayni kosul).
+        if (!patches[l.accountId]?.bypassLock && acc.closedThrough && tx.date <= acc.closedThrough) {
+          throw new LedgerConflictError('closed', `Hesap ${acc.closedThrough} tarihine kadar kapatilmis`, l.accountId, acc.closedThrough);
+        }
       }
+    }
+    for (const id of Object.keys(patches)) {
+      if (!accounts.has(k(apt, id))) throw new LedgerConflictError('account_missing');
+    }
+    for (const d of newDocs) {
+      if (docs.has(`${d.PK}|${d.SK}`)) throw new Error('belge zaten var');
     }
     if (input.counter && (counters.get(k(apt, input.counter.name)) ?? 0) !== input.counter.expected) {
       throw new LedgerConflictError('counter');
@@ -63,7 +77,7 @@ export function createFakeFinanceRepo(defaultApartmentId = 'apt-1') {
     }
     // 2) Yazim
     idem.set(k(apt, input.idempotency.id), {
-      transactionId: input.transactions[0]!.transactionId,
+      transactionId: input.transactions[0]?.transactionId as string,
       recordId: input.idempotency.recordId,
       transactionIds: input.idempotency.transactionIds,
       recordIds: input.idempotency.recordIds,
@@ -79,6 +93,18 @@ export function createFakeFinanceRepo(defaultApartmentId = 'apt-1') {
           version: acc.version + 1,
         });
       }
+    }
+    for (const [id, patch] of Object.entries(patches)) {
+      const acc = accounts.get(k(apt, id))!;
+      const { closedThrough: _old, ...rest } = acc;
+      accounts.set(k(apt, id), {
+        ...rest,
+        ...(patch.closedThrough === null ? {} : { closedThrough: patch.closedThrough }),
+        version: input.transactions.some((t) => t.lines.some((l) => l.accountId === id)) ? acc.version : acc.version + 1,
+      });
+    }
+    for (const d of newDocs) {
+      docs.set(`${d.PK}|${d.SK}`, d as unknown as Record<string, unknown> & { PK: string; SK: string; version: number });
     }
     if (input.counter) {
       counters.set(k(apt, input.counter.name), input.counter.expected + (input.counter.increment ?? 1));

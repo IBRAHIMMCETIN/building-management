@@ -2,7 +2,8 @@ import type { Role } from '../../auth/claims.js';
 import { type CoreRepository, coreRepository } from '../core/repository.js';
 import { type IsoDate, type Kurus, type LiableParty, type Unit, toKurus, tenthsM2ToM2 } from '../core/types.js';
 import { ValidationError, assertId, isIsoDate } from '../core/validation.js';
-import { type FeeCharge, type FeeCredit, unpostedLateFee } from '../finance/lateFee.js';
+import { unpostedLateFee } from '../finance/lateFee.js';
+import { allocate, cancelledIn, feeInputsOf, linesFromEntries, readSubledger } from '../finance/subledger.js';
 import { DEFAULT_LATE_FEE_BASIS_POINTS } from '../finance/service.js';
 import type { LedgerEntry, Payment, Transaction, TransactionKind } from '../finance/types.js';
 import { type PortalRepository, portalRepository } from './repository.js';
@@ -161,8 +162,9 @@ function compareEntries(a: LedgerEntry, b: LedgerEntry): number {
 }
 
 /**
- * Acik aidat kalemleri: iptal (ters kayit) edilmemis tahakkuklara, iptal edilmemis
- * tahsilatlar vade sirasina gore (FIFO) mahsup edilir. Kalan alacak avans sayilir.
+ * Acik aidat kalemleri (kurallar `finance/subledger.ts`): iptal edilmemis borc kalemlerine
+ * alacaklar FIFO mahsup edilir (once anapara vade sirasiyla, en son tazminat); cari kapamadan
+ * onceki donem dikkate alinmaz; devir kalemleri ayri kalem olarak acilir. Kalan alacak avanstir.
  */
 export function allocateOpenDues(
   party: LiableParty,
@@ -170,62 +172,24 @@ export function allocateOpenDues(
   txById: Map<string, Transaction>,
   today: IsoDate,
 ): { open: OpenDue[]; advance: Kurus } {
-  const reversed = new Set<string>();
-  for (const e of entries) {
-    const reversalOf = txById.get(e.transactionId)?.reversalOf;
-    if (reversalOf) reversed.add(reversalOf);
-  }
-
-  const charges: OpenDue[] = [];
-  let credit = 0;
-  for (const e of entries) {
-    const tx = txById.get(e.transactionId);
-    if (!tx || tx.kind === 'reversal' || reversed.has(tx.transactionId)) continue;
-    if (e.side === 'debit') {
-      const dueDate = tx.dueDate ?? tx.date;
-      charges.push({
-        transactionId: tx.transactionId,
-        liableParty: party,
-        description: tx.description,
-        date: tx.date,
-        dueDate,
-        amount: e.amount,
-        paid: toKurus(0),
-        remaining: e.amount,
-        overdue: false,
-        daysOverdue: 0,
-        ...(tx.kind === 'late_fee' ? { lateFee: true } : {}),
-      });
-    } else {
-      credit += e.amount;
-    }
-  }
-
-  // Karar 2a: tahsilat once anaparayi (vade sirasiyla), en son gecikme tazminatini kapatir.
-  charges.sort(
-    (a, b) =>
-      Number(a.lateFee ?? false) - Number(b.lateFee ?? false) ||
-      a.dueDate.localeCompare(b.dueDate) ||
-      a.date.localeCompare(b.date) ||
-      a.transactionId.localeCompare(b.transactionId),
-  );
-
-  const open: OpenDue[] = [];
-  for (const c of charges) {
-    const applied = Math.min(credit, c.amount);
-    credit -= applied;
-    const remaining = c.amount - applied;
-    if (remaining === 0) continue;
-    const late = c.dueDate < today;
-    open.push({
-      ...c,
-      paid: toKurus(applied),
-      remaining: toKurus(remaining),
-      overdue: late,
-      daysOverdue: late ? daysBetween(c.dueDate, today) : 0,
-    });
-  }
-  return { open, advance: toKurus(credit) };
+  const sub = readSubledger(linesFromEntries(entries, txById), cancelledIn(txById.values()));
+  const { open, advance } = allocate(sub, today);
+  return {
+    open: open.map((c) => ({
+      transactionId: c.id,
+      liableParty: party,
+      description: c.description,
+      date: c.date,
+      dueDate: c.dueDate,
+      amount: c.amount as Kurus,
+      paid: c.paid,
+      remaining: c.remaining,
+      overdue: c.overdue,
+      daysOverdue: c.daysOverdue,
+      ...(c.lateFee ? { lateFee: true } : {}),
+    })),
+    advance,
+  };
 }
 
 function entryTypeOf(kind: TransactionKind | undefined): StatementEntryType {
@@ -526,35 +490,25 @@ export function createPortalService(overrides: Partial<PortalServiceDeps> = {}) 
     const lateFeeRate = site?.settings.lateFeeMonthlyBasisPoints ?? DEFAULT_LATE_FEE_BASIS_POINTS;
     const day = today();
 
-    const cancelled = new Set<string>();
-    for (const tx of txById.values()) {
-      if (tx.reversalOf) {
-        cancelled.add(tx.reversalOf);
-        cancelled.add(tx.transactionId);
-      }
-    }
+    const cancelled = cancelledIn(txById.values());
 
     let balance = 0;
     let totalCharged = 0;
     let totalPaid = 0;
     let accruedLateFee = 0;
     for (const { entries } of ledgers) {
-      const feeCharges: FeeCharge[] = [];
-      const feeCredits: FeeCredit[] = [];
-      let postedFees = 0;
       for (const e of entries) {
         balance += signed(e);
         if (cancelled.has(e.transactionId)) continue;
         const tx = txById.get(e.transactionId);
         const kind = tx?.kind;
-        if (e.side === 'debit' && (kind === 'dues_charge' || kind === 'late_fee' || kind === 'opening_balance')) totalCharged += e.amount;
+        if (e.side === 'debit' && (kind === 'dues_charge' || kind === 'late_fee' || kind === 'opening_balance' || (kind === 'transfer' && tx?.transfer?.role === 'open'))) totalCharged += e.amount;
         // Devir avansi (eski sistemde yapilmis odeme) de odenen toplamina girer.
         if (e.side === 'credit' && (kind === 'payment' || kind === 'opening_balance')) totalPaid += e.amount;
-        if (e.side === 'debit' && (kind === 'dues_charge' || kind === 'opening_balance')) feeCharges.push({ id: e.transactionId, dueDate: tx?.dueDate ?? e.date, amount: e.amount });
-        else if (e.side === 'debit' && kind === 'late_fee') postedFees += e.amount;
-        else if (e.side === 'credit') feeCredits.push({ date: e.date, amount: e.amount });
       }
-      if (lateFeeRate > 0) accruedLateFee += unpostedLateFee({ charges: feeCharges, credits: feeCredits, postedFees }, lateFeeRate, day);
+      if (lateFeeRate > 0) {
+        accruedLateFee += unpostedLateFee(feeInputsOf(readSubledger(linesFromEntries(entries, txById), cancelled)), lateFeeRate, day);
+      }
     }
 
     const open = ledgers.flatMap(({ party, entries }) => allocateOpenDues(party, entries, txById, day).open);
@@ -573,6 +527,7 @@ export function createPortalService(overrides: Partial<PortalServiceDeps> = {}) 
           p.siteId === ctx.apartmentId &&
           p.unitId === unit.unitId &&
           parties.has(p.liableParty) &&
+          !p.receivableAccountId &&
           inWindow(p.paidAt, membership) &&
           !cancelled.has(p.transactionId),
       )
@@ -653,6 +608,8 @@ export function createPortalService(overrides: Partial<PortalServiceDeps> = {}) 
           p.siteId === ctx.apartmentId &&
           p.unitId === unit.unitId &&
           parties.includes(p.liableParty) &&
+          // Ayrilan sakin/malik carisine alinan tahsilat bugunku sakinin makbuzu degildir.
+          !p.receivableAccountId &&
           inWindow(p.paidAt, membership),
       )
       .sort((a, b) => b.paidAt.localeCompare(a.paidAt) || b.receiptNumber.localeCompare(a.receiptNumber))
