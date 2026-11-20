@@ -208,3 +208,14 @@ variable "payments_callback_rate_limit" {
   default     = 5
   description = "Kimliksiz odeme callback/webhook rotalari icin saniyede ortalama istek (rota bazli throttling)."
 }
+
+variable "aws_region" {
+  type        = string
+  default     = "eu-north-1"
+  description = "Projenin AWS bolgesi. Hesaptaki SCP diger bolgelerdeki islemleri reddeder; state de bu bolgededir."
+
+  validation {
+    condition     = can(regex("^[a-z]{2}-[a-z]+-[0-9]$", var.aws_region))
+    error_message = "aws_region gecerli bir AWS bolge kodu olmalidir (ornegin eu-north-1)."
+  }
+}

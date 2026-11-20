@@ -24,8 +24,12 @@ terraform {
   backend "s3" {}
 }
 
-# Region AWS_REGION ortam degiskeninden gelir (projenin secili region'i olmali).
+# Region acikca sabitlenir: AWS_REGION/CLI profili farkli bir bolgeyi gosterse bile (ornegin
+# eu-central-1) yanlis bolgede plan yapilmaz. Hesaptaki SCP projenin bolgesi disindaki islemleri
+# reddeder ve bolge adini iceren kaynaklar (belge bucket'i) yeniden olusturulmak istenir.
 provider "aws" {
+  region = var.aws_region
+
   default_tags {
     tags = {
       Project     = var.project
