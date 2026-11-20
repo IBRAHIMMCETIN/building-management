@@ -5,7 +5,7 @@ import { announcementRoutes } from './modules/announcements/routes.js';
 import { apartmentRoleRoutes } from './modules/apartment-roles/routes.js';
 import { type ApartmentRoleService, createApartmentRoleService } from './modules/apartment-roles/service.js';
 import { type AnnouncementService, createAnnouncementService } from './modules/announcements/service.js';
-import { coreRoutes } from './modules/core/routes.js';
+import { coreAdminRoutes, coreRoutes } from './modules/core/routes.js';
 import { type CoreService, createCoreService } from './modules/core/service.js';
 import { documentRoutes } from './modules/documents/routes.js';
 import { type DocumentsService, createDocumentsService } from './modules/documents/service.js';
@@ -95,13 +95,9 @@ export function createApp(config: AppConfig) {
     '/api/me',
     meRoutes({ identify: config.identify ?? denyAllIdentity, service: config.meService ?? createMeService() }),
   );
-  app.route(
-    '/api/sites',
-    coreRoutes({
-      authenticate,
-      service: config.coreService ?? createCoreService(),
-    }),
-  );
+  const coreService = config.coreService ?? createCoreService();
+  app.route('/api/sites', coreRoutes({ authenticate, service: coreService }));
+  app.route('/api/admin/apartments', coreAdminRoutes({ authenticate, service: coreService }));
 
   const portalService = config.portalService ?? createPortalService();
   // Belgeler: makbuz yetkisi portal listesinden, fatura tasima finans gider kaydindan.

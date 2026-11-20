@@ -874,6 +874,26 @@ describe('core routes', () => {
     expect(res.json.items[0]).not.toHaveProperty('SK');
   });
 
+  it('GET /api/admin/apartments: yalnizca platform_admin; tum apartmanlarin dizini, apartman ici veri yok', async () => {
+    const { call, service } = await setup();
+    await service.createSite('seed', 'tenant-2', { ...siteInput, name: 'Akasya Sitesi', type: 'site' }); // id-2
+    const platform: AuthClaims = { userId: 'ops-1', role: 'platform_admin' };
+
+    const res = await call('GET', '/api/admin/apartments', platform);
+    expect(res.status).toBe(200);
+    expect(res.json.items).toEqual([
+      { siteId: 'id-2', tenantId: 'tenant-2', name: 'Akasya Sitesi', type: 'site', city: 'Izmir', district: 'Konak', status: 'active', createdAt: NOW.toISOString() },
+      { siteId: 'id-1', tenantId: 'tenant-1', name: 'Gul Apartmani', type: 'apartment', city: 'Izmir', district: 'Konak', status: 'active', createdAt: NOW.toISOString() },
+    ]);
+    expect(JSON.stringify(res.json)).not.toMatch(/settings|PK|SK|line1/);
+
+    expect((await call('GET', '/api/admin/apartments', manager('id-1'))).status).toBe(403);
+    expect((await call('GET', '/api/admin/apartments', { userId: 'c1', role: 'management_company', organizationId: 'org-1' })).status).toBe(403);
+    expect((await call('GET', '/api/admin/apartments')).status).toBe(401);
+    // Platform rolu apartman ici veriyi okuyamaz.
+    expect((await call('GET', '/api/sites/id-1/units', platform)).status).toBe(403);
+  });
+
   it('POST /api/sites: yonetim firmasi olusturur, yonetici olusturamaz', async () => {
     const { call } = await setup();
     const company: AuthClaims = { userId: 'c1', role: 'management_company', organizationId: 'org-1' };

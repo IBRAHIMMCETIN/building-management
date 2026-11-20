@@ -26,6 +26,7 @@ const READ_ROLES: readonly Role[] = [
 ];
 const WRITE_ROLES: readonly Role[] = ['apartment_manager', 'management_company'];
 const SITE_CREATE_ROLES: readonly Role[] = ['platform_admin', 'management_company'];
+const PLATFORM_ROLES: readonly Role[] = ['platform_admin'];
 
 const STATUS_FILTERS = ['active', 'inactive', 'all'] as const;
 
@@ -154,5 +155,23 @@ export function coreRoutes({ authenticate, service }: CoreRoutesDeps) {
     return c.json(publicView(await service.deactivateUnit(actor(c), apt(c), unitId)));
   });
 
+  return r;
+}
+
+/**
+ * Platform ekibi: `/api/admin/apartments` (JWT + `platform_admin`).
+ *   GET /   tum apartmanlarin dizini (ad, tur, il/ilce, durum, olusturma)
+ * Apartman ici veri (daire, kisi, finans) bu yoldan okunamaz.
+ */
+export function coreAdminRoutes({ authenticate, service }: CoreRoutesDeps) {
+  const r = new Hono<Env>();
+  r.onError(handleError);
+  r.use('*', authenticateWith(authenticate));
+  r.use('*', requireRole(PLATFORM_ROLES));
+  r.use('*', async (c, next) => {
+    await next();
+    c.header('Cache-Control', 'no-store');
+  });
+  r.get('/', async (c) => c.json({ items: await service.listSiteDirectory() }));
   return r;
 }

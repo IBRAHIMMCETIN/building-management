@@ -6,9 +6,10 @@ import { type Role, homePathForRole } from '@/types/roles';
  * Yalnizca arayuz yonlendirmesidir; gercek yetki kontrolu API'de JWT claim'leriyle yapilir.
  *  - Oturum yok            -> /login (donus adresi saklanir)
  *  - Aktif baglam yok      -> /select-context
- *  - Rol bu alana uygun degil -> /403
+ *  - Rol bu alana uygun degil -> /403 (`redirectHome`: rolun acilis sayfasina; ornegin platform
+ *    yoneticisi apartman ekranina girerse kendi paneline doner)
  */
-export function RequireRole({ roles }: { roles: readonly Role[] }) {
+export function RequireRole({ roles, redirectHome = false }: { roles: readonly Role[]; redirectHome?: boolean }) {
   const { user } = useAuth();
   const location = useLocation();
 
@@ -16,7 +17,7 @@ export function RequireRole({ roles }: { roles: readonly Role[] }) {
     return <Navigate to="/login" replace state={{ from: location.pathname + location.search }} />;
   }
   if (!user.role) return <Navigate to="/select-context" replace />;
-  if (!roles.includes(user.role)) return <Navigate to="/403" replace />;
+  if (!roles.includes(user.role)) return <Navigate to={redirectHome ? homePathForRole(user.role) : '/403'} replace />;
   return <Outlet />;
 }
 

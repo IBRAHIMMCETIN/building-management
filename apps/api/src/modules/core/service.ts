@@ -449,6 +449,28 @@ export function createCoreService(overrides: Partial<CoreServiceDeps> = {}) {
     return requireSite(apartmentId);
   }
 
+  /**
+   * Platform dizini: tum apartmanlarin yalnizca kimlik/adres/durum bilgisi (finans, daire ve
+   * kisi verisi yok; platform_admin apartman verisini okuyamaz). Ada gore sirali.
+   */
+  async function listSiteDirectory() {
+    const ids = await repo.listSiteIds();
+    const sites = await Promise.all(ids.map((id) => repo.getSite(id)));
+    return sites
+      .filter((s): s is Site => Boolean(s))
+      .map((s) => ({
+        siteId: s.siteId,
+        tenantId: s.tenantId,
+        name: s.name,
+        type: s.type,
+        city: s.address.city,
+        district: s.address.district,
+        status: s.status,
+        createdAt: s.createdAt,
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name, 'tr'));
+  }
+
   async function updateSite(actor: string, apartmentId: string, input: unknown): Promise<Site> {
     const o = asObject(input);
     const version = reqInt(o, 'version', 1, Number.MAX_SAFE_INTEGER);
@@ -709,6 +731,7 @@ export function createCoreService(overrides: Partial<CoreServiceDeps> = {}) {
     createSite,
     getSite,
     updateSite,
+    listSiteDirectory,
     listBlocks,
     getBlock,
     createBlock,
