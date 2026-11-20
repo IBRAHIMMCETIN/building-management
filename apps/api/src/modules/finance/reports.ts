@@ -5,7 +5,7 @@
  */
 import type { IsoDate, LiableParty, Unit } from '../core/types.js';
 import { cancelledTransactions, unpostedLateFee } from './lateFee.js';
-import { type AccountLine, allocate, feeInputsOf, readSubledger } from './subledger.js';
+import { type AccountLine, allocate, feeInputsOf, linesOfAccount, readSubledger } from './subledger.js';
 import { type Account, type Transaction, mainReceivableId } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -294,6 +294,78 @@ export function buildDuesStatus(
 }
 
 // ---------------------------------------------------------------------------
+// Ayrilan sakin / malik carileri (tasinmada kapama ile acilan)
+// ---------------------------------------------------------------------------
+
+export type FormerAccountView = {
+  accountId: string;
+  name: string;
+  unitId: string;
+  unitNumber?: string;
+  blockId?: string;
+  liableParty: LiableParty;
+  closureId?: string;
+  holder?: Account['holder'];
+  /** Pozitif borc, negatif avans (hesap bakiyesi). */
+  balance: number;
+  debt: number;
+  advance: number;
+  overdue: number;
+  oldestUnpaidDueDate?: IsoDate;
+  daysOverdue: number;
+  /** Islemis, deftere yazilmamis tazminat (bugun itibariyla). */
+  lateFee: number;
+  lastPaymentDate?: IsoDate;
+};
+
+/**
+ * Ana cari olmayan (kapamayla acilmis) alacak hesaplari. Kurallar subledger.ts ile ayni;
+ * varsayilan olarak yalnizca bakiyesi olanlar (`includeSettled` ile hepsi).
+ */
+export function buildFormerAccounts(
+  accounts: Account[],
+  units: Unit[],
+  transactions: Transaction[],
+  today: IsoDate,
+  lateFeeBasisPoints = 0,
+  includeSettled = false,
+): FormerAccountView[] {
+  const unitById = new Map(units.map((u) => [u.unitId, u]));
+  const cancelled = cancelledTransactions(transactions);
+  const former = accounts.filter(
+    (a) => a.type === 'receivable' && a.unitId && a.liableParty && a.accountId !== mainReceivableId(a.unitId, a.liableParty),
+  );
+  return former
+    .filter((a) => includeSettled || a.balance !== 0)
+    .map((a) => {
+      const sub = readSubledger(linesOfAccount(a.accountId, transactions), cancelled);
+      const { open } = allocate(sub, today);
+      const overdue = open.filter((c) => c.overdue);
+      const oldest = overdue[0]?.dueDate ?? open[0]?.dueDate;
+      const unit = unitById.get(a.unitId as string);
+      const lastPayment = sub.credits.filter((c) => c.txKind === 'payment').map((c) => c.date).sort().at(-1);
+      return {
+        accountId: a.accountId,
+        name: a.name,
+        unitId: a.unitId as string,
+        ...(unit ? { unitNumber: unit.number, blockId: unit.blockId } : {}),
+        liableParty: a.liableParty as LiableParty,
+        ...(a.closureId ? { closureId: a.closureId } : {}),
+        ...(a.holder ? { holder: a.holder } : {}),
+        balance: a.balance,
+        debt: Math.max(a.balance, 0),
+        advance: Math.max(-a.balance, 0),
+        overdue: overdue.reduce((s, c) => s + c.remaining, 0),
+        ...(oldest ? { oldestUnpaidDueDate: oldest } : {}),
+        daysOverdue: overdue[0]?.daysOverdue ?? 0,
+        lateFee: lateFeeBasisPoints > 0 ? unpostedLateFee(feeInputsOf(sub), lateFeeBasisPoints, today) : 0,
+        ...(lastPayment ? { lastPaymentDate: lastPayment } : {}),
+      };
+    })
+    .sort((x, y) => (x.unitNumber ?? x.unitId).localeCompare(y.unitNumber ?? y.unitId, 'tr', { numeric: true }) || x.accountId.localeCompare(y.accountId));
+}
+
+// ---------------------------------------------------------------------------
 // Ozet kartlari
 // ---------------------------------------------------------------------------
 
@@ -303,8 +375,12 @@ export type FinanceSummary = {
   bank: number;
   /** Kasa + banka (likit varlik). */
   totalFunds: number;
-  /** Sakinlerin toplam borcu (pozitif cari bakiyeler). */
+  /** Sakinlerin toplam borcu (pozitif cari bakiyeler; ayrilan carileri de icerir). */
   receivables: number;
+  /** Bunun ayrilan sakin/malik carilerindeki kismi (tasinmada devredilen borclar). */
+  formerReceivables: number;
+  /** Borcu olan ayrilan cari sayisi. */
+  formerDebtorCount: number;
   /** Sakinlerin avanslari (negatif cari bakiyeler, mutlak deger). */
   advances: number;
   /** Tedarikci borclari. */
@@ -321,6 +397,7 @@ export function buildSummary(accounts: Account[], dues: UnitDuesView[]): Finance
   const active = accounts.filter((a) => a.status === 'active' || a.balance !== 0);
   const sum = (type: Account['type']) => active.filter((a) => a.type === type).reduce((s, a) => s + a.balance, 0);
   const recv = accounts.filter((a) => a.type === 'receivable');
+  const formerRecv = recv.filter((a) => a.unitId && a.liableParty && a.accountId !== mainReceivableId(a.unitId, a.liableParty));
   const cash = sum('cash');
   const bank = sum('bank');
   return {
@@ -329,6 +406,8 @@ export function buildSummary(accounts: Account[], dues: UnitDuesView[]): Finance
     bank,
     totalFunds: cash + bank,
     receivables: recv.reduce((s, a) => s + Math.max(a.balance, 0), 0),
+    formerReceivables: formerRecv.reduce((s, a) => s + Math.max(a.balance, 0), 0),
+    formerDebtorCount: formerRecv.filter((a) => a.balance > 0).length,
     advances: recv.reduce((s, a) => s + Math.max(-a.balance, 0), 0),
     // Borc hesabinin normal tarafi alacak: bakiye (borc - alacak) negatiftir.
     payables: -sum('payable'),

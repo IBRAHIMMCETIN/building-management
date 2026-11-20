@@ -10,7 +10,7 @@ const WRITE_ROLES: readonly Role[] = ['apartment_manager', 'management_company']
 export type FinanceRoutesDeps = { authenticate: Authenticator; service: FinanceService; closures?: ClosureService };
 
 /**
- * Uclar: GET /accounts, /summary, /dues-status, /transactions?from&to&limit&cursor, /balance/:unitId
+ * Uclar: GET /accounts, /summary, /dues-status, /former-accounts, /transactions?from&to&limit&cursor, /balance/:unitId
  *        POST /accounts, /dues, /payments, /expenses, /transactions/:id/reversal
  * Tasinmada cari kapama:
  *        GET  /units/:unitId/closures/preview?party&moveOutDate&userIds   (yazmaz)
@@ -100,6 +100,9 @@ export function financeRoutes({ authenticate, service, closures }: FinanceRoutes
   r.get('/summary', requireRole(READ_ROLES), async (c) => c.json(await service.summary(ctx(c))));
 
   r.get('/dues-status', requireRole(READ_ROLES), async (c) => c.json(await service.duesStatus(ctx(c))));
+
+  // Ayrilan sakin/malik carileri (tasinmada kapama); `?all=true` kapanmis olanlar dahil.
+  r.get('/former-accounts', requireRole(READ_ROLES), async (c) => c.json(await service.formerAccounts(ctx(c), { all: c.req.query('all') })));
 
   r.get('/transactions', requireRole(READ_ROLES), async (c) =>
     c.json(

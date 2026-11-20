@@ -134,6 +134,9 @@ export function buildNotifications(
   switch (event.type) {
     case 'PAYMENT_RECEIVED': {
       const p = event.payload;
+      // Ayrilan sakin/malik carisine tahsilat: ilk surumde ayrilan kisinin portal/bildirim erisimi
+      // yok; dairenin bugunku sakinine de gitmemeli.
+      if (p.receivableAccountId) break;
       for (const m of current) {
         if (m.unitId === p.unitId && seesParty(m, p.liableParty)) {
           add(m.userId, 'payment_received', {

@@ -37,7 +37,7 @@ import {
   periodLabel,
   unpostedLateFee,
 } from './lateFee.js';
-import { buildDueReminders, buildDuesStatus, buildSummary, toTransactionView } from './reports.js';
+import { buildDueReminders, buildDuesStatus, buildFormerAccounts, buildSummary, toTransactionView } from './reports.js';
 import {
   ACCOUNT_TYPES,
   type Account,
@@ -760,7 +760,17 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
     const o = asObject(body);
     const key = reqKey(o);
     const unitId = assertId(o.unitId, 'unitId');
-    const party = reqEnum(o, 'liableParty', LIABLE_PARTIES);
+    // Ayrilan sakin/malik carisinden tahsilat: `accountId` (taraf hesaptan gelir).
+    const accountId = o.accountId === undefined ? undefined : assertId(o.accountId, 'accountId');
+    const target = accountId ? await repo.getAccount(ctx.apartmentId, accountId) : undefined;
+    if (accountId && (!target || target.type !== 'receivable' || target.unitId !== unitId || !target.liableParty)) {
+      throw new ValidationError('accountId bu daireye ait bir cari hesap olmali', 'accountId');
+    }
+    const party: LiableParty = target?.liableParty ?? reqEnum(o, 'liableParty', LIABLE_PARTIES);
+    if (target && o.liableParty !== undefined && o.liableParty !== party) {
+      throw new ValidationError('liableParty secilen cari hesapla uyusmuyor', 'liableParty');
+    }
+    const former = target && target.accountId !== receivableId(unitId, party) ? target : undefined;
     const amount = reqAmount(o, 'amount');
     const method: PaymentMethod = reqEnum(o, 'method', PAYMENT_METHODS);
     const paidAt = optDate(o, 'paidAt') ?? today();
@@ -773,7 +783,19 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
           : SYSTEM_ACCOUNTS.bank
         : assertId(o.depositAccountId, 'depositAccountId');
 
-    const fp = fingerprint({ op: 'payment', unitId, party, amount, method, paidAt, depositAccountId, payerName, note });
+    const fp = fingerprint({
+      op: 'payment',
+      unitId,
+      party,
+      amount,
+      method,
+      paidAt,
+      depositAccountId,
+      payerName,
+      note,
+      // Ana cariye tahsilatin parmak izi eskisiyle ayni kalir.
+      ...(former ? { accountId: former.accountId } : {}),
+    });
     const replay = await replayOf(ctx, key, fp);
     if (replay) return paymentResult(ctx, replay, true);
 
@@ -786,8 +808,8 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
     if ((deposit.type !== 'cash' && deposit.type !== 'bank') || deposit.status !== 'active') {
       throw new FinanceError('unprocessable', 'Tahsilat hesabi aktif bir kasa/banka hesabi olmali');
     }
-    const recv = receivable(ctx, unitId, party);
-    await repo.ensureAccounts([recv]);
+    const recv = former ?? receivable(ctx, unitId, party);
+    if (!former) await repo.ensureAccounts([recv]);
 
     for (let attempt = 1; ; attempt++) {
       const counterValue = await repo.getCounter(ctx.apartmentId, 'receipt');
@@ -795,7 +817,7 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
       const tx = buildTx(ctx, {
         kind: 'payment',
         date: paidAt,
-        description: `Tahsilat - Daire ${unit.number}`,
+        description: former ? `Tahsilat - Daire ${unit.number} (ayrılan ${party === 'owner' ? 'malik' : 'sakin'})` : `Tahsilat - Daire ${unit.number}`,
         lines: [
           { accountId: depositAccountId, side: 'debit', amount },
           { accountId: recv.accountId, side: 'credit', amount, unitId, liableParty: party },
@@ -816,6 +838,7 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
         paidAt,
         payerName,
         note,
+        ...(former ? { receivableAccountId: former.accountId } : {}),
         createdAt: tx.createdAt,
         createdBy: ctx.userId,
       };
@@ -841,6 +864,7 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
             amount,
             method,
             paidAt,
+            ...(former ? { receivableAccountId: former.accountId } : {}),
           },
         });
         return { payment, transaction: tx, replayed: false };
@@ -1298,6 +1322,15 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
     return { asOf: today(), lateFeeMonthlyBasisPoints: rate, items };
   }
 
+  /** Ayrilan sakin/malik carileri (tasinmada kapama ile acilan), varsayilan: bakiyesi olanlar. */
+  async function formerAccounts(ctx: FinanceContext, opts: { all?: string } = {}) {
+    const [{ accounts, units, transactions }, rate] = await Promise.all([loadReportData(ctx), lateFeeRate(ctx.apartmentId)]);
+    return {
+      asOf: today(),
+      items: buildFormerAccounts(accounts, units, transactions, today(), rate, opts.all === 'true'),
+    };
+  }
+
   /** Kasa/banka bakiyeleri + alacak/gecikme ozeti. */
   async function summary(ctx: FinanceContext) {
     const [{ accounts, units, transactions }, rate] = await Promise.all([loadReportData(ctx), lateFeeRate(ctx.apartmentId)]);
@@ -1542,6 +1575,7 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
 
   return {
     duesStatus,
+    formerAccounts,
     summary,
     autoChargeDues,
     postLateFees,

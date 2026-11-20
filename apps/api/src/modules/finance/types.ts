@@ -190,6 +190,11 @@ export type Payment = TableKeys & {
   paidAt: IsoDate;
   payerName?: string;
   note?: string;
+  /**
+   * Tahsilatin alacak yazildigi alt cari; yalnizca ana cari DISINDA (tasinmada acilan ayrilan
+   * sakin/malik carisi) doldurulur. Bu makbuzlar dairenin bugunku sakinine gosterilmez.
+   */
+  receivableAccountId?: string;
   /** Online odeme: odeme niyeti ve saglayici islem numarasi (makbuz/mutabakat icin). */
   intentId?: string;
   provider?: string;

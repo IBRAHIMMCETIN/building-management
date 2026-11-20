@@ -527,6 +527,7 @@ export function createPortalService(overrides: Partial<PortalServiceDeps> = {}) 
           p.siteId === ctx.apartmentId &&
           p.unitId === unit.unitId &&
           parties.has(p.liableParty) &&
+          !p.receivableAccountId &&
           inWindow(p.paidAt, membership) &&
           !cancelled.has(p.transactionId),
       )
@@ -607,6 +608,8 @@ export function createPortalService(overrides: Partial<PortalServiceDeps> = {}) 
           p.siteId === ctx.apartmentId &&
           p.unitId === unit.unitId &&
           parties.includes(p.liableParty) &&
+          // Ayrilan sakin/malik carisine alinan tahsilat bugunku sakinin makbuzu degildir.
+          !p.receivableAccountId &&
           inWindow(p.paidAt, membership),
       )
       .sort((a, b) => b.paidAt.localeCompare(a.paidAt) || b.receiptNumber.localeCompare(a.receiptNumber))
