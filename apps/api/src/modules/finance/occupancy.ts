@@ -10,11 +10,14 @@ import type { UnitMembership } from '../portal/types.js';
 
 export type Occupancy = 'occupied' | 'vacant' | 'unknown';
 
-type MembershipLike = Pick<UnitMembership, 'unitId' | 'relation' | 'residesInUnit' | 'startDate' | 'endDate' | 'status'>;
+type MembershipLike = Pick<UnitMembership, 'unitId' | 'relation' | 'residesInUnit' | 'startDate' | 'endDate' | 'status' | 'endedByClosureId'>;
 
-/** `day` gunu (dahil) gecerli uyelik. Kapama servisindeki kuralla aynidir. */
+/**
+ * `day` gunu (dahil) gecerli uyelik. Kapamayla sona erdirilen (pasif) uyelik gecmis gunler icin
+ * `endDate`'e kadar gecerli sayilir; elle pasiflestirilen (hatali kayit) hic sayilmaz.
+ */
 export const coversDay = (m: MembershipLike, day: IsoDate): boolean =>
-  m.status === 'active' && m.startDate <= day && (!m.endDate || m.endDate >= day);
+  (m.status === 'active' || !!m.endedByClosureId) && m.startDate <= day && (!m.endDate || m.endDate >= day);
 
 /**
  * occupied: kiraci ya da oturan malik var.

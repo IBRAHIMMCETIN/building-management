@@ -11,6 +11,7 @@ import { toLedgerEntries } from '../../src/modules/finance/repository.js';
 import { createFinanceService } from '../../src/modules/finance/service.js';
 import type { Transaction } from '../../src/modules/finance/types.js';
 import { type MembershipRepository, membershipKeys } from '../../src/modules/memberships/repository.js';
+import { createMembershipService } from '../../src/modules/memberships/service.js';
 import type { PortalRepository } from '../../src/modules/portal/repository.js';
 import { type PortalServiceDeps, createPortalService } from '../../src/modules/portal/service.js';
 import type { UnitMembership } from '../../src/modules/portal/types.js';
@@ -97,10 +98,22 @@ export function cariWorld(start = '2026-09-01', opts: { vacancyRule?: boolean } 
     core: { ...core, getBlock: async () => undefined } as unknown as PortalServiceDeps['core'],
     now: () => now,
   });
+  // Daireler ekraninin kaynagi (GET /api/memberships?current=true) ayni belge deposundan okur.
+  const membershipRepo: MembershipRepository = {
+    get: async (apt, userId, unitId) => fake.docs.get(`APT#${apt}|MEMBER#${userId}#${unitId}`) as unknown as UnitMembership | undefined,
+    list: async (apt, f) => memberships.list(apt, f),
+    create: async (m) => {
+      fake.docs.set(`${m.PK}|${m.SK}`, m as unknown as Record<string, unknown> & { PK: string; SK: string; version: number });
+    },
+    update: async (m) => {
+      fake.docs.set(`${m.PK}|${m.SK}`, m as unknown as Record<string, unknown> & { PK: string; SK: string; version: number });
+    },
+  };
   const app = createApp({
     version: 'test',
     financeService: finance,
     closureService: closures,
+    membershipService: createMembershipService({ repository: membershipRepo, core: core as Pick<CoreRepository, 'getUnit'>, now: () => now }),
     authenticate: (c) => {
       const raw = c.req.header('x-test-claims');
       return raw ? (JSON.parse(raw) as AuthClaims) : null;
