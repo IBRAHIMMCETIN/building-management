@@ -1,4 +1,4 @@
-import { ShieldMinus, UserPlus } from 'lucide-react';
+import { History, LogOut, ShieldMinus, UserPlus } from 'lucide-react';
 import { Badge, Button, Skeleton } from '@/components/ui';
 import { expenseCategoryLabel } from '@/lib/api/finance';
 import { UNIT_TYPE_LABELS } from '@/lib/api/units';
@@ -10,6 +10,10 @@ type Props = {
   canManage: boolean;
   onInvite: (row: UnitRow) => void;
   onExemptions: (row: UnitRow) => void;
+  /** Finans okuma yetkisi: kapama gecmisi gorulebilir. */
+  canViewCari?: boolean;
+  /** Tasinma sihirbazi (wizard=true) veya kapama gecmisi. */
+  onCari?: (row: UnitRow, wizard: boolean) => void;
 };
 
 function Parties({ parties, empty = '—' }: { parties: RowParty[]; empty?: string }) {
@@ -50,7 +54,28 @@ function exemptionText(row: UnitRow): string | null {
 }
 
 /** md ve ustu: tablo. Alti: kart listesi (yatay kaydirma yerine okunabilir satirlar). */
-export function UnitsTable({ rows, showResidents, canManage, onInvite, onExemptions }: Props) {
+export function UnitsTable({ rows, showResidents, canManage, onInvite, onExemptions, canViewCari = false, onCari }: Props) {
+  const showActions = canManage || (canViewCari && !!onCari);
+  const historyButton = (row: UnitRow, full = false) =>
+    canViewCari && onCari ? (
+      <Button
+        variant={full ? 'secondary' : 'ghost'}
+        size="sm"
+        onClick={() => onCari(row, false)}
+        aria-label={`${unitLabel(row)} taşınma / cari kapama geçmişi`}
+        title="Taşınma / cari kapama geçmişi"
+      >
+        <History className="size-4" aria-hidden="true" />
+        {full && 'Cari geçmişi'}
+      </Button>
+    ) : null;
+  const moveOutButton = (row: UnitRow, full = false) =>
+    canManage && canViewCari && onCari ? (
+      <Button variant={full ? 'secondary' : 'ghost'} size="sm" onClick={() => onCari(row, true)} aria-label={`${unitLabel(row)} taşınma / cari kapama`}>
+        <LogOut className="size-4" aria-hidden="true" />
+        <span className={full ? undefined : 'hidden lg:inline'}>Taşınma</span>
+      </Button>
+    ) : null;
   return (
     <>
       <div className="hidden overflow-x-auto rounded-xl border border-border bg-surface/60 shadow-sm backdrop-blur-sm md:block">
@@ -68,7 +93,7 @@ export function UnitsTable({ rows, showResidents, canManage, onInvite, onExempti
                   <th scope="col" className="px-4 py-3 font-medium">Aktif Kiracı</th>
                 </>
               )}
-              {canManage && (
+              {showActions && (
                 <th scope="col" className="px-4 py-3 font-medium">
                   <span className="sr-only">İşlemler</span>
                 </th>
@@ -103,17 +128,23 @@ export function UnitsTable({ rows, showResidents, canManage, onInvite, onExempti
                     </td>
                   </>
                 )}
-                {canManage && (
+                {showActions && (
                   <td className="px-4 py-2.5 text-right">
                     <div className="flex justify-end gap-1">
-                      <Button variant="ghost" size="sm" onClick={() => onExemptions(row)} aria-label={`${unitLabel(row)} muafiyetleri`}>
-                        <ShieldMinus className="size-4" aria-hidden="true" />
-                        <span className="hidden lg:inline">Muafiyetler</span>
-                      </Button>
-                      <Button variant="ghost" size="sm" onClick={() => onInvite(row)} aria-label={`${unitLabel(row)} için sakin davet et`}>
-                        <UserPlus className="size-4" aria-hidden="true" />
-                        <span className="hidden lg:inline">Davet et</span>
-                      </Button>
+                      {canManage && (
+                        <>
+                          <Button variant="ghost" size="sm" onClick={() => onExemptions(row)} aria-label={`${unitLabel(row)} muafiyetleri`}>
+                            <ShieldMinus className="size-4" aria-hidden="true" />
+                            <span className="hidden xl:inline">Muafiyetler</span>
+                          </Button>
+                          <Button variant="ghost" size="sm" onClick={() => onInvite(row)} aria-label={`${unitLabel(row)} için sakin davet et`}>
+                            <UserPlus className="size-4" aria-hidden="true" />
+                            <span className="hidden xl:inline">Davet et</span>
+                          </Button>
+                        </>
+                      )}
+                      {moveOutButton(row)}
+                      {historyButton(row)}
                     </div>
                   </td>
                 )}
@@ -150,16 +181,22 @@ export function UnitsTable({ rows, showResidents, canManage, onInvite, onExempti
                 </dd>
               </dl>
             )}
-            {canManage && (
+            {showActions && (
               <div className="mt-3 grid grid-cols-2 gap-2">
-                <Button variant="secondary" size="sm" onClick={() => onExemptions(row)}>
-                  <ShieldMinus className="size-4" aria-hidden="true" />
-                  Muafiyetler
-                </Button>
-                <Button variant="secondary" size="sm" onClick={() => onInvite(row)}>
-                  <UserPlus className="size-4" aria-hidden="true" />
-                  Sakin davet et
-                </Button>
+                {canManage && (
+                  <>
+                    <Button variant="secondary" size="sm" onClick={() => onExemptions(row)}>
+                      <ShieldMinus className="size-4" aria-hidden="true" />
+                      Muafiyetler
+                    </Button>
+                    <Button variant="secondary" size="sm" onClick={() => onInvite(row)}>
+                      <UserPlus className="size-4" aria-hidden="true" />
+                      Sakin davet et
+                    </Button>
+                  </>
+                )}
+                {moveOutButton(row, true)}
+                {historyButton(row, true)}
               </div>
             )}
           </li>

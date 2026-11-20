@@ -10,10 +10,11 @@ type CardProps = {
   value: string;
   icon: ComponentType<{ className?: string }>;
   detail?: string;
+  extra?: string;
   tone?: 'default' | 'warning';
 };
 
-function StatCard({ label, value, icon: Icon, detail, tone = 'default' }: CardProps) {
+function StatCard({ label, value, icon: Icon, detail, extra, tone = 'default' }: CardProps) {
   return (
     <div
       className={cn(
@@ -29,6 +30,7 @@ function StatCard({ label, value, icon: Icon, detail, tone = 'default' }: CardPr
       </dt>
       <dd className="text-xl font-semibold tracking-tight text-text tabular-nums md:text-2xl">{value}</dd>
       {detail && <dd className="text-xs text-muted">{detail}</dd>}
+      {extra && <dd className="text-xs text-muted">{extra}</dd>}
     </div>
   );
 }
@@ -73,6 +75,11 @@ export function SummaryCards() {
             : data.receivables > 0
               ? 'Gecikmiş borç yok'
               : 'Bekleyen borç yok'
+        }
+        extra={
+          data.formerReceivables > 0
+            ? `Ayrılan cariler: ${formatTRY(data.formerReceivables)} (${data.formerDebtorCount} cari)`
+            : undefined
         }
       />
     </dl>

@@ -3,6 +3,7 @@ import { Banknote, CheckCircle2, Landmark } from 'lucide-react';
 import { useEffect } from 'react';
 import { useForm } from 'react-hook-form';
 import { Alert, Button, Dialog, FormField, Input, Select } from '@/components/ui';
+import { useFormerAccounts } from '@/hooks/useClosures';
 import { useDuesStatus, useRecordPayment } from '@/hooks/useFinance';
 import { useIdempotencyKey } from '@/hooks/useIdempotencyKey';
 import { ApiError, errorMessage } from '@/lib/api/errors';
@@ -13,11 +14,12 @@ import { formatTRY, kurusToInput } from '@/lib/money';
 import { type PaymentForm, type PaymentValues, paymentSchema, todayIstanbul } from './schemas';
 import { useUnitOptions } from './useUnitOptions';
 
-export type PaymentPreset = { unitId: string; liableParty?: LiableParty; amount?: number };
+/** accountId: ayrilan sakin/malik carisinden tahsilat (Ayrılan cariler ekranindan). */
+export type PaymentPreset = { unitId: string; liableParty?: LiableParty; accountId?: string; amount?: number };
 
 type Props = { open: boolean; onClose: () => void; preset?: PaymentPreset | null };
 
-const FIELDS = ['unitId', 'liableParty', 'amount', 'method', 'paidAt', 'payerName', 'note'] as const;
+const FIELDS = ['unitId', 'liableParty', 'accountId', 'amount', 'method', 'paidAt', 'payerName', 'note'] as const;
 
 const METHODS = [
   { value: 'cash', label: 'Elden nakit', hint: 'Kasaya girer', icon: Banknote },
@@ -27,17 +29,21 @@ const METHODS = [
 export function PaymentDialog({ open, onClose, preset }: Props) {
   const { options, isPending: unitsPending } = useUnitOptions();
   const dues = useDuesStatus();
+  const former = useFormerAccounts(false, open);
   const pay = useRecordPayment();
   const [idempotencyKey, renewKey] = useIdempotencyKey();
 
   const form = useForm<PaymentForm, unknown, PaymentValues>({
     resolver: zodResolver(paymentSchema),
-    defaultValues: { unitId: '', liableParty: 'occupant', amount: '', method: 'cash', paidAt: todayIstanbul(), payerName: '', note: '' },
+    defaultValues: { unitId: '', liableParty: 'occupant', accountId: '', amount: '', method: 'cash', paidAt: todayIstanbul(), payerName: '', note: '' },
   });
   const { errors } = form.formState;
-  const [unitId, party] = form.watch(['unitId', 'liableParty']);
+  const [unitId, party, accountId] = form.watch(['unitId', 'liableParty', 'accountId']);
   const unitDues = dues.data?.items.find((d) => d.unitId === unitId);
-  const partyBalance = unitDues ? unitDues[party].balance : undefined;
+  // Ayrilan cariler: secili dairenin bakiyesi olanlari (+ on secilmis olan, bakiyesi sifirlansa da).
+  const formerOptions = (former.data?.items ?? []).filter((a) => a.unitId === unitId);
+  const selectedFormer = formerOptions.find((a) => a.accountId === accountId);
+  const partyBalance = accountId ? selectedFormer?.balance : unitDues ? unitDues[party].balance : undefined;
 
   useEffect(() => {
     if (!open) return;
@@ -46,6 +52,7 @@ export function PaymentDialog({ open, onClose, preset }: Props) {
     form.reset({
       unitId: preset?.unitId ?? '',
       liableParty: preset?.liableParty ?? 'occupant',
+      accountId: preset?.accountId ?? '',
       amount: preset?.amount && preset.amount > 0 ? kurusToInput(preset.amount) : '',
       method: 'cash',
       paidAt: todayIstanbul(),
@@ -57,12 +64,27 @@ export function PaymentDialog({ open, onClose, preset }: Props) {
 
   const submit = form.handleSubmit(async (v) => {
     try {
-      await pay.mutateAsync({ idempotencyKey, ...v });
+      // Ayrilan cari secildiyse borclu taraf o carinin tarafidir (API uyumsuzlugu 400 ile reddeder).
+      const acc = v.accountId ? former.data?.items.find((a) => a.accountId === v.accountId) : undefined;
+      await pay.mutateAsync({ idempotencyKey, ...v, ...(acc ? { liableParty: acc.liableParty } : {}) });
     } catch (err) {
       if (applyApiFieldError(err, form.setError, FIELDS)) return;
       if (err instanceof ApiError && err.code === 'idempotency_conflict') renewKey();
     }
   });
+
+  // Daire degisince ayrilan cari secimi gecersiz olur; ayrilan cari secilince borclu taraf onun tarafidir.
+  useEffect(() => {
+    const sub = form.watch((v, { name, type }) => {
+      if (type !== 'change') return;
+      if (name === 'unitId' && v.accountId) form.setValue('accountId', '');
+      if (name === 'accountId' && v.accountId) {
+        const acc = former.data?.items.find((a) => a.accountId === v.accountId);
+        if (acc) form.setValue('liableParty', acc.liableParty);
+      }
+    });
+    return () => sub.unsubscribe();
+  }, [form, former.data]);
 
   // Form degisirse (farkli tutar/daire) yeni bir islemdir: ayni anahtarla farkli icerik 409 olurdu.
   useEffect(() => {
@@ -91,7 +113,7 @@ export function PaymentDialog({ open, onClose, preset }: Props) {
               onClick={() => {
                 pay.reset();
                 renewKey();
-                form.reset({ ...form.getValues(), unitId: '', amount: '', payerName: '', note: '' });
+                form.reset({ ...form.getValues(), unitId: '', accountId: '', amount: '', payerName: '', note: '' });
               }}
             >
               Yeni tahsilat
@@ -125,6 +147,25 @@ export function PaymentDialog({ open, onClose, preset }: Props) {
               </Select>
             </FormField>
           </div>
+
+          {(formerOptions.length > 0 || accountId) && (
+            <FormField
+              label="Cari"
+              error={errors.accountId?.message}
+              hint={accountId ? 'Tahsilat ayrılan kişinin carisine yazılır; yeni sakinin bakiyesini etkilemez.' : undefined}
+            >
+              <Select {...form.register('accountId')}>
+                <option value="">Ana cari (güncel sakin / malik)</option>
+                {formerOptions.map((a) => (
+                  <option key={a.accountId} value={a.accountId}>
+                    {a.name}
+                    {a.balance > 0 ? ` · ${formatTRY(a.balance)} borç` : ''}
+                  </option>
+                ))}
+                {accountId && !selectedFormer && <option value={accountId}>Ayrılan cari</option>}
+              </Select>
+            </FormField>
+          )}
 
           {partyBalance !== undefined && (
             <div className="flex items-center justify-between gap-2 rounded-md bg-surface-muted px-3 py-2 text-small">

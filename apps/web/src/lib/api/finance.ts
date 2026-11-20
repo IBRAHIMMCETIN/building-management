@@ -27,6 +27,9 @@ export const summarySchema = z.object({
   accruedLateFees: kurus.default(0),
   overdueUnitCount: z.number().int(),
   pendingUnitCount: z.number().int(),
+  /** Tasinma kapamasiyla acilmis ayrilan sakin/malik carilerindeki borc (ayri izlenir). */
+  formerReceivables: kurus.default(0),
+  formerDebtorCount: z.number().int().default(0),
   fundsAccounts: z.array(z.object({ accountId: z.string(), name: z.string(), type: z.enum(['cash', 'bank']), balance: kurus })),
 });
 
@@ -89,6 +92,8 @@ export const duesStatusSchema = z.object({
       blockId: z.string(),
       owner: partyDues,
       occupant: partyDues,
+      /** Bu dairenin ayrilan sakin/malik carileri toplami (bakiye/gecikmeye dahil degil). */
+      former: partyDues.optional(),
       balance: kurus,
       overdue: kurus,
       lateFee: kurus.default(0),
@@ -118,6 +123,8 @@ export type RecordPaymentInput = {
   idempotencyKey: string;
   unitId: string;
   liableParty: LiableParty;
+  /** Ayrilan sakin/malik carisine tahsilat (ana cari icin bos birakilir). */
+  accountId?: string;
   amount: number;
   method: 'cash' | 'bank_transfer';
   paidAt: string;

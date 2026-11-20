@@ -46,6 +46,16 @@ function Overdue({ row }: { row: UnitDues }) {
   );
 }
 
+/** Ayrilan sakin/malik carileri bu satirin bakiyesine dahil degil; ayrica not dusulur. */
+function FormerNote({ row }: { row: UnitDues }) {
+  if (!row.former || row.former.balance <= 0) return null;
+  return (
+    <span className="block text-small text-muted" title="Finans › Ayrılan cariler sekmesinden tahsil edilir">
+      + ayrılan cari {formatTRY(row.former.balance)}
+    </span>
+  );
+}
+
 /** Tahsil edilecek varsayilan taraf: borcu olan taraf (once sakin). */
 function presetFor(row: UnitDues): PaymentPreset {
   const party = row.occupant.balance > 0 || row.owner.balance <= 0 ? 'occupant' : 'owner';
@@ -190,6 +200,7 @@ export function DuesPanel({ canWrite, onCollect }: Props) {
                           Sakin {formatTRY(r.occupant.balance)} · Malik {formatTRY(r.owner.balance)}
                         </span>
                       )}
+                      <FormerNote row={r} />
                     </td>
                     <td className="px-4 py-3 text-right">
                       <Overdue row={r} />
@@ -225,6 +236,7 @@ export function DuesPanel({ canWrite, onCollect }: Props) {
                   <dt className="text-muted">Son ödeme</dt>
                   <dd className="text-right">{r.lastPaymentDate ? formatDate(r.lastPaymentDate) : '—'}</dd>
                 </dl>
+                <FormerNote row={r} />
                 {collectButton(r, true)}
               </li>
             ))}

@@ -27,6 +27,11 @@ const optionalText = (max: number) =>
 export const paymentSchema = z.object({
   unitId: z.string().min(1, 'Daire seçin.'),
   liableParty: z.enum(['occupant', 'owner']),
+  /** '' = dairenin ana carisi; dolu = ayrilan sakin/malik carisi (tasinma kapamasi). */
+  accountId: z
+    .string()
+    .default('')
+    .transform((v) => (v === '' ? undefined : v)),
   amount: moneyField(),
   method: z.enum(['cash', 'bank_transfer']),
   paidAt: date,
