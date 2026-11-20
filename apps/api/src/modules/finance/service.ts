@@ -99,6 +99,11 @@ export const SYSTEM_ACCOUNTS = {
    * aktarana kadar burada bekler. Banka hesabina aktarim (settlement) mutabakati sonraki fazda.
    */
   onlineCollection: 'online-collection',
+  /**
+   * Cari devri ara hesabi (tasinmada kapama): kapama ve acilis islemleri bu hesap uzerinden
+   * dengelenir; bakiyesi her zaman sifirdir. Ilk kapamada olusturulur.
+   */
+  transferClearing: 'transfer-clearing',
 } as const;
 
 /** KMK m.20 varsayilani: aylik %5. Apartman ayari okunamazsa kullanilir. */
@@ -1178,6 +1183,19 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
     if (original.kind === 'reversal') {
       throw new FinanceError('unprocessable', 'Ters kayit tekrar ters cevrilemez');
     }
+    if (original.kind === 'transfer') {
+      throw new FinanceError('unprocessable', 'Cari devri islemleri yalnizca kapamanin geri alinmasiyla cevrilebilir');
+    }
+    // Kapatilmis doneme ait kayit: kalemi devredildi; ters kayit kaynakta etkisiz kalir.
+    for (const accountId of new Set(original.lines.filter((l) => l.unitId && l.liableParty).map((l) => l.accountId))) {
+      const acc = await repo.getAccount(ctx.apartmentId, accountId);
+      if (acc?.closedThrough && original.date <= acc.closedThrough) {
+        throw new FinanceError(
+          'unprocessable',
+          `Bu islem tasinma kapamasiyla ${acc.closedThrough} tarihinde kapatilan doneme ait; duzeltmeyi borcun devredildigi caride yapin`,
+        );
+      }
+    }
     const idemId = `REV_${transactionId}`;
     const fp = fingerprint({ op: 'reversal', transactionId, reason, date });
     const replay = await replayOf(ctx, idemId, fp).catch((err) => {
@@ -1357,6 +1375,8 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
         account.accountId === mainReceivableId(unitId, party)
           ? `lf-${p.period}-${unitId}-${party === 'owner' ? 'o' : 't'}`
           : `lf-${p.period}-${account.accountId}`;
+      // Kapama, kesim tarihine kadarki tazminati zaten kesinlestirdi; o donemin tazminati yazilmaz.
+      if (account.closedThrough && postDate <= account.closedThrough) continue;
       const existing = await repo.getIdempotency(apartmentId, idemId);
       if (existing) {
         const tx = await repo.getTransaction(apartmentId, existing.transactionId);
@@ -1541,6 +1561,8 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
     recordExpense,
     reverseTransaction,
     getUnitBalance,
+    /** Sistem hesaplari (kasa, banka, gelir...) yoksa olusturur (cari kapama servisi kullanir). */
+    ensureSystemAccounts,
   };
 }
 
@@ -1562,6 +1584,11 @@ function mapConflict(err: unknown): unknown {
         return new FinanceError('not_found', 'Hesap bulunamadi');
       case 'duplicate':
         return new FinanceError('conflict', 'Islem zaten kaydedilmis');
+      case 'closed':
+        return new FinanceError(
+          'conflict',
+          `Bu cari tasinma kapamasiyla ${err.closedThrough ?? ''} tarihine kadar kapatildi; bu tarih ve oncesine kayit girilemez`.replace('  ', ' '),
+        );
       default:
         return new FinanceError('conflict', 'Es zamanli bir islem cakismasi oldu, tekrar deneyin');
     }
