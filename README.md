@@ -2,7 +2,7 @@
 
 Türkiye'deki apartman, site ve profesyonel yönetim firmaları için çok kiracılı (multi-tenant), sunucusuz bir site ve aidat yönetim platformu. Kat Mülkiyeti Kanunu'na uygun alt cari (malik / kiracı) ayrımı, dağıtım anahtarlarıyla toplu tahakkuk ve değişmez (append-only) finansal defter üzerine kuruludur.
 
-> **Durum (20.11.2026):** Aktif geliştirme. Backend çekirdeği, yönetici ve sakin web ekranları, kıstelyevm, belge deposu ve toplu aktarım `main` dalında; `dev` ortamı AWS `eu-north-1` bölgesinde, web Cloudflare Pages üzerinde canlı. Online ödeme (Adım 8b) `feature/adim-8b-online-odeme` dalında geliştiriliyor. Ayrıntılar için [Yol Haritası](#yol-haritası).
+> **Durum (20.11.2026):** Aktif geliştirme. Backend çekirdeği, yönetici ve sakin web ekranları, kıstelyevm, belge deposu ve toplu aktarım `main` dalında; `dev` ortamı AWS `eu-north-1` bölgesinde, web Cloudflare Pages üzerinde canlı. Online ödeme (Adım 8b: iyzico Pazaryeri altyapısı, ekranlar, inceleme/iade aracı) `main`'e alındı ve `dev`'de çalışıyor; iyzico sandbox uçtan uca doğrulaması bilerek proje sonuna bırakıldı ([Canlıya Geçiş Kontrol Listesi](#canlıya-geçiş-kontrol-listesi)). Ayrıntılar için [Yol Haritası](#yol-haritası).
 
 ---
 
@@ -323,7 +323,7 @@ Yedi rol: `platform_admin`, `management_company`, `apartment_manager`, `resident
 - [x] CI/CD: `main`'e push `dev` yığınını günceller; `prod` yalnızca `v*` etiketi veya elle tetiklemeyle
 - [x] AWS bölgesi Terraform'da `eu-north-1` olarak sabit (hesap SCP'si diğer bölgeleri reddeder)
 
-**Online ödeme — Adım 8b (`feature/adim-8b-online-odeme`, henüz `main`'de değil)**
+**Online ödeme — Adım 8b (`main`'e alındı: `2c89911`)**
 
 - [x] Ödeme niyeti, ödenebilir tutar hesabı (toplam borç veya en eskiden başlayan seçili kalemler), ödeme anında tazminat kesinleştirme
 - [x] Atomik tahsilat yazımı (`postBatch`): tazminat + tahsilat + makbuz + niyet durumu tek `TransactWriteItems`'ta
@@ -333,14 +333,13 @@ Yedi rol: `platform_admin`, `management_company`, `apartment_manager`, `resident
 - [x] Ortak dağıtım politikası modülü ve `github-deploy` kullanıcısına en az yetki
 - [x] Web ekranları: sakin ödeme seçimi (`/app/odeme`) ve sonuç sayfası (`/app/odeme/sonuc`), yönetici Finans → "Online ödemeler" sekmesi, platform yöneticisi ödeme hesapları (`/admin/payments`)
 - [x] `NEEDS_REVIEW` elle sonuçlandırma (yalnızca `platform_admin`): her kararda iyzico yeniden sorgulanır; deftere işle / tam iade (kalem bazlı `paymentTransactionId`) / kapat, zorunlu gerekçe ve denetim kaydı; çift iade koruması ve iadelerin 15 dakikalık mutabakatla tamamlanması, reddedilen iadede `PAYMENT_REFUND_FAILED` alarmı
+- [x] Platform yöneticisi paneli apartmandan ayrıldı: yalnızca Apartmanlar (açılış, `GET /api/admin/apartments` dizini) ve Ödeme Hesapları; apartman ekranları platform rolüne kapalı
+- [x] `github-deploy` kullanıcısından `AdministratorAccess` kaldırıldı; yalnızca en az yetkili `building-management-serverless-deploy` politikası, CI (PR planı + dev apply) ile doğrulandı
+- [x] Dal `main`'e alındı (`2c89911`)
 
 ### Sırada
 
-**Adım 8b'nin kalanı**
-
-- [ ] iyzico sandbox Pazaryeri yetkisi ve ilk uçtan uca ödeme — tüm modüller tamamlandıktan sonra (bkz. [Canlıya Geçiş Kontrol Listesi](#canlıya-geçiş-kontrol-listesi))
-- [ ] `github-deploy` kullanıcısından geniş politikaların kaldırılması ve CI ile doğrulanması
-- [ ] Dalın `main`'e alınması
+> iyzico sandbox Pazaryeri yetkisi ve ilk uçtan uca ödeme doğrulaması tüm modüller tamamlandıktan sonra yapılacak (bkz. [Canlıya Geçiş Kontrol Listesi](#canlıya-geçiş-kontrol-listesi)).
 
 **Ödeme ve tahsilatın devamı**
 
@@ -358,7 +357,6 @@ Yedi rol: `platform_admin`, `management_company`, `apartment_manager`, `resident
 **Platform ve operasyon**
 
 - [ ] Eski soneksiz `building-management` (prod) yığını hakkında karar ve ilk `prod` sürümü
-- [ ] Platform yöneticisi menüsünün apartmana özel sayfalardan ayrılması
 - [ ] Transactional outbox (`events/publisher.ts`)
 - [ ] Arıza/görev, ziyaretçi QR, anket/oylama, rezervasyon, ihale
 - [ ] Yönetim firması portföyü, abonelik/lisans
