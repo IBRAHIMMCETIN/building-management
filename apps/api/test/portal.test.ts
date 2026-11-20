@@ -168,6 +168,9 @@ function createWorld() {
       if (input.counter) counters.set(k(apt, input.counter.name), input.counter.expected + 1);
       if (input.record?.entityType === 'PAYMENT') payments.set(k(apt, input.record.paymentId), input.record);
     },
+    postBatch: async () => {
+      throw new Error('portal testlerinde kullanilmaz');
+    },
   };
 
   const portalRepo: PortalRepository = {

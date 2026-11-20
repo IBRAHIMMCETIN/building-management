@@ -1,0 +1,206 @@
+/**
+ * Odenebilir tutar hesabi (saf fonksiyonlar, I/O yok).
+ *
+ * Girdi, sakinin portalda gordugu alt cari satirlaridir (uyelik donemiyle sinirli). Mahsup
+ * kurallari portal (`allocateOpenDues`) ve kistelyevm (`computeLateFee`) ile birebir aynidir:
+ * tahsilat once anaparayi vade sirasiyla, en son deftere yazilmis tazminat kalemlerini kapatir.
+ */
+import { type IsoDate, type Kurus, type LiableParty, toKurus } from '../core/types.js';
+import { ValidationError } from '../core/validation.js';
+import { type FeeCharge, type FeeCredit, unpostedLateFee } from '../finance/lateFee.js';
+import type { LedgerEntry, Transaction } from '../finance/types.js';
+import { type OpenDue, allocateOpenDues } from '../portal/service.js';
+import type { IntentAllocation, PaymentMode } from './types.js';
+
+export const receivableAccountId = (unitId: string, party: LiableParty) => `recv-${unitId}-${party}`;
+
+export type PartyQuote = {
+  liableParty: LiableParty;
+  /** Pozitif = borc, negatif = avans. */
+  balance: Kurus;
+  debt: Kurus;
+  advance: Kurus;
+  /** Bugune kadar islemis, henuz deftere yazilmamis gecikme tazminati. */
+  accruedLateFee: Kurus;
+  /** "Toplam borc" odemesinde bu alt cariden tahsil edilecek: `debt + accruedLateFee`. */
+  totalDue: Kurus;
+  /** Secilebilir anapara kalemleri (FIFO sirasinda; yalnizca bastan kesintisiz secilebilir). */
+  items: OpenDue[];
+  /** Deftere yazilmis, acik gecikme tazminati kalemleri (yalnizca toplam odemede kapanir). */
+  postedLateFees: OpenDue[];
+};
+
+export type PaymentQuote = {
+  asOf: IsoDate;
+  lateFeeMonthlyBasisPoints: number;
+  parties: PartyQuote[];
+  totalDue: Kurus;
+};
+
+export type PartyLedgerInput = { party: LiableParty; entries: LedgerEntry[] };
+
+/** Iptal edilen (ters kayitli) islemler ve ters kayitlarin kendisi. */
+function cancelledIds(txById: ReadonlyMap<string, Transaction>): Set<string> {
+  const cancelled = new Set<string>();
+  for (const tx of txById.values()) {
+    if (tx.reversalOf) {
+      cancelled.add(tx.reversalOf);
+      cancelled.add(tx.transactionId);
+    }
+  }
+  return cancelled;
+}
+
+/**
+ * Bir alt carinin kistelyevm girdileri (portal ozetiyle ayni kurallar): taban aidat tahakkuku
+ * ve devir borcu; alacak satirlari islem tarihinde mahsup edilir; yazilmis tazminat ayri.
+ */
+export function feeInputsFromEntries(entries: readonly LedgerEntry[], txById: ReadonlyMap<string, Transaction>) {
+  const cancelled = cancelledIds(txById);
+  const charges: FeeCharge[] = [];
+  const credits: FeeCredit[] = [];
+  let postedFees = 0;
+  for (const e of entries) {
+    if (cancelled.has(e.transactionId)) continue;
+    const tx = txById.get(e.transactionId);
+    const kind = tx?.kind;
+    if (e.side === 'debit' && (kind === 'dues_charge' || kind === 'opening_balance')) {
+      charges.push({ id: e.transactionId, dueDate: tx?.dueDate ?? e.date, amount: e.amount });
+    } else if (e.side === 'debit' && kind === 'late_fee') {
+      postedFees += e.amount;
+    } else if (e.side === 'credit') {
+      credits.push({ date: e.date, amount: e.amount });
+    }
+  }
+  return { charges, credits, postedFees };
+}
+
+/** `asOf` itibariyla deftere yazilmamis tazminat (oran 0 ise 0). */
+export function accruedLateFeeOf(
+  entries: readonly LedgerEntry[],
+  txById: ReadonlyMap<string, Transaction>,
+  monthlyBasisPoints: number,
+  asOf: IsoDate,
+): Kurus {
+  if (monthlyBasisPoints <= 0) return toKurus(0);
+  return toKurus(unpostedLateFee(feeInputsFromEntries(entries, txById), monthlyBasisPoints, asOf));
+}
+
+export function buildPartyQuote(
+  input: PartyLedgerInput,
+  txById: ReadonlyMap<string, Transaction>,
+  today: IsoDate,
+  monthlyBasisPoints: number,
+): PartyQuote {
+  const balance = input.entries.reduce((s, e) => s + (e.side === 'debit' ? e.amount : -e.amount), 0);
+  const debt = Math.max(balance, 0);
+  const accruedLateFee = accruedLateFeeOf(input.entries, txById, monthlyBasisPoints, today);
+  const { open } = allocateOpenDues(input.party, input.entries, txById as Map<string, Transaction>, today);
+  return {
+    liableParty: input.party,
+    balance: toKurus(balance),
+    debt: toKurus(debt),
+    advance: toKurus(Math.max(-balance, 0)),
+    accruedLateFee,
+    totalDue: toKurus(debt + accruedLateFee),
+    items: open.filter((o) => !o.lateFee),
+    postedLateFees: open.filter((o) => o.lateFee),
+  };
+}
+
+export function buildQuote(input: {
+  ledgers: readonly PartyLedgerInput[];
+  txById: ReadonlyMap<string, Transaction>;
+  today: IsoDate;
+  lateFeeMonthlyBasisPoints: number;
+}): PaymentQuote {
+  const parties = input.ledgers.map((l) => buildPartyQuote(l, input.txById, input.today, input.lateFeeMonthlyBasisPoints));
+  return {
+    asOf: input.today,
+    lateFeeMonthlyBasisPoints: input.lateFeeMonthlyBasisPoints,
+    parties,
+    totalDue: toKurus(parties.reduce((s, p) => s + p.totalDue, 0)),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Secim -> dagilim
+// ---------------------------------------------------------------------------
+
+export type PaymentSelection =
+  | { mode: 'total' }
+  | { mode: 'items'; items: readonly { liableParty: LiableParty; transactionId: string }[] };
+
+/** Platform payi, yarim yukari yuvarlanmis (BigInt; kayan nokta yok). */
+export function platformFeeOf(amount: number, basisPoints: number): number {
+  if (basisPoints <= 0) return 0;
+  return Number((BigInt(amount) * BigInt(basisPoints) * 2n + 10_000n) / 20_000n);
+}
+
+/**
+ * Secimi alt cari basina dagilima cevirir.
+ *  - total: borcu veya islemis tazminati olan her alt cari; tazminat kesinlestirilir.
+ *  - items: alt cari basina, secilen kalemler FIFO sirasindaki ilk N acik anapara kalemi
+ *    olmalidir (atlama yok). Tazminat tahsil edilmez (Karar A).
+ */
+export function allocateSelection(
+  quote: PaymentQuote,
+  selection: PaymentSelection,
+  platformFeeBasisPoints = 0,
+): { mode: PaymentMode; allocations: IntentAllocation[]; amount: Kurus; platformFee: Kurus } {
+  const allocations: IntentAllocation[] = [];
+
+  if (selection.mode === 'total') {
+    for (const p of quote.parties) {
+      if (p.totalDue <= 0) continue;
+      allocations.push({
+        liableParty: p.liableParty,
+        principal: p.debt,
+        lateFee: p.accruedLateFee,
+        amount: p.totalDue,
+        subMerchantPrice: p.totalDue,
+        transactionIds: [],
+      });
+    }
+  } else {
+    if (selection.items.length === 0) throw new ValidationError('En az bir borç kalemi seçilmeli', 'items');
+    const byParty = new Map<LiableParty, string[]>();
+    for (const s of selection.items) {
+      const list = byParty.get(s.liableParty) ?? [];
+      if (list.includes(s.transactionId)) throw new ValidationError('Aynı borç kalemi iki kez seçilmiş', 'items');
+      list.push(s.transactionId);
+      byParty.set(s.liableParty, list);
+    }
+    for (const [party, ids] of byParty) {
+      const pq = quote.parties.find((p) => p.liableParty === party);
+      if (!pq) throw new ValidationError('Seçilen cari hesap size ait değil', 'items');
+      const prefix = pq.items.slice(0, ids.length);
+      const selected = new Set(ids);
+      if (prefix.length !== ids.length || prefix.some((it) => !selected.has(it.transactionId))) {
+        throw new ValidationError(
+          'Borç kalemleri en eski vadeliden başlayarak, atlamadan seçilmelidir',
+          'items',
+        );
+      }
+      const principal = prefix.reduce((s, it) => s + it.remaining, 0);
+      allocations.push({
+        liableParty: party,
+        principal: toKurus(principal),
+        lateFee: toKurus(0),
+        amount: toKurus(principal),
+        subMerchantPrice: toKurus(principal),
+        transactionIds: prefix.map((it) => it.transactionId),
+      });
+    }
+  }
+
+  allocations.sort((a, b) => a.liableParty.localeCompare(b.liableParty));
+  let platformFee = 0;
+  for (const a of allocations) {
+    const fee = platformFeeOf(a.amount, platformFeeBasisPoints);
+    a.subMerchantPrice = toKurus(a.amount - fee);
+    platformFee += fee;
+  }
+  const amount = allocations.reduce((s, a) => s + a.amount, 0);
+  return { mode: selection.mode, allocations, amount: toKurus(amount), platformFee: toKurus(platformFee) };
+}

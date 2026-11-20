@@ -24,6 +24,7 @@ import {
   type FinanceRepository,
   InvalidCursorError,
   LedgerConflictError,
+  type ReplaceRecord,
   financeKeys,
   financeRepository,
 } from './repository.js';
@@ -92,6 +93,11 @@ export const SYSTEM_ACCOUNTS = {
   incomeLateFee: 'income-late-fee',
   payable: 'payable',
   openingBalance: 'opening-balance',
+  /**
+   * Online (kartla) tahsilatlarin gecis hesabi: saglayici (iyzico) parayi apartmanin IBAN'ina
+   * aktarana kadar burada bekler. Banka hesabina aktarim (settlement) mutabakati sonraki fazda.
+   */
+  onlineCollection: 'online-collection',
 } as const;
 
 /** KMK m.20 varsayilani: aylik %5. Apartman ayari okunamazsa kullanilir. */
@@ -127,6 +133,29 @@ const LIABLE_PARTIES = ['owner', 'occupant'] as const;
 const EDITABLE_ACCOUNT_TYPES = ['cash', 'bank', 'income', 'expense', 'payable'] as const;
 
 export type FinanceContext = { apartmentId: string; userId: string };
+
+/** Online odemede alt cari basina tahsilat. `amount` alt cariye alacak yazilan toplamdir. */
+export type OnlinePaymentAllocation = {
+  liableParty: LiableParty;
+  amount: Kurus;
+  /** `amount`'un icindeki, odeme aninda kesinlestirilen gecikme tazminati (0 olabilir). */
+  lateFee: Kurus;
+};
+
+export type OnlinePaymentInput = {
+  intentId: string;
+  unitId: string;
+  paidAt: IsoDate;
+  provider: string;
+  providerPaymentId: string;
+  payerName?: string;
+  allocations: OnlinePaymentAllocation[];
+  /**
+   * Odeme niyetinin sonuclanmis hali (ayni atomik yazimda, surum kosuluyla). Makbuz ve islem
+   * kimlikleri burada uretildigi icin fonksiyon olarak verilir.
+   */
+  intentUpdate: (r: { payments: Payment[]; transactions: Transaction[] }) => ReplaceRecord;
+};
 
 export type FinanceServiceDeps = {
   repository: FinanceRepository;
@@ -326,6 +355,7 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
         name: 'Tedarikci Borclari',
         system: true,
       }),
+
       ...DEFAULT_EXPENSE_ACCOUNTS.map((e) => newAccount(ctx, { ...e, type: 'expense' })),
     ]);
     ensuredSystem.add(ctx.apartmentId);
@@ -832,6 +862,190 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
   }
 
   // -------------------------------------------------------------------------
+  // Online tahsilat (odeme saglayicisi onayindan sonra)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Saglayicinin onayladigi online odemeyi deftere TEK atomik yazimla isler (Adim 8b):
+   *  - alt cari basina: varsa odeme aninda kesinlesen gecikme tazminati (`late_fee`) +
+   *    tahsilat (`payment`, karsi hesap `online-collection`) + makbuz
+   *  - odeme niyetinin sonuc durumu (surum kosullu; callback/webhook/mutabakat yarisinda tek yazim)
+   * Idempotency anahtari `pay-<intentId>`: ayni niyet ikinci kez yazilmaz, onceki sonuc doner.
+   *
+   * Para saglayicida tahsil edilmis oldugu icin daire durumu/uyelik kontrolu YAPILMAZ.
+   */
+  async function recordOnlinePayment(ctx: FinanceContext, p: OnlinePaymentInput) {
+    assertId(p.intentId, 'intentId');
+    assertId(p.unitId, 'unitId');
+    if (!isIsoDate(p.paidAt)) throw new ValidationError('paidAt YYYY-MM-DD olmali', 'paidAt');
+    if (p.allocations.length === 0 || p.allocations.length > LIABLE_PARTIES.length) {
+      throw new ValidationError('allocations 1-2 alt cari icermeli', 'allocations');
+    }
+    const parties = new Set<LiableParty>();
+    for (const a of p.allocations) {
+      if (!(LIABLE_PARTIES as readonly string[]).includes(a.liableParty) || parties.has(a.liableParty)) {
+        throw new ValidationError('allocations alt carileri gecersiz veya tekrarli', 'allocations');
+      }
+      parties.add(a.liableParty);
+      if (!Number.isSafeInteger(a.amount) || a.amount < 1 || a.amount > MAX_AMOUNT) {
+        throw new ValidationError('allocations.amount pozitif kurus olmali', 'allocations');
+      }
+      if (!Number.isSafeInteger(a.lateFee) || a.lateFee < 0 || a.lateFee > a.amount) {
+        throw new ValidationError('allocations.lateFee 0 ile amount arasinda olmali', 'allocations');
+      }
+    }
+
+    const idemId = `pay-${p.intentId}`;
+    const fp = fingerprint({
+      op: 'online_payment',
+      intentId: p.intentId,
+      unitId: p.unitId,
+      paidAt: p.paidAt,
+      provider: p.provider,
+      providerPaymentId: p.providerPaymentId,
+      allocations: p.allocations,
+    });
+    const replay = async () => {
+      const existing = await repo.getIdempotency(ctx.apartmentId, idemId);
+      if (!existing) return undefined;
+      if (existing.fingerprint !== fp) {
+        throw new FinanceError('idempotency_conflict', 'Bu odeme niyeti farkli bir tahsilatla kaydedilmis');
+      }
+      const payments = (
+        await Promise.all((existing.recordIds ?? []).map((id) => repo.getPayment(ctx.apartmentId, id)))
+      ).filter((x): x is Payment => !!x);
+      const transactions = (
+        await Promise.all(
+          (existing.transactionIds ?? [existing.transactionId]).map((id) => repo.getTransaction(ctx.apartmentId, id)),
+        )
+      ).filter((x): x is Transaction => !!x);
+      return { payments, transactions, replayed: true };
+    };
+    const previous = await replay();
+    if (previous) return previous;
+
+    const unit = await requireUnit(ctx, p.unitId);
+    await ensureSystemAccounts(ctx);
+    // Online tahsilat hesabi yalnizca online odeme alan apartmanlarda acilir (kasa/banka
+    // listesinde gereksiz bos hesap olmasin).
+    await repo.ensureAccounts([
+      newAccount(ctx, {
+        accountId: SYSTEM_ACCOUNTS.onlineCollection,
+        type: 'bank',
+        name: 'Online Tahsilat (iyzico)',
+        system: true,
+      }),
+      ...p.allocations.map((a) => receivable(ctx, p.unitId, a.liableParty)),
+    ]);
+
+    const ordered = [...p.allocations].sort((a, b) => a.liableParty.localeCompare(b.liableParty));
+    for (let attempt = 1; ; attempt++) {
+      const counterValue = await repo.getCounter(ctx.apartmentId, 'receipt');
+      const transactions: Transaction[] = [];
+      const payments: Payment[] = [];
+      for (const [i, a] of ordered.entries()) {
+        const recvId = receivableId(p.unitId, a.liableParty);
+        if (a.lateFee > 0) {
+          const fee = buildTx(ctx, {
+            kind: 'late_fee',
+            date: p.paidAt,
+            dueDate: p.paidAt,
+            description: 'Gecikme tazminatı (online ödemede kesinleşen)',
+            reference: `LATE_FEE:PAY:${p.intentId}`,
+            lines: [
+              { accountId: recvId, side: 'debit', amount: a.lateFee, unitId: p.unitId, liableParty: a.liableParty },
+              { accountId: SYSTEM_ACCOUNTS.incomeLateFee, side: 'credit', amount: a.lateFee },
+            ],
+          });
+          // Ekstrede tazminat, ayni gunun tahsilatindan once gorunsun (kayit sirasi createdAt).
+          fee.createdAt = new Date(Date.parse(fee.createdAt) - 1).toISOString();
+          transactions.push(fee);
+        }
+        const tx = buildTx(ctx, {
+          kind: 'payment',
+          date: p.paidAt,
+          description: `Online tahsilat - Daire ${unit.number}`,
+          reference: `${p.provider.toUpperCase()}:${p.providerPaymentId}`,
+          lines: [
+            { accountId: SYSTEM_ACCOUNTS.onlineCollection, side: 'debit', amount: a.amount },
+            { accountId: recvId, side: 'credit', amount: a.amount, unitId: p.unitId, liableParty: a.liableParty },
+          ],
+        });
+        transactions.push(tx);
+        const paymentId = deps.newId();
+        payments.push({
+          ...financeKeys.payment(ctx.apartmentId, paymentId),
+          entityType: 'PAYMENT',
+          paymentId,
+          siteId: ctx.apartmentId,
+          unitId: p.unitId,
+          liableParty: a.liableParty,
+          method: 'card',
+          amount: a.amount,
+          depositAccountId: SYSTEM_ACCOUNTS.onlineCollection,
+          receiptNumber: `MKB-${String(counterValue + i + 1).padStart(6, '0')}`,
+          transactionId: tx.transactionId,
+          paidAt: p.paidAt,
+          payerName: p.payerName,
+          note: `Online ödeme (${p.provider})`,
+          intentId: p.intentId,
+          provider: p.provider,
+          providerPaymentId: p.providerPaymentId,
+          createdAt: tx.createdAt,
+          createdBy: ctx.userId,
+        });
+      }
+
+      try {
+        await repo.postBatch({
+          transactions,
+          idempotency: {
+            id: idemId,
+            fingerprint: fp,
+            transactionIds: transactions.map((t) => t.transactionId),
+            recordIds: payments.map((x) => x.paymentId),
+          },
+          counter: { name: 'receipt', expected: counterValue, increment: payments.length },
+          records: payments,
+          replaceRecords: [p.intentUpdate({ payments, transactions })],
+        });
+      } catch (err) {
+        if (err instanceof LedgerConflictError) {
+          if (err.reason === 'duplicate') {
+            const again = await replay();
+            if (again) return again;
+          }
+          if (err.reason === 'counter' && attempt < MAX_ATTEMPTS) continue;
+          // precondition: niyet baska bir istekle sonuclanmis; cagiran (odeme servisi) ele alir.
+          if (err.reason === 'precondition') throw err;
+        }
+        throw mapConflict(err);
+      }
+
+      for (const payment of payments) {
+        await publish({
+          eventId: `PAYMENT_RECEIVED:${payment.paymentId}`,
+          type: 'PAYMENT_RECEIVED',
+          apartmentId: ctx.apartmentId,
+          actorId: ctx.userId,
+          groupKey: p.unitId,
+          payload: {
+            paymentId: payment.paymentId,
+            transactionId: payment.transactionId,
+            receiptNumber: payment.receiptNumber,
+            unitId: p.unitId,
+            liableParty: payment.liableParty,
+            amount: payment.amount,
+            method: payment.method,
+            paidAt: payment.paidAt,
+          },
+        });
+      }
+      return { payments, transactions, replayed: false };
+    }
+  }
+
+  // -------------------------------------------------------------------------
   // Gider
   // -------------------------------------------------------------------------
 
@@ -1302,6 +1516,7 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
     chargeBulk,
     previewBulk,
     recordPayment,
+    recordOnlinePayment,
     recordExpense,
     reverseTransaction,
     getUnitBalance,

@@ -18,6 +18,11 @@ import { meRoutes } from './modules/me/routes.js';
 import { type MeService, createMeService } from './modules/me/service.js';
 import { membershipRoutes } from './modules/memberships/routes.js';
 import { type MembershipService, createMembershipService } from './modules/memberships/service.js';
+import { loadPaymentsConfig } from './modules/payments/config.js';
+import type { FakePaymentProvider } from './modules/payments/fakeProvider.js';
+import { paymentCallbackRoutes, paymentPortalRoutes } from './modules/payments/routes.js';
+import { type PaymentsService, createPaymentsService } from './modules/payments/service.js';
+import { portalRepository } from './modules/portal/repository.js';
 import { portalRoutes } from './modules/portal/routes.js';
 import { residentRoutes } from './modules/residents/routes.js';
 import { type ResidentsService, createResidentsService } from './modules/residents/service.js';
@@ -51,6 +56,13 @@ export type AppConfig = {
   residentsService?: ResidentsService;
   announcementService?: AnnouncementService;
   apartmentRoleService?: ApartmentRoleService;
+  /**
+   * Online odeme (Adim 8b). Verilmezse ortam degiskenlerinden (`loadPaymentsConfig`) kurulur;
+   * PAYMENTS_PROVIDER tanimsizsa online odeme kapalidir. `fakePaymentProvider` yalnizca sahte
+   * saglayicinin test sayfasi rotalarini acar.
+   */
+  paymentsService?: PaymentsService;
+  fakePaymentProvider?: FakePaymentProvider;
   /**
    * Domain olay yayincisi (DUE_GENERATED, PAYMENT_RECEIVED). server.ts/Lambda ortam
    * degiskenlerinden `createEventPublisherFromEnv()` ile verir; verilmezse bellek ici
@@ -127,6 +139,25 @@ export function createApp(config: AppConfig) {
       service: config.announcementService ?? createAnnouncementService({ events }),
     }),
   );
+
+  // Online odeme: sakin uclari portal'dan ONCE baglanir (daha ozel yol); callback kimliksizdir.
+  let paymentsService = config.paymentsService;
+  let fakePaymentProvider = config.fakePaymentProvider;
+  if (!paymentsService) {
+    const payments = loadPaymentsConfig();
+    fakePaymentProvider = payments.fake;
+    paymentsService = createPaymentsService({
+      portal: portalService,
+      ledger: portalRepository,
+      finance: financeService,
+      provider: payments.provider,
+      apiBaseUrl: payments.apiBaseUrl,
+      webAppUrl: payments.webAppUrl,
+      intentTtlMinutes: payments.intentTtlMinutes,
+    });
+  }
+  app.route('/api/portal/payments', paymentPortalRoutes({ authenticate, service: paymentsService }));
+  app.route('/api/payments', paymentCallbackRoutes({ service: paymentsService, fake: fakePaymentProvider }));
 
   app.route(
     '/api/portal',
