@@ -438,6 +438,10 @@ run "payments_disabled_by_default" {
     condition     = output.payments_secret_arn == null && output.payments_callback_urls == null
     error_message = "Odeme kapaliyken odeme ciktilari bos olmali"
   }
+  assert {
+    condition     = length(aws_cloudwatch_metric_alarm.payment_needs_review) == 0 && length(aws_cloudwatch_metric_alarm.payment_refund_failed) == 0
+    error_message = "Odeme kapaliyken odeme alarmlari olusmamali"
+  }
 }
 
 run "payments_iyzico" {
@@ -537,6 +541,14 @@ run "payments_iyzico" {
   assert {
     condition     = length(aws_cloudwatch_metric_alarm.payment_needs_review) == 1 && aws_cloudwatch_metric_alarm.payment_needs_review[0].threshold == 1
     error_message = "Incelemeye alinan ilk odemede alarm uretilmeli"
+  }
+  assert {
+    condition     = length(aws_cloudwatch_log_metric_filter.payment_refund_failed) == 2 && alltrue([for f in aws_cloudwatch_log_metric_filter.payment_refund_failed : f.pattern == "\"PAYMENT_REFUND_FAILED\""])
+    error_message = "Reddedilen iadeler API ve scheduler loglarinda sayilmali"
+  }
+  assert {
+    condition     = length(aws_cloudwatch_metric_alarm.payment_refund_failed) == 1 && aws_cloudwatch_metric_alarm.payment_refund_failed[0].threshold == 1
+    error_message = "Reddedilen ilk iadede alarm uretilmeli"
   }
   assert {
     condition     = output.payments_secret_arn == "arn:aws:secretsmanager:eu-central-1:123456789012:secret:building-management-dev/payments/iyzico-AbCdEf"

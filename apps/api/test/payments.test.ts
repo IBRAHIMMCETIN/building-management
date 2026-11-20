@@ -1,5 +1,5 @@
 import { TransactionCanceledException } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, QueryCommand, TransactWriteCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, PutCommand, QueryCommand, TransactWriteCommand } from '@aws-sdk/lib-dynamodb';
 import { mockClient } from 'aws-sdk-client-mock';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { createApp } from '../src/app.js';
@@ -25,6 +25,7 @@ import {
   PaymentsConflictError,
   createPaymentsRepository,
   paymentKeys,
+  toStoredIntent,
 } from '../src/modules/payments/repository.js';
 import { createPaymentsService, utcStamp } from '../src/modules/payments/service.js';
 import type { PaymentAccount, PaymentIntent } from '../src/modules/payments/types.js';
@@ -1010,12 +1011,16 @@ describe('odeme - alici bilgisi (Karar C)', () => {
 
 /** iyzico API'sini taklit eden sahte fetch: baslatilan oturumlari hatirlar, imzali yanit doner. */
 function fakeIyzicoServer(secretKey: string) {
-  const sessions = new Map<string, { body: Record<string, any>; paid?: boolean }>();
+  const sessions = new Map<string, { body: Record<string, any>; paid?: boolean; paidPrice?: string }>();
+  const refunds: Record<string, any>[] = [];
   let n = 0;
   const fetchFn = (async (input: RequestInfo | URL, init?: RequestInit) => {
-    const path = new URL(String(input)).pathname;
-    const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, any>;
+    const url = new URL(String(input));
+    const path = url.pathname;
+    const body = JSON.parse(String(init?.body || '{}')) as Record<string, any>;
     const json = (data: unknown) => new Response(JSON.stringify(data), { status: 200, headers: { 'content-type': 'application/json' } });
+    const items = (token: string, s: { body: Record<string, any> }) =>
+      (s.body.basketItems as Record<string, any>[]).map((it, i) => ({ itemId: it.id, paymentTransactionId: `ptx-${token}-${i + 1}`, price: it.price, paidPrice: it.price }));
     if (path === IYZICO_PATHS.initialize) {
       const token = `iyz-tok-${++n}`;
       sessions.set(token, { body });
@@ -1024,14 +1029,35 @@ function fakeIyzicoServer(secretKey: string) {
     if (path === IYZICO_PATHS.retrieve) {
       const s = sessions.get(body.token);
       if (!s?.paid) return json({ status: 'success', paymentStatus: 'INIT_THREEDS', token: body.token });
-      const r = { paymentStatus: 'SUCCESS', paymentId: `pay-${body.token}`, currency: 'TRY', basketId: s.body.basketId, conversationId: s.body.conversationId, paidPrice: s.body.paidPrice, price: s.body.price, token: body.token };
+      const r = { paymentStatus: 'SUCCESS', paymentId: `pay-${body.token}`, currency: 'TRY', basketId: s.body.basketId, conversationId: s.body.conversationId, paidPrice: s.paidPrice ?? s.body.paidPrice, price: s.body.price, token: body.token };
       const signature = responseSignature(secretKey, [r.paymentStatus, r.paymentId, r.currency, r.basketId, r.conversationId, signaturePrice(r.paidPrice), signaturePrice(r.price), r.token]);
-      return json({ status: 'success', fraudStatus: 1, ...r, signature });
+      return json({ status: 'success', fraudStatus: 1, ...r, signature, itemTransactions: items(body.token, s) });
+    }
+    if (path === IYZICO_PATHS.refund) {
+      refunds.push(body);
+      return json({ status: 'success', conversationId: body.conversationId, paymentTransactionId: body.paymentTransactionId, price: Number(body.price), currency: 'TRY', refundHostReference: `rf-${refunds.length}` });
+    }
+    if (path === IYZICO_PATHS.paymentDetails && init?.method === 'GET') {
+      const token = (url.searchParams.get('paymentId') ?? '').replace(/^pay-/, '');
+      const s = sessions.get(token);
+      if (!s) return json({ status: 'failure', errorCode: '5000', errorMessage: 'yok' });
+      return json({
+        status: 'success',
+        payments: [
+          {
+            paymentId: `pay-${token}`,
+            itemTransactions: items(token, s).map((t) => ({
+              ...t,
+              refunds: refunds.filter((r) => r.paymentTransactionId === t.paymentTransactionId).map((r) => ({ refundPrice: Number(r.price), refundStatus: 1 })),
+            })),
+          },
+        ],
+      });
     }
     if (path === '/onboarding/submerchant') return json({ status: 'success', subMerchantKey: `smk-${body.subMerchantExternalId}` });
     return new Response('{}', { status: 404 });
   }) as typeof fetch;
-  return { fetchFn, sessions };
+  return { fetchFn, sessions, refunds };
 }
 
 describe('odeme - iyzico saglayicisi ile uctan uca (sahte HTTP)', () => {
@@ -1109,6 +1135,42 @@ describe('odeme - iyzico saglayicisi ile uctan uca (sahte HTTP)', () => {
     });
     expect(cb.status).toBe(303);
     expect(w.intentOf(intentId).status).toBe('PENDING');
+  });
+
+  it('inceleme -> tam iade: kalem bazli /payment/refund, raporlamadan iade tutari okunur', async () => {
+    const { w, server } = iyzicoWorld();
+    await w.charge('u1', 'occupant', TL(1000), '2026-11-10', 'c1', '2026-11-01');
+    await w.payRepo.repo.putAccount({ ...paymentKeys.account(APT, 'iyzico'), entityType: 'PAYMENT_ACCOUNT', apartmentId: APT, provider: 'iyzico', subMerchantKey: 'smk', subMerchantType: 'PRIVATE_COMPANY', status: 'active', platformFeeBasisPoints: 0, ...audit });
+    const { intentId } = (await w.call('POST', '/api/portal/payments', w.token('tenant-1'), { idempotencyKey: 'k-1', mode: 'total' })).body;
+    // Saglayicinin bildirdigi tutar niyetten farkli -> inceleme.
+    Object.assign(server.sessions.get('iyz-tok-1')!, { paid: true, paidPrice: '999.00' });
+    await w.app.request(`/api/payments/iyzico/callback?ref=${APT}:${intentId}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: 'token=iyz-tok-1',
+    });
+    expect(w.intentOf(intentId)).toMatchObject({
+      status: 'NEEDS_REVIEW',
+      itemTransactions: [{ itemId: `${intentId}-occupant`, paymentTransactionId: 'ptx-iyz-tok-1-1', paidAmount: TL(1000) }],
+    });
+
+    const ops = w.token('ops-1', 'platform_admin', '');
+    const r = await w.call('POST', `/api/admin/payments/apartments/${APT}/intents/${intentId}/resolve`, ops, {
+      action: 'refund',
+      note: 'Tutar uyuşmazlığı, tam iade',
+      expectedVersion: w.intentOf(intentId).version,
+    });
+    expect(r.status).toBe(200);
+    expect(r.body.intent).toMatchObject({ status: 'REFUNDED', refundedAmount: TL(1000) });
+    expect(server.refunds).toEqual([
+      { locale: 'tr', conversationId: `refund-${intentId}-1`, paymentTransactionId: 'ptx-iyz-tok-1-1', price: '1000.00', currency: 'TRY', ip: '203.0.113.7' },
+    ]);
+    expect(r.body.intent.refund.items[0]).toMatchObject({ providerRefundId: 'rf-1' });
+    expect(w.fin.batches).toHaveLength(0);
+
+    // Raporlama: kalem bazinda iade edilen tutar.
+    const provider = w.payments.provider!;
+    expect(await provider.refundedAmounts({ providerPaymentId: 'pay-iyz-tok-1', conversationId: `${APT}:${intentId}` })).toEqual(new Map([['ptx-iyz-tok-1-1', TL(1000)]]));
   });
 
   it('iyzico saglayicisinda alt uye kaydi yoksa online odeme kapali (varsayilan hesap yalnizca sahte saglayicida)', async () => {
@@ -1373,5 +1435,281 @@ describe('odeme deposu - yonetici listesi (DynamoDB)', () => {
     await expect(repo.listIntents(APT, { limit: 5, cursor: enc({ PK: `APT#${APT}`, SK: 'TX#1' }) })).rejects.toBeInstanceOf(InvalidIntentCursorError);
     await expect(repo.listIntents(APT, { limit: 5, cursor: 'bozuk' })).rejects.toBeInstanceOf(InvalidIntentCursorError);
     expect(ddbMock.commandCalls(QueryCommand)).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEEDS_REVIEW elle sonuclandirma (deftere yaz / tam iade / kapat) - yalnizca platform_admin
+// ---------------------------------------------------------------------------
+
+describe('odeme - inceleme sonuclandirma', () => {
+  type W = ReturnType<typeof setup>;
+  const ops = (w: W) => w.token('ops-1', 'platform_admin', '');
+  /** Olustur (1) -> odeme sayfasi (2) -> inceleme (3). */
+  const REVIEW_V = 3;
+  const base = (id: string) => `/api/admin/payments/apartments/${APT}/intents/${id}`;
+
+  /** Odeme saglayicida basarili ama dogrulama tutmuyor -> NEEDS_REVIEW. */
+  async function reviewed(
+    override: Parameters<W['fake']['complete']>[2] extends infer O ? (O extends { override?: infer V } ? V : never) : never,
+    opts: { userId?: string; unitId?: string } = {},
+  ) {
+    const w = setup();
+    await w.charge('u1', 'occupant', TL(1000), '2026-11-10', 'c1', '2026-11-01');
+    await w.charge('u2', 'owner', TL(400), '2026-11-10', 'c2', '2026-11-01');
+    await w.charge('u2', 'occupant', TL(600), '2026-11-10', 'c3', '2026-11-01');
+    const created = await w.call('POST', '/api/portal/payments', w.token(opts.userId ?? 'tenant-1'), {
+      idempotencyKey: 'k-1',
+      mode: 'total',
+      ...(opts.unitId ? { unitId: opts.unitId } : {}),
+    });
+    expect(created.status).toBe(201);
+    const id = created.body.intentId as string;
+    const session = w.fake.sessions.get(`fake_${id}`)!;
+    w.fake.complete(`fake_${id}`, 'success', { override });
+    const ref = new URL(session.request.callbackUrl).searchParams.get('ref')!;
+    await w.app.request(`/api/payments/fake/callback?ref=${encodeURIComponent(ref)}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: `token=${encodeURIComponent(`fake_${id}`)}`,
+    });
+    expect(w.intentOf(id).status).toBe('NEEDS_REVIEW');
+    return { w, id, session };
+  }
+
+  const resolve = (w: W, id: string, action: string, version: number, note = 'Sağlayıcı paneli kontrol edildi') =>
+    w.call('POST', `${base(id)}/resolve`, ops(w), { action, note, expectedVersion: version });
+
+  it('kuyruk: tum apartmanlardaki incelemeler, apartman adiyla; yalnizca platform_admin', async () => {
+    const { w, id } = await reviewed({ paidAmount: toKurus(TL(999)) });
+    const q = await w.call('GET', '/api/admin/payments/review', ops(w));
+    expect(q.status).toBe(200);
+    expect(q.body.items).toHaveLength(1);
+    expect(q.body.items[0]).toMatchObject({ intentId: id, apartmentId: APT, apartmentName: 'Lale Apartmani', status: 'NEEDS_REVIEW', version: REVIEW_V });
+    expect(JSON.stringify(q.body)).not.toMatch(/subMerchantKey|checkout|token|GSI1/);
+    // Kuyruk kaydi yalnizca inceleme durumunda (seyrek indeks).
+    expect(w.fin.docs.get(`APT#${APT}|PI#${id}`)).toMatchObject({ GSI1PK: 'PAYMENT_REVIEW', GSI1SK: `PI#${id}#APT#${APT}` });
+
+    expect((await w.call('GET', '/api/admin/payments/review', w.token('mgr-1', 'apartment_manager'))).status).toBe(403);
+    expect((await w.call('GET', '/api/admin/payments/review', w.token('tenant-1'))).status).toBe(403);
+    expect((await w.call('POST', `${base(id)}/resolve`, w.token('mgr-1', 'apartment_manager'), { action: 'refund', note: 'xxxxx', expectedVersion: REVIEW_V })).status).toBe(403);
+    expect((await w.call('GET', `${base(id)}/check`)).status).toBe(401);
+  });
+
+  it('tutar uyusmuyorsa deftere isleme kapali; yalnizca tam iade', async () => {
+    const { w, id } = await reviewed({ paidAmount: toKurus(TL(999)) });
+    const check = await w.call('GET', `${base(id)}/check`, ops(w));
+    expect(check.status).toBe(200);
+    expect(check.body.check).toMatchObject({ status: 'success', paidAmount: TL(999), problems: [expect.stringMatching(/tutar uyusmuyor/)] });
+    expect(check.body.actions).toEqual([
+      { action: 'approve', allowed: false, reason: expect.stringMatching(/Doğrulama tutmuyor/) },
+      { action: 'refund', allowed: true },
+      { action: 'close', allowed: false, reason: expect.stringMatching(/başarılı çekim var/) },
+    ]);
+    const r = await resolve(w, id, 'approve', REVIEW_V);
+    expect(r.status).toBe(422);
+    expect(r.body.error).toBe('action_not_allowed');
+    expect(w.fin.batches).toHaveLength(0);
+  });
+
+  it('deftere isle: dogrulama artik tutuyorsa (fraud onaylandi) SUCCEEDED, makbuz, iz kaydi; kuyruktan duser', async () => {
+    const { w, id, session } = await reviewed({ fraudApproved: false });
+    expect((await w.call('GET', `${base(id)}/check`, ops(w))).body.actions[0]).toMatchObject({ action: 'approve', allowed: false });
+    // iyzico fraud incelemesini onayladi:
+    session.override = undefined;
+    const check = await w.call('GET', `${base(id)}/check`, ops(w));
+    expect(check.body.actions.map((a: { allowed: boolean }) => a.allowed)).toEqual([true, true, false]);
+
+    // Eski surumla karar: 409 (siz incelerken degisti).
+    expect((await resolve(w, id, 'approve', REVIEW_V - 1)).status).toBe(409);
+    const ok = await resolve(w, id, 'approve', REVIEW_V, 'Fraud incelemesi iyzico panelinde onaylandı');
+    expect(ok.status).toBe(200);
+    expect(ok.body.intent).toMatchObject({
+      status: 'SUCCEEDED',
+      receiptNumbers: ['MKB-000001'],
+      resolution: { action: 'approve', note: 'Fraud incelemesi iyzico panelinde onaylandı', by: 'ops-1', providerCheck: { status: 'success', problems: [] } },
+    });
+    expect(w.fin.balanceOf('recv-u1-occupant')).toBe(0);
+    expect(w.fin.batches).toHaveLength(1);
+    const stored = w.fin.docs.get(`APT#${APT}|PI#${id}`)!;
+    expect(stored.GSI1PK).toBeUndefined();
+    expect((await w.call('GET', '/api/admin/payments/review', ops(w))).body.items).toEqual([]);
+    expect(w.logs.some((l) => l.fields?.audit === 'PAYMENT_REVIEW_RESOLVED' && l.fields?.action === 'approve')).toBe(true);
+
+    // Ikinci karar: artik inceleme beklemiyor.
+    const again = await resolve(w, id, 'approve', (stored.version as number));
+    expect(again.status).toBe(422);
+    // Sakin: basarili; yonetici: karar ve gerekce (saglayici ayrintisi yok).
+    expect((await w.call('GET', `/api/portal/payments/${id}`, w.token('tenant-1'))).body.status).toBe('SUCCEEDED');
+    const mgr = await w.call('GET', '/api/finance/online-payments', w.token('mgr-1', 'apartment_manager'));
+    expect(mgr.body.items[0].resolution).toEqual({ action: 'approve', note: 'Fraud incelemesi iyzico panelinde onaylandı', at: expect.any(String) });
+    expect(JSON.stringify(mgr.body)).not.toMatch(/providerCheck/);
+  });
+
+  it('tam iade: her sepet kalemi kendi paymentTransactionId ile tam tutarda bir kez iade edilir; defterde iz yok', async () => {
+    // Malik + oturan: iki sepet kalemi.
+    const { w, id } = await reviewed({ paidAmount: toKurus(TL(1001)) }, { userId: 'owner-2', unitId: 'u2' });
+    const r = await resolve(w, id, 'refund', REVIEW_V, 'Tutar uyuşmazlığı, tam iade');
+    expect(r.status).toBe(200);
+    expect(r.body.intent).toMatchObject({ status: 'REFUNDED', refundedAmount: TL(1000) });
+    expect(r.body.intent.refund.items).toEqual([
+      expect.objectContaining({ itemId: `${id}-occupant`, paymentTransactionId: 'fakepay-1-t1', amount: TL(600), status: 'succeeded', attempts: 1, conversationId: `refund-${id}-1` }),
+      expect.objectContaining({ itemId: `${id}-owner`, paymentTransactionId: 'fakepay-1-t2', amount: TL(400), status: 'succeeded', attempts: 1, conversationId: `refund-${id}-2` }),
+    ]);
+    expect(Object.fromEntries([...w.fake.refunds].map(([k, list]) => [k, list.map((x) => x.amount)]))).toEqual({
+      'fakepay-1-t1': [TL(600)],
+      'fakepay-1-t2': [TL(400)],
+    });
+    expect(w.fin.batches).toHaveLength(0);
+    expect(w.fin.balanceOf('recv-u2-owner')).toBe(TL(400));
+    expect(w.fin.docs.get(`APT#${APT}|PI#${id}`)!.GSI1PK).toBeUndefined();
+    expect(w.logs.some((l) => l.fields?.audit === 'PAYMENT_REFUNDED')).toBe(true);
+
+    const resident = await w.call('GET', `/api/portal/payments/${id}`, w.token('owner-2'));
+    expect(resident.body).toMatchObject({ status: 'REFUNDED', failureMessage: expect.stringMatching(/iade edildi/) });
+    // Iade edilmis odemede yeni islem yok.
+    expect((await resolve(w, id, 'refund', 99)).status).toBe(409);
+  });
+
+  it('iade yaniti kaybolursa (zaman asimi): tekrar denemeden once saglayicida iade edilmis tutar sorulur; cift iade yok', async () => {
+    const { w, id } = await reviewed({ paidAmount: toKurus(TL(999)) });
+    w.fake.failNextRefund(new PaymentProviderError('timeout', 'Zaman asimi', true), { applied: true });
+    const r = await resolve(w, id, 'refund', REVIEW_V);
+    expect(r.status).toBe(200);
+    expect(r.body.intent).toMatchObject({ status: 'REFUND_PENDING' });
+    expect(r.body.intent.refund.items[0]).toMatchObject({ status: 'pending', attempts: 1, error: { code: 'timeout' } });
+    expect(w.fake.refunds.get('fakepay-1-t1')).toHaveLength(1);
+
+    // Hemen calisan mutabakat devam eden cagri ile yarismaz.
+    expect(await w.payments.reconcileRefunds()).toEqual({ checked: 1, refunded: 0, stillPending: 1 });
+    // 5 dk sonra: saglayicida iade gorulur, tekrar gonderilmez.
+    w.clock.now = new Date(w.clock.now.getTime() + 6 * 60_000);
+    expect(await w.payments.reconcileRefunds()).toEqual({ checked: 1, refunded: 1, stillPending: 0 });
+    expect(w.fake.refunds.get('fakepay-1-t1')).toHaveLength(1);
+    expect(w.intentOf(id)).toMatchObject({ status: 'REFUNDED' });
+    expect(w.intentOf(id).refund!.items[0]).toMatchObject({ status: 'succeeded', attempts: 2 });
+    expect(await w.payments.reconcileRefunds()).toEqual({ checked: 0, refunded: 0, stillPending: 0 });
+  });
+
+  it('ag hatasi (iade gerceklesmedi): sure dolunca mutabakat yeniden gonderir', async () => {
+    const { w, id } = await reviewed({ paidAmount: toKurus(TL(999)) });
+    w.fake.failNextRefund(new PaymentProviderError('unavailable', 'Ulasilamadi', true));
+    expect((await resolve(w, id, 'refund', REVIEW_V)).body.intent.status).toBe('REFUND_PENDING');
+    expect(w.fake.refunds.size).toBe(0);
+    w.clock.now = new Date(w.clock.now.getTime() + 6 * 60_000);
+    await w.payments.reconcileRefunds();
+    expect(w.intentOf(id).status).toBe('REFUNDED');
+    expect(w.fake.refunds.get('fakepay-1-t1')).toHaveLength(1);
+  });
+
+  it('saglayici iadeyi reddederse alarm; mutabakat tekrar denemez, platform ekibi yeniden deneyebilir', async () => {
+    const { w, id } = await reviewed({ paidAmount: toKurus(TL(999)) });
+    w.fake.failNextRefund(new PaymentProviderError('refund_rejected', 'Iade reddedildi', false));
+    const r = await resolve(w, id, 'refund', REVIEW_V);
+    expect(r.body.intent.refund.items[0]).toMatchObject({ status: 'failed', error: { code: 'refund_rejected' } });
+    expect(w.logs.some((l) => l.fields?.alert === 'PAYMENT_REFUND_FAILED')).toBe(true);
+
+    w.clock.now = new Date(w.clock.now.getTime() + 60 * 60_000);
+    expect(await w.payments.reconcileRefunds()).toEqual({ checked: 1, refunded: 0, stillPending: 1 });
+    expect(w.fake.refunds.size).toBe(0);
+
+    const check = await w.call('GET', `${base(id)}/check`, ops(w));
+    expect(check.body).toMatchObject({ check: null, actions: [{ allowed: false }, { action: 'refund', allowed: true }, { allowed: false }] });
+    // REFUND_PENDING'de yalnizca iade tekrar denenebilir.
+    expect((await resolve(w, id, 'close', check.body.intent.version)).status).toBe(422);
+    const retry = await resolve(w, id, 'refund', check.body.intent.version, 'Sağlayıcıyla görüşüldü, tekrar');
+    expect(retry.body.intent.status).toBe('REFUNDED');
+    expect(w.fake.refunds.get('fakepay-1-t1')).toHaveLength(1);
+  });
+
+  it('kapat: saglayicida basarili cekim yoksa FAILED; varsa kapatilamaz', async () => {
+    const { w, id, session } = await reviewed({ fraudApproved: false });
+    expect((await resolve(w, id, 'close', REVIEW_V)).status).toBe(422);
+    // Fraud incelemesi sonunda iyzico odemeyi iptal etti:
+    session.outcome = 'failure';
+    const check = await w.call('GET', `${base(id)}/check`, ops(w));
+    expect(check.body.actions).toEqual([
+      { action: 'approve', allowed: false, reason: 'Sağlayıcıda başarılı çekim yok' },
+      { action: 'refund', allowed: false, reason: 'Sağlayıcıda başarılı çekim yok' },
+      { action: 'close', allowed: true },
+    ]);
+    const r = await resolve(w, id, 'close', REVIEW_V, 'iyzico ödemeyi iptal etmiş');
+    expect(r.body.intent).toMatchObject({ status: 'FAILED', failure: { code: 'review_closed' }, resolution: { action: 'close' } });
+    expect(w.fin.batches).toHaveLength(0);
+    expect(w.fake.refunds.size).toBe(0);
+  });
+
+  it('odeme bu kayitla eslesmiyorsa (sepet/conversation) iade de kapali: saglayici panelinden', async () => {
+    const { w, id } = await reviewed({ basketId: 'baska-sepet' });
+    const check = await w.call('GET', `${base(id)}/check`, ops(w));
+    expect(check.body.actions.find((a: { action: string }) => a.action === 'refund')).toEqual({
+      action: 'refund',
+      allowed: false,
+      reason: expect.stringMatching(/eşleşmiyor/),
+    });
+  });
+
+  it('dogrulama: gerekce, islem, surum; olmayan niyet 404; saglayiciya ulasilamazsa 502', async () => {
+    const { w, id } = await reviewed({ paidAmount: toKurus(TL(999)) });
+    expect((await resolve(w, id, 'refund', REVIEW_V, 'kısa')).body).toMatchObject({ error: 'validation_error', field: 'note' });
+    expect((await resolve(w, id, 'sil', REVIEW_V)).body.field).toBe('action');
+    expect((await w.call('POST', `${base(id)}/resolve`, ops(w), { action: 'refund', note: 'yeterli gerekçe' })).body.field).toBe('expectedVersion');
+    expect((await resolve(w, '20261106100000-yok', 'refund', 1)).status).toBe(404);
+    expect((await w.call('GET', `/api/admin/payments/apartments/${OTHER_APT}/intents/${id}/check`, ops(w))).status).toBe(404);
+    w.fake.failNextRetrieve();
+    expect((await resolve(w, id, 'refund', REVIEW_V)).status).toBe(502);
+    expect(w.intentOf(id).status).toBe('NEEDS_REVIEW');
+  });
+
+  it('PENDING / SUCCEEDED niyet inceleme islemlerine kapali', async () => {
+    const w = setup();
+    await w.charge('u1', 'occupant', TL(1000), '2026-11-10', 'c1', '2026-11-01');
+    const created = await w.call('POST', '/api/portal/payments', w.token('tenant-1'), { idempotencyKey: 'k-1', mode: 'total' });
+    const id = created.body.intentId as string;
+    const check = await w.call('GET', `${base(id)}/check`, ops(w));
+    expect(check.body.actions.every((a: { allowed: boolean }) => !a.allowed)).toBe(true);
+    expect((await resolve(w, id, 'close', w.intentOf(id).version)).body.error).toBe('action_not_allowed');
+  });
+});
+
+describe('odeme deposu - inceleme kuyrugu (DynamoDB GSI1)', () => {
+  const ddbMock = mockClient(DynamoDBDocumentClient);
+  const repo = createPaymentsRepository();
+
+  beforeEach(() => {
+    ddbMock.reset();
+    resetDynamoCache();
+    process.env.DYNAMODB_TABLE_NAME = 'bm-test-table';
+    process.env.AWS_REGION = 'eu-north-1';
+    process.env.DYNAMODB_ENDPOINT = '';
+  });
+
+  const intent = (status: string) =>
+    ({ ...paymentKeys.intent(APT, '20261106100000-a'), entityType: 'PAYMENT_INTENT', intentId: '20261106100000-a', apartmentId: APT, status, version: 2 }) as unknown as PaymentIntent;
+
+  it('kuyruk alanlari durumdan turetilir: inceleme durumunda yazilir, cikinca silinir', async () => {
+    expect(toStoredIntent(intent('NEEDS_REVIEW'))).toMatchObject({ GSI1PK: 'PAYMENT_REVIEW', GSI1SK: `PI#20261106100000-a#APT#${APT}` });
+    expect(toStoredIntent(intent('REFUND_PENDING'))).toMatchObject({ GSI1PK: 'PAYMENT_REVIEW' });
+    const leaving = { ...intent('SUCCEEDED'), GSI1PK: 'PAYMENT_REVIEW', GSI1SK: 'x' } as PaymentIntent;
+    expect(toStoredIntent(leaving)).not.toHaveProperty('GSI1PK');
+
+    ddbMock.on(PutCommand).resolves({});
+    await repo.updateIntent({ ...leaving, version: 3 }, 2);
+    expect(ddbMock.commandCalls(PutCommand)[0]!.args[0].input.Item).not.toHaveProperty('GSI1PK');
+  });
+
+  it('kuyruk sorgusu GSI1 ile; durumu artik incelemede olmayan (gecikmeli indeks) kayitlar elenir; indeks alanlari donmez', async () => {
+    ddbMock.on(QueryCommand).resolves({
+      Items: [
+        { ...intent('NEEDS_REVIEW'), GSI1PK: 'PAYMENT_REVIEW', GSI1SK: 'a' },
+        { ...intent('SUCCEEDED'), intentId: 'b' },
+        { PK: 'x', entityType: 'SITE', status: 'NEEDS_REVIEW' },
+      ],
+    });
+    const out = await repo.listReviewQueue(50);
+    expect(out).toHaveLength(1);
+    expect(out[0]).not.toHaveProperty('GSI1PK');
+    const input = ddbMock.commandCalls(QueryCommand)[0]!.args[0].input;
+    expect(input).toMatchObject({ IndexName: 'GSI1', KeyConditionExpression: 'GSI1PK = :pk', ExpressionAttributeValues: { ':pk': 'PAYMENT_REVIEW' }, Limit: 50 });
   });
 });

@@ -8,7 +8,7 @@ import { errorMessage } from '@/lib/api/errors';
 import type { IntentStatus, ManagerIntent } from '@/lib/api/payments';
 import { formatDateTime } from '@/lib/dates';
 import { formatTRY } from '@/lib/money';
-import { accountStatusView, formatBasisPoints, intentStatusLabel, intentStatusTone } from '@/lib/payments/manager';
+import { REVIEW_ACTION_LABELS, accountStatusView, formatBasisPoints, intentStatusLabel, intentStatusTone } from '@/lib/payments/manager';
 import { partyLabel } from '@/lib/payments/result';
 import { cn } from '@/lib/cn';
 import { useUnitOptions } from './useUnitOptions';
@@ -21,6 +21,7 @@ const FILTERS: readonly { value: Filter; label: string }[] = [
   { value: 'PENDING', label: 'Bekleyen' },
   { value: 'FAILED', label: 'Başarısız' },
   { value: 'NEEDS_REVIEW', label: 'İnceleme gerekli' },
+  { value: 'REFUNDED', label: 'İade edildi' },
 ];
 
 type DocOpener = ReturnType<typeof useOpenDocument>;
@@ -94,8 +95,8 @@ function ReviewBanner({ onShow }: { onShow: () => void }) {
             {more ? '+' : ''} online ödeme inceleme bekliyor
           </p>
           <p>
-            Kartından çekim yapılmış ancak tutarı borçla eşleşmeyen veya süresi geçmiş ödemeler. Sakinden tekrar ödeme istemeyin; ödeme
-            sağlayıcısı panelinden kontrol edip platform yöneticisiyle sonuçlandırın.
+            Kartından çekim yapılmış ancak deftere yazılamamış ödemeler. Sakinden tekrar ödeme istemeyin; platform yöneticisi ödemeyi
+            sağlayıcıdan doğrulayıp deftere işler veya tam iade eder. Karar ve gerekçe burada görünür.
           </p>
         </div>
       </div>
@@ -128,13 +129,25 @@ function ReceiptButtons({ intent, docs }: { intent: ManagerIntent; docs: DocOpen
 }
 
 function IntentNote({ intent }: { intent: ManagerIntent }) {
+  const decision = intent.resolution && (
+    <p className="mt-1 text-small text-muted">
+      Platform kararı: <span className="font-medium text-text">{REVIEW_ACTION_LABELS[intent.resolution.action].done}</span> ·{' '}
+      {formatDateTime(intent.resolution.at)} — “{intent.resolution.note}”
+      {intent.refundedAmount !== undefined && ` · ${formatTRY(intent.refundedAmount)} iade edildi`}
+    </p>
+  );
   if (intent.status === 'NEEDS_REVIEW' && intent.review) {
     return <p className="mt-1 text-small text-warning">{intent.review.reason}</p>;
   }
   if (intent.status === 'FAILED' && intent.failure) {
-    return <p className="mt-1 text-small text-muted">{intent.failure.message}</p>;
+    return (
+      <>
+        <p className="mt-1 text-small text-muted">{intent.failure.message}</p>
+        {decision}
+      </>
+    );
   }
-  return null;
+  return decision ?? null;
 }
 
 function Breakdown({ intent }: { intent: ManagerIntent }) {

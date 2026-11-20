@@ -8,21 +8,24 @@
  *
  * Production'da kullanilamaz (bkz. config.ts).
  */
-import type { IsoDate } from '../core/types.js';
+import { type IsoDate, type Kurus, toKurus } from '../core/types.js';
 import {
   type CheckoutOutcome,
   type CheckoutRequest,
   type CheckoutSession,
   type PaymentProvider,
   PaymentProviderError,
+  type RefundRequest,
   type SubMerchantRequest,
 } from './provider.js';
+import type { ItemTransaction } from './types.js';
 
 type FakeSession = {
   request: CheckoutRequest;
   outcome: 'pending' | 'success' | 'failure';
   providerPaymentId?: string;
   paidAt?: IsoDate;
+  itemTransactions?: ItemTransaction[];
   /** Testlerde dogrulama hatasi uretmek icin. */
   override?: Partial<Pick<CheckoutOutcome, 'paidAmount' | 'basketId' | 'conversationId' | 'fraudApproved' | 'currency'>>;
 };
@@ -40,6 +43,13 @@ export type FakePaymentProvider = PaymentProvider & {
   failNextCheckout(error?: Error): void;
   /** Sonraki `retrieveCheckout` cagrisini hatayla sonuclandirir. */
   failNextRetrieve(error?: Error): void;
+  /** Iade kayitlari (`paymentTransactionId` -> istekler). */
+  refunds: Map<string, RefundRequest[]>;
+  /**
+   * Sonraki `refundItem` cagrisi hata verir. `applied: true` -> iade saglayicida GERCEKLESIR
+   * ama yanit kaybolur (zaman asimi senaryosu).
+   */
+  failNextRefund(error?: Error, options?: { applied?: boolean }): void;
 };
 
 export function createFakePaymentProvider(options: { apiBaseUrl: string }): FakePaymentProvider {
@@ -48,6 +58,8 @@ export function createFakePaymentProvider(options: { apiBaseUrl: string }): Fake
   let payments = 0;
   let checkoutError: Error | undefined;
   let retrieveError: Error | undefined;
+  let refundError: { error: Error; applied: boolean } | undefined;
+  const refunds = new Map<string, RefundRequest[]>();
   const base = options.apiBaseUrl.replace(/\/+$/, '');
 
   return {
@@ -55,6 +67,7 @@ export function createFakePaymentProvider(options: { apiBaseUrl: string }): Fake
     sandbox: true,
     sessions,
     subMerchants,
+    refunds,
 
     async registerSubMerchant(request) {
       const subMerchantKey = `fake-sm-${request.externalId}`;
@@ -97,6 +110,7 @@ export function createFakePaymentProvider(options: { apiBaseUrl: string }): Fake
         currency: 'TRY',
         fraudApproved: true,
         paidAt: s.paidAt,
+        itemTransactions: s.itemTransactions,
         ...s.override,
       };
     },
@@ -106,7 +120,14 @@ export function createFakePaymentProvider(options: { apiBaseUrl: string }): Fake
       if (!s) throw new PaymentProviderError('not_found', 'Odeme oturumu bulunamadi');
       if (s.outcome === 'pending') {
         s.outcome = outcome;
-        if (outcome === 'success') s.providerPaymentId = `fakepay-${++payments}`;
+        if (outcome === 'success') {
+          s.providerPaymentId = `fakepay-${++payments}`;
+          s.itemTransactions = s.request.items.map((it, i) => ({
+            itemId: it.id,
+            paymentTransactionId: `${s.providerPaymentId}-t${i + 1}`,
+            paidAmount: it.amount,
+          }));
+        }
         s.paidAt = opts.paidAt;
         s.override = opts.override;
       }
@@ -118,6 +139,34 @@ export function createFakePaymentProvider(options: { apiBaseUrl: string }): Fake
     },
     failNextRetrieve(error = new PaymentProviderError('unavailable', 'Saglayiciya ulasilamadi', true)) {
       retrieveError = error;
+    },
+
+    async refundItem(request) {
+      const known = [...sessions.values()].some((x) => x.itemTransactions?.some((t) => t.paymentTransactionId === request.paymentTransactionId));
+      const apply = () => refunds.set(request.paymentTransactionId, [...(refunds.get(request.paymentTransactionId) ?? []), request]);
+      if (refundError) {
+        const { error, applied } = refundError;
+        refundError = undefined;
+        if (applied) apply();
+        throw error;
+      }
+      if (!known) throw new PaymentProviderError('not_found', 'Islem bulunamadi');
+      apply();
+      return { providerRefundId: `fakerefund-${request.conversationId}` };
+    },
+
+    async refundedAmounts({ providerPaymentId }) {
+      const out = new Map<string, Kurus>();
+      const s = [...sessions.values()].find((x) => x.providerPaymentId === providerPaymentId);
+      for (const t of s?.itemTransactions ?? []) {
+        const total = (refunds.get(t.paymentTransactionId) ?? []).reduce((sum, r) => sum + r.amount, 0);
+        out.set(t.paymentTransactionId, toKurus(total));
+      }
+      return out;
+    },
+
+    failNextRefund(error = new PaymentProviderError('unavailable', 'Saglayiciya ulasilamadi', true), opts = {}) {
+      refundError = { error, applied: Boolean(opts.applied) };
     },
   };
 }

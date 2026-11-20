@@ -16,7 +16,7 @@ export type ResultView = {
   canRetry: boolean;
 };
 
-export const TERMINAL_STATUSES: readonly IntentStatus[] = ['SUCCEEDED', 'FAILED', 'NEEDS_REVIEW'];
+export const TERMINAL_STATUSES: readonly IntentStatus[] = ['SUCCEEDED', 'FAILED', 'NEEDS_REVIEW', 'REFUND_PENDING', 'REFUNDED'];
 
 /** Sonuc sayfasi bu sure boyunca durumu sorgular; sonra "isleniyor" mesajinda kalir. */
 export const RESULT_POLL_MS = 3_000;
@@ -68,6 +68,24 @@ export function intentResultView(intent: Pick<PaymentIntent, 'status' | 'failure
           'Ödemeniz alındı ancak kontrol edilmesi gerekiyor; yönetim sizinle iletişime geçecek. Lütfen tekrar ödeme yapmayın.',
         terminal: true,
         canRetry: false,
+      };
+    case 'REFUND_PENDING':
+      return {
+        tone: 'warning',
+        title: 'Ödemeniz iade ediliyor',
+        body: intent.failureMessage ?? 'Ödemeniz borcunuza işlenemedi; tutarın tamamı kartınıza iade ediliyor.',
+        terminal: true,
+        canRetry: false,
+      };
+    case 'REFUNDED':
+      return {
+        tone: 'info',
+        title: 'Ödemeniz iade edildi',
+        body:
+          intent.failureMessage ??
+          'Ödemeniz borcunuza işlenemedi ve tutarın tamamı kartınıza iade edildi. Borcunuzu yeniden ödeyebilirsiniz.',
+        terminal: true,
+        canRetry: true,
       };
     case 'PENDING':
       return timedOut

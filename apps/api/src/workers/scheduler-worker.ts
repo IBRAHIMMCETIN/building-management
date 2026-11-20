@@ -26,6 +26,8 @@ import type { SqsBatchResponse, SqsEvent } from './notification-worker.js';
  *   payment_reconcile 15 dakikada bir (Adim 8b): 30 dk'dan eski PENDING online odeme niyetlerini
  *                  saglayicidan sorgulayip sonuclandirir (kaybolan callback/webhook). Online odeme
  *                  kapaliysa (PAYMENTS_PROVIDER tanimsiz) apartmanlar `payments_disabled` ile atlanir.
+ *                  Ayrica (tum apartmanlar icin calistiginda) iadesi suren niyetlerin bekleyen
+ *                  kalemlerini tekrar dener (`_refunds` satiri).
  *
  * Idempotency: her defter yazimi donem bazli anahtar kullanir (auto-dues-<YYYY-MM>,
  * lf-<YYYY-MM>-...), olay kimlikleri deterministiktir ve bildirim worker'i ayni olayi bir kez
@@ -83,7 +85,7 @@ export type SchedulerDeps = {
   core: Pick<CoreRepository, 'listSiteIds' | 'getSite'>;
   finance: Pick<FinanceService, 'autoChargeDues' | 'postLateFees' | 'dueReminders'>;
   /** null: online odeme kapali. Verilmezse ortam degiskenlerinden kurulur (ilk kullanimda). */
-  payments: Pick<PaymentsService, 'reconcile'> | null;
+  payments: Pick<PaymentsService, 'reconcile' | 'reconcileRefunds'> | null;
   events: EventPublisher;
   now: () => Date;
   log: Pick<Console, 'info' | 'error'>;
@@ -200,6 +202,17 @@ export function createSchedulerWorker(overrides: Partial<SchedulerDeps> = {}) {
         outcomes.push(await runForSite(message.job, apartmentId, day));
       } catch (err) {
         outcomes.push({ apartmentId, status: 'failed', error: err instanceof Error ? `${err.name}: ${err.message}` : 'unknown' });
+      }
+    }
+    // Iadeler apartman durumundan bagimsiz (pasif sitedeki iade de tamamlanmali); tek sefer.
+    if (message.job === 'payment_reconcile' && !message.apartmentId) {
+      const service = payments();
+      if (service) {
+        try {
+          outcomes.push({ apartmentId: '_refunds', status: 'done', detail: await service.reconcileRefunds() });
+        } catch (err) {
+          outcomes.push({ apartmentId: '_refunds', status: 'failed', error: err instanceof Error ? `${err.name}: ${err.message}` : 'unknown' });
+        }
       }
     }
     return outcomes;

@@ -4,7 +4,7 @@
  * barindirdigi odeme sayfasi kullanilir.
  */
 import type { IsoDate, Kurus } from '../core/types.js';
-import type { PaymentProviderName, SubMerchantType } from './types.js';
+import type { ItemTransaction, PaymentProviderName, SubMerchantType } from './types.js';
 
 export type CheckoutItem = {
   /** Sepet kalemi kimligi: `<intentId>-<owner|occupant>`. */
@@ -64,6 +64,8 @@ export type CheckoutOutcome = {
   paidAt?: IsoDate;
   /** Yanit imzasi dogrulandi mi (saglayici imza donduruyorsa). false -> incelemeye alinir. */
   signatureValid?: boolean;
+  /** Basarili sonucta sepet kalemi bazinda saglayici islem kimlikleri (iade bunlarla yapilir). */
+  itemTransactions?: ItemTransaction[];
   errorCode?: string;
   errorMessage?: string;
 };
@@ -86,6 +88,17 @@ export type SubMerchantRequest = {
   identityNumber?: string;
 };
 
+/** Kalem bazli iade istegi (iyzico `/payment/refund`, `paymentTransactionId`). */
+export type RefundRequest = {
+  paymentTransactionId: string;
+  amount: Kurus;
+  /** Izleme kimligi; saglayici yanitinda aynen donmeli. */
+  conversationId: string;
+  ip: string;
+};
+
+export type RefundResult = { providerRefundId?: string };
+
 export type WebhookInput = { headers: Record<string, string | undefined>; body: unknown };
 
 export interface PaymentProvider {
@@ -95,6 +108,17 @@ export interface PaymentProvider {
   createCheckout(request: CheckoutRequest): Promise<CheckoutSession>;
   retrieveCheckout(query: { token: string; conversationId: string }): Promise<CheckoutOutcome>;
   registerSubMerchant(request: SubMerchantRequest): Promise<{ subMerchantKey: string }>;
+  /**
+   * Bir sepet kalemini (kismi veya tam) iade eder. Reddedilirse `PaymentProviderError`
+   * (`retryable=false`); ag/zaman asimi gibi sonucu belirsiz hatalarda `retryable=true`.
+   */
+  refundItem(request: RefundRequest): Promise<RefundResult>;
+  /**
+   * Odemenin kalem bazinda saglayicida simdiye kadar iade edilmis tutarlari
+   * (`paymentTransactionId` -> kurus). Sonucu belirsiz bir iade tekrar denenmeden once
+   * cagrilir: boylece ayni kalem iki kez iade edilmez.
+   */
+  refundedAmounts(query: { providerPaymentId: string; conversationId: string }): Promise<Map<string, Kurus>>;
   /**
    * Webhook imzasini dogrular; gecerliyse niyeti bulmak icin `conversationId` doner, degilse
    * null. Govdedeki odeme durumuna guvenilmez: servis sonucu yine saglayicidan sorgular.

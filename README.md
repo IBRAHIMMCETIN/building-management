@@ -332,6 +332,7 @@ Yedi rol: `platform_admin`, `management_company`, `apartment_manager`, `resident
 - [x] Altyapı: iyzico anahtarları Secrets Manager'da, yalnızca iki kimliksiz rota (callback/webhook), `dev`'e uygulandı
 - [x] Ortak dağıtım politikası modülü ve `github-deploy` kullanıcısına en az yetki
 - [x] Web ekranları: sakin ödeme seçimi (`/app/odeme`) ve sonuç sayfası (`/app/odeme/sonuc`), yönetici Finans → "Online ödemeler" sekmesi, platform yöneticisi ödeme hesapları (`/admin/payments`)
+- [x] `NEEDS_REVIEW` elle sonuçlandırma (yalnızca `platform_admin`): her kararda iyzico yeniden sorgulanır; deftere işle / tam iade (kalem bazlı `paymentTransactionId`) / kapat, zorunlu gerekçe ve denetim kaydı; çift iade koruması ve iadelerin 15 dakikalık mutabakatla tamamlanması, reddedilen iadede `PAYMENT_REFUND_FAILED` alarmı
 
 ### Sırada
 
@@ -339,7 +340,6 @@ Yedi rol: `platform_admin`, `management_company`, `apartment_manager`, `resident
 
 - [ ] iyzico sandbox Pazaryeri yetkisi ve ilk uçtan uca ödeme — tüm modüller tamamlandıktan sonra (bkz. [Canlıya Geçiş Kontrol Listesi](#canlıya-geçiş-kontrol-listesi))
 - [ ] `github-deploy` kullanıcısından geniş politikaların kaldırılması ve CI ile doğrulanması
-- [ ] `NEEDS_REVIEW` ödemelerini elle sonuçlandırma aracı (deftere yazma / iade)
 - [ ] Dalın `main`'e alınması
 
 **Ödeme ve tahsilatın devamı**
@@ -370,6 +370,7 @@ Yedi rol: `platform_admin`, `management_company`, `apartment_manager`, `resident
 Bilinen, bilerek ertelenmiş adımlar:
 
 - [ ] iyzico Sandbox hesabındaki (Üye İşyeri No: `3438668`) Pazaryeri (Marketplace / SubMerchant) yetki başvurusu ve test kartıyla ilk uçtan uca online ödeme doğrulaması, projenin tüm modülleri tamamlandıktan sonra hayata geçirilecektir. Yetki açılana kadar alt üye işyeri kaydı `provider_rejected` döner; doğrulamada `paymentStatus` / `fraudStatus` eşlemeleri ve webhook imzası da kontrol edilecektir.
+- [ ] Aynı sandbox doğrulamasında iade akışı: Checkout Form sonucundaki `itemTransactions[].paymentTransactionId` alanı, `/payment/refund` yanıtı, raporlama servisinde (`GET /v2/reporting/payment/details`) başarılı iadenin `refundStatus = 1` olduğu varsayımı ve GET isteğinde sorgu dizgisinin IYZWSv2 imzasına katılmadığı varsayımı kontrol edilecektir.
 
 ---
 

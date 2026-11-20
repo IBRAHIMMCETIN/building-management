@@ -1,4 +1,4 @@
-import { PaymentsConflictError, type PaymentsRepository } from '../../src/modules/payments/repository.js';
+import { PaymentsConflictError, type PaymentsRepository, REVIEW_QUEUE_PK, toStoredIntent } from '../../src/modules/payments/repository.js';
 import type { IntentKeyRecord, PaymentAccount, PaymentIntent } from '../../src/modules/payments/types.js';
 
 type Doc = Record<string, unknown> & { PK: string; SK: string; version?: number };
@@ -28,8 +28,13 @@ export function createFakePaymentsRepo(docs: Map<string, Doc>) {
       }
       const cur = docs.get(key(intent));
       if (!cur || cur.version !== expectedVersion) throw new PaymentsConflictError();
-      docs.set(key(intent), structuredClone(intent) as unknown as Doc);
+      docs.set(key(intent), structuredClone(toStoredIntent(intent)) as unknown as Doc);
     },
+    listReviewQueue: async (limit) =>
+      ([...docs.values()]
+        .filter((d) => d.GSI1PK === REVIEW_QUEUE_PK)
+        .sort((a, b) => String(a.GSI1SK).localeCompare(String(b.GSI1SK)))
+        .slice(0, limit) as unknown as PaymentIntent[]),
     listIntentsBetween: async (apt, from, to) =>
       [...docs.values()]
         .filter((d) => d.PK === `APT#${apt}` && d.SK >= `PI#${from}` && d.SK <= `PI#${to}`)

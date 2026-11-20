@@ -107,3 +107,42 @@ resource "aws_cloudwatch_metric_alarm" "payment_needs_review" {
 
   depends_on = [aws_cloudwatch_log_metric_filter.payment_needs_review]
 }
+
+# Platform ekibinin tam iade kararindan sonra saglayici iadeyi reddetti (PAYMENT_REFUND_FAILED):
+# para sakinde degil; panelden kontrol edilip yeniden denenmeli.
+resource "aws_cloudwatch_log_metric_filter" "payment_refund_failed" {
+  for_each = {
+    for k, v in {
+      api       = aws_cloudwatch_log_group.api.name
+      scheduler = aws_cloudwatch_log_group.scheduler_worker.name
+    } : k => v if local.payments_enabled
+  }
+
+  name           = "${local.name}-payment-refund-failed-${each.key}"
+  log_group_name = each.value
+  pattern        = "\"PAYMENT_REFUND_FAILED\""
+
+  metric_transformation {
+    name      = "PaymentRefundFailed"
+    namespace = "BuildingManagement/${local.name}"
+    value     = "1"
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "payment_refund_failed" {
+  count = local.payments_enabled ? 1 : 0
+
+  alarm_name          = "${local.name}-payment-refund-failed"
+  alarm_description   = "Platform ekibinin iade karari verdigi bir odemenin iadesi saglayici tarafindan reddedildi. Saglayici panelini kontrol edip /admin/payments ekranindan yeniden deneyin."
+  namespace           = "BuildingManagement/${local.name}"
+  metric_name         = "PaymentRefundFailed"
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = 1
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+
+  depends_on = [aws_cloudwatch_log_metric_filter.payment_refund_failed]
+}

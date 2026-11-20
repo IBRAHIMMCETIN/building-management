@@ -107,6 +107,11 @@ export type IyzicoClientOptions = {
 export type IyzicoClient = {
   readonly baseUrl: string;
   post<T extends IyzicoEnvelope>(path: string, body: Record<string, unknown>): Promise<T>;
+  /**
+   * GET (raporlama servisleri). Imza govdesiz: HMAC(secret, randomKey + yol); sorgu dizgisi
+   * imzaya katilmaz (iyzico "Sample Authentication": uri_path sorgu parametrelerini icermez).
+   */
+  get<T extends IyzicoEnvelope>(path: string, query: Record<string, string>): Promise<T>;
   credentials(): Promise<IyzicoCredentials>;
 };
 
@@ -116,47 +121,50 @@ export function createIyzicoClient(options: IyzicoClientOptions): IyzicoClient {
   const randomKey = options.randomKey ?? (() => `${Date.now()}${randomBytes(6).toString('hex')}`);
   const timeoutMs = options.timeoutMs ?? 10_000;
 
+  async function send<T extends IyzicoEnvelope>(method: 'GET' | 'POST', path: string, payload: string, query?: Record<string, string>): Promise<T> {
+    if (!path.startsWith('/') || path.includes('?')) throw new Error(`Gecersiz iyzico yolu: ${path}`);
+    const credentials = await options.credentials();
+    const rnd = randomKey();
+    const qs = query && Object.keys(query).length > 0 ? `?${new URLSearchParams(query).toString()}` : '';
+    let res: Response;
+    try {
+      res = await doFetch(`${baseUrl}${path}${qs}`, {
+        method,
+        headers: {
+          authorization: iyzicoAuthorization(credentials, rnd, path, payload),
+          'x-iyzi-rnd': rnd,
+          'content-type': 'application/json',
+          accept: 'application/json',
+        },
+        ...(method === 'POST' ? { body: payload } : {}),
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+    } catch (err) {
+      const timeout = err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError');
+      throw new PaymentProviderError(timeout ? 'timeout' : 'unavailable', 'iyzico\'ya ulasilamadi', true);
+    }
+    if (res.status >= 500 || res.status === 429) {
+      throw new PaymentProviderError(`http_${res.status}`, `iyzico gecici hata: HTTP ${res.status}`, true);
+    }
+    let json: unknown;
+    try {
+      json = await res.json();
+    } catch {
+      throw new PaymentProviderError('invalid_response', `iyzico yaniti JSON degil (HTTP ${res.status})`, res.status >= 500);
+    }
+    if (typeof json !== 'object' || json === null) {
+      throw new PaymentProviderError('invalid_response', 'iyzico yaniti bos');
+    }
+    if (!res.ok && (json as IyzicoEnvelope).status !== 'failure') {
+      throw new PaymentProviderError(`http_${res.status}`, `iyzico hatasi: HTTP ${res.status}`);
+    }
+    return json as T;
+  }
+
   return {
     baseUrl,
     credentials: options.credentials,
-    async post<T extends IyzicoEnvelope>(path: string, body: Record<string, unknown>): Promise<T> {
-      if (!path.startsWith('/') || path.includes('?')) throw new Error(`Gecersiz iyzico yolu: ${path}`);
-      const credentials = await options.credentials();
-      const payload = JSON.stringify(body);
-      const rnd = randomKey();
-      let res: Response;
-      try {
-        res = await doFetch(`${baseUrl}${path}`, {
-          method: 'POST',
-          headers: {
-            authorization: iyzicoAuthorization(credentials, rnd, path, payload),
-            'x-iyzi-rnd': rnd,
-            'content-type': 'application/json',
-            accept: 'application/json',
-          },
-          body: payload,
-          signal: AbortSignal.timeout(timeoutMs),
-        });
-      } catch (err) {
-        const timeout = err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError');
-        throw new PaymentProviderError(timeout ? 'timeout' : 'unavailable', 'iyzico\'ya ulasilamadi', true);
-      }
-      if (res.status >= 500 || res.status === 429) {
-        throw new PaymentProviderError(`http_${res.status}`, `iyzico gecici hata: HTTP ${res.status}`, true);
-      }
-      let json: unknown;
-      try {
-        json = await res.json();
-      } catch {
-        throw new PaymentProviderError('invalid_response', `iyzico yaniti JSON degil (HTTP ${res.status})`, res.status >= 500);
-      }
-      if (typeof json !== 'object' || json === null) {
-        throw new PaymentProviderError('invalid_response', 'iyzico yaniti bos');
-      }
-      if (!res.ok && (json as IyzicoEnvelope).status !== 'failure') {
-        throw new PaymentProviderError(`http_${res.status}`, `iyzico hatasi: HTTP ${res.status}`);
-      }
-      return json as T;
-    },
+    post: <T extends IyzicoEnvelope>(path: string, body: Record<string, unknown>) => send<T>('POST', path, JSON.stringify(body)),
+    get: <T extends IyzicoEnvelope>(path: string, query: Record<string, string>) => send<T>('GET', path, '', query),
   };
 }

@@ -1,7 +1,7 @@
 /**
  * Yonetici / platform odeme ekranlari icin saf yardimcilar (etiket, ton, oran bicimi, IBAN).
  */
-import type { AccountSummary, IntentStatus } from '@/lib/api/payments';
+import type { AccountSummary, IntentStatus, ReviewAction } from '@/lib/api/payments';
 
 export type Tone = 'neutral' | 'success' | 'warning' | 'accent' | 'danger';
 
@@ -10,6 +10,14 @@ const STATUS: Record<IntentStatus, { label: string; tone: Tone }> = {
   SUCCEEDED: { label: 'Başarılı', tone: 'success' },
   FAILED: { label: 'Başarısız', tone: 'danger' },
   NEEDS_REVIEW: { label: 'İnceleme gerekli', tone: 'warning' },
+  REFUND_PENDING: { label: 'İade sürüyor', tone: 'warning' },
+  REFUNDED: { label: 'İade edildi', tone: 'neutral' },
+};
+
+export const REVIEW_ACTION_LABELS: Record<ReviewAction, { label: string; done: string }> = {
+  approve: { label: 'Deftere işle', done: 'Deftere işlendi' },
+  refund: { label: 'Tam iade et', done: 'Tam iade kararı' },
+  close: { label: 'Çekim yok, kapat', done: 'Kapatıldı' },
 };
 
 export const intentStatusLabel = (s: IntentStatus) => STATUS[s].label;

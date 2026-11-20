@@ -153,6 +153,9 @@ function page(title: string, body: string): string {
  *   GET   /apartments/:apartmentId/account   alt uye isyeri kaydi
  *   POST  /apartments/:apartmentId/account   saglayicida alt uye isyeri olustur (KYC)
  *   PATCH /apartments/:apartmentId/account   durum (active/disabled) ve platform payi
+ *   GET   /review                            inceleme bekleyen / iadesi suren odemeler (tum apartmanlar)
+ *   GET   /apartments/:apartmentId/intents/:intentId/check     saglayicidan guncel sonuc + yapilabilecek islemler
+ *   POST  /apartments/:apartmentId/intents/:intentId/resolve   { action: approve|refund|close, note, expectedVersion }
  */
 export function paymentAdminRoutes({ authenticate, service }: { authenticate: Authenticator; service: PaymentsService }) {
   const r = new Hono<Env>();
@@ -171,6 +174,21 @@ export function paymentAdminRoutes({ authenticate, service }: { authenticate: Au
   );
   r.patch('/apartments/:apartmentId/account', async (c) =>
     c.json(await service.updateAccount({ userId: c.get('claims').userId }, c.req.param('apartmentId'), await readJson(c))),
+  );
+  r.get('/review', async (c) => c.json(await service.listReviewQueue()));
+  r.get('/apartments/:apartmentId/intents/:intentId/check', async (c) =>
+    c.json(await service.checkReview(c.req.param('apartmentId'), c.req.param('intentId'))),
+  );
+  r.post('/apartments/:apartmentId/intents/:intentId/resolve', async (c) =>
+    c.json(
+      await service.resolveReview(
+        { userId: c.get('claims').userId },
+        c.req.param('apartmentId'),
+        c.req.param('intentId'),
+        await readJson(c),
+        { ip: clientIp(c) },
+      ),
+    ),
   );
   return r;
 }

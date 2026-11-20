@@ -7,6 +7,7 @@ import type { PlatformApartment } from '@/lib/api/payments';
 import { formatDateTime } from '@/lib/dates';
 import { MAX_PLATFORM_FEE_BASIS_POINTS, formatBasisPoints, parsePercentToBasisPoints } from '@/lib/payments/manager';
 import { SUB_MERCHANT_TYPE_LABELS } from '@/lib/payments/subMerchant';
+import { ReviewQueue } from './ReviewQueue';
 import { SubMerchantDialog } from './SubMerchantDialog';
 
 type Filter = 'all' | 'active' | 'disabled' | 'none';
@@ -238,6 +239,7 @@ export function PlatformPaymentsPage() {
           </div>
         )}
       </div>
+      {list.data?.provider && <ReviewQueue />}
       {content}
       <SubMerchantDialog apartment={onboarding} sandbox={!!list.data?.sandbox} onClose={() => setOnboarding(null)} />
       <FeeDialog apartment={feeFor} onClose={() => setFeeFor(null)} />

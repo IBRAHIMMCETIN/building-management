@@ -25,11 +25,61 @@ export type PaymentMode = (typeof PAYMENT_MODES)[number];
  * PENDING      saglayici sayfasina yonlendirildi, sonuc bekleniyor
  * SUCCEEDED    saglayici onayladi ve deftere yazildi (makbuzlar uretildi)
  * FAILED       odeme basarisiz / iptal / suresi doldu (defterde iz yok)
- * NEEDS_REVIEW saglayici basarili dedi ama dogrulama tutmadi (tutar, sepet, fraud):
- *              deftere YAZILMAZ, alarm uretilir, platform ekibi elle sonuclandirir.
+ * NEEDS_REVIEW saglayici basarili dedi ama dogrulama tutmadi (tutar, sepet, fraud) veya defter
+ *              yazilamadi: deftere YAZILMAZ, alarm uretilir, platform ekibi elle sonuclandirir.
+ * REFUND_PENDING platform ekibi tam iade karari verdi; kalem bazli iade(ler) saglayicida suruyor.
+ * REFUNDED     tum kalemler saglayicida iade edildi (defterde iz yok: hic yazilmamisti).
  */
-export const INTENT_STATUSES = ['PENDING', 'SUCCEEDED', 'FAILED', 'NEEDS_REVIEW'] as const;
+export const INTENT_STATUSES = ['PENDING', 'SUCCEEDED', 'FAILED', 'NEEDS_REVIEW', 'REFUND_PENDING', 'REFUNDED'] as const;
 export type IntentStatus = (typeof INTENT_STATUSES)[number];
+
+/** Platform inceleme kuyrugundaki durumlar (GSI1 seyrek kaydi bu durumlarda tutulur). */
+export const REVIEW_QUEUE_STATUSES: readonly IntentStatus[] = ['NEEDS_REVIEW', 'REFUND_PENDING'];
+
+/**
+ * Elle sonuclandirma (yalnizca `platform_admin`; her biri once saglayicidan guncel sonucu sorgular):
+ *   approve  saglayici basarili + dogrulama artik tutuyor -> deftere yaz (SUCCEEDED)
+ *   refund   saglayici basarili -> tum kalemleri tam iade et (REFUND_PENDING -> REFUNDED)
+ *   close    saglayicida basarili cekim yok -> FAILED
+ */
+export const REVIEW_ACTIONS = ['approve', 'refund', 'close'] as const;
+export type ReviewAction = (typeof REVIEW_ACTIONS)[number];
+
+/** Saglayicinin sepet kalemi bazinda islem kimligi (iyzico `paymentTransactionId`): iade bununla yapilir. */
+export type ItemTransaction = {
+  /** Sepet kalemi kimligi: `<intentId>-<owner|occupant>`. */
+  itemId: string;
+  paymentTransactionId: string;
+  paidAmount: Kurus;
+};
+
+/** Sonuclandirma aninda saglayicidan sorgulanan sonucun ozeti (iz kaydi). */
+export type ProviderCheck = {
+  status: 'success' | 'failure' | 'pending';
+  providerPaymentId?: string;
+  paidAmount?: Kurus;
+  currency?: string;
+  fraudApproved?: boolean;
+  /** Niyetle uyusmazliklar; bossa deftere islenebilir. */
+  problems: string[];
+  errorMessage?: string;
+  checkedAt: IsoDateTime;
+};
+
+export type RefundItem = {
+  paymentTransactionId: string;
+  itemId: string;
+  amount: Kurus;
+  /** `refund-<intentId>-<sira>`: saglayici isteginin izlenebilir kimligi. */
+  conversationId: string;
+  status: 'pending' | 'succeeded' | 'failed';
+  /** Son deneme zamani: dolu ise tekrar denemeden once saglayicida iade edilmis tutar sorgulanir. */
+  attemptedAt?: IsoDateTime;
+  attempts: number;
+  providerRefundId?: string;
+  completedAt?: IsoDateTime;
+  error?: { code: string; message: string; at: IsoDateTime };
+};
 
 /** iyzico alt uye isyeri tipleri. Apartman/site yonetimi icin varsayilan PRIVATE_COMPANY. */
 export const SUB_MERCHANT_TYPES = ['PERSONAL', 'PRIVATE_COMPANY', 'LIMITED_OR_JOINT_STOCK_COMPANY'] as const;
@@ -86,6 +136,12 @@ export type PaymentIntent = TableKeys & {
   receiptNumbers?: string[];
   failure?: { code: string; message: string; at: IsoDateTime };
   review?: { reason: string; at: IsoDateTime; providerPaymentId?: string };
+  /** Saglayicinin kalem islem kimlikleri (basarili sonucta kaydedilir; iade icin gerekir). */
+  itemTransactions?: ItemTransaction[];
+  /** Elle sonuclandirma kaydi (yalnizca eklenir; ayni niyette tekrar iade denemesi `refund` icinde izlenir). */
+  resolution?: { action: ReviewAction; note: string; by: string; at: IsoDateTime; providerCheck: ProviderCheck };
+  /** Tam iade (yalnizca `refund` kararinda). */
+  refund?: { items: RefundItem[]; requestedAt: IsoDateTime; requestedBy: string; completedAt?: IsoDateTime };
   /** Saglayici sayfasinin gecerlilik suresi; sonrasinda mutabakat sonuclandirir. */
   expiresAt: IsoDateTime;
   createdAt: IsoDateTime;

@@ -33,6 +33,7 @@ import {
   PaymentsConflictError,
   paymentKeys,
   paymentsRepository,
+  toStoredIntent,
 } from './repository.js';
 import {
   INTENT_STATUSES,
@@ -43,6 +44,10 @@ import {
   type PaymentAccount,
   type PaymentIntent,
   type PaymentMode,
+  type ProviderCheck,
+  REVIEW_ACTIONS,
+  type RefundItem,
+  type ReviewAction,
   SUB_MERCHANT_TYPES,
   type SubMerchantType,
 } from './types.js';
@@ -59,7 +64,9 @@ export type PaymentsErrorCode =
   | 'conflict'
   | 'profile_incomplete'
   | 'provider_rejected'
-  | 'provider_unavailable';
+  | 'provider_unavailable'
+  | 'action_not_allowed'
+  | 'ledger_failed';
 
 const STATUS: Record<PaymentsErrorCode, 404 | 409 | 422 | 502> = {
   not_found: 404,
@@ -70,6 +77,8 @@ const STATUS: Record<PaymentsErrorCode, 404 | 409 | 422 | 502> = {
   profile_incomplete: 422,
   provider_rejected: 422,
   provider_unavailable: 502,
+  action_not_allowed: 422,
+  ledger_failed: 422,
 };
 
 export class PaymentsError extends Error {
@@ -138,6 +147,14 @@ export const RECONCILE_GRACE_MINUTES = 30;
 export const RECONCILE_LOOKBACK_DAYS = 7;
 /** Saglayici bu kadar sure sonra hala "pending" diyorsa niyet zaman asimina ugrar. */
 export const PENDING_GIVE_UP_HOURS = 24;
+/**
+ * Sonucu belirsiz kalan (zaman asimi) bir iade denemesinden sonra bu sure gecmeden tekrar
+ * denenmez: devam eden bir cagri ile yarisip ayni kalemi iki kez iade etmemek icin.
+ */
+export const REFUND_RETRY_MINUTES = 5;
+const MAX_REVIEW_QUEUE = 200;
+const NOTE_MIN = 5;
+const NOTE_MAX = 500;
 
 const LIABLE_PARTIES = ['owner', 'occupant'] as const;
 const PARTY_LABEL: Record<LiableParty, string> = { owner: 'Kat Maliki', occupant: 'Sakin' };
@@ -230,6 +247,12 @@ function toView(i: PaymentIntent): IntentView {
     ...(i.status === 'FAILED' && i.failure ? { failureMessage: i.failure.message } : {}),
     ...(i.status === 'NEEDS_REVIEW'
       ? { failureMessage: 'Ödemeniz alındı ancak kontrol edilmesi gerekiyor; yönetim sizinle iletişime geçecek.' }
+      : {}),
+    ...(i.status === 'REFUND_PENDING'
+      ? { failureMessage: 'Ödemeniz borcunuza işlenemedi; tutarın tamamı kartınıza iade ediliyor.' }
+      : {}),
+    ...(i.status === 'REFUNDED'
+      ? { failureMessage: 'Ödemeniz borcunuza işlenemedi ve tutarın tamamı kartınıza iade edildi. İadenin hesabınıza yansıması bankanıza göre birkaç gün sürebilir.' }
       : {}),
     expiresAt: i.expiresAt,
     createdAt: i.createdAt,
@@ -559,6 +582,55 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
     return toKurus(Math.min(planned, unposted));
   }
 
+  const errText = (err: unknown) => (err instanceof Error ? err.message : String(err));
+  const isTransient = (err: unknown) => err instanceof DataAccessError && (err.code === 'throttled' || err.code === 'internal');
+
+  /**
+   * Dogrulanmis basarili sonucu deftere yazar: tazminat ust siniri yeniden hesaplanir, tahsilat +
+   * makbuz + niyetin SUCCEEDED hali tek atomik yazimdir (`pay-<intentId>` mukerrer yazimi engeller).
+   * Niyet surumu degismisse `LedgerConflictError(precondition)` firlatir.
+   */
+  async function writeLedger(intent: PaymentIntent, o: CheckoutOutcome, extra: Partial<PaymentIntent> = {}): Promise<void> {
+    const providerPaymentId = o.providerPaymentId as string;
+    const paidAt = o.paidAt ?? today();
+    const allocations = await Promise.all(
+      intent.allocations.map(async (a) => ({
+        liableParty: a.liableParty,
+        amount: a.amount,
+        lateFee: await lateFeeCap(intent, a.liableParty, a.lateFee),
+      })),
+    );
+    await deps.finance.recordOnlinePayment(
+      { apartmentId: intent.apartmentId, userId: intent.userId },
+      {
+        intentId: intent.intentId,
+        unitId: intent.unitId,
+        paidAt,
+        provider: intent.provider,
+        providerPaymentId,
+        allocations,
+        intentUpdate: ({ payments, transactions }) => ({
+          // Inceleme kuyrugu alanlari durumdan turetilir: SUCCEEDED kayit kuyruktan duser.
+          item: toStoredIntent({
+            ...intent,
+            ...extra,
+            status: 'SUCCEEDED',
+            providerPaymentId,
+            itemTransactions: o.itemTransactions ?? intent.itemTransactions,
+            paidAt,
+            paymentIds: payments.map((p) => p.paymentId),
+            receiptNumbers: payments.map((p) => p.receiptNumber),
+            transactionIds: transactions.map((t) => t.transactionId),
+            updatedAt: stamp(),
+            version: intent.version + 1,
+          } satisfies PaymentIntent),
+          expectedVersion: intent.version,
+          label: 'intent',
+        }),
+      },
+    );
+  }
+
   /** Saglayicidan sorgulanan sonucu niyete uygular (idempotent). */
   async function applyOutcome(intent: PaymentIntent, o: CheckoutOutcome): Promise<PaymentIntent> {
     if (intent.status !== 'PENDING' || o.status === 'pending') return intent;
@@ -582,73 +654,37 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
       return transition(intent, {
         status: 'NEEDS_REVIEW',
         providerPaymentId: o.providerPaymentId,
+        itemTransactions: o.itemTransactions,
         review: { reason: problems.join('; '), at: stamp(), providerPaymentId: o.providerPaymentId },
       });
     }
 
-    const providerPaymentId = o.providerPaymentId as string;
-    const paidAt = o.paidAt ?? today();
-    const allocations = await Promise.all(
-      intent.allocations.map(async (a) => ({
-        liableParty: a.liableParty,
-        amount: a.amount,
-        lateFee: await lateFeeCap(intent, a.liableParty, a.lateFee),
-      })),
-    );
-
     try {
-      await deps.finance.recordOnlinePayment(
-        { apartmentId: intent.apartmentId, userId: intent.userId },
-        {
-          intentId: intent.intentId,
-          unitId: intent.unitId,
-          paidAt,
-          provider: intent.provider,
-          providerPaymentId,
-          allocations,
-          intentUpdate: ({ payments, transactions }) => ({
-            item: {
-              ...intent,
-              status: 'SUCCEEDED',
-              providerPaymentId,
-              paidAt,
-              paymentIds: payments.map((p) => p.paymentId),
-              receiptNumbers: payments.map((p) => p.receiptNumber),
-              transactionIds: transactions.map((t) => t.transactionId),
-              updatedAt: stamp(),
-              version: intent.version + 1,
-            } satisfies PaymentIntent,
-            expectedVersion: intent.version,
-            label: 'intent',
-          }),
-        },
-      );
+      await writeLedger(intent, o);
     } catch (err) {
       // Niyet baska bir istekle (callback/webhook/mutabakat) sonuclandi: guncel hali doner.
       if (err instanceof LedgerConflictError && err.reason === 'precondition') {
         return (await repo.getIntent(intent.apartmentId, intent.intentId)) ?? intent;
       }
       // Gecici hata: niyet PENDING kalir, mutabakat tekrar dener.
-      if (err instanceof DataAccessError && (err.code === 'throttled' || err.code === 'internal')) {
-        deps.log('warn', 'tahsilat yazimi ertelendi', { intentId: intent.intentId, code: err.code });
+      if (isTransient(err)) {
+        deps.log('warn', 'tahsilat yazimi ertelendi', { intentId: intent.intentId, code: (err as DataAccessError).code });
         return intent;
       }
       // Belirleyici hata (ornegin daire silinmis): para tahsil edildi, elle incelenmeli.
+      const providerPaymentId = o.providerPaymentId as string;
       deps.log('error', 'ALARM tahsilat deftere yazilamadi', {
         alert: 'PAYMENT_NEEDS_REVIEW',
         intentId: intent.intentId,
         apartmentId: intent.apartmentId,
         providerPaymentId,
-        error: err instanceof Error ? err.message : String(err),
+        error: errText(err),
       });
       return transition(intent, {
         status: 'NEEDS_REVIEW',
         providerPaymentId,
-        review: {
-          reason: `defter yazimi basarisiz: ${err instanceof Error ? err.message : String(err)}`,
-          at: stamp(),
-          providerPaymentId,
-        },
+        itemTransactions: o.itemTransactions,
+        review: { reason: `defter yazimi basarisiz: ${errText(err)}`, at: stamp(), providerPaymentId },
       });
     }
     return (await repo.getIntent(intent.apartmentId, intent.intentId)) ?? intent;
@@ -770,6 +806,356 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
     const intent = await repo.getIntent(apartmentId, intentId);
     if (intent) await settle(intent);
     return { status: 200 };
+  }
+
+  // ----- Platform: NEEDS_REVIEW elle sonuclandirma (deftere yaz / tam iade / kapat) -----
+
+  /** Saglayicidan guncel sonucu sorgular; sonuclandirma kararlari yalnizca buna dayanir. */
+  async function providerCheck(intent: PaymentIntent): Promise<{ check: ProviderCheck; outcome?: CheckoutOutcome }> {
+    if (!provider || provider.name !== intent.provider || !intent.checkout) {
+      throw new PaymentsError('payments_disabled', 'Bu ödemenin sağlayıcısı şu an yapılandırılmamış');
+    }
+    let o: CheckoutOutcome;
+    try {
+      o = await provider.retrieveCheckout({ token: intent.checkout.token, conversationId: intent.conversationId });
+    } catch (err) {
+      deps.log('warn', 'inceleme: saglayici sorgusu basarisiz', { intentId: intent.intentId, code: err instanceof PaymentProviderError ? err.code : 'unknown' });
+      throw new PaymentsError('provider_unavailable', 'Ödeme sağlayıcısına şu an ulaşılamıyor, lütfen tekrar deneyin');
+    }
+    return {
+      outcome: o,
+      check: {
+        status: o.status,
+        providerPaymentId: o.providerPaymentId,
+        paidAmount: o.paidAmount,
+        currency: o.currency,
+        fraudApproved: o.fraudApproved,
+        problems: o.status === 'success' ? verificationProblems(intent, o) : [],
+        errorMessage: o.errorMessage,
+        checkedAt: stamp(),
+      },
+    };
+  }
+
+  /**
+   * Iade, yalnizca odemenin bu niyete ait oldugu kanitlanabiliyorsa (sepet ve conversationId
+   * eslesiyor) ve kalem islem kimlikleri biliniyorsa yapilabilir; aksi halde saglayici panelinden.
+   */
+  function refundBlocker(intent: PaymentIntent, o: CheckoutOutcome | undefined): string | undefined {
+    if (!o || o.status !== 'success') return 'Sağlayıcıda başarılı çekim yok';
+    if (!o.providerPaymentId) return 'Sağlayıcı ödeme numarası yok';
+    if (o.basketId !== intent.intentId || o.conversationId !== intent.conversationId) {
+      return 'Ödeme bu kayıtla eşleşmiyor; iadeyi sağlayıcı panelinden yapın';
+    }
+    const items = o.itemTransactions ?? [];
+    if (items.length === 0 || items.some((t) => !t.paymentTransactionId || t.paidAmount < 1)) {
+      return 'Kalem işlem numaraları alınamadı; iadeyi sağlayıcı panelinden yapın';
+    }
+    return undefined;
+  }
+
+  type ActionView = { action: ReviewAction; allowed: boolean; reason?: string };
+
+  function actionsFor(intent: PaymentIntent, o: CheckoutOutcome | undefined, check: ProviderCheck | undefined): ActionView[] {
+    if (intent.status === 'REFUND_PENDING') {
+      const open = intent.refund?.items.some((i) => i.status !== 'succeeded') ?? false;
+      return [
+        { action: 'approve', allowed: false, reason: 'İade kararı verildi' },
+        { action: 'refund', allowed: open, reason: open ? undefined : 'Tüm kalemler iade edildi' },
+        { action: 'close', allowed: false, reason: 'İade kararı verildi' },
+      ];
+    }
+    if (intent.status !== 'NEEDS_REVIEW' || !check) {
+      return REVIEW_ACTIONS.map((action) => ({ action, allowed: false, reason: 'Ödeme inceleme beklemiyor' }));
+    }
+    const pending = check.status === 'pending' ? 'Sağlayıcıda sonuç henüz kesinleşmedi' : undefined;
+    const approveReason =
+      pending ??
+      (check.status !== 'success'
+        ? 'Sağlayıcıda başarılı çekim yok'
+        : check.problems.length > 0
+          ? `Doğrulama tutmuyor: ${check.problems.join('; ')}`
+          : undefined);
+    const refundReason = pending ?? refundBlocker(intent, o);
+    const closeReason = pending ?? (check.status === 'success' ? 'Sağlayıcıda başarılı çekim var; deftere işleyin veya iade edin' : undefined);
+    return [
+      { action: 'approve', allowed: !approveReason, reason: approveReason },
+      { action: 'refund', allowed: !refundReason, reason: refundReason },
+      { action: 'close', allowed: !closeReason, reason: closeReason },
+    ];
+  }
+
+  /** Platform gorunumu: yonetici gorunumu + iz kaydi + iade kalemleri + surum (iyimser kilit). */
+  function reviewView(i: PaymentIntent) {
+    return {
+      ...managerView(i),
+      apartmentId: i.apartmentId,
+      version: i.version,
+      resolution: i.resolution,
+      refund: i.refund,
+    };
+  }
+
+  async function loadForReview(apartmentId: string, intentId: string): Promise<PaymentIntent> {
+    assertId(apartmentId, 'apartmentId');
+    assertId(intentId, 'intentId');
+    const intent = await repo.getIntent(apartmentId, intentId);
+    if (!intent || intent.apartmentId !== apartmentId) throw new PaymentsError('not_found', 'Ödeme bulunamadı');
+    return intent;
+  }
+
+  /** Platform: tum apartmanlarda inceleme bekleyen / iadesi suren odemeler (en eski once). */
+  async function listReviewQueue() {
+    const intents = await repo.listReviewQueue(MAX_REVIEW_QUEUE);
+    const names = new Map<string, string>();
+    await Promise.all(
+      [...new Set(intents.map((i) => i.apartmentId))].map(async (id) => {
+        const site = await deps.core.getSite(id);
+        if (site) names.set(id, site.name);
+      }),
+    );
+    return { items: intents.map((i) => ({ ...reviewView(i), apartmentName: names.get(i.apartmentId) ?? i.apartmentId })) };
+  }
+
+  /** Platform: saglayicidan guncel sonuc + hangi islemlerin yapilabilecegi (karar oncesi). */
+  async function checkReview(apartmentId: string, intentId: string) {
+    const intent = await loadForReview(apartmentId, intentId);
+    if (intent.status === 'REFUND_PENDING') return { intent: reviewView(intent), check: null, actions: actionsFor(intent, undefined, undefined) };
+    if (intent.status !== 'NEEDS_REVIEW') {
+      return { intent: reviewView(intent), check: null, actions: actionsFor(intent, undefined, undefined) };
+    }
+    const { check, outcome } = await providerCheck(intent);
+    return { intent: reviewView(intent), check, actions: actionsFor(intent, outcome, check) };
+  }
+
+  function parseResolveInput(body: unknown): { action: ReviewAction; note: string; expectedVersion: number } {
+    const o = asObject(body);
+    if (typeof o.action !== 'string' || !(REVIEW_ACTIONS as readonly string[]).includes(o.action)) {
+      throw new ValidationError(`action şu değerlerden biri olmalıdır: ${REVIEW_ACTIONS.join(', ')}`, 'action');
+    }
+    const note = typeof o.note === 'string' ? o.note.trim() : '';
+    if (note.length < NOTE_MIN || note.length > NOTE_MAX) {
+      throw new ValidationError(`Gerekçe ${NOTE_MIN}-${NOTE_MAX} karakter olmalıdır`, 'note');
+    }
+    const v = o.expectedVersion;
+    if (typeof v !== 'number' || !Number.isInteger(v) || v < 1) throw new ValidationError('expectedVersion zorunludur', 'expectedVersion');
+    return { action: o.action as ReviewAction, note, expectedVersion: v };
+  }
+
+  /**
+   * Platform: inceleme bekleyen odemeyi sonuclandirir. Karar her zaman saglayicidan YENIDEN
+   * sorgulanan sonuca gore dogrulanir (ekrandaki eski kontrole guvenilmez); surum degismisse 409.
+   */
+  async function resolveReview(ctx: { userId: string }, apartmentId: string, intentId: string, body: unknown, meta: { ip: string }) {
+    const input = parseResolveInput(body);
+    const intent = await loadForReview(apartmentId, intentId);
+    if (intent.version !== input.expectedVersion) {
+      throw new PaymentsError('conflict', 'Ödeme kaydı siz incelerken değişti; sayfayı yenileyip tekrar kontrol edin');
+    }
+
+    // Iade suruyor: yalnizca kalan/basarisiz kalemleri tekrar dene.
+    if (intent.status === 'REFUND_PENDING') {
+      if (input.action !== 'refund') throw new PaymentsError('action_not_allowed', 'Bu ödeme için iade kararı verildi');
+      deps.log('info', 'AUDIT iade yeniden denendi', { audit: 'PAYMENT_REFUND_RETRIED', apartmentId, intentId, by: ctx.userId, note: input.note });
+      return { intent: reviewView(await processRefund(intent, { ip: meta.ip, retryFailed: true })) };
+    }
+    if (intent.status !== 'NEEDS_REVIEW') throw new PaymentsError('action_not_allowed', 'Ödeme inceleme beklemiyor');
+
+    const { check, outcome } = await providerCheck(intent);
+    const verdict = actionsFor(intent, outcome, check).find((a) => a.action === input.action) as ActionView;
+    if (!verdict.allowed) throw new PaymentsError('action_not_allowed', verdict.reason ?? 'Bu işlem yapılamaz');
+    const resolution: PaymentIntent['resolution'] = { action: input.action, note: input.note, by: ctx.userId, at: stamp(), providerCheck: check };
+    const auditFields = {
+      apartmentId,
+      intentId,
+      by: ctx.userId,
+      action: input.action,
+      note: input.note,
+      providerPaymentId: check.providerPaymentId,
+      amount: intent.amount,
+    };
+    const o = outcome as CheckoutOutcome;
+
+    if (input.action === 'approve') {
+      try {
+        await writeLedger(intent, o, { resolution });
+      } catch (err) {
+        if (err instanceof LedgerConflictError && err.reason === 'precondition') {
+          throw new PaymentsError('conflict', 'Ödeme kaydı eş zamanlı olarak değişti; sayfayı yenileyin');
+        }
+        deps.log('error', 'inceleme: deftere yazilamadi', { ...auditFields, error: errText(err) });
+        if (isTransient(err)) throw new PaymentsError('provider_unavailable', 'Kayıt şu an yazılamadı, lütfen tekrar deneyin');
+        throw new PaymentsError('ledger_failed', `Deftere yazılamadı: ${errText(err)}. Ödemeyi iade edebilirsiniz.`);
+      }
+      deps.log('info', 'AUDIT inceleme sonuclandi: deftere yazildi', { audit: 'PAYMENT_REVIEW_RESOLVED', ...auditFields });
+      return { intent: reviewView((await repo.getIntent(apartmentId, intentId)) ?? intent) };
+    }
+
+    if (input.action === 'close') {
+      const next = await strictTransition(intent, {
+        status: 'FAILED',
+        failure: { code: 'review_closed', message: 'Ödeme sağlayıcıda tamamlanmamış; kayıt kapatıldı', at: stamp() },
+        resolution,
+      });
+      deps.log('info', 'AUDIT inceleme sonuclandi: kapatildi', { audit: 'PAYMENT_REVIEW_RESOLVED', ...auditFields });
+      return { intent: reviewView(next) };
+    }
+
+    // refund: once karar yazilir (REFUND_PENDING), sonra kalemler iade edilir.
+    const itemTransactions = o.itemTransactions ?? [];
+    const items: RefundItem[] = itemTransactions.map((t, idx) => ({
+      paymentTransactionId: t.paymentTransactionId,
+      itemId: t.itemId,
+      amount: t.paidAmount,
+      conversationId: `refund-${intent.intentId}-${idx + 1}`,
+      status: 'pending',
+      attempts: 0,
+    }));
+    const decided = await strictTransition(intent, {
+      status: 'REFUND_PENDING',
+      providerPaymentId: o.providerPaymentId,
+      itemTransactions,
+      resolution,
+      refund: { items, requestedAt: stamp(), requestedBy: ctx.userId },
+    });
+    deps.log('info', 'AUDIT inceleme sonuclandi: tam iade karari', {
+      audit: 'PAYMENT_REVIEW_RESOLVED',
+      ...auditFields,
+      refundAmount: items.reduce((sum, i) => sum + i.amount, 0),
+    });
+    return { intent: reviewView(await processRefund(decided, { ip: meta.ip, retryFailed: false })) };
+  }
+
+  /** `transition` gibi, ama baska bir istek once davrandiysa 409 (elle kararlar sessizce ezilmez). */
+  async function strictTransition(intent: PaymentIntent, patch: Partial<PaymentIntent>): Promise<PaymentIntent> {
+    const next: PaymentIntent = { ...intent, ...patch, updatedAt: stamp(), version: intent.version + 1 };
+    try {
+      await repo.updateIntent(next, intent.version);
+      return next;
+    } catch (err) {
+      if (err instanceof PaymentsConflictError) {
+        throw new PaymentsError('conflict', 'Ödeme kaydı eş zamanlı olarak değişti; sayfayı yenileyin');
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * REFUND_PENDING niyetin kalemlerini sirayla iade eder. Her deneme once niyete surum kosullu
+   * yazilir (`attemptedAt`): es zamanli ikinci bir islem kosulu tutturamaz ve cekilir. Daha once
+   * denenmis (sonucu belirsiz) bir kalem, saglayicida iade edilmis tutar sorgulanmadan tekrar
+   * gonderilmez; boylece ayni kalem iki kez iade edilmez. Tum kalemler tamamlaninca REFUNDED.
+   */
+  async function processRefund(start: PaymentIntent, opts: { ip: string; retryFailed: boolean }): Promise<PaymentIntent> {
+    let intent = start;
+    if (!provider || provider.name !== intent.provider || !intent.refund) return intent;
+    const nowMs = () => deps.now().getTime();
+
+    for (let idx = 0; idx < intent.refund!.items.length; idx++) {
+      const item = intent.refund!.items[idx] as RefundItem;
+      if (item.status === 'succeeded') continue;
+      if (item.status === 'failed' && !opts.retryFailed) continue;
+      const recent = item.attemptedAt && nowMs() - Date.parse(item.attemptedAt) < REFUND_RETRY_MINUTES * 60_000;
+      if (item.status === 'pending' && recent) continue; // devam eden olasi bir cagri ile yarisma
+
+      const uncertain = item.attempts > 0 && item.status === 'pending';
+      // 1) Deneme hakki: surum kosullu yazim.
+      const claimed = await withItem(intent, idx, { status: 'pending', attemptedAt: stamp(), attempts: item.attempts + 1, error: undefined });
+      if (!claimed) return (await repo.getIntent(intent.apartmentId, intent.intentId)) ?? intent;
+      intent = claimed;
+
+      // 2) Sonucu belirsiz onceki deneme: saglayicida zaten iade edilmis mi?
+      if (uncertain) {
+        try {
+          const refunded = await provider.refundedAmounts({ providerPaymentId: intent.providerPaymentId as string, conversationId: intent.conversationId });
+          if ((refunded.get(item.paymentTransactionId) ?? 0) >= item.amount) {
+            const done = await withItem(intent, idx, { status: 'succeeded', completedAt: stamp() });
+            if (!done) return (await repo.getIntent(intent.apartmentId, intent.intentId)) ?? intent;
+            intent = done;
+            continue;
+          }
+        } catch (err) {
+          // Durum bilinemiyorsa tekrar gonderilmez; sonraki mutabakatta yeniden sorulur.
+          deps.log('warn', 'iade durumu sorgulanamadi', { intentId: intent.intentId, code: err instanceof PaymentProviderError ? err.code : 'unknown' });
+          continue;
+        }
+      }
+
+      // 3) Iade cagrisi.
+      let patch: Partial<RefundItem>;
+      try {
+        const r = await provider.refundItem({
+          paymentTransactionId: item.paymentTransactionId,
+          amount: item.amount,
+          conversationId: item.conversationId,
+          ip: opts.ip,
+        });
+        patch = { status: 'succeeded', providerRefundId: r.providerRefundId, completedAt: stamp() };
+      } catch (err) {
+        const code = err instanceof PaymentProviderError ? err.code : 'unknown';
+        const message = errText(err);
+        if (err instanceof PaymentProviderError && !err.retryable) {
+          deps.log('error', 'ALARM iade saglayici tarafindan reddedildi', {
+            alert: 'PAYMENT_REFUND_FAILED',
+            intentId: intent.intentId,
+            apartmentId: intent.apartmentId,
+            paymentTransactionId: item.paymentTransactionId,
+            code,
+            message,
+          });
+          patch = { status: 'failed', error: { code, message, at: stamp() } };
+        } else {
+          // Sonuc belirsiz: `attemptedAt` dolu kalir; tekrar denemeden once durum sorgulanir.
+          deps.log('warn', 'iade sonucu belirsiz, tekrar denenecek', { intentId: intent.intentId, code });
+          patch = { status: 'pending', error: { code, message, at: stamp() } };
+        }
+      }
+      const saved = await withItem(intent, idx, patch);
+      if (!saved) return (await repo.getIntent(intent.apartmentId, intent.intentId)) ?? intent;
+      intent = saved;
+    }
+
+    if (intent.refund!.items.every((i) => i.status === 'succeeded') && intent.status === 'REFUND_PENDING') {
+      const done = await transition(intent, { status: 'REFUNDED', refund: { ...intent.refund!, completedAt: stamp() } });
+      if (done.status === 'REFUNDED') {
+        deps.log('info', 'AUDIT iade tamamlandi', {
+          audit: 'PAYMENT_REFUNDED',
+          apartmentId: done.apartmentId,
+          intentId: done.intentId,
+          amount: done.refund!.items.reduce((sum, i) => sum + i.amount, 0),
+        });
+      }
+      return done;
+    }
+    return intent;
+  }
+
+  /** Tek iade kalemini gunceller (surum kosullu); baska istek once davrandiysa undefined. */
+  async function withItem(intent: PaymentIntent, idx: number, patch: Partial<RefundItem>): Promise<PaymentIntent | undefined> {
+    const items = intent.refund!.items.map((it, i) => (i === idx ? { ...it, ...patch } : it));
+    const next: PaymentIntent = { ...intent, refund: { ...intent.refund!, items }, updatedAt: stamp(), version: intent.version + 1 };
+    try {
+      await repo.updateIntent(next, intent.version);
+      return next;
+    } catch (err) {
+      if (err instanceof PaymentsConflictError) return undefined;
+      throw err;
+    }
+  }
+
+  /**
+   * Mutabakat (zamanlanmis gorev, apartmandan bagimsiz): iadesi suren niyetlerin bekleyen
+   * kalemlerini tekrar dener. Reddedilmis kalemler yalnizca platform ekibinin karariyla denenir.
+   */
+  async function reconcileRefunds() {
+    const queue = (await repo.listReviewQueue(MAX_REVIEW_QUEUE)).filter((i) => i.status === 'REFUND_PENDING');
+    const result = { checked: queue.length, refunded: 0, stillPending: 0 };
+    for (const intent of queue) {
+      const next = await processRefund(intent, { ip: '127.0.0.1', retryFailed: false });
+      if (next.status === 'REFUNDED') result.refunded++;
+      else result.stillPending++;
+    }
+    return result;
   }
 
   // ----- Platform: alt uye isyeri (Karar 1) -----
@@ -973,6 +1359,9 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
       receiptNumbers: i.receiptNumbers,
       failure: i.failure ? { code: i.failure.code, message: i.failure.message, at: i.failure.at } : undefined,
       review: i.review ? { reason: i.review.reason, at: i.review.at } : undefined,
+      // Yonetici karari ve gerekcesini gorur (salt okunur); saglayici yanit ayrintisi platformda kalir.
+      resolution: i.resolution ? { action: i.resolution.action, note: i.resolution.note, at: i.resolution.at } : undefined,
+      refundedAmount: i.refund ? i.refund.items.filter((r) => r.status === 'succeeded').reduce((sum, r) => sum + r.amount, 0) : undefined,
       createdAt: i.createdAt,
       updatedAt: i.updatedAt,
     };
@@ -1060,6 +1449,10 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
     getAccount,
     onboardSubMerchant,
     updateAccount,
+    listReviewQueue,
+    checkReview,
+    resolveReview,
+    reconcileRefunds,
   };
 }
 

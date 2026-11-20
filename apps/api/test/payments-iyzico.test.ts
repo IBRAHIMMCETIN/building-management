@@ -25,7 +25,7 @@ import { isValidTrIban, maskIban, normalizeGsm } from '../src/modules/payments/s
 const CREDS = { apiKey: 'sandbox-api-key', secretKey: 'sandbox-secret-key' };
 const BASE = 'https://sandbox-api.iyzipay.com';
 
-type Call = { url: string; path: string; headers: Record<string, string>; raw: string; body: Record<string, any> };
+type Call = { url: string; path: string; method: string; query: Record<string, string>; headers: Record<string, string>; raw: string; body: Record<string, any> };
 
 /** Sahte fetch: istegi kaydeder, `respond` ile yanit uretir. */
 function fakeFetch(respond: (call: Call) => { status?: number; json?: unknown; throws?: Error; text?: string }) {
@@ -34,7 +34,8 @@ function fakeFetch(respond: (call: Call) => { status?: number; json?: unknown; t
     const url = String(input);
     const raw = String(init?.body ?? '');
     const headers = Object.fromEntries(Object.entries((init?.headers ?? {}) as Record<string, string>));
-    const call: Call = { url, path: new URL(url).pathname, headers, raw, body: raw ? JSON.parse(raw) : {} };
+    const u = new URL(url);
+    const call: Call = { url, path: u.pathname, method: init?.method ?? 'GET', query: Object.fromEntries(u.searchParams), headers, raw, body: raw ? JSON.parse(raw) : {} };
     calls.push(call);
     const r = respond(call);
     if (r.throws) throw r.throws;
@@ -268,6 +269,89 @@ describe('iyzico - Checkout Form sonuc sorgusu', () => {
   it('cozumlenemeyen tutar: paidAmount bos (servis tutar uyusmazligi olarak incelemeye alir)', async () => {
     const { p } = provider(success({ paidPrice: '31.355', signature: undefined }));
     expect(await p.retrieveCheckout(q)).toMatchObject({ status: 'success', paidAmount: undefined });
+  });
+});
+
+describe('iyzico - kalem bazli iade ve raporlama', () => {
+  const req = { paymentTransactionId: 'ptx-1', amount: toKurus(100_050), conversationId: 'refund-PI-1', ip: '203.0.113.7' };
+
+  it('sonuc sorgusu kalem islem kimliklerini dondurur; eksik/bozuk kalem varsa hic biri donmez', async () => {
+    const base = { status: 'success', paymentStatus: 'SUCCESS', paymentId: 'p1', currency: 'TRY', basketId: 'b', paidPrice: 10, price: 10, fraudStatus: 1 };
+    const ok = provider(() => ({ json: { ...base, itemTransactions: [{ itemId: 'b-occupant', paymentTransactionId: 445566, paidPrice: '10.0' }] } }));
+    expect((await ok.p.retrieveCheckout({ token: 't', conversationId: 'c' })).itemTransactions).toEqual([
+      { itemId: 'b-occupant', paymentTransactionId: '445566', paidAmount: 1000 },
+    ]);
+    const broken = provider(() => ({
+      json: { ...base, itemTransactions: [{ itemId: 'b-occupant', paymentTransactionId: '1', paidPrice: 5 }, { itemId: 'b-owner', paidPrice: 5 }] },
+    }));
+    expect(await broken.p.retrieveCheckout({ token: 't', conversationId: 'c' })).not.toHaveProperty('itemTransactions');
+  });
+
+  it('iade istegi: /payment/refund, paymentTransactionId + ondalik tutar + conversationId + ip (Refund V2 degil)', async () => {
+    const { p, calls } = provider((c) => ({
+      json: { status: 'success', conversationId: c.body.conversationId, paymentTransactionId: 'ptx-1', price: 1000.5, currency: 'TRY', refundHostReference: 'RF-1' },
+    }));
+    expect(await p.refundItem(req)).toEqual({ providerRefundId: 'RF-1' });
+    expect(calls[0]!.path).toBe(IYZICO_PATHS.refund);
+    expect(calls[0]!.path).not.toMatch(/v2/);
+    expect(calls[0]!.body).toEqual({ locale: 'tr', conversationId: 'refund-PI-1', paymentTransactionId: 'ptx-1', price: '1000.50', currency: 'TRY', ip: '203.0.113.7' });
+    const expectedSig = hmacHex(CREDS.secretKey, `rnd123${IYZICO_PATHS.refund}${calls[0]!.raw}`);
+    expect(Buffer.from(calls[0]!.headers.authorization!.slice(8), 'base64').toString()).toContain(`signature:${expectedSig}`);
+  });
+
+  it('iyzico reddi kesin hatadir (iyzico retryable demedikce); yanit istekle eslesmezse sonuc belirsiz', async () => {
+    const rejected = provider(() => ({ json: { status: 'failure', errorCode: '5093', errorMessage: 'Iade tutari fazla' } }));
+    await expect(rejected.p.refundItem(req)).rejects.toMatchObject({ code: 'iyzico_5093', retryable: false });
+    const retry = provider(() => ({ json: { status: 'failure', errorCode: '10000', errorMessage: 'Gecici', retryable: true } }));
+    await expect(retry.p.refundItem(req)).rejects.toMatchObject({ retryable: true });
+    const mismatch = provider((c) => ({ json: { status: 'success', conversationId: c.body.conversationId, paymentTransactionId: 'ptx-1', price: 10 } }));
+    await expect(mismatch.p.refundItem(req)).rejects.toMatchObject({ code: 'invalid_response', retryable: true });
+    const timeout = provider(() => ({ throws: Object.assign(new Error('t'), { name: 'TimeoutError' }) }));
+    await expect(timeout.p.refundItem(req)).rejects.toMatchObject({ code: 'timeout', retryable: true });
+  });
+
+  it('raporlama: GET, imza sorgu dizgisiz (rnd + yol, govde yok); kalem bazinda basarili iade toplami', async () => {
+    const { p, calls } = provider(() => ({
+      json: {
+        status: 'success',
+        payments: [
+          {
+            paymentId: 22416035,
+            paymentRefundStatus: 'PARTIALLY_REFUNDED',
+            itemTransactions: [
+              { paymentTransactionId: 1, paidPrice: 600, refunds: [{ refundPrice: 100, refundStatus: 1 }, { refundPrice: 50.5, refundStatus: 1 }] },
+              { paymentTransactionId: 2, paidPrice: 400, refunds: [] },
+            ],
+          },
+        ],
+      },
+    }));
+    expect(await p.refundedAmounts({ providerPaymentId: '22416035', conversationId: 'apt-1:PI' })).toEqual(
+      new Map([
+        ['1', 15_050],
+        ['2', 0],
+      ]),
+    );
+    const c = calls[0]!;
+    expect(c.method).toBe('GET');
+    expect(c.path).toBe(IYZICO_PATHS.paymentDetails);
+    expect(c.query).toEqual({ paymentId: '22416035', locale: 'tr', conversationId: 'refund-check:apt-1:PI' });
+    expect(c.raw).toBe('');
+    expect(c.headers.authorization).toBe(iyzicoAuthorization(CREDS, 'rnd123', IYZICO_PATHS.paymentDetails, ''));
+  });
+
+  it('raporlama: iptal / tam iade tum kalemleri tam sayar; sonucu belirsiz iade kaydi hata (tekrar gonderilmez)', async () => {
+    const report = (payment: Record<string, unknown>) =>
+      provider(() => ({ json: { status: 'success', payments: [{ paymentId: 'p1', itemTransactions: [{ paymentTransactionId: 't1', paidPrice: 250 }], ...payment }] } })).p;
+    const q = { providerPaymentId: 'p1', conversationId: 'c' };
+    expect(await report({ cancels: [{ refundPrice: 250, refundStatus: 1 }] }).refundedAmounts(q)).toEqual(new Map([['t1', 25_000]]));
+    expect(await report({ paymentRefundStatus: 'TOTALLY_REFUNDED' }).refundedAmounts(q)).toEqual(new Map([['t1', 25_000]]));
+    await expect(
+      report({ itemTransactions: [{ paymentTransactionId: 't1', paidPrice: 250, refunds: [{ refundPrice: 250, refundStatus: 0 }] }] }).refundedAmounts(q),
+    ).rejects.toMatchObject({ code: 'refund_status_unknown', retryable: true });
+    await expect(report({ paymentId: 'baska' }).refundedAmounts(q)).rejects.toMatchObject({ code: 'not_found' });
+    const failed = provider(() => ({ json: { status: 'failure', errorCode: '1', errorMessage: 'x' } })).p;
+    await expect(failed.refundedAmounts(q)).rejects.toBeInstanceOf(PaymentProviderError);
   });
 });
 

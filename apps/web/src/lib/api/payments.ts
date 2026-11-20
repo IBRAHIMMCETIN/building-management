@@ -8,6 +8,9 @@ import { apiClient } from './client';
  *   Yonetici  : GET  /api/finance/online-payments?status&limit&cursor   GET .../account
  *   Platform  : GET  /api/admin/payments/apartments
  *               GET|POST|PATCH /api/admin/payments/apartments/:apartmentId/account
+ *               GET  /api/admin/payments/review
+ *               GET  /api/admin/payments/apartments/:apartmentId/intents/:intentId/check
+ *               POST /api/admin/payments/apartments/:apartmentId/intents/:intentId/resolve
  * Kart verisi bu uygulamaya hic gelmez: odeme saglayicinin (iyzico) sayfasinda yapilir.
  */
 
@@ -15,7 +18,7 @@ const kurus = z.number().int();
 const party = z.enum(['owner', 'occupant']);
 export type LiableParty = z.infer<typeof party>;
 
-export const INTENT_STATUSES = ['PENDING', 'SUCCEEDED', 'FAILED', 'NEEDS_REVIEW'] as const;
+export const INTENT_STATUSES = ['PENDING', 'SUCCEEDED', 'FAILED', 'NEEDS_REVIEW', 'REFUND_PENDING', 'REFUNDED'] as const;
 export type IntentStatus = (typeof INTENT_STATUSES)[number];
 
 // ----- Sakin -----
@@ -110,6 +113,10 @@ export const managerIntentSchema = z.object({
   receiptNumbers: z.array(z.string()).optional(),
   failure: z.object({ code: z.string(), message: z.string(), at: z.string() }).optional(),
   review: z.object({ reason: z.string(), at: z.string() }).optional(),
+  /** Platform ekibinin karari (yalnizca inceleme sonuclandiysa). */
+  resolution: z.object({ action: z.enum(['approve', 'refund', 'close']), note: z.string(), at: z.string() }).optional(),
+  /** Iade edilen toplam (yalnizca iade kararinda). */
+  refundedAmount: kurus.optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
@@ -184,6 +191,61 @@ export type SubMerchantInput = {
 
 export type AccountPatch = { status?: 'active' | 'disabled'; platformFeeBasisPoints?: number };
 
+// ----- Platform: inceleme sonuclandirma -----
+
+export const REVIEW_ACTIONS = ['approve', 'refund', 'close'] as const;
+export type ReviewAction = (typeof REVIEW_ACTIONS)[number];
+
+const providerCheckSchema = z.object({
+  status: z.enum(['success', 'failure', 'pending']),
+  providerPaymentId: z.string().optional(),
+  paidAmount: kurus.optional(),
+  currency: z.string().optional(),
+  fraudApproved: z.boolean().optional(),
+  problems: z.array(z.string()),
+  errorMessage: z.string().optional(),
+  checkedAt: z.string(),
+});
+export type ProviderCheck = z.infer<typeof providerCheckSchema>;
+
+const refundItemSchema = z.object({
+  paymentTransactionId: z.string(),
+  itemId: z.string(),
+  amount: kurus,
+  status: z.enum(['pending', 'succeeded', 'failed']),
+  attempts: z.number().int(),
+  attemptedAt: z.string().optional(),
+  completedAt: z.string().optional(),
+  error: z.object({ code: z.string(), message: z.string(), at: z.string() }).optional(),
+});
+export type RefundItem = z.infer<typeof refundItemSchema>;
+
+export const reviewIntentSchema = managerIntentSchema.extend({
+  apartmentId: z.string(),
+  version: z.number().int(),
+  resolution: z
+    .object({ action: z.enum(REVIEW_ACTIONS), note: z.string(), by: z.string(), at: z.string(), providerCheck: providerCheckSchema })
+    .optional(),
+  refund: z
+    .object({ items: z.array(refundItemSchema), requestedAt: z.string(), requestedBy: z.string(), completedAt: z.string().optional() })
+    .optional(),
+});
+export type ReviewIntent = z.infer<typeof reviewIntentSchema>;
+
+const reviewQueueSchema = z.object({ items: z.array(reviewIntentSchema.extend({ apartmentName: z.string() })) });
+export type ReviewQueueItem = z.infer<typeof reviewQueueSchema>['items'][number];
+
+export const reviewCheckSchema = z.object({
+  intent: reviewIntentSchema,
+  check: providerCheckSchema.nullable(),
+  actions: z.array(z.object({ action: z.enum(REVIEW_ACTIONS), allowed: z.boolean(), reason: z.string().optional() })),
+});
+export type ReviewCheck = z.infer<typeof reviewCheckSchema>;
+
+const resolveResultSchema = z.object({ intent: reviewIntentSchema });
+
+export type ResolveInput = { action: ReviewAction; note: string; expectedVersion: number };
+
 // ----- Istemci -----
 
 export const paymentsApi = {
@@ -207,6 +269,16 @@ export const paymentsApi = {
   onboard: (apartmentId: string, input: SubMerchantInput) =>
     apiClient.post(`/api/admin/payments/apartments/${encodeURIComponent(apartmentId)}/account`, input, {
       schema: paymentAccountSchema,
+    }),
+  reviewQueue: (signal?: AbortSignal) => apiClient.get('/api/admin/payments/review', { signal, schema: reviewQueueSchema }),
+  reviewCheck: (apartmentId: string, intentId: string, signal?: AbortSignal) =>
+    apiClient.get(`/api/admin/payments/apartments/${encodeURIComponent(apartmentId)}/intents/${encodeURIComponent(intentId)}/check`, {
+      signal,
+      schema: reviewCheckSchema,
+    }),
+  resolveReview: (apartmentId: string, intentId: string, input: ResolveInput) =>
+    apiClient.post(`/api/admin/payments/apartments/${encodeURIComponent(apartmentId)}/intents/${encodeURIComponent(intentId)}/resolve`, input, {
+      schema: resolveResultSchema,
     }),
   updateAccount: (apartmentId: string, patch: AccountPatch) =>
     apiClient.patch(`/api/admin/payments/apartments/${encodeURIComponent(apartmentId)}/account`, patch, {

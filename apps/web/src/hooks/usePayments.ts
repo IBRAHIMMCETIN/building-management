@@ -7,6 +7,7 @@ import {
   type CreatePaymentInput,
   type IntentStatus,
   type PaymentIntent,
+  type ResolveInput,
   type SubMerchantInput,
   paymentsApi,
 } from '@/lib/api/payments';
@@ -141,7 +142,10 @@ export function usePaymentAccountSummary() {
 // ---------------------------------------------------------------------------
 
 export const platformPaymentKeys = {
+  all: () => ['platform', 'payments'] as const,
   apartments: () => ['platform', 'payments', 'apartments'] as const,
+  reviewQueue: () => ['platform', 'payments', 'review'] as const,
+  reviewCheck: (apartmentId: string, intentId: string) => ['platform', 'payments', 'review', 'check', apartmentId, intentId] as const,
 };
 
 export function usePlatformPaymentApartments() {
@@ -172,5 +176,43 @@ export function useUpdatePaymentAccount() {
   return useMutation({
     mutationFn: ({ apartmentId, patch }: { apartmentId: string; patch: AccountPatch }) => paymentsApi.updateAccount(apartmentId, patch),
     onSuccess: () => invalidate(),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Platform yoneticisi: NEEDS_REVIEW elle sonuclandirma
+// ---------------------------------------------------------------------------
+
+export function useReviewQueue() {
+  const { user } = useAuth();
+  return useQuery({
+    queryKey: platformPaymentKeys.reviewQueue(),
+    queryFn: ({ signal }) => paymentsApi.reviewQueue(signal),
+    enabled: user?.role === 'platform_admin',
+    retry,
+    // Iade suren kayitlar mutabakatla ilerler: ekran acikken ara ara tazelenir.
+    refetchInterval: 60_000,
+  });
+}
+
+/** Saglayicidan guncel sonuc + yapilabilecek islemler. Her acilista yeniden sorgulanir (onbellek yok). */
+export function useReviewCheck(target: { apartmentId: string; intentId: string } | null) {
+  return useQuery({
+    queryKey: platformPaymentKeys.reviewCheck(target?.apartmentId ?? '', target?.intentId ?? ''),
+    queryFn: ({ signal }) => paymentsApi.reviewCheck(target!.apartmentId, target!.intentId, signal),
+    enabled: target !== null,
+    retry: false,
+    staleTime: 0,
+    gcTime: 0,
+  });
+}
+
+export function useResolveReview() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ apartmentId, intentId, input }: { apartmentId: string; intentId: string; input: ResolveInput }) =>
+      paymentsApi.resolveReview(apartmentId, intentId, input),
+    // Basarili ya da 409 (kayit degisti): kuyruk ve kontrol yeniden okunur.
+    onSettled: () => queryClient.invalidateQueries({ queryKey: platformPaymentKeys.all() }),
   });
 }
