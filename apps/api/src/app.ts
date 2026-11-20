@@ -20,7 +20,7 @@ import { membershipRoutes } from './modules/memberships/routes.js';
 import { type MembershipService, createMembershipService } from './modules/memberships/service.js';
 import { loadPaymentsConfig } from './modules/payments/config.js';
 import type { FakePaymentProvider } from './modules/payments/fakeProvider.js';
-import { paymentCallbackRoutes, paymentPortalRoutes } from './modules/payments/routes.js';
+import { paymentAdminRoutes, paymentCallbackRoutes, paymentPortalRoutes } from './modules/payments/routes.js';
 import { type PaymentsService, createPaymentsService } from './modules/payments/service.js';
 import { portalRepository } from './modules/portal/repository.js';
 import { portalRoutes } from './modules/portal/routes.js';
@@ -158,6 +158,7 @@ export function createApp(config: AppConfig) {
   }
   app.route('/api/portal/payments', paymentPortalRoutes({ authenticate, service: paymentsService }));
   app.route('/api/payments', paymentCallbackRoutes({ service: paymentsService, fake: fakePaymentProvider }));
+  app.route('/api/admin/payments', paymentAdminRoutes({ authenticate, service: paymentsService }));
 
   app.route(
     '/api/portal',

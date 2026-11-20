@@ -4,7 +4,7 @@
  * barindirdigi odeme sayfasi kullanilir.
  */
 import type { IsoDate, Kurus } from '../core/types.js';
-import type { PaymentProviderName } from './types.js';
+import type { PaymentProviderName, SubMerchantType } from './types.js';
 
 export type CheckoutItem = {
   /** Sepet kalemi kimligi: `<intentId>-<owner|occupant>`. */
@@ -20,9 +20,14 @@ export type CheckoutBuyer = {
   /** TCKN: veritabanina yazilmaz, yalnizca saglayici istegine gider. */
   identityNumber: string;
   ip: string;
-  name?: string;
-  surname?: string;
-  email?: string;
+  name: string;
+  surname: string;
+  email: string;
+  /** E.164 (+90...). Saklanmaz; istekte gelir. */
+  gsmNumber?: string;
+  /** Kayit/fatura adresi: apartmanin adresi. */
+  address: string;
+  city: string;
 };
 
 export type CheckoutRequest = {
@@ -57,9 +62,31 @@ export type CheckoutOutcome = {
   fraudApproved?: boolean;
   /** Saglayicinin bildirdigi odeme gunu (Istanbul); yoksa sonuclandirma gunu kullanilir. */
   paidAt?: IsoDate;
+  /** Yanit imzasi dogrulandi mi (saglayici imza donduruyorsa). false -> incelemeye alinir. */
+  signatureValid?: boolean;
   errorCode?: string;
   errorMessage?: string;
 };
+
+/** Alt uye isyeri kaydi (pazaryeri). KYC verisi saglayicida kalir; bizde yalnizca anahtar. */
+export type SubMerchantRequest = {
+  subMerchantType: SubMerchantType;
+  /** Bizdeki esleme kimligi: apartmentId. */
+  externalId: string;
+  name?: string;
+  email: string;
+  gsmNumber: string;
+  address: string;
+  iban: string;
+  taxOffice?: string;
+  taxNumber?: string;
+  legalCompanyTitle?: string;
+  contactName?: string;
+  contactSurname?: string;
+  identityNumber?: string;
+};
+
+export type WebhookInput = { headers: Record<string, string | undefined>; body: unknown };
 
 export interface PaymentProvider {
   readonly name: PaymentProviderName;
@@ -67,6 +94,12 @@ export interface PaymentProvider {
   readonly sandbox: boolean;
   createCheckout(request: CheckoutRequest): Promise<CheckoutSession>;
   retrieveCheckout(query: { token: string; conversationId: string }): Promise<CheckoutOutcome>;
+  registerSubMerchant(request: SubMerchantRequest): Promise<{ subMerchantKey: string }>;
+  /**
+   * Webhook imzasini dogrular; gecerliyse niyeti bulmak icin `conversationId` doner, degilse
+   * null. Govdedeki odeme durumuna guvenilmez: servis sonucu yine saglayicidan sorgular.
+   */
+  verifyWebhook?(input: WebhookInput): Promise<{ conversationId: string } | null>;
 }
 
 /** Saglayiciya ulasilamadi veya istek reddedildi. */
@@ -84,3 +117,5 @@ export class PaymentProviderError extends Error {
 
 /** iyzico sandbox'in kabul ettigi test kimlik numarasi (Karar C). */
 export const SANDBOX_IDENTITY_NUMBER = '11111111111';
+/** Sandbox'ta telefon verilmezse kullanilan ornek numara (iyzico dokumanindaki ornek). */
+export const SANDBOX_GSM_NUMBER = '+905350000000';

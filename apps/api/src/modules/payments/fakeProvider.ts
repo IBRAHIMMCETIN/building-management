@@ -15,6 +15,7 @@ import {
   type CheckoutSession,
   type PaymentProvider,
   PaymentProviderError,
+  type SubMerchantRequest,
 } from './provider.js';
 
 type FakeSession = {
@@ -28,6 +29,7 @@ type FakeSession = {
 
 export type FakePaymentProvider = PaymentProvider & {
   sessions: Map<string, FakeSession>;
+  subMerchants: Map<string, SubMerchantRequest>;
   /** Kullanicinin odeme sayfasindaki secimi. */
   complete(
     token: string,
@@ -42,6 +44,7 @@ export type FakePaymentProvider = PaymentProvider & {
 
 export function createFakePaymentProvider(options: { apiBaseUrl: string }): FakePaymentProvider {
   const sessions = new Map<string, FakeSession>();
+  const subMerchants = new Map<string, SubMerchantRequest>();
   let payments = 0;
   let checkoutError: Error | undefined;
   let retrieveError: Error | undefined;
@@ -51,6 +54,13 @@ export function createFakePaymentProvider(options: { apiBaseUrl: string }): Fake
     name: 'fake',
     sandbox: true,
     sessions,
+    subMerchants,
+
+    async registerSubMerchant(request) {
+      const subMerchantKey = `fake-sm-${request.externalId}`;
+      subMerchants.set(subMerchantKey, request);
+      return { subMerchantKey };
+    },
 
     async createCheckout(request): Promise<CheckoutSession> {
       if (checkoutError) {

@@ -2,7 +2,7 @@ import { type Context, Hono } from 'hono';
 import type { Authenticator } from '../../auth/claims.js';
 import { type Env, authenticateWith, handleError, readJson, requireRole } from '../../http/helpers.js';
 import type { FakePaymentProvider } from './fakeProvider.js';
-import { PAYMENT_ROLES, type PaymentsContext, type PaymentsService } from './service.js';
+import { PAYMENT_ADMIN_ROLES, PAYMENT_ROLES, type PaymentsContext, type PaymentsService } from './service.js';
 
 /**
  * Sakin: `/api/portal/payments/*` (JWT + `resident` rolu; apartman yalnizca JWT claim'inden)
@@ -52,6 +52,7 @@ function clientIp(c: Context): string {
 /**
  * Kimliksiz uclar: `/api/payments/*` (API Gateway'de yalnizca bu tam yollar JWT'siz acilir).
  *   POST /:provider/callback?ref=<apartmentId>:<intentId>   saglayici -> tarayici POST (token)
+ *   POST /:provider/webhook        saglayici -> sunucu bildirimi (imzali; X-IYZ-SIGNATURE-V3)
  *   GET  /fake/checkout?token=     (yalnizca sahte saglayici) test odeme sayfasi
  *   POST /fake/complete            (yalnizca sahte saglayici) sayfadaki secim
  */
@@ -64,6 +65,21 @@ export function paymentCallbackRoutes({ service, fake }: { service: PaymentsServ
     const result = await service.handleCallback(c.req.param('provider'), { ref: c.req.query('ref'), token });
     c.header('Cache-Control', 'no-store');
     return c.redirect(result.redirectUrl, 303);
+  });
+
+  r.post('/:provider/webhook', async (c) => {
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: 'invalid_body' }, 400);
+    }
+    const headers: Record<string, string | undefined> = {};
+    c.req.raw.headers.forEach((value, key) => {
+      headers[key.toLowerCase()] = value;
+    });
+    const { status } = await service.handleWebhook(c.req.param('provider'), { headers, body });
+    return c.json(status === 200 ? { ok: true } : { error: status === 401 ? 'invalid_signature' : 'unavailable' }, status);
   });
 
   if (fake) {
@@ -128,4 +144,31 @@ function esc(value: string): string {
 
 function page(title: string, body: string): string {
   return `<!doctype html><html lang="tr"><head><meta charset="utf-8"><title>${esc(title)}</title></head><body><h1>${esc(title)}</h1>${body}</body></html>`;
+}
+
+/**
+ * Platform ekibi: `/api/admin/payments/*` (JWT + `platform_admin`; apartman yoldan gelir cunku
+ * platform rolunun apartman claim'i yoktur). Her yazim AUDIT logu uretir.
+ *   GET   /apartments/:apartmentId/account   alt uye isyeri kaydi
+ *   POST  /apartments/:apartmentId/account   saglayicida alt uye isyeri olustur (KYC)
+ *   PATCH /apartments/:apartmentId/account   durum (active/disabled) ve platform payi
+ */
+export function paymentAdminRoutes({ authenticate, service }: { authenticate: Authenticator; service: PaymentsService }) {
+  const r = new Hono<Env>();
+  r.onError(handleError);
+  r.use('*', authenticateWith(authenticate));
+  r.use('*', requireRole(PAYMENT_ADMIN_ROLES));
+  r.use('*', async (c, next) => {
+    await next();
+    c.header('Cache-Control', 'no-store');
+  });
+
+  r.get('/apartments/:apartmentId/account', async (c) => c.json(await service.getAccount(c.req.param('apartmentId'))));
+  r.post('/apartments/:apartmentId/account', async (c) =>
+    c.json(await service.onboardSubMerchant({ userId: c.get('claims').userId }, c.req.param('apartmentId'), await readJson(c)), 201),
+  );
+  r.patch('/apartments/:apartmentId/account', async (c) =>
+    c.json(await service.updateAccount({ userId: c.get('claims').userId }, c.req.param('apartmentId'), await readJson(c))),
+  );
+  return r;
 }

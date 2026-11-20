@@ -5,14 +5,20 @@ import { type IsoDate, type IsoDateTime, type Kurus, type LiableParty, toKurus }
 import { ValidationError, asObject, assertId } from '../core/validation.js';
 import { LedgerConflictError } from '../finance/repository.js';
 import type { FinanceService } from '../finance/service.js';
+import { type CoreRepository, coreRepository } from '../core/repository.js';
 import type { PortalRepository } from '../portal/repository.js';
 import type { PortalService } from '../portal/service.js';
+import { type PersonRepository, personRepository } from '../residents/repository.js';
 import {
+  type CheckoutBuyer,
   type CheckoutOutcome,
   type CheckoutRequest,
   type PaymentProvider,
   PaymentProviderError,
+  SANDBOX_GSM_NUMBER,
   SANDBOX_IDENTITY_NUMBER,
+  type SubMerchantRequest,
+  type WebhookInput,
 } from './provider.js';
 import {
   type PaymentSelection,
@@ -24,10 +30,13 @@ import {
 import { type PaymentsRepository, PaymentsConflictError, paymentKeys, paymentsRepository } from './repository.js';
 import {
   type IntentKeyRecord,
+  MAX_PLATFORM_FEE_BASIS_POINTS,
   PAYMENT_MODES,
   type PaymentAccount,
   type PaymentIntent,
   type PaymentMode,
+  SUB_MERCHANT_TYPES,
+  type SubMerchantType,
 } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -40,6 +49,8 @@ export type PaymentsErrorCode =
   | 'payments_disabled'
   | 'idempotency_conflict'
   | 'conflict'
+  | 'profile_incomplete'
+  | 'provider_rejected'
   | 'provider_unavailable';
 
 const STATUS: Record<PaymentsErrorCode, 404 | 409 | 422 | 502> = {
@@ -48,6 +59,8 @@ const STATUS: Record<PaymentsErrorCode, 404 | 409 | 422 | 502> = {
   payments_disabled: 422,
   idempotency_conflict: 409,
   conflict: 409,
+  profile_incomplete: 422,
+  provider_rejected: 422,
   provider_unavailable: 502,
 };
 
@@ -68,6 +81,8 @@ export class PaymentsError extends Error {
 // ---------------------------------------------------------------------------
 
 export const PAYMENT_ROLES: readonly Role[] = ['resident'];
+/** Alt uye isyeri (KYC) kaydi yalnizca platform ekibi tarafindan yapilir. */
+export const PAYMENT_ADMIN_ROLES: readonly Role[] = ['platform_admin'];
 
 export type PaymentsContext = { apartmentId: string; userId: string; role: Role };
 
@@ -80,6 +95,9 @@ export type PaymentsServiceDeps = {
   /** Sonuclandirmada tazminat ust siniri icin alt carinin TUM satirlari (uyelikten bagimsiz). */
   ledger: Pick<PortalRepository, 'listLedgerEntries' | 'getTransactions'>;
   finance: Pick<FinanceService, 'recordOnlinePayment'>;
+  /** Alici adi/e-postasi (sakin dizini, `PERSON#`) ve apartman adresi. */
+  people: Pick<PersonRepository, 'get'>;
+  core: Pick<CoreRepository, 'getSite'>;
   /** Verilmezse online odeme kapali (quote calisir, odeme baslatilamaz). */
   provider?: PaymentProvider;
   /** API'nin disaridan erisilen adresi (saglayici callback'i buraya POST eder). */
@@ -112,6 +130,39 @@ const PARTY_LABEL: Record<LiableParty, string> = { owner: 'Kat Maliki', occupant
 const MAX_SELECTED_ITEMS = 120;
 const REF = /^([A-Za-z0-9_-]{1,64}):(\d{14}-[A-Za-z0-9_-]{1,64})$/;
 const TCKN = /^[1-9]\d{10}$/;
+const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/** "0532 123 45 67", "5321234567", "+90 532..." -> "+905321234567"; gecersizse undefined. */
+export function normalizeGsm(value: string): string | undefined {
+  const digits = value.replace(/[\s()-]/g, '');
+  const m = /^(?:\+?90|0)?(5\d{9})$/.exec(digits);
+  return m ? `+90${m[1]}` : undefined;
+}
+
+/** TR IBAN: TR + 24 hane, ISO 13616 mod-97 kontrolu. */
+export function isValidTrIban(value: string): boolean {
+  const iban = value.replace(/\s/g, '').toUpperCase();
+  if (!/^TR\d{24}$/.test(iban)) return false;
+  const rearranged = iban.slice(4) + iban.slice(0, 4);
+  const numeric = rearranged.replace(/[A-Z]/g, (ch) => String(ch.charCodeAt(0) - 55));
+  let rem = 0;
+  for (const d of numeric) rem = (rem * 10 + Number(d)) % 97;
+  return rem === 1;
+}
+
+/** Yalnizca son 4 hane: "TR** **** **** **** **** **12 34". */
+export function maskIban(value: string): string {
+  const iban = value.replace(/\s/g, '').toUpperCase();
+  const last4 = iban.slice(-4);
+  return `TR** **** **** **** **** **${last4.slice(0, 2)} ${last4.slice(2)}`;
+}
+
+/** "Ayşe Nur Yılmaz" -> { name: "Ayşe Nur", surname: "Yılmaz" } */
+function splitFullName(fullName: string): { name: string; surname: string } {
+  const parts = fullName.trim().split(/\s+/);
+  if (parts.length < 2) return { name: parts[0] ?? '', surname: parts[0] ?? '' };
+  return { name: parts.slice(0, -1).join(' '), surname: parts.at(-1) as string };
+}
 
 const fingerprint = (value: unknown): string => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 
@@ -179,7 +230,9 @@ type IntentInput = {
   idempotencyKey: string;
   unitId?: string;
   selection: PaymentSelection;
+  /** TCKN ve telefon saklanmaz; yalnizca saglayici istegine gider (Karar C). */
   identityNumber?: string;
+  gsmNumber?: string;
 };
 
 function parseIntentInput(body: unknown): IntentInput {
@@ -217,7 +270,12 @@ function parseIntentInput(body: unknown): IntentInput {
     }
     identityNumber = o.identityNumber;
   }
-  return { idempotencyKey, unitId, selection, identityNumber };
+  let gsmNumber: string | undefined;
+  if (o.gsmNumber !== undefined && o.gsmNumber !== null && o.gsmNumber !== '') {
+    gsmNumber = typeof o.gsmNumber === 'string' ? normalizeGsm(o.gsmNumber) : undefined;
+    if (!gsmNumber) throw new ValidationError('gsmNumber geçerli bir cep telefonu numarası olmalıdır (05xx...)', 'gsmNumber');
+  }
+  return { idempotencyKey, unitId, selection, identityNumber, gsmNumber };
 }
 
 // ---------------------------------------------------------------------------
@@ -227,6 +285,8 @@ function parseIntentInput(body: unknown): IntentInput {
 export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & Pick<PaymentsServiceDeps, 'portal' | 'ledger' | 'finance'>) {
   const deps: PaymentsServiceDeps = {
     repository: paymentsRepository,
+    people: personRepository,
+    core: coreRepository,
     apiBaseUrl: 'http://localhost:3000',
     webAppUrl: 'http://localhost:5173',
     intentTtlMinutes: 30,
@@ -250,6 +310,38 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
     if (account?.status === 'active') return account;
     if (!account && provider.name === 'fake') return { subMerchantKey: 'fake-submerchant', platformFeeBasisPoints: 0 };
     return undefined;
+  }
+
+  /**
+   * Saglayiciya giden alici: ad/e-posta sakin dizininden (`PERSON#`), adres apartmanin
+   * adresinden; TCKN ve telefon istekten (saklanmaz). Sandbox'ta eksikler test degerleriyle
+   * doldurulur; canlida eksik bilgi 422/400 ile reddedilir (yarim niyet olusmaz).
+   */
+  async function resolveBuyer(ctx: PaymentsContext, input: IntentInput, ip: string, sandbox: boolean): Promise<CheckoutBuyer> {
+    const [person, site] = await Promise.all([
+      deps.people.get(ctx.apartmentId, ctx.userId),
+      deps.core.getSite(ctx.apartmentId),
+    ]);
+    const valid = person && person.userId === ctx.userId && person.apartmentId === ctx.apartmentId ? person : undefined;
+    if (!valid && !sandbox) {
+      throw new PaymentsError('profile_incomplete', 'Ödeme için ad ve e-posta bilginiz eksik; lütfen yönetiminizle iletişime geçin');
+    }
+    const gsmNumber = input.gsmNumber ?? (sandbox ? SANDBOX_GSM_NUMBER : undefined);
+    if (!gsmNumber) throw new ValidationError('Ödeme için cep telefonu numarası gereklidir', 'gsmNumber');
+    const { name, surname } = splitFullName(valid?.fullName ?? 'Test Sakin');
+    const address = site ? [site.address.line1, site.address.line2, site.address.district].filter(Boolean).join(', ') : '';
+    return {
+      id: ctx.userId,
+      // Karar C: sandbox'ta veya verilmezse saglayicinin test numarasi.
+      identityNumber: sandbox || !input.identityNumber ? SANDBOX_IDENTITY_NUMBER : input.identityNumber,
+      ip,
+      name,
+      surname,
+      email: valid?.email ?? 'sandbox@example.com',
+      gsmNumber,
+      address: address || 'Türkiye',
+      city: site?.address.city ?? 'Istanbul',
+    };
   }
 
   // ----- Odenebilir tutar -----
@@ -311,6 +403,8 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
     });
     const plan = allocateSelection(q, input.selection, account.platformFeeBasisPoints);
     if (plan.amount < 1) throw new PaymentsError('no_debt', 'Ödenecek borcunuz bulunmuyor');
+    // Alici bilgisi niyet yazilmadan once: eksikse yarim kalmis niyet olusmaz.
+    const buyer = await resolveBuyer(ctx, input, meta.ip, provider.sandbox);
 
     const now = deps.now();
     const ts = now.toISOString();
@@ -364,12 +458,7 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
       amount: intent.amount,
       currency: 'TRY',
       callbackUrl: `${apiBase}/api/payments/${provider.name}/callback?ref=${encodeURIComponent(intent.conversationId)}`,
-      buyer: {
-        id: ctx.userId,
-        // Karar C: TCKN yazilmaz; sandbox'ta veya verilmezse saglayicinin test numarasi.
-        identityNumber: provider.sandbox || !input.identityNumber ? SANDBOX_IDENTITY_NUMBER : input.identityNumber,
-        ip: meta.ip,
-      },
+      buyer,
       items: intent.allocations.map((a) => ({
         id: `${intentId}-${a.liableParty}`,
         name: `Aidat ödemesi · Daire ${data.unit.number} · ${PARTY_LABEL[a.liableParty]}`,
@@ -423,6 +512,7 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
     if (o.paidAmount !== intent.amount) problems.push(`tutar uyusmuyor (${o.paidAmount ?? '-'} != ${intent.amount})`);
     if (o.currency !== 'TRY') problems.push(`para birimi ${o.currency ?? '-'}`);
     if (o.fraudApproved === false) problems.push('fraud onayi yok');
+    if (o.signatureValid === false) problems.push('yanit imzasi dogrulanamadi');
     return problems;
   }
 
@@ -630,7 +720,224 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
     return result;
   }
 
-  return { provider, quote, createIntent, getIntent, handleCallback, reconcile };
+  // ----- Saglayici webhook'u (kimliksiz, imzali; sunucudan sunucuya) -----
+
+  /**
+   * Imza dogrulanirsa ilgili niyet saglayicidan SORGULANARAK sonuclandirilir (webhook
+   * govdesindeki durum kullanilmaz). Bilinmeyen niyet icin de 200 doner: saglayici tekrar
+   * denemeyi birakir. Gecersiz imza 401.
+   */
+  async function handleWebhook(providerName: string, input: WebhookInput): Promise<{ status: 200 | 401 | 404 | 503 }> {
+    if (!provider || provider.name !== providerName || !provider.verifyWebhook) return { status: 404 };
+    let verified: { conversationId: string } | null;
+    try {
+      verified = await provider.verifyWebhook(input);
+    } catch (err) {
+      deps.log('error', 'webhook dogrulanamadi (anahtar okunamadi)', { code: err instanceof PaymentProviderError ? err.code : 'unknown' });
+      return { status: 503 };
+    }
+    if (!verified) {
+      deps.log('warn', 'webhook imzasi gecersiz', { providerName });
+      return { status: 401 };
+    }
+    const m = REF.exec(verified.conversationId);
+    if (!m) {
+      deps.log('warn', 'webhook bilinmeyen conversationId', { providerName });
+      return { status: 200 };
+    }
+    const [, apartmentId, intentId] = m as unknown as [string, string, string];
+    const intent = await repo.getIntent(apartmentId, intentId);
+    if (intent) await settle(intent);
+    return { status: 200 };
+  }
+
+  // ----- Platform: alt uye isyeri (Karar 1) -----
+
+  function accountView(a: PaymentAccount) {
+    const { PK: _pk, SK: _sk, ...rest } = a;
+    return rest;
+  }
+
+  async function requireSite(apartmentId: string) {
+    assertId(apartmentId, 'apartmentId');
+    const site = await deps.core.getSite(apartmentId);
+    if (!site) throw new PaymentsError('not_found', 'Apartman bulunamadı');
+    return site;
+  }
+
+  async function getAccount(apartmentId: string) {
+    await requireSite(apartmentId);
+    if (!provider) throw new PaymentsError('payments_disabled', 'Online ödeme yapılandırılmamış');
+    const account = await repo.getAccount(apartmentId, provider.name);
+    if (!account) throw new PaymentsError('not_found', 'Bu apartman için alt üye işyeri kaydı yok');
+    return accountView(account);
+  }
+
+  function parseSubMerchant(apartmentId: string, body: unknown): { request: SubMerchantRequest; feeBps: number } {
+    const o = asObject(body);
+    const str = (key: string, min: number, max: number, required: boolean): string | undefined => {
+      const v = o[key];
+      if (v === undefined || v === null || v === '') {
+        if (required) throw new ValidationError(`${key} zorunludur`, key);
+        return undefined;
+      }
+      if (typeof v !== 'string' || v.trim().length < min || v.trim().length > max) {
+        throw new ValidationError(`${key} ${min}-${max} karakter olmalıdır`, key);
+      }
+      return v.trim();
+    };
+    const typeRaw = o.subMerchantType ?? 'PRIVATE_COMPANY';
+    if (typeof typeRaw !== 'string' || !(SUB_MERCHANT_TYPES as readonly string[]).includes(typeRaw)) {
+      throw new ValidationError(`subMerchantType şu değerlerden biri olmalıdır: ${SUB_MERCHANT_TYPES.join(', ')}`, 'subMerchantType');
+    }
+    const type = typeRaw as SubMerchantType;
+    const email = str('email', 5, 254, true) as string;
+    if (!EMAIL.test(email)) throw new ValidationError('email geçerli bir e-posta adresi olmalıdır', 'email');
+    const gsm = normalizeGsm(str('gsmNumber', 10, 20, true) as string);
+    if (!gsm) throw new ValidationError('gsmNumber geçerli bir cep telefonu numarası olmalıdır', 'gsmNumber');
+    const iban = (str('iban', 26, 40, true) as string).replace(/\s/g, '').toUpperCase();
+    if (!isValidTrIban(iban)) throw new ValidationError('iban geçerli bir TR IBAN olmalıdır', 'iban');
+    const company = type !== 'PERSONAL';
+    const taxNumber = str('taxNumber', 10, 10, type === 'LIMITED_OR_JOINT_STOCK_COMPANY');
+    if (taxNumber && !/^\d{10}$/.test(taxNumber)) throw new ValidationError('taxNumber 10 haneli olmalıdır', 'taxNumber');
+    const identityNumber = str('identityNumber', 11, 11, type === 'PERSONAL');
+    if (identityNumber && !TCKN.test(identityNumber)) {
+      throw new ValidationError('identityNumber 11 haneli T.C. kimlik numarası olmalıdır', 'identityNumber');
+    }
+    const fee = o.platformFeeBasisPoints ?? 0;
+    if (typeof fee !== 'number' || !Number.isInteger(fee) || fee < 0 || fee > MAX_PLATFORM_FEE_BASIS_POINTS) {
+      throw new ValidationError(`platformFeeBasisPoints 0-${MAX_PLATFORM_FEE_BASIS_POINTS} tam sayı olmalıdır`, 'platformFeeBasisPoints');
+    }
+    return {
+      feeBps: fee,
+      request: {
+        subMerchantType: type,
+        externalId: apartmentId,
+        name: str('name', 2, 200, false),
+        email,
+        gsmNumber: gsm,
+        address: str('address', 5, 500, true) as string,
+        iban,
+        taxOffice: str('taxOffice', 2, 100, company),
+        taxNumber,
+        legalCompanyTitle: str('legalCompanyTitle', 2, 300, company),
+        contactName: str('contactName', 2, 100, !company),
+        contactSurname: str('contactSurname', 2, 100, !company),
+        identityNumber,
+      },
+    };
+  }
+
+  /**
+   * Apartmani saglayicida alt uye isyeri olarak kaydeder. KYC verisi (vergi no, IBAN, TCKN)
+   * saglayicida kalir; bizde yalnizca `subMerchantKey`, tip, maskeli IBAN ve platform payi.
+   */
+  async function onboardSubMerchant(ctx: { userId: string }, apartmentId: string, body: unknown) {
+    await requireSite(apartmentId);
+    if (!provider) throw new PaymentsError('payments_disabled', 'Online ödeme yapılandırılmamış');
+    const { request, feeBps } = parseSubMerchant(apartmentId, body);
+    if (await repo.getAccount(apartmentId, provider.name)) {
+      throw new PaymentsError('conflict', 'Bu apartman zaten kayıtlı; durum ve platform payı için PATCH kullanın');
+    }
+    let subMerchantKey: string;
+    try {
+      ({ subMerchantKey } = await provider.registerSubMerchant(request));
+    } catch (err) {
+      if (err instanceof PaymentProviderError && !err.retryable && err.code !== 'config') {
+        throw new PaymentsError('provider_rejected', `Ödeme sağlayıcısı kaydı reddetti: ${err.message}`);
+      }
+      deps.log('error', 'alt uye isyeri kaydi basarisiz', { apartmentId, code: err instanceof PaymentProviderError ? err.code : 'unknown' });
+      throw new PaymentsError('provider_unavailable', 'Ödeme sağlayıcısına şu an ulaşılamıyor');
+    }
+    const ts = stamp();
+    const account: PaymentAccount = {
+      ...paymentKeys.account(apartmentId, provider.name),
+      entityType: 'PAYMENT_ACCOUNT',
+      apartmentId,
+      provider: provider.name,
+      subMerchantKey,
+      subMerchantType: request.subMerchantType,
+      ibanMasked: maskIban(request.iban),
+      status: 'active',
+      platformFeeBasisPoints: feeBps,
+      createdAt: ts,
+      createdBy: ctx.userId,
+      updatedAt: ts,
+      updatedBy: ctx.userId,
+      version: 1,
+    };
+    try {
+      await repo.putAccount(account);
+    } catch (err) {
+      if (err instanceof PaymentsConflictError) throw new PaymentsError('conflict', 'Bu apartman eş zamanlı olarak kaydedildi');
+      throw err;
+    }
+    deps.log('info', 'AUDIT alt uye isyeri kaydedildi', {
+      audit: 'PAYMENT_ACCOUNT_ONBOARDED',
+      apartmentId,
+      by: ctx.userId,
+      subMerchantType: account.subMerchantType,
+      ibanMasked: account.ibanMasked,
+    });
+    return accountView(account);
+  }
+
+  /** Durum (aktif/pasif) ve platform payi; surum kosullu. */
+  async function updateAccount(ctx: { userId: string }, apartmentId: string, body: unknown) {
+    await requireSite(apartmentId);
+    if (!provider) throw new PaymentsError('payments_disabled', 'Online ödeme yapılandırılmamış');
+    const current = await repo.getAccount(apartmentId, provider.name);
+    if (!current) throw new PaymentsError('not_found', 'Bu apartman için alt üye işyeri kaydı yok');
+    const o = asObject(body);
+    let status = current.status;
+    if (o.status !== undefined) {
+      if (o.status !== 'active' && o.status !== 'disabled') throw new ValidationError('status active veya disabled olmalıdır', 'status');
+      status = o.status;
+    }
+    let fee = current.platformFeeBasisPoints;
+    if (o.platformFeeBasisPoints !== undefined) {
+      const v = o.platformFeeBasisPoints;
+      if (typeof v !== 'number' || !Number.isInteger(v) || v < 0 || v > MAX_PLATFORM_FEE_BASIS_POINTS) {
+        throw new ValidationError(`platformFeeBasisPoints 0-${MAX_PLATFORM_FEE_BASIS_POINTS} tam sayı olmalıdır`, 'platformFeeBasisPoints');
+      }
+      fee = v;
+    }
+    const next: PaymentAccount = {
+      ...current,
+      status,
+      platformFeeBasisPoints: fee,
+      updatedAt: stamp(),
+      updatedBy: ctx.userId,
+      version: current.version + 1,
+    };
+    try {
+      await repo.putAccount(next, current.version);
+    } catch (err) {
+      if (err instanceof PaymentsConflictError) throw new PaymentsError('conflict', 'Kayıt başka biri tarafından değiştirildi');
+      throw err;
+    }
+    deps.log('info', 'AUDIT alt uye isyeri guncellendi', {
+      audit: 'PAYMENT_ACCOUNT_UPDATED',
+      apartmentId,
+      by: ctx.userId,
+      status,
+      platformFeeBasisPoints: fee,
+    });
+    return accountView(next);
+  }
+
+  return {
+    provider,
+    quote,
+    createIntent,
+    getIntent,
+    handleCallback,
+    handleWebhook,
+    reconcile,
+    getAccount,
+    onboardSubMerchant,
+    updateAccount,
+  };
 }
 
 export type PaymentsService = ReturnType<typeof createPaymentsService>;

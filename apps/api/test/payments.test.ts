@@ -27,6 +27,10 @@ import {
 } from '../src/modules/payments/repository.js';
 import { createPaymentsService, utcStamp } from '../src/modules/payments/service.js';
 import type { PaymentAccount, PaymentIntent } from '../src/modules/payments/types.js';
+import { type PaymentProvider, PaymentProviderError } from '../src/modules/payments/provider.js';
+import { createIyzicoClient, hmacHex, responseSignature, signaturePrice } from '../src/modules/payments/iyzico/client.js';
+import { IYZICO_PATHS, createIyzicoProvider } from '../src/modules/payments/iyzico/provider.js';
+import { type Person, personKeys } from '../src/modules/residents/repository.js';
 import type { PortalRepository } from '../src/modules/portal/repository.js';
 import { createPortalService } from '../src/modules/portal/service.js';
 import type { UnitMembership } from '../src/modules/portal/types.js';
@@ -100,7 +104,17 @@ const site: Site = {
   },
 };
 
-function setup(options: { provider?: boolean; at?: string } = {}) {
+const person = (userId: string, fullName: string, email: string, apt = APT): Person => ({
+  ...personKeys.person(apt, userId),
+  entityType: 'PERSON',
+  ...audit,
+  apartmentId: apt,
+  userId,
+  fullName,
+  email,
+});
+
+function setup(options: { provider?: boolean | 'live'; at?: string; customProvider?: PaymentProvider } = {}) {
   const clock = { now: new Date(options.at ?? '2026-11-06T10:00:00.000Z') }; // Istanbul 13:00
   const units = [unit('u1'), unit('u2'), unit('x1', OTHER_APT)];
   const memberships = [
@@ -137,13 +151,19 @@ function setup(options: { provider?: boolean; at?: string } = {}) {
   const finance = createFinanceService({ repository: fin.repo, core, now, newId, events });
   const portal = createPortalService({ repository: portalRepo, core, now });
   const fake = createFakePaymentProvider({ apiBaseUrl: 'https://api.test' });
+  const people = [person('tenant-1', 'Ayşe Nur Yılmaz', 'ayse@example.com'), person('owner-2', 'Mehmet Kaya', 'mehmet@example.com')];
+  // Canli (sandbox olmayan) saglayici davranisi: ayni sahte oturumlar, sandbox=false.
+  const provider: PaymentProvider | undefined =
+    options.customProvider ?? (options.provider === false ? undefined : options.provider === 'live' ? { ...fake, sandbox: false } : fake);
   const logs: { level: string; message: string; fields?: Record<string, unknown> }[] = [];
   const payments = createPaymentsService({
     repository: payRepo.repo,
     portal,
     ledger: portalRepo,
     finance,
-    provider: options.provider === false ? undefined : fake,
+    people: { get: async (apt, userId) => people.find((p) => p.apartmentId === apt && p.userId === userId) },
+    core,
+    provider,
     apiBaseUrl: 'https://api.test',
     webAppUrl: 'https://web.test',
     now,
@@ -202,7 +222,7 @@ function setup(options: { provider?: boolean; at?: string } = {}) {
 
   const intentOf = (id: string) => fin.docs.get(`APT#${APT}|PI#${id}`) as unknown as PaymentIntent;
 
-  return { clock, app, call, token, fin, payRepo, finance, portal, payments, fake, events, logs, charge, cashPayment, payThroughProvider, intentOf, portalRepo };
+  return { clock, app, call, token, fin, payRepo, finance, portal, payments, fake, events, logs, charge, cashPayment, payThroughProvider, intentOf, portalRepo, people };
 }
 
 // ---------------------------------------------------------------------------
@@ -352,7 +372,17 @@ describe('odeme - uctan uca (sahte saglayici)', () => {
       amount: TL(3135),
       conversationId: `${APT}:${intentId}`,
       callbackUrl: `https://api.test/api/payments/fake/callback?ref=${encodeURIComponent(`${APT}:${intentId}`)}`,
-      buyer: { id: 'tenant-1', identityNumber: '11111111111', ip: '203.0.113.7' },
+      buyer: {
+        id: 'tenant-1',
+        identityNumber: '11111111111',
+        ip: '203.0.113.7',
+        name: 'Ayşe Nur',
+        surname: 'Yılmaz',
+        email: 'ayse@example.com',
+        gsmNumber: '+905350000000',
+        address: 'x, Kadikoy',
+        city: 'Istanbul',
+      },
       items: [{ id: `${intentId}-occupant`, amount: TL(3135), subMerchantKey: 'fake-submerchant', subMerchantPrice: TL(3135) }],
     });
 
@@ -935,5 +965,251 @@ describe('odeme deposu (DynamoDB)', () => {
     expect(out).toHaveLength(1);
     const input = ddbMock.commandCalls(QueryCommand)[0]!.args[0].input;
     expect(input.ExpressionAttributeValues).toEqual({ ':pk': 'APT#apt-1', ':lo': 'PI#20261030000000', ':hi': 'PI#20261106093000~' });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Adim 8b-2: alici bilgisi, iyzico saglayicisi (sahte HTTP), webhook, alt uye isyeri
+// ---------------------------------------------------------------------------
+
+describe('odeme - alici bilgisi (Karar C)', () => {
+  it('canli saglayicida: telefon zorunlu ve normalize edilir; TCKN/telefon saklanmaz', async () => {
+    const w = setup({ provider: 'live' });
+    await w.charge('u1', 'occupant', TL(1000), '2026-11-10', 'c1', '2026-11-01');
+    const noGsm = await w.call('POST', '/api/portal/payments', w.token('tenant-1'), { idempotencyKey: 'k-0', mode: 'total' });
+    expect(noGsm).toMatchObject({ status: 400, body: { field: 'gsmNumber' } });
+    const badGsm = await w.call('POST', '/api/portal/payments', w.token('tenant-1'), { idempotencyKey: 'k-0', mode: 'total', gsmNumber: '0212 000 00 00' });
+    expect(badGsm).toMatchObject({ status: 400, body: { field: 'gsmNumber' } });
+    expect(w.payRepo.intents()).toHaveLength(0); // yarim niyet olusmadi
+
+    const ok = await w.call('POST', '/api/portal/payments', w.token('tenant-1'), {
+      idempotencyKey: 'k-1',
+      mode: 'total',
+      identityNumber: '12345678950',
+      gsmNumber: '0532 123 45 67',
+    });
+    expect(ok.status).toBe(201);
+    const buyer = w.fake.sessions.get(`fake_${ok.body.intentId}`)!.request.buyer;
+    expect(buyer).toMatchObject({ identityNumber: '12345678950', gsmNumber: '+905321234567', email: 'ayse@example.com' });
+    const stored = JSON.stringify([...w.fin.docs.values()]);
+    expect(stored).not.toContain('12345678950');
+    expect(stored).not.toContain('5321234567');
+  });
+
+  it('canli saglayicida sakin dizini kaydi yoksa 422 profile_incomplete', async () => {
+    const w = setup({ provider: 'live' });
+    w.people.length = 0;
+    await w.charge('u1', 'occupant', TL(1000), '2026-11-10', 'c1', '2026-11-01');
+    const res = await w.call('POST', '/api/portal/payments', w.token('tenant-1'), { idempotencyKey: 'k-1', mode: 'total', gsmNumber: '05321234567' });
+    expect(res).toMatchObject({ status: 422, body: { error: 'profile_incomplete' } });
+    expect(w.payRepo.intents()).toHaveLength(0);
+  });
+});
+
+/** iyzico API'sini taklit eden sahte fetch: baslatilan oturumlari hatirlar, imzali yanit doner. */
+function fakeIyzicoServer(secretKey: string) {
+  const sessions = new Map<string, { body: Record<string, any>; paid?: boolean }>();
+  let n = 0;
+  const fetchFn = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const path = new URL(String(input)).pathname;
+    const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, any>;
+    const json = (data: unknown) => new Response(JSON.stringify(data), { status: 200, headers: { 'content-type': 'application/json' } });
+    if (path === IYZICO_PATHS.initialize) {
+      const token = `iyz-tok-${++n}`;
+      sessions.set(token, { body });
+      return json({ status: 'success', conversationId: body.conversationId, token, paymentPageUrl: `https://sandbox-cpp.iyzipay.com?token=${token}`, signature: responseSignature(secretKey, [body.conversationId, token]) });
+    }
+    if (path === IYZICO_PATHS.retrieve) {
+      const s = sessions.get(body.token);
+      if (!s?.paid) return json({ status: 'success', paymentStatus: 'INIT_THREEDS', token: body.token });
+      const r = { paymentStatus: 'SUCCESS', paymentId: `pay-${body.token}`, currency: 'TRY', basketId: s.body.basketId, conversationId: s.body.conversationId, paidPrice: s.body.paidPrice, price: s.body.price, token: body.token };
+      const signature = responseSignature(secretKey, [r.paymentStatus, r.paymentId, r.currency, r.basketId, r.conversationId, signaturePrice(r.paidPrice), signaturePrice(r.price), r.token]);
+      return json({ status: 'success', fraudStatus: 1, ...r, signature });
+    }
+    if (path === '/onboarding/submerchant') return json({ status: 'success', subMerchantKey: `smk-${body.subMerchantExternalId}` });
+    return new Response('{}', { status: 404 });
+  }) as typeof fetch;
+  return { fetchFn, sessions };
+}
+
+describe('odeme - iyzico saglayicisi ile uctan uca (sahte HTTP)', () => {
+  const SECRET = 'sandbox-secret';
+  function iyzicoWorld() {
+    const server = fakeIyzicoServer(SECRET);
+    const client = createIyzicoClient({ baseUrl: 'https://sandbox-api.iyzipay.com', credentials: async () => ({ apiKey: 'k', secretKey: SECRET }), fetch: server.fetchFn });
+    const w = setup({ customProvider: createIyzicoProvider({ client, sandbox: true, now: () => new Date('2026-11-06T10:00:00Z') }) });
+    return { w, server };
+  }
+  const webhookSig = (b: Record<string, unknown>) =>
+    hmacHex(SECRET, `${SECRET}${b.iyziEventType}${b.iyziPaymentId}${b.token}${b.paymentConversationId}${b.status}`);
+
+  it('alt uye kaydi -> niyet -> imzali webhook -> saglayici sorgusu -> defter', async () => {
+    const { w, server } = iyzicoWorld();
+    const admin = w.token('ops-1', 'platform_admin', '');
+    const onboard = await w.call('POST', `/api/admin/payments/apartments/${APT}/account`, admin, {
+      email: 'yonetim@lale.test',
+      gsmNumber: '0532 123 45 67',
+      address: 'Lale Sk. 1, Kadıköy',
+      iban: 'TR33 0006 1005 1978 6457 8413 26',
+      taxOffice: 'Kadıköy',
+      legalCompanyTitle: 'Lale Apartmanı Yönetimi',
+      platformFeeBasisPoints: 100,
+    });
+    expect(onboard.status).toBe(201);
+    expect(onboard.body).toMatchObject({ subMerchantKey: `smk-${APT}`, subMerchantType: 'PRIVATE_COMPANY', status: 'active', ibanMasked: 'TR** **** **** **** **** **13 26' });
+
+    await w.charge('u1', 'occupant', TL(1000), '2026-11-10', 'c1', '2026-11-01');
+    const created = await w.call('POST', '/api/portal/payments', w.token('tenant-1'), { idempotencyKey: 'k-1', mode: 'total' });
+    expect(created.status).toBe(201);
+    expect(created.body.paymentPageUrl).toBe('https://sandbox-cpp.iyzipay.com?token=iyz-tok-1');
+    const init = server.sessions.get('iyz-tok-1')!.body;
+    expect(init.basketItems[0]).toMatchObject({ price: '1000.00', subMerchantKey: `smk-${APT}`, subMerchantPrice: '990.00' });
+
+    // Kullanici 3DS'i tamamladi; callback kayboldu, webhook geldi.
+    server.sessions.get('iyz-tok-1')!.paid = true;
+    const hook = { paymentConversationId: `${APT}:${created.body.intentId}`, token: 'iyz-tok-1', status: 'SUCCESS', iyziEventType: 'CHECKOUT_FORM_AUTH', iyziPaymentId: 1 };
+    const bad = await w.app.request('/api/payments/iyzico/webhook', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'X-IYZ-SIGNATURE-V3': '00' },
+      body: JSON.stringify(hook),
+    });
+    expect(bad.status).toBe(401);
+    expect(w.intentOf(created.body.intentId).status).toBe('PENDING');
+
+    const good = await w.app.request('/api/payments/iyzico/webhook', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'X-IYZ-SIGNATURE-V3': webhookSig(hook) },
+      body: JSON.stringify(hook),
+    });
+    expect(good.status).toBe(200);
+    expect(w.intentOf(created.body.intentId)).toMatchObject({ status: 'SUCCEEDED', providerPaymentId: 'pay-iyz-tok-1', platformFee: TL(10) });
+    expect(w.fin.balanceOf('recv-u1-occupant')).toBe(0);
+    expect([...w.fin.payments.values()][0]).toMatchObject({ provider: 'iyzico', providerPaymentId: 'pay-iyz-tok-1', method: 'card' });
+
+    // Ayni webhook tekrar: deftere ikinci yazim yok.
+    await w.app.request('/api/payments/iyzico/webhook', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'X-IYZ-SIGNATURE-V3': webhookSig(hook) },
+      body: JSON.stringify(hook),
+    });
+    expect(w.fin.batches).toHaveLength(1);
+  });
+
+  it('3DS tamamlanmadan gelen callback niyeti PENDING birakir', async () => {
+    const { w } = iyzicoWorld();
+    await w.charge('u1', 'occupant', TL(1000), '2026-11-10', 'c1', '2026-11-01');
+    await w.payRepo.repo.putAccount({ ...paymentKeys.account(APT, 'iyzico'), entityType: 'PAYMENT_ACCOUNT', apartmentId: APT, provider: 'iyzico', subMerchantKey: 'smk', subMerchantType: 'PRIVATE_COMPANY', status: 'active', platformFeeBasisPoints: 0, ...audit });
+    const { intentId } = (await w.call('POST', '/api/portal/payments', w.token('tenant-1'), { idempotencyKey: 'k-1', mode: 'total' })).body;
+    const cb = await w.app.request(`/api/payments/iyzico/callback?ref=${APT}:${intentId}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: 'token=iyz-tok-1',
+    });
+    expect(cb.status).toBe(303);
+    expect(w.intentOf(intentId).status).toBe('PENDING');
+  });
+
+  it('iyzico saglayicisinda alt uye kaydi yoksa online odeme kapali (varsayilan hesap yalnizca sahte saglayicida)', async () => {
+    const { w } = iyzicoWorld();
+    await w.charge('u1', 'occupant', TL(1000), '2026-11-10', 'c1', '2026-11-01');
+    const q = await w.call('GET', '/api/portal/payments/quote', w.token('tenant-1'));
+    expect(q.body.onlinePaymentEnabled).toBe(false);
+    const res = await w.call('POST', '/api/portal/payments', w.token('tenant-1'), { idempotencyKey: 'k-1', mode: 'total' });
+    expect(res).toMatchObject({ status: 422, body: { error: 'payments_disabled' } });
+  });
+
+  it('sahte saglayicida webhook ucu yok (404); bilinmeyen niyet icin imzali webhook 200 (tekrar denemesin)', async () => {
+    const plain = setup();
+    const r1 = await plain.app.request('/api/payments/fake/webhook', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+    expect(r1.status).toBe(404);
+    const { w } = iyzicoWorld();
+    const hook = { paymentConversationId: `${APT}:20261106100000-yok`, token: 't', status: 'SUCCESS', iyziEventType: 'X', iyziPaymentId: 1 };
+    const r2 = await w.app.request('/api/payments/iyzico/webhook', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-iyz-signature-v3': webhookSig(hook) },
+      body: JSON.stringify(hook),
+    });
+    expect(r2.status).toBe(200);
+    const r3 = await w.app.request('/api/payments/iyzico/webhook', { method: 'POST', headers: { 'content-type': 'application/json' }, body: 'bozuk' });
+    expect(r3.status).toBe(400);
+  });
+});
+
+describe('odeme - alt uye isyeri yonetimi (platform_admin)', () => {
+  const body = {
+    email: 'yonetim@lale.test',
+    gsmNumber: '05321234567',
+    address: 'Lale Sk. 1, Kadıköy',
+    iban: 'TR330006100519786457841326',
+    taxOffice: 'Kadıköy',
+    legalCompanyTitle: 'Lale Apartmanı Yönetimi',
+    taxNumber: '1234567890',
+  };
+
+  it('yalnizca platform_admin; yonetici ve sakin 403, token yoksa 401', async () => {
+    const w = setup();
+    const path = `/api/admin/payments/apartments/${APT}/account`;
+    expect((await w.call('POST', path, undefined, body)).status).toBe(401);
+    expect((await w.call('POST', path, w.token('mgr-1', 'apartment_manager'), body)).status).toBe(403);
+    expect((await w.call('GET', path, w.token('tenant-1'))).status).toBe(403);
+  });
+
+  it('kayit: KYC verisi saklanmaz, audit logu yazilir, ikinci kayit 409, olmayan apartman 404', async () => {
+    const w = setup();
+    const admin = w.token('ops-1', 'platform_admin', '');
+    const path = `/api/admin/payments/apartments/${APT}/account`;
+    const res = await w.call('POST', path, admin, body);
+    expect(res.status).toBe(201);
+    expect(res.body).toMatchObject({ provider: 'fake', subMerchantKey: `fake-sm-${APT}`, platformFeeBasisPoints: 0, version: 1, createdBy: 'ops-1' });
+    expect(res.body.PK).toBeUndefined();
+    const stored = JSON.stringify([...w.fin.docs.values()]);
+    expect(stored).not.toContain('1234567890');
+    expect(stored).not.toContain('TR330006100519786457841326');
+    expect(w.fake.subMerchants.get(`fake-sm-${APT}`)).toMatchObject({ taxNumber: '1234567890', gsmNumber: '+905321234567' });
+    expect(w.logs.some((l) => l.fields?.audit === 'PAYMENT_ACCOUNT_ONBOARDED' && l.fields.by === 'ops-1')).toBe(true);
+
+    expect((await w.call('POST', path, admin, body)).status).toBe(409);
+    expect((await w.call('GET', path, admin)).body.subMerchantKey).toBe(`fake-sm-${APT}`);
+    expect((await w.call('POST', `/api/admin/payments/apartments/yok/account`, admin, body)).status).toBe(404);
+    expect((await w.call('GET', `/api/admin/payments/apartments/${OTHER_APT}/account`, admin)).status).toBe(404);
+  });
+
+  it.each([
+    ['gecersiz tip', { subMerchantType: 'X' }, 'subMerchantType'],
+    ['IBAN', { iban: 'TR330006100519786457841327' }, 'iban'],
+    ['telefon', { gsmNumber: '123' }, 'gsmNumber'],
+    ['e-posta', { email: 'x' }, 'email'],
+    ['sirket unvani eksik', { legalCompanyTitle: undefined }, 'legalCompanyTitle'],
+    ['limited vergi no eksik', { subMerchantType: 'LIMITED_OR_JOINT_STOCK_COMPANY', taxNumber: undefined }, 'taxNumber'],
+    ['bireysel TCKN eksik', { subMerchantType: 'PERSONAL', contactName: 'Ali', contactSurname: 'Veli' }, 'identityNumber'],
+    ['platform payi', { platformFeeBasisPoints: 5000 }, 'platformFeeBasisPoints'],
+  ])('dogrulama: %s', async (_label, over, field) => {
+    const w = setup();
+    const res = await w.call('POST', `/api/admin/payments/apartments/${APT}/account`, w.token('ops-1', 'platform_admin', ''), { ...body, ...over });
+    expect(res).toMatchObject({ status: 400, body: { field } });
+  });
+
+  it('PATCH: pasife alinan apartmanda odeme baslatilamaz; platform payi guncellenir', async () => {
+    const w = setup();
+    const admin = w.token('ops-1', 'platform_admin', '');
+    const path = `/api/admin/payments/apartments/${APT}/account`;
+    await w.call('POST', path, admin, body);
+    const off = await w.call('PATCH', path, admin, { status: 'disabled', platformFeeBasisPoints: 150 });
+    expect(off.body).toMatchObject({ status: 'disabled', platformFeeBasisPoints: 150, version: 2, updatedBy: 'ops-1' });
+    await w.charge('u1', 'occupant', TL(1000), '2026-11-10', 'c1', '2026-11-01');
+    const res = await w.call('POST', '/api/portal/payments', w.token('tenant-1'), { idempotencyKey: 'k-1', mode: 'total' });
+    expect(res.body.error).toBe('payments_disabled');
+    expect((await w.call('PATCH', path, admin, { status: 'x' })).status).toBe(400);
+  });
+
+  it('saglayici kaydi reddederse 422 provider_rejected; ulasilamazsa 502', async () => {
+    const reject: PaymentProvider = { ...createFakePaymentProvider({ apiBaseUrl: 'https://api.test' }), registerSubMerchant: async () => { throw new PaymentProviderError('iyzico_2001', 'IBAN hatali'); } };
+    const w = setup({ customProvider: reject });
+    const admin = w.token('ops-1', 'platform_admin', '');
+    const res = await w.call('POST', `/api/admin/payments/apartments/${APT}/account`, admin, body);
+    expect(res).toMatchObject({ status: 422, body: { error: 'provider_rejected' } });
+    const down: PaymentProvider = { ...reject, registerSubMerchant: async () => { throw new PaymentProviderError('unavailable', 'x', true); } };
+    const w2 = setup({ customProvider: down });
+    expect((await w2.call('POST', `/api/admin/payments/apartments/${APT}/account`, admin, body)).status).toBe(502);
   });
 });
