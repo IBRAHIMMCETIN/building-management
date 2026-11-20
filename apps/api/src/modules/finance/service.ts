@@ -48,6 +48,7 @@ import {
   type PaymentMethod,
   type Transaction,
   type TransactionLine,
+  mainReceivableId,
 } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -277,7 +278,7 @@ const fingerprint = (value: unknown): string =>
 
 const compact = (d: IsoDate) => d.replaceAll('-', '');
 
-const receivableId = (unitId: string, party: LiableParty) => `recv-${unitId}-${party}`;
+const receivableId = mainReceivableId;
 
 function parseInvoiceUpload(value: unknown): { uploadId: string; fileName: string } | undefined {
   if (value === undefined || value === null) return undefined;
@@ -1221,11 +1222,14 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
     const accounts = (await repo.listAccounts(ctx.apartmentId)).filter(
       (a) => a.type === 'receivable' && a.unitId === unitId,
     );
+    // Daire bakiyesi ana carilerden olusur; ayrilan sakin/malik carileri ayri gosterilir.
+    const main = (a: Account) => a.liableParty !== undefined && a.accountId === mainReceivableId(unitId, a.liableParty);
     const of = (party: LiableParty) =>
-      accounts.filter((a) => a.liableParty === party).reduce((s, a) => s + a.balance, 0);
+      accounts.filter((a) => main(a) && a.liableParty === party).reduce((s, a) => s + a.balance, 0);
     const owner = of('owner');
     const occupant = of('occupant');
     const net = owner + occupant;
+    const formerAccounts = accounts.filter((a) => !main(a));
     const split = (n: number) => ({
       balance: toKurus(n),
       debt: toKurus(Math.max(n, 0)),
@@ -1237,6 +1241,13 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
       owner: split(owner),
       occupant: split(occupant),
       ...split(net),
+      ...(formerAccounts.length
+        ? {
+            former: formerAccounts
+              .map((a) => ({ accountId: a.accountId, name: a.name, liableParty: a.liableParty, closureId: a.closureId, ...split(a.balance) }))
+              .sort((a, b) => a.accountId.localeCompare(b.accountId)),
+          }
+        : {}),
     };
   }
 
@@ -1341,7 +1352,11 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
     for (const account of receivables) {
       const unitId = account.unitId as string;
       const party = account.liableParty as LiableParty;
-      const idemId = `lf-${p.period}-${unitId}-${party === 'owner' ? 'o' : 't'}`;
+      // Ana cari anahtari geriye uyumlu; ayrilan sakin carileri hesap kimligiyle ayrisir.
+      const idemId =
+        account.accountId === mainReceivableId(unitId, party)
+          ? `lf-${p.period}-${unitId}-${party === 'owner' ? 'o' : 't'}`
+          : `lf-${p.period}-${account.accountId}`;
       const existing = await repo.getIdempotency(apartmentId, idemId);
       if (existing) {
         const tx = await repo.getTransaction(apartmentId, existing.transactionId);
@@ -1495,7 +1510,13 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
   async function dueReminders(apartmentId: string, date: IsoDate) {
     if (!isIsoDate(date)) throw new ValidationError('date YYYY-MM-DD olmali', 'date');
     const [accounts, txPage] = await Promise.all([repo.listAccounts(apartmentId), repo.listTransactions(apartmentId)]);
-    const receivables = new Set(accounts.filter((a) => a.type === 'receivable').map((a) => a.accountId));
+    // Yalnizca daire ana carileri: ayrilan sakin carilerinin sahibine portal/bildirim erisimi yok
+    // (ilk surum); hatirlatma dairedeki bugunku sakine gitmemeli.
+    const receivables = new Set(
+      accounts
+        .filter((a) => a.type === 'receivable' && a.unitId && a.liableParty && a.accountId === mainReceivableId(a.unitId, a.liableParty))
+        .map((a) => a.accountId),
+    );
     return buildDueReminders(txPage.items, receivables, date);
   }
 

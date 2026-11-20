@@ -38,7 +38,8 @@ export const transactionSchema = z.object({
   date: isoDate,
   dueDate: isoDate.optional(),
   description: z.string(),
-  kind: z.enum(['dues_charge', 'payment', 'expense', 'reversal', 'late_fee', 'opening_balance']),
+  /** transfer: tasinmada cari devri (kapama), refund: avans iadesi. */
+  kind: z.enum(['dues_charge', 'payment', 'expense', 'reversal', 'late_fee', 'opening_balance', 'transfer', 'refund']),
   category: z.enum(TRANSACTION_CATEGORIES),
   amount: kurus,
   funds: z.array(
