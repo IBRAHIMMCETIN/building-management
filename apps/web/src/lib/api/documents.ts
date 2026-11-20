@@ -9,6 +9,7 @@ export * from './documentModel';
  * Belgeler (apps/api/src/modules/documents). Dosyaya YALNIZCA API'nin urettigi 5 dakikalik
  * imzali S3 linkiyle erisilir; link istenince alinip hemen acilir, saklanmaz.
  *   GET  /api/documents/receipts/by-transaction/:txId   yonetici/denetci: makbuz PDF
+ *   GET  /api/documents/receipts/by-payment/:paymentId  yonetici/denetci: makbuz (online odemeler)
  *   GET  /api/documents/invoices/by-transaction/:txId   yonetici/denetci: gider faturasi
  *   POST /api/documents/invoice-uploads                 yonetici: fatura yukleme linki
  *   GET  /api/documents/my-receipts/:paymentId?unitId   sakin: kendi makbuzu
@@ -29,6 +30,8 @@ const tx = (id: string) => encodeURIComponent(id);
 export const documentsApi = {
   receiptForTransaction: (transactionId: string) =>
     apiClient.get(`/api/documents/receipts/by-transaction/${tx(transactionId)}`, { schema: signedDownloadSchema }),
+  receiptForPayment: (paymentId: string) =>
+    apiClient.get(`/api/documents/receipts/by-payment/${encodeURIComponent(paymentId)}`, { schema: signedDownloadSchema }),
   invoiceForTransaction: (transactionId: string) =>
     apiClient.get(`/api/documents/invoices/by-transaction/${tx(transactionId)}`, { schema: signedDownloadSchema }),
   myReceipt: (paymentId: string, unitId?: string) =>

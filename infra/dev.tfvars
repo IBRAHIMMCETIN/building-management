@@ -15,3 +15,8 @@ cors_allow_origins = [
   "https://feature-adim-7-web-ekranlari.building-management-apx.pages.dev",
 ]
 
+# Online odeme (Adim 8b): iyzico sandbox. Anahtar Terraform disinda Secrets Manager'a girilir
+# (bkz. payments.tf ve `terraform output payments_secret_arn`).
+payments_provider = "iyzico"
+iyzico_base_url   = "https://sandbox-api.iyzipay.com"
+web_app_url       = "https://building-management-apx.pages.dev"

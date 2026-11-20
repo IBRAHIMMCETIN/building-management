@@ -67,16 +67,22 @@ const MAX_ATTEMPTS = 3;
 // Defter cakisma hatasi
 // ---------------------------------------------------------------------------
 
-export type LedgerConflictReason = 'duplicate' | 'version' | 'counter' | 'account_missing';
+/**
+ * precondition: `replaceRecords` icindeki bir belgenin surumu degismis (ornegin odeme niyeti
+ * baska bir istekle sonuclandirilmis). `label` hangi belge oldugunu soyler.
+ */
+export type LedgerConflictReason = 'duplicate' | 'version' | 'counter' | 'account_missing' | 'precondition';
 
 /** Beklenen, servis katmaninin ele alacagi yazim cakismalari. */
 export class LedgerConflictError extends Error {
   readonly reason: LedgerConflictReason;
+  readonly label?: string;
 
-  constructor(reason: LedgerConflictReason, message = `Defter cakismasi: ${reason}`) {
+  constructor(reason: LedgerConflictReason, message = `Defter cakismasi: ${reason}`, label?: string) {
     super(message);
     this.name = 'LedgerConflictError';
     this.reason = reason;
+    this.label = label;
   }
 }
 
@@ -94,6 +100,37 @@ export type PostInput = {
   /** Islemle ayni atomik yazimda saklanacak belge (Payment / Expense). */
   record?: Payment | Expense;
 };
+
+/** Surumlu belge (ornegin odeme niyeti): yalnizca mevcut surum `expectedVersion` ise yazilir. */
+export type ReplaceRecord = {
+  item: TableKeys & { version: number };
+  expectedVersion: number;
+  /** Cakismada `LedgerConflictError.label` olarak doner. */
+  label: string;
+};
+
+/**
+ * Birden fazla islemin TEK atomik yazimi (online odeme: gecikme tazminati kesinlestirmesi +
+ * alt cari basina tahsilat + makbuzlar + odeme niyeti durum gecisi).
+ */
+export type PostBatchInput = {
+  transactions: Transaction[];
+  idempotency: {
+    id: string;
+    fingerprint: string;
+    recordId?: string;
+    transactionIds?: string[];
+    recordIds?: string[];
+  };
+  expectedVersions?: Record<string, number>;
+  /** `increment` kadar ardisik numara ayrilir (varsayilan 1). */
+  counter?: { name: string; expected: number; increment?: number };
+  records?: (Payment | Expense)[];
+  replaceRecords?: ReplaceRecord[];
+};
+
+/** DynamoDB TransactWriteItems ust siniri. */
+export const MAX_TRANSACT_ITEMS = 100;
 
 /** Transaction satirlarindan degismez defter kayitlarini turetir. */
 export function toLedgerEntries(tx: Transaction): LedgerEntry[] {
@@ -139,7 +176,8 @@ function assertBalanced(tx: Transaction): void {
 
 type Label =
   | { kind: 'idem' | 'tx' | 'entry' | 'counter' | 'record' }
-  | { kind: 'account'; accountId: string };
+  | { kind: 'account'; accountId: string }
+  | { kind: 'replace'; label: string };
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -150,24 +188,53 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
  * optimistic locking uygulanir.
  */
 export async function postTransaction(input: PostInput): Promise<void> {
-  const { transaction: tx, idempotency, expectedVersions = {}, counter, record } = input;
-  assertBalanced(tx);
+  const { transaction, idempotency, expectedVersions, counter, record } = input;
+  await postBatch({
+    transactions: [transaction],
+    idempotency,
+    expectedVersions,
+    counter,
+    records: record ? [record] : undefined,
+  });
+}
 
-  const apartmentId = tx.siteId;
+/**
+ * `postTransaction`'in coklu islem hali. Ayni hesap birden fazla islemde gecse de bakiyesi
+ * TEK `Update` ile (birlesik delta) guncellenir: DynamoDB bir istekte ayni ogeye iki islem
+ * yapilmasina izin vermez.
+ *
+ * Oge sirasi: idempotency, (islem basligi + satirlar) x N, hesaplar, sayac, belgeler,
+ * surumlu belgeler. Tek islemde `postTransaction` ile birebir aynidir.
+ */
+export async function postBatch(input: PostBatchInput): Promise<void> {
+  const { transactions, idempotency, expectedVersions = {}, counter, records = [], replaceRecords = [] } = input;
+  if (transactions.length === 0) throw new Error('En az bir islem gerekli');
+  const apartmentId = transactions[0]!.siteId;
   const pk = tenantPk(apartmentId);
-  if (tx.PK !== pk || tx.SK !== financeKeys.transaction(apartmentId, tx.transactionId).SK) {
-    throw new Error('Islem anahtari tenant/kimlikle uyusmuyor');
+  const ids = new Set<string>();
+  for (const tx of transactions) {
+    assertBalanced(tx);
+    if (tx.siteId !== apartmentId || tx.PK !== pk || tx.SK !== financeKeys.transaction(apartmentId, tx.transactionId).SK) {
+      throw new Error('Islem anahtari tenant/kimlikle uyusmuyor');
+    }
+    if (ids.has(tx.transactionId)) throw new Error(`Ayni islem iki kez verildi: ${tx.transactionId}`);
+    ids.add(tx.transactionId);
   }
-  if (record && record.PK !== pk) {
-    throw new Error('Belge anahtari tenant ile uyusmuyor');
+  for (const doc of [...records, ...replaceRecords.map((r) => r.item)]) {
+    if (doc.PK !== pk) throw new Error('Belge anahtari tenant ile uyusmuyor');
   }
+  const increment = counter?.increment ?? 1;
+  if (counter && (!Number.isSafeInteger(increment) || increment < 1)) throw new Error('Gecersiz sayac artisi');
 
   const deltas = new Map<string, number>();
-  for (const line of tx.lines) {
-    const signed = line.side === 'debit' ? line.amount : -line.amount;
-    deltas.set(line.accountId, (deltas.get(line.accountId) ?? 0) + signed);
+  for (const tx of transactions) {
+    for (const line of tx.lines) {
+      const signed = line.side === 'debit' ? line.amount : -line.amount;
+      deltas.set(line.accountId, (deltas.get(line.accountId) ?? 0) + signed);
+    }
   }
 
+  const first = transactions[0]!;
   const { client, tableName } = getDynamo();
   const items: NonNullable<TransactWriteCommandInput['TransactItems']> = [];
   const labels: Label[] = [];
@@ -185,18 +252,22 @@ export async function postTransaction(input: PostInput): Promise<void> {
         Item: {
           ...financeKeys.idempotency(apartmentId, idempotency.id),
           entityType: 'IDEMPOTENCY',
-          transactionId: tx.transactionId,
+          transactionId: first.transactionId,
           recordId: idempotency.recordId,
+          ...(idempotency.transactionIds ? { transactionIds: idempotency.transactionIds } : {}),
+          ...(idempotency.recordIds ? { recordIds: idempotency.recordIds } : {}),
           fingerprint: idempotency.fingerprint,
-          createdAt: tx.createdAt,
+          createdAt: first.createdAt,
         },
         ConditionExpression: notExists,
       },
     },
   );
-  add({ kind: 'tx' }, { Put: { TableName: tableName, Item: tx, ConditionExpression: notExists } });
-  for (const entry of toLedgerEntries(tx)) {
-    add({ kind: 'entry' }, { Put: { TableName: tableName, Item: entry, ConditionExpression: notExists } });
+  for (const tx of transactions) {
+    add({ kind: 'tx' }, { Put: { TableName: tableName, Item: tx, ConditionExpression: notExists } });
+    for (const entry of toLedgerEntries(tx)) {
+      add({ kind: 'entry' }, { Put: { TableName: tableName, Item: entry, ConditionExpression: notExists } });
+    }
   }
 
   for (const [accountId, delta] of deltas) {
@@ -218,7 +289,7 @@ export async function postTransaction(input: PostInput): Promise<void> {
             '#version': 'version',
           },
           ExpressionAttributeValues: {
-            ':now': tx.createdAt,
+            ':now': first.createdAt,
             ':delta': delta,
             ':one': 1,
             ...(expected === undefined ? {} : { ':expectedVersion': expected }),
@@ -239,8 +310,8 @@ export async function postTransaction(input: PostInput): Promise<void> {
           ConditionExpression: counter.expected === 0 ? notExists : '#value = :expected',
           ExpressionAttributeNames: { '#value': 'value', '#updatedAt': 'updatedAt' },
           ExpressionAttributeValues: {
-            ':next': counter.expected + 1,
-            ':now': tx.createdAt,
+            ':next': counter.expected + increment,
+            ':now': first.createdAt,
             ...(counter.expected === 0 ? {} : { ':expected': counter.expected }),
           },
         },
@@ -248,8 +319,28 @@ export async function postTransaction(input: PostInput): Promise<void> {
     );
   }
 
-  if (record) {
+  for (const record of records) {
     add({ kind: 'record' }, { Put: { TableName: tableName, Item: record, ConditionExpression: notExists } });
+  }
+
+  for (const r of replaceRecords) {
+    if (r.item.version !== r.expectedVersion + 1) throw new Error('Surumlu belge surumu bir artirilmali');
+    add(
+      { kind: 'replace', label: r.label },
+      {
+        Put: {
+          TableName: tableName,
+          Item: r.item,
+          ConditionExpression: 'attribute_exists(PK) AND #version = :expectedVersion',
+          ExpressionAttributeNames: { '#version': 'version' },
+          ExpressionAttributeValues: { ':expectedVersion': r.expectedVersion },
+        },
+      },
+    );
+  }
+
+  if (items.length > MAX_TRANSACT_ITEMS) {
+    throw new Error(`Atomik yazim ${MAX_TRANSACT_ITEMS} ogeyi asamaz (${items.length})`);
   }
 
   for (let attempt = 1; ; attempt++) {
@@ -264,6 +355,9 @@ export async function postTransaction(input: PostInput): Promise<void> {
 
         if (label?.kind === 'idem') throw new LedgerConflictError('duplicate');
         if (label?.kind === 'counter') throw new LedgerConflictError('counter');
+        if (label?.kind === 'replace') {
+          throw new LedgerConflictError('precondition', `Belge degismis: ${label.label}`, label.label);
+        }
         if (label?.kind === 'account') {
           throw new LedgerConflictError(
             expectedVersions[label.accountId] === undefined ? 'account_missing' : 'version',
@@ -307,6 +401,7 @@ export type FinanceRepository = {
   listTransactions(apartmentId: string, query?: TransactionQuery): Promise<{ items: Transaction[]; cursor?: string }>;
 
   postTransaction(input: PostInput): Promise<void>;
+  postBatch(input: PostBatchInput): Promise<void>;
 };
 
 export type TransactionQuery = {
@@ -453,6 +548,7 @@ export function createFinanceRepository(): FinanceRepository {
     listTransactions: queryTransactions,
 
     postTransaction,
+    postBatch,
   };
 }
 

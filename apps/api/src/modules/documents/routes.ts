@@ -12,6 +12,7 @@ export type DocumentRoutesDeps = { authenticate: Authenticator; service: Documen
 /**
  * `/api/documents` - dosyalar yalnizca kisa omurlu (5 dk) imzali S3 linkiyle verilir.
  *   GET  /receipts/by-transaction/:transactionId   yonetici/denetci: tahsilat makbuzu PDF
+ *   GET  /receipts/by-payment/:paymentId           yonetici/denetci: makbuz kaydindan PDF (online odemeler)
  *   GET  /invoices/by-transaction/:transactionId   yonetici/denetci: gider faturasi
  *   POST /invoice-uploads                          yonetici: fatura yukleme linki
  *   GET  /my-receipts/:paymentId?unitId=           sakin: kendi makbuzu
@@ -35,6 +36,10 @@ export function documentRoutes({ authenticate, service }: DocumentRoutesDeps) {
 
   r.get('/receipts/by-transaction/:transactionId', requireRole(READ_ROLES), async (c) =>
     c.json(await service.receiptForTransaction(apt(c), id(c))),
+  );
+
+  r.get('/receipts/by-payment/:paymentId', requireRole(READ_ROLES), async (c) =>
+    c.json(await service.receiptForPaymentId(apt(c), c.req.param('paymentId'))),
   );
 
   r.get('/invoices/by-transaction/:transactionId', requireRole(READ_ROLES), async (c) =>

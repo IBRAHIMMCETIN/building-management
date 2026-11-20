@@ -13,10 +13,14 @@ import { LoginPage } from '@/pages/auth/LoginPage';
 import { SelectContextPage } from '@/pages/auth/SelectContextPage';
 import { ForbiddenPage, NotFoundPage, RouteErrorPage } from '@/pages/errors/ErrorPages';
 import { PlaceholderPage } from '@/pages/PlaceholderPage';
+import { PlatformApartmentsPage } from '@/pages/platform/apartments/PlatformApartmentsPage';
+import { PlatformPaymentsPage } from '@/pages/platform/payments/PlatformPaymentsPage';
 import { ResidentAnnouncementsPage } from '@/pages/resident/AnnouncementsPage';
 import { DuesPage } from '@/pages/resident/DuesPage';
+import { PaymentPage } from '@/pages/resident/payment/PaymentPage';
+import { PaymentResultPage } from '@/pages/resident/payment/PaymentResultPage';
 import { ResidentHomePage } from '@/pages/resident/ResidentHomePage';
-import { ADMIN_ROLES, RESIDENT_ROLES } from '@/types/roles';
+import { ADMIN_ROLES, APARTMENT_ADMIN_ROLES, PLATFORM_ROLES, RESIDENT_ROLES } from '@/types/roles';
 import { RedirectIfAuthenticated, RequireRole, RequireSession, RootRedirect } from './guards';
 
 export const router = createBrowserRouter([
@@ -49,12 +53,26 @@ export const router = createBrowserRouter([
           {
             element: <AdminLayout />,
             children: [
-              { index: true, element: <DashboardPage /> },
-              { path: 'units', element: <UnitsPage /> },
-              { path: 'finance', element: <FinancePage /> },
-              { path: 'announcements', element: <AnnouncementsPage /> },
-              { path: 'import', element: <ImportPage /> },
-              { path: 'settings', element: <SettingsPage /> },
+              {
+                // Apartmana ozel ekranlar; platform yoneticisi kendi acilis sayfasina yonlenir.
+                element: <RequireRole roles={APARTMENT_ADMIN_ROLES} redirectHome />,
+                children: [
+                  { index: true, element: <DashboardPage /> },
+                  { path: 'units', element: <UnitsPage /> },
+                  { path: 'finance', element: <FinancePage /> },
+                  { path: 'announcements', element: <AnnouncementsPage /> },
+                  { path: 'import', element: <ImportPage /> },
+                  { path: 'settings', element: <SettingsPage /> },
+                ],
+              },
+              {
+                // Platform geneli ekranlar; apartman rolleri kendi panellerine yonlenir.
+                element: <RequireRole roles={PLATFORM_ROLES} redirectHome />,
+                children: [
+                  { path: 'apartments', element: <PlatformApartmentsPage /> },
+                  { path: 'payments', element: <PlatformPaymentsPage /> },
+                ],
+              },
             ],
           },
         ],
@@ -68,6 +86,8 @@ export const router = createBrowserRouter([
             children: [
               { index: true, element: <ResidentHomePage /> },
               { path: 'dues', element: <DuesPage /> },
+              { path: 'odeme', element: <PaymentPage /> },
+              { path: 'odeme/sonuc', element: <PaymentResultPage /> },
               { path: 'announcements', element: <ResidentAnnouncementsPage /> },
             ],
           },

@@ -26,6 +26,20 @@ export const ADMIN_ROLES = [
 
 export const RESIDENT_ROLES = ['resident'] as const satisfies readonly Role[];
 
+/** Yalnizca platform ekibinin ekranlari (/admin/apartments, /admin/payments). */
+export const PLATFORM_ROLES = ['platform_admin'] as const satisfies readonly Role[];
+
+/**
+ * Apartmana ozel yonetim ekranlari (genel bakis, daireler, finans, duyurular, aktarim, ayarlar).
+ * `platform_admin` apartman baglami tasimaz ve API apartman verisini ona acmaz.
+ */
+export const APARTMENT_ADMIN_ROLES = ADMIN_ROLES.filter((r) => r !== 'platform_admin') as readonly Role[];
+
+export const isPlatformRole = (role: Role | undefined): role is 'platform_admin' => role === 'platform_admin';
+
+/** Platform yoneticisinin acilis sayfasi. */
+export const PLATFORM_HOME = '/admin/apartments';
+
 export const ROLE_LABELS: Record<Role, string> = {
   platform_admin: 'Platform Yöneticisi',
   management_company: 'Yönetim Firması',
@@ -38,5 +52,7 @@ export const ROLE_LABELS: Record<Role, string> = {
 
 /** Giris sonrasi role gore varsayilan sayfa. */
 export function homePathForRole(role: Role): string {
-  return role === 'resident' ? '/app' : '/admin';
+  if (role === 'resident') return '/app';
+  if (role === 'platform_admin') return PLATFORM_HOME;
+  return '/admin';
 }

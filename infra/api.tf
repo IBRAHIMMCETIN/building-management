@@ -117,6 +117,17 @@ data "aws_iam_policy_document" "api" {
     actions   = ["cognito-idp:AdminGetUser", "cognito-idp:AdminCreateUser"]
     resources = [aws_cognito_user_pool.main.arn]
   }
+
+  # Online odeme: yalnizca saglayici anahtari secret'ini okuma (yazma/listeleme YOK).
+  # AWS yonetimli anahtarla (aws/secretsmanager) sifreli oldugu icin ayrica KMS yetkisi gerekmez.
+  dynamic "statement" {
+    for_each = aws_secretsmanager_secret.payments[*].arn
+    content {
+      sid       = "ReadPaymentProviderSecret"
+      actions   = ["secretsmanager:GetSecretValue"]
+      resources = [statement.value]
+    }
+  }
 }
 
 resource "aws_iam_role_policy" "api" {
@@ -143,7 +154,7 @@ resource "aws_lambda_function" "api" {
   timeout          = var.api_lambda_timeout_seconds
 
   environment {
-    variables = {
+    variables = merge({
       NODE_ENV             = "production"
       APP_VERSION          = var.app_version
       AUTH_MODE            = "apigw"
@@ -153,7 +164,7 @@ resource "aws_lambda_function" "api" {
       # Yalnizca davet icin (AUTH_MODE=apigw oldugundan kimlik dogrulamayi etkilemez).
       COGNITO_USER_POOL_ID = aws_cognito_user_pool.main.id
       DOCUMENTS_BUCKET     = aws_s3_bucket.documents.id
-    }
+    }, local.payments_env)
   }
 
   tracing_config {
@@ -313,6 +324,16 @@ resource "aws_apigatewayv2_stage" "default" {
     throttling_burst_limit = var.api_throttle_burst_limit
   }
 
+  # Kimliksiz odeme rotalari (payments.tf) icin daha siki sinir.
+  dynamic "route_settings" {
+    for_each = local.payment_public_routes
+    content {
+      route_key              = route_settings.value
+      throttling_rate_limit  = var.payments_callback_rate_limit
+      throttling_burst_limit = var.payments_callback_rate_limit * 2
+    }
+  }
+
   access_log_settings {
     destination_arn = aws_cloudwatch_log_group.api_access.arn
     format = jsonencode({
@@ -329,6 +350,9 @@ resource "aws_apigatewayv2_stage" "default" {
       userId         = "$context.authorizer.claims.sub"
     })
   }
+
+  # route_settings yalnizca var olan rotalar icin tanimlanabilir.
+  depends_on = [aws_apigatewayv2_route.payments_public]
 }
 
 resource "aws_lambda_permission" "apigw" {

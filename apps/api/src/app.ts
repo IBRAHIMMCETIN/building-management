@@ -5,7 +5,7 @@ import { announcementRoutes } from './modules/announcements/routes.js';
 import { apartmentRoleRoutes } from './modules/apartment-roles/routes.js';
 import { type ApartmentRoleService, createApartmentRoleService } from './modules/apartment-roles/service.js';
 import { type AnnouncementService, createAnnouncementService } from './modules/announcements/service.js';
-import { coreRoutes } from './modules/core/routes.js';
+import { coreAdminRoutes, coreRoutes } from './modules/core/routes.js';
 import { type CoreService, createCoreService } from './modules/core/service.js';
 import { documentRoutes } from './modules/documents/routes.js';
 import { type DocumentsService, createDocumentsService } from './modules/documents/service.js';
@@ -18,6 +18,16 @@ import { meRoutes } from './modules/me/routes.js';
 import { type MeService, createMeService } from './modules/me/service.js';
 import { membershipRoutes } from './modules/memberships/routes.js';
 import { type MembershipService, createMembershipService } from './modules/memberships/service.js';
+import { loadPaymentsConfig } from './modules/payments/config.js';
+import type { FakePaymentProvider } from './modules/payments/fakeProvider.js';
+import {
+  paymentAdminRoutes,
+  paymentCallbackRoutes,
+  paymentManagerRoutes,
+  paymentPortalRoutes,
+} from './modules/payments/routes.js';
+import { type PaymentsService, createPaymentsService } from './modules/payments/service.js';
+import { portalRepository } from './modules/portal/repository.js';
 import { portalRoutes } from './modules/portal/routes.js';
 import { residentRoutes } from './modules/residents/routes.js';
 import { type ResidentsService, createResidentsService } from './modules/residents/service.js';
@@ -52,6 +62,13 @@ export type AppConfig = {
   announcementService?: AnnouncementService;
   apartmentRoleService?: ApartmentRoleService;
   /**
+   * Online odeme (Adim 8b). Verilmezse ortam degiskenlerinden (`loadPaymentsConfig`) kurulur;
+   * PAYMENTS_PROVIDER tanimsizsa online odeme kapalidir. `fakePaymentProvider` yalnizca sahte
+   * saglayicinin test sayfasi rotalarini acar.
+   */
+  paymentsService?: PaymentsService;
+  fakePaymentProvider?: FakePaymentProvider;
+  /**
    * Domain olay yayincisi (DUE_GENERATED, PAYMENT_RECEIVED). server.ts/Lambda ortam
    * degiskenlerinden `createEventPublisherFromEnv()` ile verir; verilmezse bellek ici
    * yayinci kullanilir (yerel gelistirme/test). Servisler disaridan verilirse olay
@@ -78,13 +95,9 @@ export function createApp(config: AppConfig) {
     '/api/me',
     meRoutes({ identify: config.identify ?? denyAllIdentity, service: config.meService ?? createMeService() }),
   );
-  app.route(
-    '/api/sites',
-    coreRoutes({
-      authenticate,
-      service: config.coreService ?? createCoreService(),
-    }),
-  );
+  const coreService = config.coreService ?? createCoreService();
+  app.route('/api/sites', coreRoutes({ authenticate, service: coreService }));
+  app.route('/api/admin/apartments', coreAdminRoutes({ authenticate, service: coreService }));
 
   const portalService = config.portalService ?? createPortalService();
   // Belgeler: makbuz yetkisi portal listesinden, fatura tasima finans gider kaydindan.
@@ -93,7 +106,27 @@ export function createApp(config: AppConfig) {
 
   const financeService =
     config.financeService ?? createFinanceService({ events, attachments: { promote: documentsService.promoteInvoice } });
+  // Online odeme (Adim 8b). Yonetici uclari finans rotalarindan, sakin uclari portal
+  // rotalarindan ONCE baglanir (daha ozel yol); callback/webhook kimliksizdir.
+  let paymentsService = config.paymentsService;
+  let fakePaymentProvider = config.fakePaymentProvider;
+  if (!paymentsService) {
+    const payments = loadPaymentsConfig();
+    fakePaymentProvider = payments.fake;
+    paymentsService = createPaymentsService({
+      portal: portalService,
+      ledger: portalRepository,
+      finance: financeService,
+      provider: payments.provider,
+      apiBaseUrl: payments.apiBaseUrl,
+      webAppUrl: payments.webAppUrl,
+      intentTtlMinutes: payments.intentTtlMinutes,
+    });
+  }
+  app.route('/api/finance/online-payments', paymentManagerRoutes({ authenticate, service: paymentsService }));
   app.route('/api/finance', financeRoutes({ authenticate, service: financeService }));
+  app.route('/api/payments', paymentCallbackRoutes({ service: paymentsService, fake: fakePaymentProvider }));
+  app.route('/api/admin/payments', paymentAdminRoutes({ authenticate, service: paymentsService }));
 
   const membershipService = config.membershipService ?? createMembershipService();
   app.route('/api/memberships', membershipRoutes({ authenticate, service: membershipService }));
@@ -128,6 +161,8 @@ export function createApp(config: AppConfig) {
     }),
   );
 
+
+  app.route('/api/portal/payments', paymentPortalRoutes({ authenticate, service: paymentsService }));
   app.route(
     '/api/portal',
     portalRoutes({

@@ -264,7 +264,7 @@ function parseOptionalDate(value: string | undefined, field: string): IsoDate | 
 // ---------------------------------------------------------------------------
 
 type ResolvedUnit = { membership: UnitMembership; unit: Unit; parties: LiableParty[] };
-type PartyLedger = { party: LiableParty; entries: LedgerEntry[] };
+export type PartyLedger = { party: LiableParty; entries: LedgerEntry[] };
 
 export function createPortalService(overrides: Partial<PortalServiceDeps> = {}) {
   const deps: PortalServiceDeps = {
@@ -352,6 +352,27 @@ export function createPortalService(overrides: Partial<PortalServiceDeps> = {}) 
     const ids = ledgers.flatMap((l) => l.entries.map((e) => e.transactionId));
     const txs = ids.length ? await repo.getTransactions(unit.siteId, ids) : [];
     return { ledgers, txById: new Map(txs.map((t) => [t.transactionId, t])) };
+  }
+
+  /**
+   * Online odeme (payments modulu) icin: sakinin bu dairedeki gorunur alt cari satirlari ve
+   * apartmanin gecikme tazminati orani. Erisim kurallari portal ile birebir aynidir (rol,
+   * aktif uyelik, uyelik donemi); odenebilir tutar sakinin ekranda gordugu borctur.
+   */
+  async function getPayableLedgers(ctx: PortalContext, unitId?: string) {
+    const resolved = await resolveUnit(ctx, unitId);
+    const [{ ledgers, txById }, site] = await Promise.all([
+      loadLedgers(resolved),
+      deps.core.getSite(ctx.apartmentId),
+    ]);
+    return {
+      unit: resolved.unit,
+      membership: resolved.membership,
+      ledgers,
+      txById,
+      lateFeeMonthlyBasisPoints: site?.settings.lateFeeMonthlyBasisPoints ?? DEFAULT_LATE_FEE_BASIS_POINTS,
+      today: today(),
+    };
   }
 
   // ----- /my-unit -----
@@ -678,7 +699,7 @@ export function createPortalService(overrides: Partial<PortalServiceDeps> = {}) 
     return { items };
   }
 
-  return { resolveUnit, getMyUnit, getMySummary, getMyStatement, getMyDues, getMyReceipts, getAnnouncements };
+  return { resolveUnit, getPayableLedgers, getMyUnit, getMySummary, getMyStatement, getMyDues, getMyReceipts, getAnnouncements };
 }
 
 export type PortalService = ReturnType<typeof createPortalService>;

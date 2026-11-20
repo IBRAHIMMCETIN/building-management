@@ -45,7 +45,13 @@ mock_provider "aws" {
     }
   }
   mock_resource "aws_apigatewayv2_api" {
-    defaults = { execution_arn = "arn:aws:execute-api:eu-central-1:123456789012:mockapi" }
+    defaults = {
+      execution_arn = "arn:aws:execute-api:eu-central-1:123456789012:mockapi"
+      api_endpoint  = "https://mockapi.execute-api.eu-central-1.amazonaws.com"
+    }
+  }
+  mock_resource "aws_secretsmanager_secret" {
+    defaults = { arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:mock-AbCdEf" }
   }
   # Gecerli JSON uretmesi gereken politika belgeleri.
   mock_data "aws_iam_policy_document" {
@@ -403,4 +409,199 @@ run "ses_requires_from_address" {
   }
 
   expect_failures = [aws_cognito_user_pool.main]
+}
+
+# ---------------------------------------------------------------------------
+# Online odeme (Adim 8b)
+# ---------------------------------------------------------------------------
+
+run "payments_disabled_by_default" {
+  command = plan
+
+  assert {
+    condition     = length(aws_secretsmanager_secret.payments) == 0 && length(aws_apigatewayv2_route.payments_public) == 0
+    error_message = "Varsayilan: online odeme kapali, secret ve kimliksiz odeme rotasi olusmamali"
+  }
+  assert {
+    condition     = !contains(keys(aws_lambda_function.api.environment[0].variables), "PAYMENTS_PROVIDER") && !contains(keys(aws_lambda_function.scheduler_worker.environment[0].variables), "PAYMENTS_PROVIDER")
+    error_message = "Odeme kapaliyken Lambda'lara odeme yapilandirmasi verilmemeli"
+  }
+  assert {
+    condition     = !contains(keys(aws_scheduler_schedule.jobs), "payment_reconcile")
+    error_message = "Odeme kapaliyken mutabakat zamanlamasi olusmamali"
+  }
+  assert {
+    condition     = length([for a in flatten([for st in data.aws_iam_policy_document.api.statement : st.actions]) : a if startswith(a, "secretsmanager:")]) == 0
+    error_message = "Odeme kapaliyken API Lambda secret okuyamamali"
+  }
+  assert {
+    condition     = output.payments_secret_arn == null && output.payments_callback_urls == null
+    error_message = "Odeme kapaliyken odeme ciktilari bos olmali"
+  }
+  assert {
+    condition     = length(aws_cloudwatch_metric_alarm.payment_needs_review) == 0 && length(aws_cloudwatch_metric_alarm.payment_refund_failed) == 0
+    error_message = "Odeme kapaliyken odeme alarmlari olusmamali"
+  }
+}
+
+run "payments_iyzico" {
+  command = plan
+
+  variables {
+    environment                  = "dev"
+    dynamodb_deletion_protection = false
+    payments_provider            = "iyzico"
+    web_app_url                  = "https://building-management-apx.pages.dev"
+  }
+
+  override_resource {
+    target          = aws_secretsmanager_secret.payments
+    override_during = plan
+    values = {
+      arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:building-management-dev/payments/iyzico-AbCdEf"
+    }
+  }
+
+  # --- Secret: yalnizca kaynak; deger Terraform disinda ---
+  assert {
+    condition     = length(aws_secretsmanager_secret.payments) == 1 && aws_secretsmanager_secret.payments[0].name == "building-management-dev/payments/iyzico"
+    error_message = "Secret adi <proje>-<ortam>/payments/<saglayici> olmali"
+  }
+  assert {
+    condition     = aws_secretsmanager_secret.payments[0].recovery_window_in_days == 0
+    error_message = "prod disinda secret aninda silinebilmeli"
+  }
+
+  # --- Kimliksiz rotalar: YALNIZCA iki tam yol ---
+  assert {
+    condition     = toset([for r in aws_apigatewayv2_route.payments_public : r.route_key]) == toset(["POST /api/payments/iyzico/callback", "POST /api/payments/iyzico/webhook"])
+    error_message = "Kimliksiz odeme rotalari yalnizca iyzico callback ve webhook olmali"
+  }
+  assert {
+    condition     = alltrue([for r in aws_apigatewayv2_route.payments_public : r.authorization_type == "NONE"])
+    error_message = "Saglayici JWT tasimaz; callback/webhook rotalari kimliksiz olmali"
+  }
+  assert {
+    condition     = aws_apigatewayv2_route.api.authorization_type == "JWT" && aws_apigatewayv2_route.api.route_key == "ANY /api/{proxy+}"
+    error_message = "Diger tum rotalar JWT ile korunmaya devam etmeli"
+  }
+  assert {
+    condition = (
+      toset([for r in aws_apigatewayv2_stage.default.route_settings : r.route_key]) == toset(["POST /api/payments/iyzico/callback", "POST /api/payments/iyzico/webhook"]) &&
+      alltrue([for r in aws_apigatewayv2_stage.default.route_settings : r.throttling_rate_limit == 5 && r.throttling_burst_limit == 10])
+    )
+    error_message = "Kimliksiz odeme rotalari siki throttling ile sinirlanmali"
+  }
+
+  # --- Lambda yapilandirmasi ---
+  assert {
+    condition = alltrue([
+      for f in [aws_lambda_function.api, aws_lambda_function.scheduler_worker] :
+      f.environment[0].variables.PAYMENTS_PROVIDER == "iyzico" &&
+      f.environment[0].variables.IYZICO_BASE_URL == "https://sandbox-api.iyzipay.com" &&
+      f.environment[0].variables.WEB_APP_URL == "https://building-management-apx.pages.dev" &&
+      f.environment[0].variables.PAYMENTS_SECRET_ARN == "arn:aws:secretsmanager:eu-central-1:123456789012:secret:building-management-dev/payments/iyzico-AbCdEf"
+    ])
+    error_message = "API ve scheduler worker ayni odeme yapilandirmasini almali"
+  }
+  assert {
+    condition     = !contains(keys(aws_lambda_function.api.environment[0].variables), "IYZICO_API_KEY") && !contains(keys(aws_lambda_function.api.environment[0].variables), "IYZICO_SECRET_KEY")
+    error_message = "Anahtarlar ortam degiskeninde olmamali (Secrets Manager)"
+  }
+
+  # --- IAM: yalnizca bu secret, yalnizca okuma ---
+  assert {
+    condition     = [for st in data.aws_iam_policy_document.api.statement : { actions = toset(st.actions), resources = toset(st.resources) } if anytrue([for a in st.actions : startswith(a, "secretsmanager:")])] == [{ actions = toset(["secretsmanager:GetSecretValue"]), resources = toset(["arn:aws:secretsmanager:eu-central-1:123456789012:secret:building-management-dev/payments/iyzico-AbCdEf"]) }]
+    error_message = "API Lambda yalnizca odeme secret'ini okuyabilmeli (GetSecretValue, tek ARN)"
+  }
+  assert {
+    condition     = [for st in data.aws_iam_policy_document.scheduler_worker.statement : { actions = toset(st.actions), resources = toset(st.resources) } if anytrue([for a in st.actions : startswith(a, "secretsmanager:")])] == [{ actions = toset(["secretsmanager:GetSecretValue"]), resources = toset(["arn:aws:secretsmanager:eu-central-1:123456789012:secret:building-management-dev/payments/iyzico-AbCdEf"]) }]
+    error_message = "Scheduler worker yalnizca odeme secret'ini okuyabilmeli (GetSecretValue, tek ARN)"
+  }
+
+  # --- Mutabakat zamanlamasi ---
+  assert {
+    condition = (
+      aws_scheduler_schedule.jobs["payment_reconcile"].schedule_expression == "rate(15 minutes)" &&
+      aws_scheduler_schedule.jobs["payment_reconcile"].schedule_expression_timezone == null &&
+      jsondecode(aws_scheduler_schedule.jobs["payment_reconcile"].target[0].input).job == "payment_reconcile"
+    )
+    error_message = "payment_reconcile 15 dakikada bir calismali"
+  }
+  assert {
+    condition     = aws_scheduler_schedule.jobs["late_fees"].schedule_expression_timezone == "Europe/Istanbul"
+    error_message = "Cron zamanlamalari Europe/Istanbul saat diliminde kalmali"
+  }
+
+  # --- Inceleme alarmi ---
+  assert {
+    condition     = length(aws_cloudwatch_log_metric_filter.payment_needs_review) == 2 && alltrue([for f in aws_cloudwatch_log_metric_filter.payment_needs_review : f.pattern == "\"PAYMENT_NEEDS_REVIEW\""])
+    error_message = "API ve scheduler loglarindaki PAYMENT_NEEDS_REVIEW sayilmali"
+  }
+  assert {
+    condition     = length(aws_cloudwatch_metric_alarm.payment_needs_review) == 1 && aws_cloudwatch_metric_alarm.payment_needs_review[0].threshold == 1
+    error_message = "Incelemeye alinan ilk odemede alarm uretilmeli"
+  }
+  assert {
+    condition     = length(aws_cloudwatch_log_metric_filter.payment_refund_failed) == 2 && alltrue([for f in aws_cloudwatch_log_metric_filter.payment_refund_failed : f.pattern == "\"PAYMENT_REFUND_FAILED\""])
+    error_message = "Reddedilen iadeler API ve scheduler loglarinda sayilmali"
+  }
+  assert {
+    condition     = length(aws_cloudwatch_metric_alarm.payment_refund_failed) == 1 && aws_cloudwatch_metric_alarm.payment_refund_failed[0].threshold == 1
+    error_message = "Reddedilen ilk iadede alarm uretilmeli"
+  }
+  assert {
+    condition     = output.payments_secret_arn == "arn:aws:secretsmanager:eu-central-1:123456789012:secret:building-management-dev/payments/iyzico-AbCdEf"
+    error_message = "Secret ARN ciktisi verilmeli (deger girmek icin)"
+  }
+}
+
+run "prod_payment_secret_recoverable" {
+  command = plan
+
+  variables {
+    payments_provider = "iyzico"
+    iyzico_base_url   = "https://api.iyzipay.com"
+    web_app_url       = "https://app.ornek.com"
+  }
+
+  assert {
+    condition     = aws_secretsmanager_secret.payments[0].name == "building-management/payments/iyzico" && aws_secretsmanager_secret.payments[0].recovery_window_in_days == 30
+    error_message = "prod secret'i yanlislikla silinirse 30 gun geri alinabilmeli"
+  }
+  assert {
+    condition     = aws_lambda_function.api.environment[0].variables.IYZICO_BASE_URL == "https://api.iyzipay.com"
+    error_message = "Canli iyzico adresi Lambda'ya gecmeli"
+  }
+}
+
+run "payments_requires_web_app_url" {
+  command = plan
+
+  variables {
+    payments_provider = "iyzico"
+  }
+
+  expect_failures = [aws_secretsmanager_secret.payments]
+}
+
+run "rejects_fake_payment_provider" {
+  command = plan
+
+  variables {
+    payments_provider = "fake"
+  }
+
+  expect_failures = [var.payments_provider]
+}
+
+run "rejects_invalid_payment_urls" {
+  command = plan
+
+  variables {
+    iyzico_base_url = "https://evil.example.com"
+    web_app_url     = "https://app.ornek.com/"
+  }
+
+  expect_failures = [var.iyzico_base_url, var.web_app_url]
 }

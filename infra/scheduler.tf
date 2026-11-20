@@ -121,6 +121,16 @@ data "aws_iam_policy_document" "scheduler_worker" {
     ]
     resources = [aws_sqs_queue.jobs.arn]
   }
+
+  # payment_reconcile: saglayicidan sonuc sorgulamak icin anahtar okuma.
+  dynamic "statement" {
+    for_each = aws_secretsmanager_secret.payments[*].arn
+    content {
+      sid       = "ReadPaymentProviderSecret"
+      actions   = ["secretsmanager:GetSecretValue"]
+      resources = [statement.value]
+    }
+  }
 }
 
 resource "aws_iam_role_policy" "scheduler_worker" {
@@ -131,7 +141,7 @@ resource "aws_iam_role_policy" "scheduler_worker" {
 
 resource "aws_lambda_function" "scheduler_worker" {
   function_name    = local.scheduler_function
-  description      = "Zamanlanmis gorevler: gecikme tazminati, aylik aidat, borc hatirlatma"
+  description      = "Zamanlanmis gorevler: gecikme tazminati, aylik aidat, borc hatirlatma, odeme mutabakati"
   role             = aws_iam_role.scheduler_worker.arn
   runtime          = var.lambda_runtime
   architectures    = ["arm64"]
@@ -142,12 +152,12 @@ resource "aws_lambda_function" "scheduler_worker" {
   timeout          = local.scheduler_timeout_seconds
 
   environment {
-    variables = {
+    variables = merge({
       NODE_ENV             = "production"
       DYNAMODB_TABLE_NAME  = aws_dynamodb_table.main.name
       EVENTS_MODE          = "sns"
       EVENTS_SNS_TOPIC_ARN = aws_sns_topic.events.arn
-    }
+    }, local.payments_env)
   }
 
   depends_on = [
@@ -222,14 +232,16 @@ resource "aws_scheduler_schedule_group" "main" {
   name = local.name
 }
 
+# Online odeme acikken payment_reconcile eklenir (payments.tf). Saat dilimi yalnizca cron
+# ifadelerinde anlamlidir; rate() icin verilmez.
 resource "aws_scheduler_schedule" "jobs" {
-  for_each = local.scheduled_jobs
+  for_each = merge(local.scheduled_jobs, local.payment_jobs)
 
   name                         = replace(each.key, "_", "-")
   group_name                   = aws_scheduler_schedule_group.main.name
   description                  = each.value.description
   schedule_expression          = each.value.cron
-  schedule_expression_timezone = "Europe/Istanbul"
+  schedule_expression_timezone = startswith(each.value.cron, "cron(") ? "Europe/Istanbul" : null
   state                        = var.scheduler_enabled ? "ENABLED" : "DISABLED"
 
   flexible_time_window {

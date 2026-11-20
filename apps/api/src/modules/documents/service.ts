@@ -140,6 +140,15 @@ export function createDocumentsService(overrides: Partial<DocumentsServiceDeps> 
     return receiptForPayment(apartmentId, payment);
   }
 
+  /** Yonetici/denetci: makbuz kaydindan (online odeme listesi `paymentIds`). */
+  async function receiptForPaymentId(apartmentId: string, paymentId: string) {
+    assertId(paymentId, 'paymentId');
+    requireStore();
+    const payment = await deps.finance.getPayment(apartmentId, paymentId);
+    if (!payment || payment.siteId !== apartmentId) throw new DocumentError('not_found', 'Makbuz bulunamadi');
+    return receiptForPayment(apartmentId, payment);
+  }
+
   /**
    * Sakin: yalnizca portalin "makbuzlarim" listesinde gorunen makbuz (kendi dairesi, gorebildigi
    * cari, uyelik donemi). Listede yoksa 404 (baska makbuzun varligi sizdirilmaz).
@@ -224,7 +233,7 @@ export function createDocumentsService(overrides: Partial<DocumentsServiceDeps> 
     return sign(expense.invoice.key, expense.invoice.fileName, expense.invoice.contentType);
   }
 
-  return { receiptForPayment, receiptForTransaction, residentReceipt, createInvoiceUpload, promoteInvoice, invoiceForTransaction };
+  return { receiptForPayment, receiptForTransaction, receiptForPaymentId, residentReceipt, createInvoiceUpload, promoteInvoice, invoiceForTransaction };
 }
 
 export type DocumentsService = ReturnType<typeof createDocumentsService>;

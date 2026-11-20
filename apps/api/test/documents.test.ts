@@ -210,6 +210,15 @@ describe('documents servisi - makbuz', () => {
     await expect(service.receiptForTransaction(APT, '../x')).rejects.toMatchObject({ field: 'transactionId' });
   });
 
+  it('yonetici makbuzu odeme kaydindan da acabilir (online odemeler); baska apartman / yok 404', async () => {
+    const { service } = setup();
+    const r = await service.receiptForPaymentId(APT, 'p1');
+    expect(r).toMatchObject({ fileName: 'Makbuz-MKB-000001.pdf', status: 'valid' });
+    await expect(service.receiptForPaymentId(APT, 'yok')).rejects.toMatchObject({ code: 'not_found', httpStatus: 404 });
+    await expect(service.receiptForPaymentId('apt-2', 'p1')).rejects.toMatchObject({ code: 'not_found', httpStatus: 404 });
+    await expect(service.receiptForPaymentId(APT, '../x')).rejects.toMatchObject({ field: 'paymentId' });
+  });
+
   it('sakin yalnizca kendi makbuz listesindeki makbuzu indirebilir', async () => {
     const { service, setMine } = setup();
     const ctx = { apartmentId: APT, userId: 'tenant-1', role: 'resident' as const };

@@ -138,6 +138,10 @@ export type Payment = TableKeys & {
   paidAt: IsoDate;
   payerName?: string;
   note?: string;
+  /** Online odeme: odeme niyeti ve saglayici islem numarasi (makbuz/mutabakat icin). */
+  intentId?: string;
+  provider?: string;
+  providerPaymentId?: string;
   createdAt: IsoDateTime;
   createdBy: string;
 };
@@ -167,6 +171,9 @@ export type Expense = TableKeys & {
 export type IdempotencyRecord = {
   transactionId: string;
   recordId?: string;
+  /** Toplu yazim (postBatch): tum islem ve belge kimlikleri. */
+  transactionIds?: string[];
+  recordIds?: string[];
   /** Istek icerigi ozeti: ayni anahtarin farkli istekle kullanilmasini yakalar. */
   fingerprint: string;
 };

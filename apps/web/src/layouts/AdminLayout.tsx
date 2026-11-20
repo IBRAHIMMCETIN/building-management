@@ -1,31 +1,22 @@
-import { ArrowLeftRight, Building2, FileUp, LayoutDashboard, Megaphone, Menu, Settings, Users, Wallet } from 'lucide-react';
-import { type ComponentType, useEffect, useState } from 'react';
+import { ArrowLeftRight, Building2, Menu } from 'lucide-react';
+import { useEffect, useState } from 'react';
 import { NavLink, Outlet, useLocation } from 'react-router';
 import { ContextSwitchDialog, useCanSwitchContext } from '@/components/context/ContextSwitcher';
 import { Button, Dialog } from '@/components/ui';
 import { useActiveApartmentName } from '@/hooks/useActiveContextLabel';
 import { useAuth } from '@/hooks/useAuth';
 import { ROLE_LABELS } from '@/types/roles';
+import { navItemsFor, panelTitleFor } from './adminNav';
 import { cn } from '@/lib/cn';
 import { UserMenu } from './UserMenu';
 
-type NavItem = { to: string; label: string; icon: ComponentType<{ className?: string }>; end?: boolean };
-
-// Henuz ekrani olmayan ogeler router'da PlaceholderPage'e bagli; ekran yazildikca degistirilir.
-const NAV: NavItem[] = [
-  { to: '/admin', label: 'Genel Bakış', icon: LayoutDashboard, end: true },
-  { to: '/admin/units', label: 'Daireler', icon: Users },
-  { to: '/admin/finance', label: 'Finans', icon: Wallet },
-  { to: '/admin/announcements', label: 'Duyurular', icon: Megaphone },
-  { to: '/admin/import', label: 'Toplu Aktarım', icon: FileUp },
-  { to: '/admin/settings', label: 'Ayarlar', icon: Settings },
-];
-
 /** Masaustu yan menu ve mobil cekmece ayni listeyi kullanir. */
 function AdminNav({ onNavigate }: { onNavigate?: () => void }) {
+  const { user } = useAuth();
+  const items = navItemsFor(user?.role);
   return (
     <nav aria-label="Yönetim menüsü" className="flex flex-col gap-1">
-      {NAV.map(({ to, label, icon: Icon, end }) => (
+      {items.map(({ to, label, icon: Icon, end }) => (
         <NavLink
           key={to}
           to={to}
@@ -47,10 +38,11 @@ function AdminNav({ onNavigate }: { onNavigate?: () => void }) {
 }
 
 function Brand() {
+  const { user } = useAuth();
   return (
     <div className="flex items-center gap-2 text-accent">
       <Building2 className="size-6" aria-hidden="true" />
-      <span className="font-semibold text-text">Yönetim Paneli</span>
+      <span className="font-semibold text-text">{panelTitleFor(user?.role)}</span>
     </div>
   );
 }
@@ -107,7 +99,7 @@ export function AdminLayout() {
             >
               <Menu className="size-5" aria-hidden="true" />
             </button>
-            <span className="truncate font-semibold">Yönetim Paneli</span>
+            <span className="truncate font-semibold">{panelTitleFor(user?.role)}</span>
           </div>
           <UserMenu />
         </header>

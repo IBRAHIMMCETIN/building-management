@@ -165,3 +165,57 @@ variable "scheduler_enabled" {
   type        = bool
   default     = true
 }
+
+# ---------------------------------------------------------------------------
+# Online odeme (Adim 8b)
+# ---------------------------------------------------------------------------
+
+variable "payments_provider" {
+  type        = string
+  default     = "disabled"
+  description = "Online odeme saglayicisi: disabled | iyzico. (fake yalnizca yerel gelistirme icindir.)"
+
+  validation {
+    condition     = contains(["disabled", "iyzico"], var.payments_provider)
+    error_message = "payments_provider disabled veya iyzico olmalidir."
+  }
+}
+
+variable "iyzico_base_url" {
+  type        = string
+  default     = "https://sandbox-api.iyzipay.com"
+  description = "iyzico API adresi: sandbox veya canli."
+
+  validation {
+    condition     = contains(["https://sandbox-api.iyzipay.com", "https://api.iyzipay.com"], var.iyzico_base_url)
+    error_message = "iyzico_base_url https://sandbox-api.iyzipay.com veya https://api.iyzipay.com olmalidir."
+  }
+}
+
+variable "web_app_url" {
+  type        = string
+  default     = ""
+  description = "Odeme sonrasi kullanicinin donecegi web uygulamasi (Cloudflare Pages), ornegin https://app.ornek.com. Online odeme acikken zorunlu."
+
+  validation {
+    condition     = var.web_app_url == "" || can(regex("^https://[a-z0-9.-]+$", var.web_app_url))
+    error_message = "web_app_url sonunda / olmayan bir https kok adresi olmalidir."
+  }
+}
+
+variable "payments_callback_rate_limit" {
+  type        = number
+  default     = 5
+  description = "Kimliksiz odeme callback/webhook rotalari icin saniyede ortalama istek (rota bazli throttling)."
+}
+
+variable "aws_region" {
+  type        = string
+  default     = "eu-north-1"
+  description = "Projenin AWS bolgesi. Hesaptaki SCP diger bolgelerdeki islemleri reddeder; state de bu bolgededir."
+
+  validation {
+    condition     = can(regex("^[a-z]{2}-[a-z]+-[0-9]$", var.aws_region))
+    error_message = "aws_region gecerli bir AWS bolge kodu olmalidir (ornegin eu-north-1)."
+  }
+}
