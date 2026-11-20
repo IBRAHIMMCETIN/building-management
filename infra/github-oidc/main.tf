@@ -170,8 +170,25 @@ data "aws_iam_policy_document" "deploy" {
 
   statement {
     sid       = "LogsDescribe"
-    actions   = ["logs:DescribeLogGroups", "logs:ListTagsForResource"]
+    actions   = ["logs:DescribeLogGroups", "logs:DescribeMetricFilters", "logs:ListTagsForResource"]
     resources = ["*"]
+  }
+
+  # Online odeme anahtari secret'i (payments.tf): <proje>[-<ortam>]/payments/<saglayici>.
+  # Dagitim yalnizca secret KAYNAGINI yonetir; degeri okuyamaz/yazamaz (GetSecretValue /
+  # PutSecretValue YOK). Deger elle girilir.
+  statement {
+    sid = "PaymentSecrets"
+    actions = [
+      "secretsmanager:CreateSecret",
+      "secretsmanager:DeleteSecret",
+      "secretsmanager:DescribeSecret",
+      "secretsmanager:UpdateSecret",
+      "secretsmanager:GetResourcePolicy",
+      "secretsmanager:TagResource",
+      "secretsmanager:UntagResource",
+    ]
+    resources = ["arn:${local.partition}:secretsmanager:*:${local.account}:secret:${var.project}*"]
   }
 
   # Belge deposu (storage.tf): <proje>[-<ortam>]-documents-<hesap>-<region>

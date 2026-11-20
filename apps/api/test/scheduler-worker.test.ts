@@ -38,7 +38,7 @@ function site(id: string, over: Partial<Site> = {}): Site {
   } as Site;
 }
 
-function setup(sites: Site[] = [site('apt-1'), site('apt-2')]) {
+function setup(sites: Site[] = [site('apt-1'), site('apt-2')], options: { payments?: { reconcile: (apt: string) => Promise<unknown> } | null } = {}) {
   const events = createInMemoryEventPublisher();
   const finance = {
     autoChargeDues: vi.fn(async () => ({
@@ -69,9 +69,13 @@ function setup(sites: Site[] = [site('apt-1'), site('apt-2')]) {
     listSiteIds: vi.fn(async () => sites.map((s) => s.siteId)),
     getSite: vi.fn(async (id: string) => sites.find((s) => s.siteId === id)),
   };
-  const worker = createSchedulerWorker({ core, finance, events, now: () => NOW, log: quiet });
+  const payments =
+    options.payments === undefined
+      ? { reconcile: vi.fn(async () => ({ checked: 1, succeeded: 1, failed: 0, review: 0, stillPending: 0 })) }
+      : options.payments;
+  const worker = createSchedulerWorker({ core, finance, events, now: () => NOW, log: quiet, payments: payments as never });
   const run = (body: object, messageId = 'm1') => worker({ Records: [{ messageId, body: JSON.stringify(body) }] });
-  return { worker, run, finance, core, events };
+  return { worker, run, finance, core, events, payments };
 }
 
 const at = '2026-11-30T23:30:00Z'; // Scheduler planlanan zamani: Istanbul 1 Aralik 02:30
@@ -201,6 +205,24 @@ const payment = (id: string, unitId: string, amount: number, date: string) =>
       { accountId: `recv-${unitId}-occupant`, side: 'credit', amount: toKurus(amount), unitId, liableParty: 'occupant' },
     ],
   });
+
+describe('scheduler worker - online odeme mutabakati (Adim 8b)', () => {
+  it('payment_reconcile: her aktif apartman icin mutabakat calisir', async () => {
+    const { run, payments } = setup();
+    expect(await run({ job: 'payment_reconcile', scheduledTime: '2026-11-20T10:15:00Z' })).toEqual({ batchItemFailures: [] });
+    expect(payments!.reconcile).toHaveBeenCalledTimes(2);
+    expect(payments!.reconcile).toHaveBeenCalledWith('apt-1');
+  });
+
+  it('online odeme kapaliysa apartmanlar atlanir; mutabakat hatasi mesaji tekrar denetir', async () => {
+    const off = setup(undefined, { payments: null });
+    expect(await off.run({ job: 'payment_reconcile', scheduledTime: '2026-11-20T10:15:00Z' })).toEqual({ batchItemFailures: [] });
+    const failing = setup(undefined, { payments: { reconcile: vi.fn(async () => { throw new Error('iyzico'); }) } });
+    expect(await failing.run({ job: 'payment_reconcile', scheduledTime: '2026-11-20T10:15:00Z' }, 'm9')).toEqual({
+      batchItemFailures: [{ itemIdentifier: 'm9' }],
+    });
+  });
+});
 
 describe('buildDueReminders', () => {
   const recv = new Set(['recv-u1-occupant', 'recv-u2-occupant', 'recv-u3-occupant']);

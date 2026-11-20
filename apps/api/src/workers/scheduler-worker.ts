@@ -3,6 +3,10 @@ import { type CoreRepository, coreRepository } from '../modules/core/repository.
 import { type IsoDate, toKurus } from '../modules/core/types.js';
 import { previousPeriod } from '../modules/finance/lateFee.js';
 import { type FinanceService, DEFAULT_LATE_FEE_BASIS_POINTS, SYSTEM_ACTOR, createFinanceService } from '../modules/finance/service.js';
+import { loadPaymentsConfig } from '../modules/payments/config.js';
+import { type PaymentsService, createPaymentsService } from '../modules/payments/service.js';
+import { portalRepository } from '../modules/portal/repository.js';
+import { createPortalService } from '../modules/portal/service.js';
 import type { SqsBatchResponse, SqsEvent } from './notification-worker.js';
 
 /**
@@ -19,6 +23,9 @@ import type { SqsBatchResponse, SqsEvent } from './notification-worker.js';
  *   late_fees      ayin 1'i 02:30  onceki ayin gecikme tazminatini kesinlestirir (+LATE_FEE_POSTED)
  *   monthly_dues   ayin 1'i 03:00  aylik aidat planini tahakkuk eder (+DUE_GENERATED)
  *   dues_reminders her gun 10:00   vadeden 3 gun once, 1 ve 7 gun sonra hatirlatir (+DUES_REMINDER)
+ *   payment_reconcile 15 dakikada bir (Adim 8b): 30 dk'dan eski PENDING online odeme niyetlerini
+ *                  saglayicidan sorgulayip sonuclandirir (kaybolan callback/webhook). Online odeme
+ *                  kapaliysa (PAYMENTS_PROVIDER tanimsiz) apartmanlar `payments_disabled` ile atlanir.
  *
  * Idempotency: her defter yazimi donem bazli anahtar kullanir (auto-dues-<YYYY-MM>,
  * lf-<YYYY-MM>-...), olay kimlikleri deterministiktir ve bildirim worker'i ayni olayi bir kez
@@ -29,7 +36,7 @@ import type { SqsBatchResponse, SqsEvent } from './notification-worker.js';
  * 5 denemeden sonra DLQ + alarm. Olcek buyudugunde apartman basina mesaja (fan-out) gecilir.
  */
 
-export const JOBS = ['late_fees', 'monthly_dues', 'dues_reminders'] as const;
+export const JOBS = ['late_fees', 'monthly_dues', 'dues_reminders', 'payment_reconcile'] as const;
 export type Job = (typeof JOBS)[number];
 
 export type JobMessage = { job: Job; scheduledTime: string; apartmentId?: string };
@@ -75,16 +82,34 @@ export type SiteOutcome =
 export type SchedulerDeps = {
   core: Pick<CoreRepository, 'listSiteIds' | 'getSite'>;
   finance: Pick<FinanceService, 'autoChargeDues' | 'postLateFees' | 'dueReminders'>;
+  /** null: online odeme kapali. Verilmezse ortam degiskenlerinden kurulur (ilk kullanimda). */
+  payments: Pick<PaymentsService, 'reconcile'> | null;
   events: EventPublisher;
   now: () => Date;
   log: Pick<Console, 'info' | 'error'>;
 };
 
 export function createSchedulerWorker(overrides: Partial<SchedulerDeps> = {}) {
-  const lazy: { events?: EventPublisher; finance?: SchedulerDeps['finance'] } = {};
+  const lazy: { events?: EventPublisher; finance?: SchedulerDeps['finance']; payments?: SchedulerDeps['payments'] } = {};
   const now = overrides.now ?? (() => new Date());
   const events = () => (lazy.events ??= overrides.events ?? createEventPublisherFromEnv());
   const finance = () => (lazy.finance ??= overrides.finance ?? createFinanceService({ events: events(), now }));
+  const payments = (): SchedulerDeps['payments'] => {
+    if (lazy.payments !== undefined) return lazy.payments;
+    if (overrides.payments !== undefined) return (lazy.payments = overrides.payments);
+    const config = loadPaymentsConfig();
+    if (!config.provider) return (lazy.payments = null);
+    return (lazy.payments = createPaymentsService({
+      portal: createPortalService({ now }),
+      ledger: portalRepository,
+      finance: createFinanceService({ events: events(), now }),
+      provider: config.provider,
+      apiBaseUrl: config.apiBaseUrl,
+      webAppUrl: config.webAppUrl,
+      intentTtlMinutes: config.intentTtlMinutes,
+      now,
+    }));
+  };
   const core = overrides.core ?? coreRepository;
   const log = overrides.log ?? console;
 
@@ -155,6 +180,13 @@ export function createSchedulerWorker(overrides: Partial<SchedulerDeps> = {}) {
           );
         }
         return { apartmentId, status: 'done', detail: { date: day, reminders: items.length } };
+      }
+
+      case 'payment_reconcile': {
+        const service = payments();
+        if (!service) return { apartmentId, status: 'skipped', reason: 'payments_disabled' };
+        const r = await service.reconcile(apartmentId);
+        return { apartmentId, status: 'done', detail: r };
       }
     }
   }

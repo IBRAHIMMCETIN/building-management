@@ -87,3 +87,16 @@ output "documents_bucket" {
   description = "Private belge deposu (makbuz PDF, gider faturasi). Yerel API icin DOCUMENTS_BUCKET."
   value       = aws_s3_bucket.documents.id
 }
+
+output "payments_secret_arn" {
+  description = "Online odeme anahtari secret'i (deger elle girilir: aws secretsmanager put-secret-value). Odeme kapaliysa null."
+  value       = local.payments_secret_arn
+}
+
+output "payments_callback_urls" {
+  description = "Saglayici paneline girilecek adresler (webhook / bildirim URL'si). Odeme kapaliysa null."
+  value = local.payments_enabled ? {
+    callback = "${aws_apigatewayv2_api.http.api_endpoint}/api/payments/${var.payments_provider}/callback"
+    webhook  = "${aws_apigatewayv2_api.http.api_endpoint}/api/payments/${var.payments_provider}/webhook"
+  } : null
+}
