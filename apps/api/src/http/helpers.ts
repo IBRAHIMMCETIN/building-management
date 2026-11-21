@@ -3,6 +3,7 @@ import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import type { AuthClaims, Authenticator, Role } from '../auth/claims.js';
 import { DataAccessError } from '../config/dynamodb.js';
 import { AccessDeniedError } from './errors.js';
+import { setRequestActor } from '../modules/audit/context.js';
 import { CoreError } from '../modules/core/service.js';
 import { DocumentError } from '../modules/documents/errors.js';
 import { FinanceError } from '../modules/finance/service.js';
@@ -34,6 +35,12 @@ export function authenticateWith(authenticate: Authenticator): MiddlewareHandler
     const claims = await authenticate(c);
     if (!claims) return c.json({ error: 'unauthorized' }, 401);
     c.set('claims', claims);
+    // Denetim kayitlari aktoru istek baglamindan okur (destek oturumunda gercek rol platform_admin).
+    setRequestActor({
+      userId: claims.userId,
+      role: claims.supportSessionId ? 'platform_admin' : claims.role,
+      ...(claims.supportSessionId ? { supportSessionId: claims.supportSessionId } : {}),
+    });
     await next();
   };
 }

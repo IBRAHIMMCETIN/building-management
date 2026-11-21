@@ -1,3 +1,4 @@
+import { auditedPutNew, auditedPutVersioned } from '../audit/log.js';
 import { PutCommand, QueryCommand, type QueryCommandOutput } from '@aws-sdk/lib-dynamodb';
 import {
   getDynamo,
@@ -98,6 +99,17 @@ function assertKeys(item: TableKeys, expected: TableKeys): void {
   }
 }
 
+/** Site ve ayar degisikligi (ayarlar kisisel veri icermez; boyut siniri denetimde). */
+function siteAudit(site: Site, action: string) {
+  return {
+    apartmentId: site.siteId,
+    action,
+    target: { type: 'site', id: site.siteId },
+    actorId: site.updatedBy,
+    details: { name: site.name, status: site.status, version: site.version, settings: site.settings },
+  };
+}
+
 async function putNew(item: TableKeys, expected: TableKeys): Promise<void> {
   assertKeys(item, expected);
   const { client, tableName } = getDynamo();
@@ -139,9 +151,14 @@ async function putVersioned(
 export function createCoreRepository(): CoreRepository {
   return {
     getSite: async (apartmentId) => withoutDirectory(await getTenantItem<Site>(coreKeys.site(apartmentId))),
-    createSite: (site) => putNew(withDirectory(site), coreKeys.site(site.siteId)),
-    updateSite: (site, expectedVersion) =>
-      putVersioned(withDirectory(site), coreKeys.site(site.siteId), expectedVersion),
+    createSite: async (site) => {
+      assertKeys(site, coreKeys.site(site.siteId));
+      return auditedPutNew(withDirectory(site), siteAudit(site, 'site.create'));
+    },
+    updateSite: async (site, expectedVersion) => {
+      assertKeys(site, coreKeys.site(site.siteId));
+      return auditedPutVersioned(withDirectory(site), expectedVersion, siteAudit(site, 'site.update'));
+    },
     listSiteIds,
 
     getBlock: (apartmentId, blockId) => getTenantItem<Block>(coreKeys.block(apartmentId, blockId)),

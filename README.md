@@ -176,6 +176,7 @@ npm run dev:api
 | `SES_CONFIGURATION_SET` | İsteğe bağlı SES yapılandırma seti (geri dönüş/şikâyet olayları). |
 | `WEB_APP_URL` | E-postalardaki portal bağlantılarının kökü (`<WEB_APP_URL>/app/...`); yalnızca `https`. |
 | `OUTBOX_LOCAL_RELAY` | Yerel sunucuda `off` ise bekleyen outbox kayıtlarını yoklayan bellek içi relay çalışmaz. |
+| `AUDIT_TABLE_NAME` | Denetim günlüğü tablosu (Terraform: `<proje>-<ortam>-audit`). Lambda'da tanımsızsa hassas yazımlar reddedilir (fail closed); yerel geliştirme ve testlerde tanımsızsa denetim atlanır. |
 
 Gizli bilgiler koda gömülmez; AWS kimlik bilgileri SDK'nın varsayılan credential zincirinden gelir.
 
@@ -276,6 +277,8 @@ Tüm uçlar `/api` altındadır. `GET /api/health` dışındakiler JWT ile korun
 | `apartment-roles` | `/api/apartment-roles` | Apartman bazlı personel ve yönetici rolleri |
 | `announcements` | `/api/announcements` | Duyuru oluşturma, onay, arşiv |
 | `portal` | `/api/portal` | Sakin ekranı: `my-unit`, `my-dues`, `my-statement`, `my-receipts`, duyurular |
+| `audit` | `/api/audit` | Apartmanın denetim günlüğü, salt okunur (`apartment_manager`, `management_company`, `observer`): en yeni önce, `limit` (≤100), `cursor`, `from`/`to`, `action` öneki, `actorId` |
+| `support` | `/api/support/sessions` | Yalnızca `platform_admin`: gerekçeli (≥20 karakter) ve süreli (≤60 dk) destek oturumu aç/listele/bitir. Oturum `X-Support-Session: <apartmentId>.<sessionId>` başlığıyla o apartmanda **salt okunur** (`observer`) erişim verir; her istek işlenmeden önce denetime yazılır |
 
 ---
 
@@ -369,6 +372,14 @@ Yedi rol: `platform_admin`, `management_company`, `apartment_manager`, `resident
 - [x] SES e-posta kanalı (`NOTIFICATION_CHANNEL=log|ses`), Türkçe HTML + düz metin şablonları (tek noktada escape), alıcı bazlı tekrar koruması, kalıcı/geçici SES hata ayrımı
 - [x] Toplu tahakkukta kullanıcı başına tek özet e-posta (`DUES_BATCH_SUMMARY`), kullanıcı bildirim tercihleri (`/api/me/notification-preferences`, varsayılan açık)
 
+**Güvenlik sertleştirmesi — G1 denetim günlüğü (`feature/guvenlik-denetim`)**
+
+- [x] Ayrı denetim tablosu (10 yıl TTL, PITR): uygulama rolleri yalnızca `PutItem`/`GetItem`/`Query`; `UpdateItem`/`DeleteItem`/`BatchWriteItem`/PartiQL hem IAM'de hem tablo kaynak politikasında reddedilir
+- [x] Apartman (ve kullanıcı geneli işlemler için `PLATFORM`) bazlı SHA-256 hash zinciri; her gece `ledger_audit` artımlı zincir doğrulaması (`AuditChainBroken` metriği)
+- [x] Hassas işlemlerle aynı `TransactWriteItems`: defter, kapama/geri alma, üyelik ve rol, davet/kişi, site ayarları, online ödeme ve iade, toplu içe aktarma, bildirim tercihleri
+- [x] KVKK: IP maskeli (IPv4 /24, IPv6 /48), User-Agent 200 karakter, ayrıntılarda e-posta/telefon/IBAN/kart maskeli
+- [x] Salt okunur `/api/audit`; gerekçeli ve süreli `platform_admin` destek erişimi (`/api/support/sessions`)
+
 ### Sırada
 
 > iyzico sandbox Pazaryeri yetkisi ve ilk uçtan uca ödeme doğrulaması tüm modüller tamamlandıktan sonra yapılacak (bkz. [Canlıya Geçiş Kontrol Listesi](#canlıya-geçiş-kontrol-listesi)).
@@ -394,10 +405,10 @@ Yedi rol: `platform_admin`, `management_company`, `apartment_manager`, `resident
 - [ ] Rapor/PDF, banka ve OCR worker'ları
 - [ ] Bildirim devamı: web'de tercih ekranı, yöneticiye toplu işlem özeti, SES geri dönüş/şikâyet olaylarının işlenmesi, SMS/WhatsApp kanalı
 
-**Güvenlik sertleştirmesi (sıradaki iş)**
+**Güvenlik sertleştirmesi (sıradaki iş: G2)**
 
-- [ ] G1 — Değiştirilemez denetim günlüğü: ayrı tablo (yalnızca ekleme), apartman bazlı hash zinciri, hassas işlemle aynı atomik yazım, yönetici/denetçi için salt okunur görüntüleme, gerekçeli ve süreli `platform_admin` destek erişimi
-- [ ] G2 — Yönetici rollerinde (`platform_admin`, `management_company`, `apartment_manager`) zorunlu TOTP MFA: Pre Token kontrolü, API ara katmanı, web kurulum ekranı, kademeli geçiş
+- [ ] Denetim günlüğü devamı: web'de görüntüleme ekranı, S3 Object Lock (WORM) dışa aktarım
+- [ ] G2 — Yönetici ve denetçi rollerinde (`platform_admin`, `management_company`, `apartment_manager`, `observer`) zorunlu TOTP MFA: Pre Token kontrolü, API ara katmanı, web kurulum ekranı, kademeli geçiş
 - [ ] G3 — Uç koruma (alan adı alındığında): API özel alan adı Cloudflare arkasında, WAF ve oran sınırlama, `disable_execute_api_endpoint`, kaynak doğrulama (HTTP API'ye AWS WAF bağlanamaz; CloudFront WAF'ı hesap SCP'si nedeniyle kullanılamaz)
 
 ### Canlıya Geçiş Kontrol Listesi

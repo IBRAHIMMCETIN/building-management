@@ -84,6 +84,20 @@ data "aws_iam_policy_document" "api" {
     ]
   }
 
+  # Denetim gunlugu (audit.tf): yalnizca ekle + oku. Degistirme/silme acikca reddedilir.
+  statement {
+    sid       = "AuditAppendOnly"
+    actions   = local.audit_app_actions
+    resources = [aws_dynamodb_table.audit.arn, "${aws_dynamodb_table.audit.arn}/index/*"]
+  }
+
+  statement {
+    sid       = "DenyAuditMutation"
+    effect    = "Deny"
+    actions   = local.audit_mutating_actions
+    resources = [aws_dynamodb_table.audit.arn]
+  }
+
   # Domain olaylari API'den dogrudan yayinlanmaz: defter yazimiyla ayni atomik islemde
   # outbox'a yazilir, yayini outbox-relay Lambda'si yapar (outbox.tf). sns:Publish YOK.
 
@@ -156,6 +170,7 @@ resource "aws_lambda_function" "api" {
       APP_VERSION         = var.app_version
       AUTH_MODE           = "apigw"
       DYNAMODB_TABLE_NAME = aws_dynamodb_table.main.name
+      AUDIT_TABLE_NAME    = aws_dynamodb_table.audit.name
       # Yalnizca davet icin (AUTH_MODE=apigw oldugundan kimlik dogrulamayi etkilemez).
       COGNITO_USER_POOL_ID = aws_cognito_user_pool.main.id
       DOCUMENTS_BUCKET     = aws_s3_bucket.documents.id

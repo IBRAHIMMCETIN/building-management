@@ -23,6 +23,11 @@ export type AuthClaims = {
   role: Role;
   apartmentId?: string;
   organizationId?: string;
+  /**
+   * Yalnizca sunucu tarafinda (destek erisimi sarmalayicisi) atanir; token'dan okunmaz.
+   * Doluysa istek `platform_admin`'in sureli, gerekceli, denetlenen salt okunur erisimidir.
+   */
+  supportSessionId?: string;
 };
 
 /** Istekten dogrulanmis claim'leri cikarir; kimlik yoksa null doner. */

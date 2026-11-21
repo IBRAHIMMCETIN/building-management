@@ -1,5 +1,6 @@
-import { GetCommand, PutCommand } from '@aws-sdk/lib-dynamodb';
+import { GetCommand } from '@aws-sdk/lib-dynamodb';
 import { KEY_SEPARATOR, getDynamo, toDataAccessError } from '../../config/dynamodb.js';
+import { auditedPut } from '../audit/log.js';
 import { ValidationError, asObject } from '../core/validation.js';
 
 /**
@@ -55,7 +56,6 @@ export function createDynamoPreferencesRepository(): PreferencesRepository {
       }
     },
     async put(userId, prefs) {
-      const { client, tableName } = getDynamo();
       const item: StoredPreferences = {
         ...preferenceKeys(userId),
         entityType: 'NOTIFICATION_PREFERENCES',
@@ -63,11 +63,13 @@ export function createDynamoPreferencesRepository(): PreferencesRepository {
         emailEnabled: prefs.email.enabled,
         updatedAt: prefs.updatedAt ?? new Date().toISOString(),
       };
-      try {
-        await client.send(new PutCommand({ TableName: tableName, Item: item }));
-      } catch (err) {
-        throw toDataAccessError(err);
-      }
+      // Kullanici geneli tercih: PLATFORM zincirine denetlenir (apartmandan bagimsiz).
+      await auditedPut(item, {
+        action: 'notification_preferences.update',
+        target: { type: 'user', id: userId },
+        actorId: userId,
+        details: { emailEnabled: prefs.email.enabled },
+      });
     },
   };
 }

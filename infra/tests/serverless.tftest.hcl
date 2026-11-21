@@ -98,6 +98,14 @@ run "prod_plan" {
       stream_arn = "arn:aws:dynamodb:eu-central-1:123456789012:table/building-management/stream/2026-11-21T00:00:00.000"
     }
   }
+  # Denetim tablosu ARN'i plan asamasinda sabit (rol politikasi kaynak kontrolleri icin).
+  override_resource {
+    target          = aws_dynamodb_table.audit
+    override_during = plan
+    values = {
+      arn = "arn:aws:dynamodb:eu-central-1:123456789012:table/building-management-audit"
+    }
+  }
 
   # --- DynamoDB ---
   assert {
@@ -353,6 +361,58 @@ run "prod_plan" {
   assert {
     condition     = toset(flatten([for st in data.aws_iam_policy_document.scheduler_send.statement : st.actions])) == toset(["sqs:SendMessage"])
     error_message = "Scheduler rolu yalnizca gorev kuyruguna mesaj birakabilmeli"
+  }
+
+  # --- Degistirilemez denetim gunlugu (Guvenlik G1) ---
+  assert {
+    condition = (
+      aws_dynamodb_table.audit.name == "building-management-audit" &&
+      aws_dynamodb_table.audit.point_in_time_recovery[0].enabled &&
+      aws_dynamodb_table.audit.ttl[0].enabled && aws_dynamodb_table.audit.ttl[0].attribute_name == "ttl" &&
+      aws_dynamodb_table.audit.deletion_protection_enabled
+    )
+    error_message = "Denetim tablosu PITR, TTL (10 yil, uygulama yazar) ve silme korumasiyla olmali"
+  }
+  assert {
+    condition = alltrue([
+      for doc in [data.aws_iam_policy_document.api, data.aws_iam_policy_document.scheduler_worker] :
+      toset(one([for st in doc.statement : st.actions if st.sid == "AuditAppendOnly"])) == toset(["dynamodb:PutItem", "dynamodb:GetItem", "dynamodb:Query"])
+    ])
+    error_message = "Uygulama rolleri denetim tablosunda yalnizca PutItem/GetItem/Query yetkisine sahip olmali"
+  }
+  assert {
+    condition = alltrue([
+      for doc in [data.aws_iam_policy_document.api, data.aws_iam_policy_document.scheduler_worker] :
+      anytrue([
+        for st in doc.statement : st.effect == "Deny" && contains(st.actions, "dynamodb:UpdateItem") && contains(st.actions, "dynamodb:DeleteItem") && contains(st.actions, "dynamodb:BatchWriteItem")
+      ])
+    ])
+    error_message = "Uygulama rollerinde denetim tablosu icin UpdateItem/DeleteItem/BatchWriteItem acikca reddedilmeli"
+  }
+  assert {
+    condition = alltrue([
+      for doc in [data.aws_iam_policy_document.api, data.aws_iam_policy_document.scheduler_worker, data.aws_iam_policy_document.notification_worker, data.aws_iam_policy_document.outbox_relay] :
+      length([
+        for st in doc.statement : st
+        if st.effect != "Deny" && length(setintersection(toset(st.actions), toset(["dynamodb:UpdateItem", "dynamodb:DeleteItem"]))) > 0 && anytrue([for r in st.resources : strcontains(r, "audit")])
+      ]) == 0
+    ])
+    error_message = "Hicbir rol denetim tablosunda UpdateItem/DeleteItem izniyle tanimlanmamali"
+  }
+  assert {
+    condition = (
+      one(data.aws_iam_policy_document.audit_table.statement).effect == "Deny" &&
+      length(setsubtract(toset(["dynamodb:UpdateItem", "dynamodb:DeleteItem", "dynamodb:BatchWriteItem"]), toset(one(data.aws_iam_policy_document.audit_table.statement).actions))) == 0 &&
+      anytrue([for p in one(data.aws_iam_policy_document.audit_table.statement).principals : contains(p.identifiers, "*")])
+    )
+    error_message = "Denetim tablosu kaynak politikasi degistirme/silmeyi tum principal'lar icin reddetmeli"
+  }
+  assert {
+    condition = (
+      aws_lambda_function.api.environment[0].variables.AUDIT_TABLE_NAME == "building-management-audit" &&
+      aws_lambda_function.scheduler_worker.environment[0].variables.AUDIT_TABLE_NAME == "building-management-audit"
+    )
+    error_message = "API ve zamanlayici denetim tablosunu bilmeli (yoksa hassas yazim reddedilir)"
   }
 
   # --- Transactional outbox relay ---

@@ -1,8 +1,7 @@
+import { auditedPutNew, auditedPutVersioned } from '../audit/log.js';
 import {
   KEY_SEPARATOR,
   getTenantItem,
-  putNewItem,
-  putVersionedItem,
   queryTenantAll,
   skKey,
   tenantPk,
@@ -57,6 +56,26 @@ function assertKeys(m: UnitMembership): void {
   }
 }
 
+/** Denetim kaydi: kimlik, iliski ve gecerlilik (kisisel veri yok). */
+function membershipAudit(m: UnitMembership, action: string) {
+  return {
+    apartmentId: m.apartmentId,
+    action,
+    target: { type: 'membership', id: `${m.userId}:${m.unitId}` },
+    actorId: m.updatedBy,
+    details: {
+      userId: m.userId,
+      unitId: m.unitId,
+      relation: m.relation,
+      residesInUnit: m.residesInUnit,
+      status: m.status,
+      startDate: m.startDate,
+      endDate: m.endDate,
+      version: m.version,
+    },
+  };
+}
+
 export function createMembershipRepository(): MembershipRepository {
   return {
     get: async (apartmentId, userId, unitId) =>
@@ -76,12 +95,16 @@ export function createMembershipRepository(): MembershipRepository {
 
     async create(membership) {
       assertKeys(membership);
-      await putNewItem({ ...stripIndex(membership), ...membershipGsi1(membership) });
+      await auditedPutNew({ ...stripIndex(membership), ...membershipGsi1(membership) }, membershipAudit(membership, 'membership.create'));
     },
 
     async update(membership, expectedVersion) {
       assertKeys(membership);
-      await putVersionedItem({ ...stripIndex(membership), ...membershipGsi1(membership) }, expectedVersion);
+      await auditedPutVersioned(
+        { ...stripIndex(membership), ...membershipGsi1(membership) },
+        expectedVersion,
+        membershipAudit(membership, 'membership.update'),
+      );
     },
   };
 }

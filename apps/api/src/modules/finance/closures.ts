@@ -608,6 +608,26 @@ export function createClosureService(overrides: Partial<ClosureServiceDeps> & Pi
         newDocs: [closure],
         replaceRecords,
         accountPatches: { [sourceAccountId]: { closedThrough: D } },
+        audit: {
+          apartmentId: ctx.apartmentId,
+          action: 'closure.create',
+          target: { type: 'closure', id: closureId },
+          actorId: ctx.userId,
+          reason: p.reason,
+          details: {
+            unitId: closure.unitId,
+            party: closure.party,
+            moveOutDate: closure.moveOutDate,
+            sourceAccountId,
+            debtTo: closure.debtTo,
+            advanceTo: closure.advanceTo,
+            debt: closure.debt,
+            advance: closure.advance,
+            lateFee: closure.lateFee,
+            transactionIds: closure.transactionIds,
+            membershipChanges: closure.membershipChanges.length,
+          },
+        },
       });
     } catch (err) {
       if (err instanceof LedgerConflictError) {
@@ -754,6 +774,14 @@ export function createClosureService(overrides: Partial<ClosureServiceDeps> & Pi
         replaceRecords: [{ item: next, expectedVersion: closure.version, label: 'closure' }, ...membershipRestores],
         accountPatches: {
           [closure.sourceAccountId]: { closedThrough: closure.previousClosedThrough ?? null, bypassLock: true },
+        },
+        audit: {
+          apartmentId: ctx.apartmentId,
+          action: 'closure.reverse',
+          target: { type: 'closure', id: closure.closureId },
+          actorId: ctx.userId,
+          reason,
+          details: { reversalTransactionIds: reversals.map((t) => t.transactionId), restoredClosedThrough: closure.previousClosedThrough ?? null },
         },
       });
     } catch (err) {

@@ -288,15 +288,26 @@ describe('zamanlayici - ledger_audit isi', () => {
       core: { listSiteIds: async () => sites.map((s) => s.siteId), getSite: async (id: string) => sites.find((s) => s.siteId === id) },
       auditor, metrics, log, now: () => new Date('2026-11-21T00:40:00.000Z'),
       finance: {} as never, payments: null, events: { publish: vi.fn() }, outbox: {} as never,
+      auditChain: {
+        verify: vi.fn(async (scope: string) => ({
+          scope,
+          checked: 3,
+          findings: scope === 'APT#apt-1' ? [{ code: 'audit_chain_hash_mismatch' as const, scope, seq: 2 }] : [],
+        })),
+      },
     });
     const res = await worker({ Records: [{ messageId: 'm1', body: JSON.stringify({ job: 'ledger_audit', scheduledTime: '2026-11-21T00:40:00Z' }) }] });
 
     expect(res.batchItemFailures).toEqual([]);
     expect(auditor.run.mock.calls.map((c) => c[0])).toEqual(['apt-1', 'apt-2']);
-    expect(metrics.emit).toHaveBeenCalledWith({ LedgerDrift: 0, LedgerAuditUnstable: 0 }, expect.objectContaining({ apartmentId: 'apt-1' }));
-    expect(metrics.emit).toHaveBeenCalledWith({ LedgerDrift: 1, LedgerAuditUnstable: 0 }, expect.objectContaining({ apartmentId: 'apt-2' }));
-    const errorLine = JSON.parse(log.error.mock.calls.find((c) => String(c[0]).includes('ledger_audit'))![0] as string);
-    expect(errorLine).toMatchObject({ msg: 'ledger_audit', apartmentId: 'apt-2', findings: [{ code: 'balance_mismatch' }] });
+    // apt-1: defter temiz ama denetim zincirinde kurcalama -> sapma; apt-2: defter sapmasi.
+    expect(metrics.emit).toHaveBeenCalledWith({ LedgerDrift: 1, LedgerAuditUnstable: 0, AuditChainBroken: 1 }, expect.objectContaining({ apartmentId: 'apt-1' }));
+    expect(metrics.emit).toHaveBeenCalledWith({ LedgerDrift: 1, LedgerAuditUnstable: 0, AuditChainBroken: 0 }, expect.objectContaining({ apartmentId: 'apt-2' }));
+    // Platform zinciri tum apartmanlar turunda bir kez dogrulanir.
+    expect(metrics.emit).toHaveBeenCalledWith({ LedgerDrift: 0, AuditChainBroken: 0 }, expect.objectContaining({ apartmentId: '_platform' }));
+    const lines = log.error.mock.calls.map((c) => JSON.parse(c[0] as string)).filter((l) => l.msg === 'ledger_audit');
+    expect(lines.find((l) => l.apartmentId === 'apt-2')).toMatchObject({ findings: [{ code: 'balance_mismatch' }] });
+    expect(lines.find((l) => l.apartmentId === 'apt-1')).toMatchObject({ findings: [{ code: 'audit_chain_hash_mismatch', seq: 2 }], counts: { auditEntriesChecked: 3 } });
   });
 
   it('denetim okuma hatasi o apartman icin is hatasidir (SQS tekrar dener)', async () => {
@@ -305,6 +316,7 @@ describe('zamanlayici - ledger_audit isi', () => {
       auditor: { run: async () => { throw new Error('throttled'); } },
       metrics: { emit: vi.fn() }, log: { info: vi.fn(), error: vi.fn() },
       finance: {} as never, payments: null, events: { publish: vi.fn() }, outbox: {} as never,
+      auditChain: { verify: async (scope: string) => ({ scope, checked: 0, findings: [] }) },
     });
     const res = await worker({ Records: [{ messageId: 'm1', body: JSON.stringify({ job: 'ledger_audit', scheduledTime: '2026-11-21T00:40:00Z' }) }] });
     expect(res.batchItemFailures).toEqual([{ itemIdentifier: 'm1' }]);

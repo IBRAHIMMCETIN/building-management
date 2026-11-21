@@ -1,6 +1,8 @@
 import { type OutboxStore, createDynamoOutboxStore } from '../events/outboxStore.js';
 import { type EventPublisher, buildEvent, createEventPublisherFromEnv } from '../events/publisher.js';
 import { DEFAULT_SWEEP_MIN_AGE_SECONDS, type SweepOptions, sweepOutbox } from '../events/sweep.js';
+import { PLATFORM_SCOPE, auditScope } from '../modules/audit/log.js';
+import { type ChainVerification, createAuditReader, createDynamoCheckpointStore, verifyAuditScope } from '../modules/audit/repository.js';
 import { type LedgerAuditor, createDynamoAuditSource, createLedgerAuditor } from '../modules/finance/audit.js';
 import { type MetricsEmitter, createEmfEmitterFromEnv } from '../observability/metrics.js';
 import { type CoreRepository, coreRepository } from '../modules/core/repository.js';
@@ -100,6 +102,8 @@ export type SchedulerDeps = {
   outbox: Pick<OutboxStore, 'listPendingPage' | 'markPublished'>;
   sweepOptions: SweepOptions;
   auditor: Pick<LedgerAuditor, 'run'>;
+  /** Denetim gunlugu hash zinciri dogrulamasi (kapsam: `APT#<id>` veya `PLATFORM`). */
+  auditChain: { verify(scope: string): Promise<ChainVerification> };
   metrics: MetricsEmitter;
   now: () => Date;
   log: Pick<Console, 'info' | 'error'>;
@@ -109,7 +113,7 @@ const errorText = (err: unknown) => (err instanceof Error ? `${err.name}: ${err.
 
 export function createSchedulerWorker(overrides: Partial<SchedulerDeps> = {}) {
   const lazy: { events?: EventPublisher; finance?: SchedulerDeps['finance']; payments?: SchedulerDeps['payments'] } = {};
-  const lazyOps: { outbox?: SchedulerDeps['outbox']; auditor?: SchedulerDeps['auditor']; metrics?: MetricsEmitter } = {};
+  const lazyOps: { outbox?: SchedulerDeps['outbox']; auditor?: SchedulerDeps['auditor']; auditChain?: SchedulerDeps['auditChain']; metrics?: MetricsEmitter } = {};
   const now = overrides.now ?? (() => new Date());
   const events = () => (lazy.events ??= overrides.events ?? createEventPublisherFromEnv());
   const finance = () => (lazy.finance ??= overrides.finance ?? createFinanceService({ now, memberships: membershipRepository }));
@@ -134,6 +138,13 @@ export function createSchedulerWorker(overrides: Partial<SchedulerDeps> = {}) {
   const outbox = () => (lazyOps.outbox ??= overrides.outbox ?? createDynamoOutboxStore());
   const auditor = () => (lazyOps.auditor ??= overrides.auditor ?? createLedgerAuditor(createDynamoAuditSource()));
   const metrics = () => (lazyOps.metrics ??= overrides.metrics ?? createEmfEmitterFromEnv());
+  const auditChain = () =>
+    (lazyOps.auditChain ??=
+      overrides.auditChain ??
+      (() => {
+        const deps = { reader: createAuditReader(), checkpoints: createDynamoCheckpointStore(), now };
+        return { verify: (scope: string) => verifyAuditScope(scope, deps) };
+      })());
   const sweepOptions: SweepOptions = overrides.sweepOptions ?? {
     minAgeSeconds: Number(process.env.OUTBOX_SWEEP_MIN_AGE_SECONDS ?? DEFAULT_SWEEP_MIN_AGE_SECONDS),
   };
@@ -158,21 +169,36 @@ export function createSchedulerWorker(overrides: Partial<SchedulerDeps> = {}) {
   /** Salt okunur denetim: sapma bulgudur, is hatasi degildir (tekrar denemek sonucu degistirmez). */
   async function runAudit(apartmentId: string): Promise<SiteOutcome> {
     const report = await auditor().run(apartmentId);
+    // Denetim gunlugu zinciri (kurcalama / silme tespiti); bulgular defter sapmasina eklenir.
+    const chain = await auditChain().verify(auditScope(apartmentId));
+    const drift = report.findings.length + chain.findings.length;
     metrics().emit(
-      { LedgerDrift: report.findings.length, LedgerAuditUnstable: report.unstable.length },
+      { LedgerDrift: drift, LedgerAuditUnstable: report.unstable.length, AuditChainBroken: chain.findings.length },
       { msg: 'ledger_audit_metrics', apartmentId },
     );
     const entry = {
-      level: report.findings.length > 0 ? 'error' : 'info',
+      level: drift > 0 ? 'error' : 'info',
       msg: 'ledger_audit',
       apartmentId,
-      counts: report.counts,
-      findings: report.findings,
+      counts: { ...report.counts, auditEntriesChecked: chain.checked },
+      findings: [...report.findings, ...chain.findings],
       unstable: report.unstable,
     };
-    if (report.findings.length > 0) log.error(JSON.stringify(entry));
+    if (drift > 0) log.error(JSON.stringify(entry));
     else log.info(JSON.stringify(entry));
-    return { apartmentId, status: 'done', detail: { findings: report.findings.length, unstable: report.unstable.length } };
+    return { apartmentId, status: 'done', detail: { findings: drift, unstable: report.unstable.length, auditEntriesChecked: chain.checked } };
+  }
+
+  /** Platform zinciri (kullanici tercihleri vb.): tum apartmanlar icin calisan gecelik turda bir kez. */
+  async function runPlatformChain(): Promise<SiteOutcome> {
+    try {
+      const chain = await auditChain().verify(PLATFORM_SCOPE);
+      metrics().emit({ LedgerDrift: chain.findings.length, AuditChainBroken: chain.findings.length }, { msg: 'ledger_audit_metrics', apartmentId: '_platform' });
+      if (chain.findings.length > 0) log.error(JSON.stringify({ level: 'error', msg: 'ledger_audit', apartmentId: '_platform', findings: chain.findings }));
+      return { apartmentId: '_platform', status: 'done', detail: { findings: chain.findings.length, auditEntriesChecked: chain.checked } };
+    } catch (err) {
+      return { apartmentId: '_platform', status: 'failed', error: errorText(err) };
+    }
   }
 
   async function runForSite(job: Job, apartmentId: string, day: IsoDate): Promise<SiteOutcome> {
@@ -253,6 +279,7 @@ export function createSchedulerWorker(overrides: Partial<SchedulerDeps> = {}) {
       }
     }
     // Iadeler apartman durumundan bagimsiz (pasif sitedeki iade de tamamlanmali); tek sefer.
+    if (message.job === 'ledger_audit' && !message.apartmentId) outcomes.push(await runPlatformChain());
     if (message.job === 'payment_reconcile' && !message.apartmentId) {
       const service = payments();
       if (service) {

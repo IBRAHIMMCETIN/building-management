@@ -1,8 +1,7 @@
+import { auditedPutNew, auditedPutVersioned } from '../audit/log.js';
 import {
   KEY_SEPARATOR,
   getTenantItem,
-  putNewItem,
-  putVersionedItem,
   queryTenantAll,
   skKey,
   tenantPk,
@@ -45,6 +44,17 @@ export type ApartmentRoleRepository = {
   update(record: ApartmentRole, expectedVersion: number): Promise<void>;
 };
 
+function roleAudit(r: ApartmentRole, action: string) {
+  const rec = r as ApartmentRole & { updatedBy?: string; status?: string; version?: number };
+  return {
+    apartmentId: r.apartmentId,
+    action,
+    target: { type: 'apartment_role', id: `${r.userId}:${r.role}` },
+    actorId: rec.updatedBy,
+    details: { userId: r.userId, role: r.role, status: rec.status, version: rec.version },
+  };
+}
+
 export function createApartmentRoleRepository(): ApartmentRoleRepository {
   return {
     get: async (apartmentId, userId, role) =>
@@ -53,11 +63,11 @@ export function createApartmentRoleRepository(): ApartmentRoleRepository {
       (await queryTenantAll<ApartmentRole>(apartmentId, 'ROLE#', { ConsistentRead: true })).map((r) => stripIndex(r)),
     async create(record) {
       assertKeys(record);
-      await putNewItem({ ...stripIndex(record), ...apartmentRoleGsi1(record) });
+      await auditedPutNew({ ...stripIndex(record), ...apartmentRoleGsi1(record) }, roleAudit(record, 'apartment_role.create'));
     },
     async update(record, expectedVersion) {
       assertKeys(record);
-      await putVersionedItem({ ...stripIndex(record), ...apartmentRoleGsi1(record) }, expectedVersion);
+      await auditedPutVersioned({ ...stripIndex(record), ...apartmentRoleGsi1(record) }, expectedVersion, roleAudit(record, 'apartment_role.update'));
     },
   };
 }

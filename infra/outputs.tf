@@ -19,6 +19,11 @@ output "dynamodb_table_arn" {
   value = aws_dynamodb_table.main.arn
 }
 
+output "audit_table_name" {
+  description = "Degistirilemez denetim gunlugu tablosu (yalnizca ekle + oku)."
+  value       = aws_dynamodb_table.audit.name
+}
+
 output "cognito_user_pool_id" {
   value = aws_cognito_user_pool.main.id
 }
