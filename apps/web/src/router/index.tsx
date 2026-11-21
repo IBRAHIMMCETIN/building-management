@@ -18,7 +18,9 @@ import { SelectContextPage } from '@/pages/auth/SelectContextPage';
 import { ForbiddenPage, NotFoundPage, RouteErrorPage } from '@/pages/errors/ErrorPages';
 import { PlaceholderPage } from '@/pages/PlaceholderPage';
 import { PlatformApartmentsPage } from '@/pages/platform/apartments/PlatformApartmentsPage';
+import { PlatformInvoicesPage } from '@/pages/platform/payments/PlatformInvoicesPage';
 import { PlatformPaymentsPage } from '@/pages/platform/payments/PlatformPaymentsPage';
+import { PlatformPayoutsPage } from '@/pages/platform/payments/PlatformPayoutsPage';
 import { ResidentAnnouncementsPage } from '@/pages/resident/AnnouncementsPage';
 import { DuesPage } from '@/pages/resident/DuesPage';
 import { PaymentPage } from '@/pages/resident/payment/PaymentPage';
@@ -91,6 +93,8 @@ export const router = createBrowserRouter([
                 children: [
                   { path: 'apartments', element: <PlatformApartmentsPage /> },
                   { path: 'payments', element: <PlatformPaymentsPage /> },
+                  { path: 'payments/transfers', element: <PlatformPayoutsPage /> },
+                  { path: 'payments/invoices', element: <PlatformInvoicesPage /> },
                   { path: 'users', element: <PlatformUsersPage /> },
                 ],
               },

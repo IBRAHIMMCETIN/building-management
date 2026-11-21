@@ -45,6 +45,11 @@ describe('alt uye isyeri formu', () => {
     ]);
   });
 
+  it('hesap sahibi adi istege bagli, verilirse 2-140 karakter', () => {
+    expect(errorPaths(base({ accountHolderName: 'X' }))).toEqual(['accountHolderName']);
+    expect(errorPaths(base({ accountHolderName: 'Lale Apartmanı Yönetimi' }))).toEqual([]);
+  });
+
   it('istek: normalize eder ve tipe ait olmayan alanlari gondermez', () => {
     const input = toSubMerchantInput(base({ contactName: 'gizli', identityNumber: '10000000146' }));
     expect(input).toMatchObject({
@@ -57,6 +62,13 @@ describe('alt uye isyeri formu', () => {
     expect(input).not.toHaveProperty('identityNumber');
     expect(input).not.toHaveProperty('contactName');
     expect(input.taxNumber).toBeUndefined();
+    // Bos hesap sahibi / saglayici gonderilmez: API unvani ve cozumlenen saglayiciyi kullanir.
+    expect(input).not.toHaveProperty('accountHolderName');
+    expect(input).not.toHaveProperty('provider');
+    expect(toSubMerchantInput(base({ accountHolderName: ' Lale Apt. Yön. ', provider: 'paytr' }))).toMatchObject({
+      accountHolderName: 'Lale Apt. Yön.',
+      provider: 'paytr',
+    });
 
     const personal = toSubMerchantInput(base({ subMerchantType: 'PERSONAL', contactName: 'Ayşe', contactSurname: 'Yılmaz', identityNumber: '10000000146' }));
     expect(personal).not.toHaveProperty('taxOffice');

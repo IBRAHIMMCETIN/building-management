@@ -7,7 +7,9 @@
  *    varsayilan %0,75). POS maliyeti saglayicinin faturasidir, buraya girmez. Iade edilen /
  *    incelemedeki odemeler satira girmez.
  *  - Model: `monthly` (varsayilan; donem `M-YYYY-MM`) veya `per_payment` (`P-<intentId>`).
- *  - KDV: `exclusive` (platform payi KDV haric; KDV ustune eklenir) veya `inclusive`.
+ *  - KDV: `inclusive` (varsayilan, karar 21.11.2026): odeme aninda kesilen platform payi KDV
+ *    dahildir; fatura toplami = kesilen pay toplami, apartmandan ayrica KDV alinmaz. `exclusive`
+ *    (pay KDV haric, KDV ustune) yalnizca ayarla secilir.
  *  - Taslak idempotenttir: ayni donem yeniden uretildiginde satirlar degismediyse dokunulmaz,
  *    degistiyse surum artar. Kesilmis (ISSUED) / iptal edilmis taslak yeniden uretilmez.
  *  - `InvoiceProvider` (Parasut / Foriba / BizimHesap adaptoru ileride): `manual` saglayici

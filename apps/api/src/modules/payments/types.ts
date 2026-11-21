@@ -386,7 +386,7 @@ export type PlatformInvoice = TableKeys & {
   /** KDV haric tutar. */
   netAmount: Kurus;
   vatRateBasisPoints: number;
-  /** `exclusive`: platform payi KDV haric (KDV ustune eklenir); `inclusive`: pay KDV dahil. */
+  /** `inclusive` (varsayilan): kesilen pay KDV dahil, toplam = pay; `exclusive`: KDV ustune eklenir. */
   vatMode: 'exclusive' | 'inclusive';
   vatAmount: Kurus;
   totalAmount: Kurus;

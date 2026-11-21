@@ -937,7 +937,7 @@ run "payments_iyzico" {
       contains(keys(f.environment[0].variables), "PAYEE_KMS_KEY_ID") &&
       f.environment[0].variables.PLATFORM_INVOICE_MODE == "monthly" &&
       f.environment[0].variables.PLATFORM_INVOICE_VAT_BPS == "2000" &&
-      f.environment[0].variables.PLATFORM_INVOICE_VAT_MODE == "exclusive" &&
+      f.environment[0].variables.PLATFORM_INVOICE_VAT_MODE == "inclusive" &&
       !contains(keys(f.environment[0].variables), "PAYTR_TRANSFER_DELAY_HOURS")
     ])
     error_message = "API ve scheduler worker alici anahtarini ve fatura ayarlarini almali"

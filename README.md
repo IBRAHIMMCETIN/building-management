@@ -184,7 +184,7 @@ npm run dev:api
 | `IYZICO_BASE_URL` / `IYZICO_SECRET_ARN` | iyzico API adresi (sandbox/canlı) ve anahtarların Secrets Manager ARN'i (eski ad `PAYMENTS_SECRET_ARN` da okunur). Yerelde `IYZICO_API_KEY` / `IYZICO_SECRET_KEY`. |
 | `PAYEE_KMS_KEY_ID` | P4: apartman aktarım alıcısını (IBAN + hesap sahibi) şifreleyen müşteri yönetimli KMS anahtarı (Terraform `payee_kms_key_arn`). API yalnızca şifreler (`kms:Encrypt`), çözme (`kms:Decrypt`) yalnızca transferi gönderen scheduler worker'da; ikisi de `purpose = payment-payee` bağlamına koşullu. Yerelde verilmezse bellek içi anahtar; production'da anahtarsız alıcı saklanamaz. |
 | `PAYTR_TRANSFER_DELAY_HOURS` | P4: PayTR ödeme onayından sonra Platform Transfer talimatı için bekleme (0-720, varsayılan 24; Terraform `paytr_transfer_delay_hours`). Talimat en erken ödemenin ertesi günü (İstanbul) verilir. |
-| `PLATFORM_INVOICE_MODE` / `PLATFORM_INVOICE_VAT_BPS` / `PLATFORM_INVOICE_VAT_MODE` | P4: platform komisyon faturası taslağı: `monthly` (varsayılan) \| `per_payment`; KDV baz puan (varsayılan `2000` = %20); `exclusive` (varsayılan; platform payı + KDV) \| `inclusive`. |
+| `PLATFORM_INVOICE_MODE` / `PLATFORM_INVOICE_VAT_BPS` / `PLATFORM_INVOICE_VAT_MODE` | P4: platform komisyon faturası taslağı: `monthly` (varsayılan) \| `per_payment`; KDV baz puan (varsayılan `2000` = %20); `inclusive` (varsayılan; kesilen platform payı KDV dahil, fatura toplamı = defterdeki platform payı) \| `exclusive` (pay + KDV). |
 | `PAYTR_SECRET_ARN` / `PAYTR_TEST_MODE` | PayTR mağaza anahtarları (Secrets Manager JSON `{"merchantId","merchantKey","merchantSalt"}`) ve `test_mode` (`1` varsayılan, canlıda `0`; Terraform `paytr_test_mode`). Yerelde `PAYTR_MERCHANT_ID` / `PAYTR_MERCHANT_KEY` / `PAYTR_MERCHANT_SALT`. |
 | `PAYMENTS_POS_RATE_BPS` / `PAYMENTS_POS_FIXED_FEE_KURUS` | Online ödeme sağlayıcısının sözleşme komisyonu: oran baz puan (`249` = %2,49; 0-1000) ve işlem başı sabit ücret kuruş (`25` = 0,25 TL; 0-5000). Varsayılan `0`; geçersiz değer başlangıçta hata verir. Komisyon tahmininde kullanılır, ödeme hesabı bazında geçersiz kılınabilir (Terraform `payments_pos_rate_bps`, `payments_pos_fixed_fee_kurus`). |
 | `AUDIT_TABLE_NAME` | Denetim günlüğü tablosu (Terraform: `<proje>-<ortam>-audit`). Lambda'da tanımsızsa hassas yazımlar reddedilir (fail closed); yerel geliştirme ve testlerde tanımsızsa denetim atlanır. |
@@ -459,6 +459,14 @@ API Gateway sınırı istemci başına değil, rota başınadır: arka ucu ve ma
 - [x] Elle tetikleme: `POST .../intents/{intentId}/release` (bekleyen/başarısız aktarımı öne çeker; ertesi gün kuralı korunur)
 - [x] Platform komisyon faturası altyapısı (`payments/invoices.ts`): sağlayıcıdan bağımsız `InvoiceProvider` arayüzü (`manual` varsayılan; Paraşüt/Foriba/BizimHesap adaptörü takılabilir), muhatap apartman yönetimi (VKN, `invoiceRecipient`), aylık veya ödeme bazlı taslak + mutabakat kaydı (`PINV#`), KDV hariç/dahil; aylık `platform_invoices` işi; kes / iptal uçları
 - [x] Altyapı: KMS anahtarı + alias (yıllık döndürme), rol bazlı KMS izinleri, PayTR transfer sonuç rotası, `payout_returns` ve `platform_invoices` zamanlamaları, `PAYOUT_RETURNED` / `PAYOUT_FAILED` alarmları, dağıtım politikasına KMS yönetimi
+**Online Ödeme v2 — P5: platform ekranları, KDV dahil fatura, canlıya geçiş runbook'u**
+
+- [x] KDV kararı: `PLATFORM_INVOICE_VAT_MODE=inclusive` varsayılan (uygulama ve Terraform `platform_invoice_vat_mode`). Ödemede kesilen platform payı KDV dahil; fatura toplamı apartman defterindeki platform payı ile birebir aynı (ör. 9,99 TL → matrah 8,33 + KDV 1,66)
+- [x] `GET /api/admin/payments/settlements?status=pending|failed&days=` (1-90, varsayılan 30): onay bekleyen / başarısız aktarımlar, tüm apartmanlar; IBAN veya şifreli alıcı dönmez
+- [x] Web `/admin/payments`: hesap açarken tam IBAN + hesap sahibi adı ve sağlayıcı seçimi; "Ayarlar" diyaloğu (platform payı, POS oranı / sabit ücret — boş = ortam varsayılanı, IBAN değişikliği, fatura muhatabı VKN); kaydettikten sonra yalnızca maskeli IBAN; apartman bazında sağlayıcı (iyzico / PayTR / ortam varsayılanı, sürüm koşullu); satırda etkin sağlayıcı ve "IBAN kayıtlı değil" / "Fatura VKN eksik" rozetleri
+- [x] Web `/admin/payments/transfers`: onay bekleyen/başarısız aktarımlar + "Şimdi tetikle" (gerekçeli); bankaya gönderilen aktarımlar bekliyor / tamamlandı / geri döndü / başarısız filtreleriyle; geri dönen ve başarısız aktarımı (isteğe bağlı düzeltilmiş IBAN ile) yeniden gönderme
+- [x] Web `/admin/payments/invoices`: dönem seçimi, matrah/KDV/toplam özeti, VKN eksik uyarısı, taslağı yenile, dışarıda kesilen faturanın numarasıyla "Kesildi", taslak iptali
+
 **Finans — taşınmada cari kapama ve borç devri (`main`'e alındı: `b162339`)**
 
 - [x] Alt cari yorumlayıcısı: kesim tarihli cari, devir kalemleri vade ve tazminat başlangıcıyla taşınır; FIFO mahsup ve kıstelyevm tek kaynaktan (`subledger.ts`)
@@ -506,7 +514,7 @@ API Gateway sınırı istemci başına değil, rota başınadır: arka ucu ve ma
 
 **Ödeme ve tahsilatın devamı**
 
-- [ ] Online tahsilatın banka hesabına aktarım (settlement) mutabakatı
+- [ ] Online tahsilatın banka hesabına aktarım mutabakatı: sağlayıcı ekstresi ↔ `PAYOUT#` kayıtları ↔ banka hareketi otomatik eşleştirme (P4/P5'te aktarım takibi, geri dönüş ve elle yeniden gönderim hazır)
 - [ ] Taksit, otomatik ödeme talimatı, şifresiz ödeme linki, iade
 - [ ] Banka hareketi eşleştirme
 
@@ -531,6 +539,67 @@ API Gateway sınırı istemci başına değil, rota başınadır: arka ucu ve ma
 - [ ] MFA devamı: `warn` → `enforce` geçişinin ortam bazında planlanması
 - [ ] G3 — Uç koruma (alan adı alındığında): API özel alan adı Cloudflare arkasında, WAF ve oran sınırlama, `disable_execute_api_endpoint`, kaynak doğrulama (HTTP API'ye AWS WAF bağlanamaz; CloudFront WAF'ı hesap SCP'si nedeniyle kullanılamaz)
 
+### Online Ödeme Canlıya Geçiş Runbook'u (P1–P5)
+
+Sıra önemlidir; her adım bir öncekinin çıktısını kullanır. Komutlar repo kökünden, ilgili ortamın tfvars dosyasıyla (`infra/dev.tfvars`, prod için ayrıca) çalıştırılır.
+
+1. **Dağıtım politikası (yönetici kimliğiyle, bir kez).** KMS anahtarı, yeni zamanlamalar ve rotalar için CI kullanıcısının yetkisi önce genişletilir:
+   ```bash
+   terraform -chdir=infra/github-deploy-user init \
+     -backend-config="bucket=building-management-tfstate-<hesap>-eu-north-1" \
+     -backend-config="key=github-deploy-user/terraform.tfstate" \
+     -backend-config="region=eu-north-1" -backend-config="use_lockfile=true"
+   terraform -chdir=infra/github-deploy-user plan
+   terraform -chdir=infra/github-deploy-user apply
+   ```
+   OIDC kullanılıyorsa aynı işlem `infra/github-oidc` için yapılır (ikisi de `infra/modules/deploy-policy` modülünü kullanır).
+2. **tfvars.** Ödeme değişkenleri tanımlanır:
+   ```hcl
+   payments_providers         = ["iyzico", "paytr"]   # kullanılacak sağlayıcılar
+   default_payment_provider   = "paytr"               # apartman tercihi yoksa
+   paytr_test_mode            = true                  # canlıda false
+   iyzico_base_url            = "https://sandbox-api.iyzipay.com"  # canlıda https://api.iyzipay.com
+   payments_pos_rate_bps      = 249                   # sağlayıcı sözleşme oranı (%2,49)
+   payments_pos_fixed_fee_kurus = 25                  # işlem başı sabit ücret (0,25 TL)
+   paytr_transfer_delay_hours = 24
+   platform_invoice_mode      = "monthly"
+   platform_invoice_vat_mode  = "inclusive"           # varsayılan; kesilen pay KDV dahil
+   alert_email                = "operasyon@ornek.com" # PAYOUT_RETURNED / PAYOUT_FAILED / PAYMENT_APPROVAL_FAILED alarmları
+   ```
+3. **Ana yığın.** `terraform -chdir=infra fmt -check`, `validate`, `test` (plan testleri), ardından `plan` / `apply` (CI'da `workflow_dispatch target=dev`). Apply sonrası:
+   ```bash
+   terraform -chdir=infra output payments_secret_arns
+   terraform -chdir=infra output payments_callback_urls
+   terraform -chdir=infra output payee_kms_key_arn
+   ```
+4. **Sağlayıcı sırları (Secrets Manager, konsoldan veya CLI ile; koda/tfvars'a yazılmaz).**
+   - iyzico: `{"apiKey","secretKey"}`
+   - PayTR: `{"merchantId","merchantKey","merchantSalt"}`
+5. **Sağlayıcı paneli adresleri** (`payments_callback_urls` çıktısından):
+   - iyzico → webhook: `iyzico.webhook`
+   - PayTR Mağaza Paneli → Ayarlar → **Bildirim URL**: `paytr.webhook`
+   - PayTR → **Platform Transfer Sonucu Bildirim URL**: `paytr.transfer_webhook`
+6. **Alarmlar.** `alert_email` adresine gelen SNS abonelik onay e-postası onaylanır. Kritik alarmlar: `PAYOUT_RETURNED`, `PAYOUT_FAILED`, `PAYMENT_APPROVAL_FAILED`, `PAYOUT_RETURN_UNMATCHED`.
+7. **Apartman hesapları (`/admin/payments`).** Her apartman için:
+   - Gerekirse "Sağlayıcı" ile iyzico / PayTR / ortam varsayılanı seçilir.
+   - "Ödeme hesabı aç": işyeri türü, KYC bilgileri, **tam IBAN + hesap sahibi adı** (KMS ile şifrelenir; sonra yalnızca maskeli görünür), platform payı (`0,75`).
+   - "Ayarlar": POS oranı / sabit ücret (sözleşme farklıysa; boş = ortam varsayılanı), fatura muhatabı (unvan, **VKN**, vergi dairesi).
+   - "Eksik bilgi" filtresinde hiçbir apartman kalmamalı (P4 öncesi açılmış PayTR hesaplarında IBAN + hesap sahibi bu diyalogdan girilir).
+8. **Sandbox uçtan uca test** (test kartı, her sağlayıcı için):
+   - Sakin portalından ödeme → sonuç sayfası `SUCCEEDED`, makbuz ve defter kaydı; apartman defterinde komisyon gideri = platform payı + POS tahmini.
+   - Ertesi gün (veya `/admin/payments/transfers` → "Şimdi tetikle"): onay / PayTR transfer talimatı → aktarım kaydı `SENT` → sonuç bildirimi ile `SETTLED`.
+   - Geri dönen aktarım simülasyonu (PayTR test ortamı elverirse) → `RETURNED` + alarm → düzeltilmiş IBAN ile "Yeniden gönder" → `RESENT`.
+   - Ay başı (veya `POST .../invoices/draft`): `/admin/payments/invoices` taslağı; toplam = dönemdeki platform payları toplamı; e-Fatura/e-Arşiv'de kesilip numara girilir → "Kesildi".
+   - P3/P4 kontrol listesindeki sağlayıcı yanıt biçimi varsayımları doğrulanır.
+9. **Canlıya geçiş.** tfvars: `paytr_test_mode = false`, `iyzico_base_url = "https://api.iyzipay.com"`; sırlar canlı anahtarlarla güncellenir; sağlayıcı panellerinde canlı mağaza için 5. adımdaki adresler tekrar girilir; apply. İlk gerçek ödeme küçük tutarla yapılır ve 8. adımdaki zincir izlenir. Sandbox'ta açılan alt üye işyeri kayıtları canlıya taşınmaz: canlı sağlayıcıda hesaplar yeniden açılır.
+10. **Geri dönüş (rollback).**
+   - Tek apartman: `/admin/payments` → "Durdur" (yeni ödeme başlatılamaz; başlamış ödemeler tamamlanır) veya "Sağlayıcı" ile diğer sağlayıcıya geçiş.
+   - Bir sağlayıcı: `payments_providers` listesinden çıkarılıp apply (o sağlayıcıyı kullanan apartmanlarda online ödeme kapalı görünür).
+   - Tamamen: `payments_providers = []` ile apply; defter ve aktarım kayıtları korunur, bekleyen aktarımlar sağlayıcı paneli üzerinden elle tamamlanır.
+   - Uygulama sürümü: önceki Lambda sürümüne CI ile yeniden dağıtım. Defter append-only olduğundan veri geri alınmaz; düzeltme ters kayıtla yapılır.
+
+**Muhasebe notu (KDV dahil mod).** Ödemede apartman defterine tek gider yazılır: `exp-online-collection-fee` = platform payı + POS tahmini. Platform komisyon faturası yalnızca platform payını kapsar ve KDV dahildir (fatura toplamı = defterdeki platform payı). POS bölümünün faturası ödeme sağlayıcısı tarafından kesilir; tahmin ile gerçek komisyon farkı (`posFeeDrift`) platform marjı/kaybıdır, apartmana yansımaz.
+
 ### Canlıya Geçiş Kontrol Listesi
 
 Bilinen, bilerek ertelenmiş adımlar:
@@ -546,9 +615,9 @@ Bilinen, bilerek ertelenmiş adımlar:
 - [ ] **Online ödeme komisyonu (P1) canlıya geçiş öncesi:** Sağlayıcı sözleşme oranı tfvars'ta `payments_pos_rate_bps` / `payments_pos_fixed_fee_kurus` olarak tanımlanmalı (varsayılan `0`: POS maliyeti tahmin edilmez, platform payından karşılanır). P1'den önce açılmış ödeme hesaplarının platform ücreti `0` olabilir; `/admin/payments` veya `PATCH /api/admin/payments/apartments/{id}/account` ile `platformFeeBasisPoints: 75` yapılmalı. Sandbox doğrulamasında onay yanıtı ve `iyziCommissionRateAmount` / `iyziCommissionFee` alanlarının TL cinsinden geldiği varsayımı kontrol edilmeli.
 - [ ] **PayTR (P3) canlıya geçiş öncesi:** `payments_providers`'a `paytr` eklenip apply edildikten sonra `terraform output payments_secret_arns` ile PayTR secret'ına `{"merchantId","merchantKey","merchantSalt"}` girilir; PayTR Mağaza Paneli → Ayarlar → **Bildirim URL** olarak `terraform output payments_callback_urls` → `paytr.webhook` tanımlanır. Mağaza test modundayken `paytr_test_mode = true`; canlıda `false`. Test kartıyla doğrulanacak varsayımlar: durum sorgusundaki `payment_amount` biçimi (`10,8` / `10.80`), `kesinti_tutari` alanı, `returns` dizisinin alan adları, dönüş adreslerine yapılan istek yöntemi (GET/POST), başarısız denemede bildirimin her denemede mi yoksa yalnızca sonunda mı geldiği. Pazaryeri payının aktarımı P4'e kadar elle (PayTR panelinden) yapılır.
 - [ ] **P4 dağıtım sırası:** önce dağıtım politikası (`infra/github-deploy-user` ve/veya `infra/github-oidc`) uygulanmalı (KMS anahtarı yönetimi yetkisi), sonra ana yığın. Ana yığın sonrası PayTR Mağaza Paneli → Ayarlar → **Platform Transfer Sonucu Bildirim URL** = `terraform output payments_callback_urls` → `paytr.transfer_webhook`.
-- [ ] **P4 mevcut hesaplar:** P4 öncesi açılmış ödeme hesaplarında tam IBAN saklanmadı (yalnızca maskeli). PayTR hesapları için `PATCH /api/admin/payments/apartments/{id}/account` ile `iban` + `accountHolderName` girilmeli; girilmezse transfer `payee_missing` ile başarısız olur ve alarm üretir. Fatura muhatabı (VKN) yoksa `invoiceRecipient` girilmeli.
+- [ ] **P4 mevcut hesaplar:** P4 öncesi açılmış ödeme hesaplarında tam IBAN saklanmadı (yalnızca maskeli). PayTR hesapları için `/admin/payments` → "Ayarlar" (veya `PATCH /api/admin/payments/apartments/{id}/account`) ile `iban` + `accountHolderName` girilmeli; girilmezse transfer `payee_missing` ile başarısız olur ve alarm üretir. Fatura muhatabı (VKN) yoksa `invoiceRecipient` girilmeli.
 - [ ] **P4 sandbox doğrulaması:** Platform Transfer yanıtı (`reference`) ve aynı `trans_id` ile tekrar gönderimin davranışı; transfer sonuç bildiriminin yalnızca başarılı transferleri mi listelediği; geri dönen aktarım listesinin yanıt biçimi ve `transfer_date` alanı; `hesaptan-gonder` `trans_info.amount` biriminin kuruş olduğu varsayımı.
-- [ ] **Platform komisyonu KDV kararı:** varsayılan `exclusive` (%0,75 + KDV) ile faturadaki KDV tutarı ödeme anında apartman payından düşülmüyor; ya ayrıca tahsil edilmeli ya da `PLATFORM_INVOICE_VAT_MODE=inclusive` (kesilen %0,75 KDV dahil sayılır) seçilmeli.
+- [x] **Platform komisyonu KDV kararı (21.11.2026):** `PLATFORM_INVOICE_VAT_MODE=inclusive` varsayılan. Ödemede kesilen %0,75 KDV dahil sayılır; apartmandan ek KDV tahsil edilmez, fatura toplamı defterdeki platform payıyla birebir örtüşür.
 - [ ] Aynı sandbox doğrulamasında iade akışı: Checkout Form sonucundaki `itemTransactions[].paymentTransactionId` alanı, `/payment/refund` yanıtı, raporlama servisinde (`GET /v2/reporting/payment/details`) başarılı iadenin `refundStatus = 1` olduğu varsayımı ve GET isteğinde sorgu dizgisinin IYZWSv2 imzasına katılmadığı varsayımı kontrol edilecektir.
 
 ---

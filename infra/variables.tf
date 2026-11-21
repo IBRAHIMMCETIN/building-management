@@ -357,8 +357,8 @@ variable "platform_invoice_vat_bps" {
 
 variable "platform_invoice_vat_mode" {
   type        = string
-  default     = "exclusive"
-  description = "P4: exclusive (platform payi KDV haric, KDV ustune) | inclusive (pay KDV dahil)."
+  default     = "inclusive"
+  description = "P4/P5: inclusive (varsayilan; odemede kesilen platform payi KDV dahil, fatura = defter gideri) | exclusive (pay KDV haric, KDV ustune)."
 
   validation {
     condition     = contains(["exclusive", "inclusive"], var.platform_invoice_vat_mode)

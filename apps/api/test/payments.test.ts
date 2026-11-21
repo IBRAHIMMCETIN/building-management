@@ -198,7 +198,8 @@ function setup(
   });
   const registry = payments.providers;
   const payouts = createPayoutService({ repository: payRepo.repo, providers: registry, ...(vault ? { vault } : {}), core, now, log });
-  const invoices = createInvoiceService({ repository: payRepo.repo, core, settings: { mode: 'monthly', vatRateBasisPoints: 2000, vatMode: 'exclusive' }, now, log });
+  // Uygulama varsayilani: KDV dahil (karar 21.11.2026).
+  const invoices = createInvoiceService({ repository: payRepo.repo, core, settings: { mode: 'monthly', vatRateBasisPoints: 2000, vatMode: 'inclusive' }, now, log });
   const app = createApp({
     version: 'test',
     authenticate: createMockAuthenticator(),
@@ -2483,6 +2484,26 @@ describe('odeme - PayTR Platform Transfer ve geri donen aktarimlar (P4)', () => 
     expect(w.intentOf(intentId).settlement).toMatchObject({ status: 'failed', approvals: [{ status: 'failed', error: { code: 'paytr_010' } }] });
     expect(w.logs).toContainEqual(expect.objectContaining({ fields: expect.objectContaining({ alert: 'PAYMENT_APPROVAL_FAILED', intentId }) }));
 
+    // P5: platform ekrani icin aktarimi bekleyen/basarisiz odemeler (yanitta IBAN / sifreli alici yok).
+    const pending = await w.call('GET', '/api/admin/payments/settlements', admin);
+    expect(pending.body.items).toEqual([
+      expect.objectContaining({
+        apartmentId: APT,
+        apartmentName: 'Lale Apartmani',
+        intentId,
+        provider: 'paytr',
+        settlementStatus: 'failed',
+        transferAmount: w.intentOf(intentId).settlement!.subMerchantTotal,
+        version: w.intentOf(intentId).version,
+        approvals: [expect.objectContaining({ status: 'failed', attempts: 1, error: expect.objectContaining({ code: 'paytr_010' }) })],
+      }),
+    ]);
+    expect(JSON.stringify(pending.body)).not.toMatch(/TR33|payeeCiphertext/);
+    expect((await w.call('GET', '/api/admin/payments/settlements?status=pending', admin)).body.items).toEqual([]);
+    expect((await w.call('GET', '/api/admin/payments/settlements?status=bogus', admin)).status).toBe(400);
+    expect((await w.call('GET', '/api/admin/payments/settlements?days=365', admin)).status).toBe(400);
+    expect((await w.call('GET', '/api/admin/payments/settlements', w.token('mgr-1', 'apartment_manager'))).status).toBe(403);
+
     const path = `/api/admin/payments/apartments/${APT}/intents/${intentId}/release`;
     expect((await w.call('POST', path, admin, { note: 'kisa', expectedVersion: w.intentOf(intentId).version })).status).toBe(400);
     expect((await w.call('POST', path, admin, { note: 'Tutar duzeltildi, tekrar gonder', expectedVersion: 1 })).status).toBe(409);
@@ -2615,22 +2636,23 @@ describe('platform komisyon faturasi (P4)', () => {
     return { w, admin, a, b, c };
   }
 
-  it('aylik taslak: yalnizca deftere yazilmis odemelerin platform payi, %20 KDV haric; idempotent', async () => {
+  it('aylik taslak: yalnizca deftere yazilmis odemelerin platform payi, %20 KDV dahil (fatura = kesilen pay); idempotent', async () => {
     const { w, admin, a, b } = await paidWorld();
     w.clock.now = new Date('2026-12-01T01:10:00.000Z');
     const d = await w.call('POST', `/api/admin/payments/apartments/${APT}/invoices/draft`, admin, { period: '2026-11' });
     expect(d.body).toEqual({ period: '2026-11', mode: 'monthly', created: 1, updated: 0, unchanged: 0, locked: 0, intents: 2 });
     const inv = (await w.call('GET', `/api/admin/payments/apartments/${APT}/invoices`, admin)).body.items[0];
-    // 1000 TL x %0,75 = 7,50 TL; 333 TL x %0,75 = 2,4975 -> 2,49 (asagi); net 9,99 TL, KDV 1,998 -> 2,00 (yarim yukari).
+    // 1000 TL x %0,75 = 7,50 TL; 333 TL x %0,75 = 2,4975 -> 2,49 (asagi); kesilen toplam 9,99 TL KDV dahil:
+    // net round(999 / 1,2) = 833 kurus, KDV 166 kurus. Fatura toplami defterdeki platform payina esit.
     expect(inv).toMatchObject({
       invoiceId: 'M-2026-11',
       status: 'DRAFT',
       recipient: { title: 'Lale Apartmanı Yönetimi', taxNumber: '1234567890', taxOffice: 'Kadıköy' },
-      netAmount: 999,
+      netAmount: 833,
       vatRateBasisPoints: 2000,
-      vatMode: 'exclusive',
-      vatAmount: 200,
-      totalAmount: 1_199,
+      vatMode: 'inclusive',
+      vatAmount: 166,
+      totalAmount: 999,
       reconciliation: { intentCount: 2, platformFeeTotal: 999 },
       invoiceProvider: 'manual',
       version: 1,
@@ -2651,7 +2673,7 @@ describe('platform komisyon faturasi (P4)', () => {
     expect((await w.call('POST', `${base}/cancel`, admin, { expectedVersion: 2, reason: 'Hatali taslak' })).body.error).toBe('action_not_allowed');
 
     const all = await w.call('GET', '/api/admin/payments/invoices?period=2026-11', admin);
-    expect(all.body).toMatchObject({ period: '2026-11', totals: { net: 999, vat: 200, total: 1_199 }, items: [{ invoiceId: 'M-2026-11', apartmentName: 'Lale Apartmani' }] });
+    expect(all.body).toMatchObject({ period: '2026-11', totals: { net: 833, vat: 166, total: 999 }, items: [{ invoiceId: 'M-2026-11', apartmentName: 'Lale Apartmani' }] });
     expect((await w.call('GET', '/api/admin/payments/invoices?period=2026-11', w.token('mgr-1', 'apartment_manager'))).status).toBe(403);
   });
 

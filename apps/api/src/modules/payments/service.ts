@@ -959,6 +959,53 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
    * Platform: bekleyen/basarisiz pazaryeri kalemlerini simdi serbest birakmaya hazirlar (gonderim
    * worker'in sonraki turunda). Transfer saglayicisinda en erken odemenin ertesi gunu.
    */
+  /**
+   * Platform: aktarimi bekleyen (`pending`) veya basarisiz (`failed`) kalemi olan basarili odemeler
+   * (tum apartmanlar, son `days` gun). Elle tetikleme ekrani icin; IBAN veya sifreli alici donmez.
+   */
+  async function listSettlements(query: { status?: string; days?: string } = {}) {
+    const statuses: IntentSettlement['status'][] =
+      query.status === undefined || query.status === '' ? ['pending', 'failed'] : query.status === 'pending' || query.status === 'failed' ? [query.status] : [];
+    if (statuses.length === 0) throw new ValidationError('status pending veya failed olmalıdır', 'status');
+    const days = query.days ? Number(query.days) : 30;
+    if (!Number.isInteger(days) || days < 1 || days > 90) throw new ValidationError('days 1-90 arasında olmalıdır', 'days');
+    const now = deps.now();
+    const from = utcStamp(new Date(now.getTime() - days * 86_400_000));
+    const to = `${utcStamp(now)}~`;
+    const items = [];
+    for (const apartmentId of await deps.core.listSiteIds()) {
+      const intents = (await repo.listIntentsBetween(apartmentId, from, to)).filter(
+        (i) => i.status === 'SUCCEEDED' && i.settlement && statuses.includes(i.settlement.status),
+      );
+      if (intents.length === 0) continue;
+      const site = await deps.core.getSite(apartmentId);
+      for (const i of intents) {
+        const s = i.settlement as IntentSettlement;
+        items.push({
+          apartmentId,
+          apartmentName: site?.name ?? null,
+          intentId: i.intentId,
+          unitId: i.unitId,
+          provider: i.provider,
+          amount: i.amount,
+          transferAmount: s.subMerchantTotal,
+          paidAt: i.paidAt,
+          settlementStatus: s.status,
+          approvals: s.approvals.map((a) => ({
+            itemId: a.itemId,
+            status: a.status,
+            attempts: a.attempts,
+            ...(a.releaseAfter ? { releaseAfter: a.releaseAfter } : {}),
+            ...(a.transferId ? { transferId: a.transferId } : {}),
+            ...(a.error ? { error: { code: a.error.code, message: a.error.message, at: a.error.at } } : {}),
+          })),
+          version: i.version,
+        });
+      }
+    }
+    return { items: items.sort((a, b) => b.intentId.localeCompare(a.intentId)) };
+  }
+
   async function releaseNow(ctx: { userId: string }, apartmentId: string, intentId: string, body: unknown) {
     assertId(apartmentId, 'apartmentId');
     assertId(intentId, 'intentId');
@@ -2129,6 +2176,7 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
   return {
     providers: registry,
     releaseNow,
+    listSettlements,
     getSettings,
     updateSettings,
     quote,

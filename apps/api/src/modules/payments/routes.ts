@@ -195,6 +195,7 @@ function page(title: string, body: string): string {
  *   GET   /review                            inceleme bekleyen / iadesi suren odemeler (tum apartmanlar)
  *   GET   /apartments/:apartmentId/intents/:intentId/check     saglayicidan guncel sonuc + yapilabilecek islemler
  *   POST  /apartments/:apartmentId/intents/:intentId/resolve   { action: approve|refund|close, note, expectedVersion }
+ *   GET   /settlements?status=pending|failed&days=   aktarimi bekleyen/basarisiz odemeler (P5; elle tetikleme ekrani)
  *   POST  /apartments/:apartmentId/intents/:intentId/release   { note, expectedVersion } bekleyen aktarimi one cek (P4)
  *   GET   /payouts?status=&days=             aktarimlar (varsayilan: ilgilenilmesi gerekenler; IBAN maskeli)
  *   POST  /apartments/:apartmentId/payouts/:transferId/resend  { note, expectedVersion, iban?, accountHolderName? }
@@ -239,6 +240,7 @@ export function paymentAdminRoutes({
     c.json(await service.updateAccount({ userId: c.get('claims').userId }, c.req.param('apartmentId'), await readJson(c))),
   );
   r.get('/review', async (c) => c.json(await service.listReviewQueue()));
+  r.get('/settlements', async (c) => c.json(await service.listSettlements({ status: c.req.query('status'), days: c.req.query('days') })));
   r.post('/apartments/:apartmentId/intents/:intentId/release', async (c) =>
     c.json(await service.releaseNow({ userId: c.get('claims').userId }, c.req.param('apartmentId'), c.req.param('intentId'), await readJson(c))),
   );
