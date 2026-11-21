@@ -158,9 +158,9 @@ run "prod_plan" {
   # --- SNS / SQS ---
   assert {
     condition = jsondecode(aws_sns_topic_subscription.notification.filter_policy).eventType == [
-      "DUE_GENERATED", "PAYMENT_RECEIVED", "ANNOUNCEMENT_PUBLISHED", "LATE_FEE_POSTED", "DUES_REMINDER",
+      "DUE_GENERATED", "PAYMENT_RECEIVED", "ANNOUNCEMENT_PUBLISHED", "LATE_FEE_POSTED", "DUES_REMINDER", "DUES_BATCH_SUMMARY",
     ]
-    error_message = "Bildirim kuyrugu bes olay turune abone olmali (zamanlanmis gorev olaylari dahil)"
+    error_message = "Bildirim kuyrugu alti olay turune abone olmali (zamanlanmis gorev olaylari ve toplu tahakkuk ozeti dahil)"
   }
   assert {
     condition     = aws_sns_topic_subscription.notification.raw_message_delivery
