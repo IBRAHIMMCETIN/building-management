@@ -255,8 +255,59 @@ run "prod_plan" {
     error_message = "Zamanlama ifadeleri hatali (tazminat 02:30, aidat 03:00, hatirlatma 10:00)"
   }
   assert {
-    condition     = alltrue([for s in aws_scheduler_schedule.jobs : s.schedule_expression_timezone == "Europe/Istanbul" && s.state == "ENABLED"])
-    error_message = "Zamanlamalar Europe/Istanbul ve varsayilan acik olmali"
+    condition     = alltrue([for s in aws_scheduler_schedule.jobs : (startswith(s.schedule_expression, "cron(") ? s.schedule_expression_timezone == "Europe/Istanbul" : s.schedule_expression_timezone == null) && s.state == "ENABLED"])
+    error_message = "cron zamanlamalari Europe/Istanbul, rate() zamanlamalari saat dilimsiz ve varsayilan acik olmali"
+  }
+
+  # --- Outbox suprucusu ve defter denetimi (Asama 3) ---
+  assert {
+    condition = (
+      aws_scheduler_schedule.jobs["outbox_sweep"].schedule_expression == "rate(5 minutes)" &&
+      aws_scheduler_schedule.jobs["outbox_sweep"].schedule_expression_timezone == null &&
+      jsondecode(aws_scheduler_schedule.jobs["outbox_sweep"].target[0].input).job == "outbox_sweep"
+    )
+    error_message = "outbox_sweep 5 dakikada bir calismali"
+  }
+  assert {
+    condition = (
+      aws_scheduler_schedule.jobs["ledger_audit"].schedule_expression == "cron(40 3 * * ? *)" &&
+      aws_scheduler_schedule.jobs["ledger_audit"].schedule_expression_timezone == "Europe/Istanbul" &&
+      jsondecode(aws_scheduler_schedule.jobs["ledger_audit"].target[0].input).job == "ledger_audit"
+    )
+    error_message = "ledger_audit her gece 03:40 (Istanbul) calismali"
+  }
+  assert {
+    condition = (
+      aws_lambda_function.scheduler_worker.environment[0].variables.METRICS_STACK == "building-management" &&
+      aws_lambda_function.scheduler_worker.environment[0].variables.OUTBOX_SWEEP_MIN_AGE_SECONDS == "120"
+    )
+    error_message = "Scheduler worker metrik boyutu yigin adi, suprucu esigi 120 sn olmali"
+  }
+  assert {
+    condition = alltrue([
+      for a in [aws_cloudwatch_metric_alarm.ledger_drift, aws_cloudwatch_metric_alarm.outbox_sweep_failed, aws_cloudwatch_metric_alarm.outbox_stuck] :
+      a.namespace == "BuildingManagement" && length(a.dimensions) == 1 && a.dimensions["Stack"] == "building-management" && a.treat_missing_data == "notBreaching"
+    ])
+    error_message = "Operasyon alarmlari worker'in EMF namespace ve Stack boyutunu dinlemeli"
+  }
+  assert {
+    condition = (
+      aws_cloudwatch_metric_alarm.ledger_drift.metric_name == "LedgerDrift" &&
+      aws_cloudwatch_metric_alarm.ledger_drift.statistic == "Sum" &&
+      aws_cloudwatch_metric_alarm.ledger_drift.threshold == 0 &&
+      aws_cloudwatch_metric_alarm.ledger_drift.comparison_operator == "GreaterThanThreshold" &&
+      aws_cloudwatch_metric_alarm.outbox_sweep_failed.metric_name == "OutboxSweepFailed" &&
+      aws_cloudwatch_metric_alarm.outbox_stuck.metric_name == "OutboxOldestPendingSeconds" &&
+      aws_cloudwatch_metric_alarm.outbox_stuck.threshold == 900
+    )
+    error_message = "Defter sapmasi ilk bulguda, outbox takilmasi 15 dakikada alarm uretmeli"
+  }
+  assert {
+    condition = length([
+      for st in data.aws_iam_policy_document.scheduler_worker.statement : st
+      if anytrue([for a in st.actions : startswith(a, "cloudwatch:")])
+    ]) == 0
+    error_message = "Metrikler EMF log satiriyla yazilir; scheduler worker'a cloudwatch yetkisi verilmemeli"
   }
   assert {
     condition     = alltrue([for k, s in aws_scheduler_schedule.jobs : jsondecode(s.target[0].input).job == k && jsondecode(s.target[0].input).scheduledTime == "<aws.scheduler.scheduled-time>"])

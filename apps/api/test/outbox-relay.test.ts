@@ -18,6 +18,7 @@ import {
   eventFromOutboxItem,
 } from '../src/workers/outbox-relay.js';
 import { createFakeFinanceRepo } from './fakes/financeRepo.js';
+import { memoryStore } from './fakes/outboxStore.js';
 
 const APT = 'apt-1';
 const NOW = new Date('2026-11-21T08:00:00.000Z');
@@ -54,26 +55,6 @@ const streamRecord = (item: Record<string, unknown>, seq: string, eventName: Dyn
     dynamodb: { Keys: { PK: image.PK!, SK: image.SK! }, NewImage: image, SequenceNumber: seq },
   };
 };
-
-function memoryStore(): OutboxStore & { items: Map<string, OutboxItem> } {
-  const items = new Map<string, OutboxItem>();
-  return {
-    items,
-    async markPublished(_apt, eventId, at) {
-      const cur = items.get(eventId);
-      if (!cur || cur.status !== 'pending') return 'already';
-      const { GSI1PK: _p, GSI1SK: _s, ...rest } = cur;
-      items.set(eventId, { ...rest, status: 'published', publishedAt: at.toISOString() });
-      return 'updated';
-    },
-    async listPending(options = {}) {
-      return [...items.values()]
-        .filter((i) => i.status === 'pending')
-        .sort((a, b) => (a.GSI1SK ?? '').localeCompare(b.GSI1SK ?? ''))
-        .slice(0, options.limit ?? 25);
-    },
-  };
-}
 
 // ---------------------------------------------------------------------------
 // Cekirdek

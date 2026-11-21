@@ -1,8 +1,8 @@
 import type { AttributeValue } from '@aws-sdk/client-dynamodb';
 import { unmarshall } from '@aws-sdk/util-dynamodb';
-import { OUTBOX_PREFIX, type OutboxItem } from '../events/outbox.js';
+import { InvalidOutboxRecordError, OUTBOX_PREFIX, type OutboxItem, eventFromOutboxItem } from '../events/outbox.js';
 import { type OutboxStore, createDynamoOutboxStore } from '../events/outboxStore.js';
-import { type DomainEvent, EVENT_TYPES, type EventPublisher, createEventPublisherFromEnv } from '../events/publisher.js';
+import { type DomainEvent, type EventPublisher, createEventPublisherFromEnv } from '../events/publisher.js';
 import { relayEvents } from '../events/relay.js';
 
 /**
@@ -36,31 +36,6 @@ export type DynamoStreamRecord = {
 };
 export type DynamoStreamEvent = { Records: DynamoStreamRecord[] };
 export type StreamBatchResponse = { batchItemFailures: { itemIdentifier: string }[] };
-
-export class InvalidOutboxRecordError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'InvalidOutboxRecordError';
-  }
-}
-
-const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
-
-/** Bir outbox kaydindan yayinlanacak olay zarfini cikarir ve tutarliligini dogrular. */
-export function eventFromOutboxItem(item: Partial<OutboxItem>): DomainEvent {
-  const event = item.event as unknown;
-  if (!isObject(event)) throw new InvalidOutboxRecordError('event alani yok');
-  if (typeof event.eventId !== 'string' || event.eventId !== item.eventId) {
-    throw new InvalidOutboxRecordError('eventId kayitla uyusmuyor');
-  }
-  if (typeof event.type !== 'string' || !(EVENT_TYPES as readonly string[]).includes(event.type)) {
-    throw new InvalidOutboxRecordError('bilinmeyen olay turu');
-  }
-  if (typeof event.apartmentId !== 'string' || event.apartmentId !== item.apartmentId || item.PK !== `APT#${event.apartmentId}`) {
-    throw new InvalidOutboxRecordError('olay tenant\'i kayitla uyusmuyor');
-  }
-  return event as DomainEvent;
-}
 
 const isOutboxInsert = (r: DynamoStreamRecord): boolean => {
   const sk = r.dynamodb?.Keys?.SK ?? r.dynamodb?.NewImage?.SK;
@@ -107,5 +82,8 @@ export function createOutboxRelay(overrides: Partial<OutboxRelayDeps> = {}) {
     return { batchItemFailures: first ? [{ itemIdentifier: first.key }] : [] };
   };
 }
+
+/** Geriye uyumluluk: dogrulayici ortak modulde (`events/outbox.ts`). */
+export { InvalidOutboxRecordError, eventFromOutboxItem };
 
 export const handler = createOutboxRelay();

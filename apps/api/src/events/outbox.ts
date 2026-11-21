@@ -87,3 +87,28 @@ export function toOutboxItems(events: readonly DomainEvent[], createdAt: string,
     return toOutboxItem(event, createdAt, apartmentId);
   });
 }
+
+export class InvalidOutboxRecordError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'InvalidOutboxRecordError';
+  }
+}
+
+const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
+
+/** Bir outbox kaydindan yayinlanacak olay zarfini cikarir ve tutarliligini dogrular. */
+export function eventFromOutboxItem(item: Partial<OutboxItem>): DomainEvent {
+  const event = item.event as unknown;
+  if (!isObject(event)) throw new InvalidOutboxRecordError('event alani yok');
+  if (typeof event.eventId !== 'string' || event.eventId !== item.eventId) {
+    throw new InvalidOutboxRecordError('eventId kayitla uyusmuyor');
+  }
+  if (typeof event.type !== 'string' || !(EVENT_TYPES as readonly string[]).includes(event.type)) {
+    throw new InvalidOutboxRecordError('bilinmeyen olay turu');
+  }
+  if (typeof event.apartmentId !== 'string' || event.apartmentId !== item.apartmentId || item.PK !== `APT#${event.apartmentId}`) {
+    throw new InvalidOutboxRecordError('olay tenant\'i kayitla uyusmuyor');
+  }
+  return event as DomainEvent;
+}

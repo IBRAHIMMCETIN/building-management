@@ -29,7 +29,15 @@ export type OutboxStore = {
    * bir kayit kisa sure listede gorunebilir (relay idempotent oldugundan zararsiz).
    */
   listPending(options?: { limit?: number; olderThan?: Date }): Promise<OutboxItem[]>;
+  /**
+   * `listPending`'in sayfali hali (suprucu): `cursor` bir onceki sayfanin devamidir. Imlec
+   * yalnizca sunucu icinde dolasir (istemciden gelmez).
+   */
+  listPendingPage(options?: { limit?: number; olderThan?: Date; cursor?: PendingCursor }): Promise<{ items: OutboxItem[]; cursor?: PendingCursor }>;
 };
+
+/** GSI1 sayfa imleci (DynamoDB LastEvaluatedKey). */
+export type PendingCursor = Record<string, unknown>;
 
 export function createDynamoOutboxStore(): OutboxStore {
   return {
@@ -66,6 +74,10 @@ export function createDynamoOutboxStore(): OutboxStore {
     },
 
     async listPending(options = {}) {
+      return (await this.listPendingPage(options)).items;
+    },
+
+    async listPendingPage(options = {}) {
       const { client, tableName } = getDynamo();
       const limit = options.limit ?? 25;
       const values: Record<string, string> = { ':pk': OUTBOX_PENDING_PK };
@@ -84,9 +96,13 @@ export function createDynamoOutboxStore(): OutboxStore {
             ExpressionAttributeValues: values,
             ScanIndexForward: true,
             Limit: limit,
+            ...(options.cursor ? { ExclusiveStartKey: options.cursor } : {}),
           }),
         );
-        return (out.Items ?? []) as OutboxItem[];
+        return {
+          items: (out.Items ?? []) as OutboxItem[],
+          ...(out.LastEvaluatedKey ? { cursor: out.LastEvaluatedKey as PendingCursor } : {}),
+        };
       } catch (err) {
         throw toDataAccessError(err);
       }

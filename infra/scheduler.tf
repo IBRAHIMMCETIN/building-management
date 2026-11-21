@@ -31,7 +31,19 @@ locals {
       cron        = "cron(0 10 * * ? *)"
       description = "Her gun 10:00 - vadeden 3 gun once, 1 ve 7 gun sonra borc hatirlatmasi"
     }
+    # Transactional outbox suprucusu ve gecelik defter denetimi (operations.tf alarmlari).
+    outbox_sweep = {
+      cron        = "rate(5 minutes)"
+      description = "5 dakikada bir - esikten eski, hala bekleyen outbox olaylarini yeniden yayinla"
+    }
+    ledger_audit = {
+      cron        = "cron(40 3 * * ? *)"
+      description = "Her gun 03:40 - salt okunur defter denetimi (sapma -> LedgerDrift metrigi + alarm)"
+    }
   }
+
+  # Suprucu bu yastan genc outbox kayitlarina dokunmaz (relay'e birakir).
+  outbox_sweep_min_age_seconds = 120
 }
 
 # ---------------------------------------------------------------------------
@@ -157,6 +169,9 @@ resource "aws_lambda_function" "scheduler_worker" {
       DYNAMODB_TABLE_NAME  = aws_dynamodb_table.main.name
       EVENTS_MODE          = "sns"
       EVENTS_SNS_TOPIC_ARN = aws_sns_topic.events.arn
+      # EMF metriklerinin `Stack` boyutu (operations.tf alarmlari ayni degeri bekler).
+      METRICS_STACK                = local.name
+      OUTBOX_SWEEP_MIN_AGE_SECONDS = tostring(local.outbox_sweep_min_age_seconds)
     }, local.payments_env)
   }
 
@@ -232,7 +247,8 @@ resource "aws_scheduler_schedule_group" "main" {
   name = local.name
 }
 
-# Online odeme acikken payment_reconcile eklenir (payments.tf). Saat dilimi yalnizca cron
+# Online odeme acikken payment_reconcile eklenir (payments.tf). outbox_sweep / ledger_audit:
+# zamanlayici rolunun mevcut tablo/index ve sns:Publish yetkisi yeterlidir (ek IAM yok). Saat dilimi yalnizca cron
 # ifadelerinde anlamlidir; rate() icin verilmez.
 resource "aws_scheduler_schedule" "jobs" {
   for_each = merge(local.scheduled_jobs, local.payment_jobs)

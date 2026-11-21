@@ -1,4 +1,8 @@
+import { type OutboxStore, createDynamoOutboxStore } from '../events/outboxStore.js';
 import { type EventPublisher, buildEvent, createEventPublisherFromEnv } from '../events/publisher.js';
+import { DEFAULT_SWEEP_MIN_AGE_SECONDS, type SweepOptions, sweepOutbox } from '../events/sweep.js';
+import { type LedgerAuditor, createDynamoAuditSource, createLedgerAuditor } from '../modules/finance/audit.js';
+import { type MetricsEmitter, createEmfEmitterFromEnv } from '../observability/metrics.js';
 import { type CoreRepository, coreRepository } from '../modules/core/repository.js';
 import { type IsoDate, toKurus } from '../modules/core/types.js';
 import { previousPeriod } from '../modules/finance/lateFee.js';
@@ -29,6 +33,10 @@ import type { SqsBatchResponse, SqsEvent } from './notification-worker.js';
  *                  kapaliysa (PAYMENTS_PROVIDER tanimsiz) apartmanlar `payments_disabled` ile atlanir.
  *                  Ayrica (tum apartmanlar icin calistiginda) iadesi suren niyetlerin bekleyen
  *                  kalemlerini tekrar dener (`_refunds` satiri).
+ *   outbox_sweep   5 dakikada bir: esikten (varsayilan 2 dk) eski, hala bekleyen outbox
+ *                  kayitlarini relay cekirdegiyle yeniden yayinlar (apartman dongusu yok; tek tur).
+ *   ledger_audit   her gece 03:40: apartman basina SALT OKUNUR defter denetimi; sapma ->
+ *                  log + `LedgerDrift` metrigi + platform alarmi (duzeltme yok). Pasif siteler dahil.
  *
  * Idempotency: her defter yazimi donem bazli anahtar kullanir (auto-dues-<YYYY-MM>,
  * lf-<YYYY-MM>-...), olay kimlikleri deterministiktir ve bildirim worker'i ayni olayi bir kez
@@ -39,7 +47,7 @@ import type { SqsBatchResponse, SqsEvent } from './notification-worker.js';
  * 5 denemeden sonra DLQ + alarm. Olcek buyudugunde apartman basina mesaja (fan-out) gecilir.
  */
 
-export const JOBS = ['late_fees', 'monthly_dues', 'dues_reminders', 'payment_reconcile'] as const;
+export const JOBS = ['late_fees', 'monthly_dues', 'dues_reminders', 'payment_reconcile', 'outbox_sweep', 'ledger_audit'] as const;
 export type Job = (typeof JOBS)[number];
 
 export type JobMessage = { job: Job; scheduledTime: string; apartmentId?: string };
@@ -88,12 +96,20 @@ export type SchedulerDeps = {
   /** null: online odeme kapali. Verilmezse ortam degiskenlerinden kurulur (ilk kullanimda). */
   payments: Pick<PaymentsService, 'reconcile' | 'reconcileRefunds'> | null;
   events: EventPublisher;
+  /** Outbox suprucusunun deposu (varsayilan DynamoDB). */
+  outbox: Pick<OutboxStore, 'listPendingPage' | 'markPublished'>;
+  sweepOptions: SweepOptions;
+  auditor: Pick<LedgerAuditor, 'run'>;
+  metrics: MetricsEmitter;
   now: () => Date;
   log: Pick<Console, 'info' | 'error'>;
 };
 
+const errorText = (err: unknown) => (err instanceof Error ? `${err.name}: ${err.message}` : 'unknown');
+
 export function createSchedulerWorker(overrides: Partial<SchedulerDeps> = {}) {
   const lazy: { events?: EventPublisher; finance?: SchedulerDeps['finance']; payments?: SchedulerDeps['payments'] } = {};
+  const lazyOps: { outbox?: SchedulerDeps['outbox']; auditor?: SchedulerDeps['auditor']; metrics?: MetricsEmitter } = {};
   const now = overrides.now ?? (() => new Date());
   const events = () => (lazy.events ??= overrides.events ?? createEventPublisherFromEnv());
   const finance = () => (lazy.finance ??= overrides.finance ?? createFinanceService({ now, memberships: membershipRepository }));
@@ -115,9 +131,54 @@ export function createSchedulerWorker(overrides: Partial<SchedulerDeps> = {}) {
   };
   const core = overrides.core ?? coreRepository;
   const log = overrides.log ?? console;
+  const outbox = () => (lazyOps.outbox ??= overrides.outbox ?? createDynamoOutboxStore());
+  const auditor = () => (lazyOps.auditor ??= overrides.auditor ?? createLedgerAuditor(createDynamoAuditSource()));
+  const metrics = () => (lazyOps.metrics ??= overrides.metrics ?? createEmfEmitterFromEnv());
+  const sweepOptions: SweepOptions = overrides.sweepOptions ?? {
+    minAgeSeconds: Number(process.env.OUTBOX_SWEEP_MIN_AGE_SECONDS ?? DEFAULT_SWEEP_MIN_AGE_SECONDS),
+  };
+
+  /** Outbox suprucusu: tum apartmanlar icin tek tur (GSI1 apartmandan bagimsiz). */
+  async function runSweep(): Promise<SiteOutcome> {
+    try {
+      const r = await sweepOutbox({ store: outbox(), publisher: events(), now, log }, sweepOptions);
+      metrics().emit(
+        { OutboxSweepStale: r.stale, OutboxSweepPublished: r.published, OutboxSweepFailed: r.failed, OutboxSweepInvalid: r.invalid },
+        { msg: 'outbox_sweep', truncated: r.truncated },
+      );
+      metrics().emit({ OutboxOldestPendingSeconds: r.oldestAgeSeconds }, { msg: 'outbox_sweep_age' }, 'Seconds');
+      // Yayin hatalari is hatasi sayilmaz (kayit bekleyen kalir, sonraki tur tekrar dener; metrik
+      // alarmi uyarir). Altyapi hatasi (sorgu) ise is hatasidir.
+      return { apartmentId: '_outbox', status: 'done', detail: { ...r } };
+    } catch (err) {
+      return { apartmentId: '_outbox', status: 'failed', error: errorText(err) };
+    }
+  }
+
+  /** Salt okunur denetim: sapma bulgudur, is hatasi degildir (tekrar denemek sonucu degistirmez). */
+  async function runAudit(apartmentId: string): Promise<SiteOutcome> {
+    const report = await auditor().run(apartmentId);
+    metrics().emit(
+      { LedgerDrift: report.findings.length, LedgerAuditUnstable: report.unstable.length },
+      { msg: 'ledger_audit_metrics', apartmentId },
+    );
+    const entry = {
+      level: report.findings.length > 0 ? 'error' : 'info',
+      msg: 'ledger_audit',
+      apartmentId,
+      counts: report.counts,
+      findings: report.findings,
+      unstable: report.unstable,
+    };
+    if (report.findings.length > 0) log.error(JSON.stringify(entry));
+    else log.info(JSON.stringify(entry));
+    return { apartmentId, status: 'done', detail: { findings: report.findings.length, unstable: report.unstable.length } };
+  }
 
   async function runForSite(job: Job, apartmentId: string, day: IsoDate): Promise<SiteOutcome> {
     const site = await core.getSite(apartmentId);
+    // Denetim pasif sitelerde de calisir (defter kapanmis olsa da tutarli kalmali).
+    if (job === 'ledger_audit') return site ? runAudit(apartmentId) : { apartmentId, status: 'skipped', reason: 'site_missing' };
     if (!site || site.status !== 'active') return { apartmentId, status: 'skipped', reason: 'site_inactive' };
     const settings = site.settings;
 
@@ -172,10 +233,15 @@ export function createSchedulerWorker(overrides: Partial<SchedulerDeps> = {}) {
         const r = await service.reconcile(apartmentId);
         return { apartmentId, status: 'done', detail: r };
       }
+
+      // Apartman dongusu disinda islenir (runJob); ledger_audit yukarida ayrilir.
+      case 'outbox_sweep':
+        return { apartmentId, status: 'skipped', reason: 'not_site_job' };
     }
   }
 
   async function runJob(message: JobMessage): Promise<SiteOutcome[]> {
+    if (message.job === 'outbox_sweep') return [await runSweep()];
     const day = istanbulDate(message.scheduledTime);
     const ids = message.apartmentId ? [message.apartmentId] : await core.listSiteIds();
     const outcomes: SiteOutcome[] = [];

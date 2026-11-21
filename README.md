@@ -80,7 +80,7 @@ building-management/
 │   │   └── test/                 # Vitest testleri
 │   └── web/                      # @bm/web — React + Vite
 ├── infra/                        # Serverless Terraform yığını
-│   ├── api.tf  cognito.tf  dynamodb.tf  sns_sqs.tf  worker.tf  outbox.tf
+│   ├── api.tf  cognito.tf  dynamodb.tf  sns_sqs.tf  worker.tf  outbox.tf  operations.tf
 │   ├── tests/serverless.tftest.hcl
 │   ├── github-oidc/              # GitHub Actions için OIDC rolü
 │   ├── budget/                   # AWS bütçe alarmı
@@ -204,6 +204,7 @@ Serverless yığın `infra/` kök modülündedir:
 | `sns_sqs.tf` | Olay topic'i, bildirim kuyruğu + DLQ, alarm topic'i |
 | `worker.tf` | Bildirim worker Lambda ve SQS event source mapping |
 | `outbox.tf` | Transactional outbox relay: tablo akışı (`NEW_IMAGE`) → yalnızca `OUTBOX#` INSERT filtresi → relay Lambda → SNS; DLQ, hata/gecikme alarmları, en az yetkili rol |
+| `operations.tf` | Platform alarmları (EMF özel metrikleri, `BuildingManagement` / `Stack`): `LedgerDrift` (gecelik defter denetimi sapması), `OutboxSweepFailed`, `OutboxOldestPendingSeconds` |
 
 Önemli değişkenler: `environment` (`prod` / `staging`), `alert_email`, `cors_allow_origins`, `cognito_user_pool_tier` (`LITE` / `ESSENTIALS`), `ses_identity_arn`, `ses_from_address`, `api_throttle_rate_limit`, `api_throttle_burst_limit`.
 
@@ -294,6 +295,7 @@ Yedi rol: `platform_admin`, `management_company`, `apartment_manager`, `resident
 - **Taşınmada cari kapama:** Çıkış tarihine kadarki açık kalemler ve o güne kadar işlemiş tazminat tek atomik yazımla ayrılan sakin carisine (`recv-<daire>-<taraf>-c<kapama>`), malik carisine veya satışta yeni malike devredilir; avans iade edilebilir. Kaynak cari çıkış tarihine kadar kilitlenir (`closedThrough`), yeni sakin temiz bir cariyle başlar. Kapama ters kayıtla geri alınabilir.
 - **Dağıtım anahtarları:** Eşit, m², arsa payı.
 - **Atomiklik ve idempotency:** Çoklu kayıtlar `TransactWriteItems` ile yazılır; tekrar gelen istekler parmak izi + `attribute_not_exists` koşullu yazımla etkisiz kalır.
+- **Defter denetimi:** Her gece `ledger_audit` hesap bakiyelerini `LE#` toplamlarıyla, işlem dengesini, kapama kilidini, makbuz sayacını ve tamamlanmış online ödemelerin defter kaydını karşılaştırır. Sapma otomatik düzeltilmez; yalnızca platform alarmı üretir (düzeltme ters kayıtla).
 - **Transactional outbox:** Defter ve belge yazımından doğan olaylar (`DUE_GENERATED`, `PAYMENT_RECEIVED`, `LATE_FEE_POSTED`, `ANNOUNCEMENT_PUBLISHED`) doğrudan yayınlanmaz; aynı `TransactWriteItems` içinde `OUTBOX#<eventId>` kaydı olarak yazılır (`events/outbox.ts`). Yazım yoksa olay da yoktur; toplu tahakkukta her kalemin olayı kendi kaydıyla birlikte yazılır.
 
 ---
@@ -373,7 +375,7 @@ Yedi rol: `platform_admin`, `management_company`, `apartment_manager`, `resident
 **Platform ve operasyon**
 
 - [ ] Eski soneksiz `building-management` (prod) yığını hakkında karar ve ilk `prod` sürümü
-- [ ] Güvenilir olay ve bildirim hattı (`feature/outbox-bildirim`): ~~1. outbox'a atomik yazım~~ ✓ · ~~2. Streams relay~~ ✓ · 3. `outbox_sweep` + `ledger_audit` · 4. SES e-posta kanalı
+- [ ] Güvenilir olay ve bildirim hattı (`feature/outbox-bildirim`): ~~1. outbox'a atomik yazım~~ ✓ · ~~2. Streams relay~~ ✓ · ~~3. `outbox_sweep` (5 dk) + `ledger_audit` (03:40, salt okunur)~~ ✓ · 4. SES e-posta kanalı
 - [ ] Arıza/görev, ziyaretçi QR, anket/oylama, rezervasyon, ihale
 - [ ] Yönetim firması portföyü, abonelik/lisans
 - [ ] Özel alan adı + Cloudflare WAF (HTTP API'ye AWS WAF bağlanamaz), Cloudflare Pages Terraform modülü, audit log
