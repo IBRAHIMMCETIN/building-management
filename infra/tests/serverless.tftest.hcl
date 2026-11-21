@@ -984,9 +984,10 @@ run "payments_paytr_and_iyzico" {
     condition = (
       toset(keys(output.payments_callback_urls)) == toset(["iyzico", "paytr"]) &&
       endswith(output.payments_callback_urls["paytr"].webhook, "/api/payments/paytr/webhook") &&
-      toset(keys(output.payments_secret_arns)) == toset(["iyzico", "paytr"])
+      # Secret ARN'leri plan asamasinda bilinmez: anahtarlar kaynaktan dogrulanir.
+      toset(keys(aws_secretsmanager_secret.payments)) == toset(["iyzico", "paytr"])
     )
-    error_message = "Saglayici basina callback/webhook adresleri ve secret ARN'leri cikti olarak verilmeli"
+    error_message = "Saglayici basina callback/webhook adresleri ve secret'lar olusturulmali"
   }
   assert {
     condition     = contains(keys(aws_scheduler_schedule.jobs), "payment_reconcile") && length(aws_cloudwatch_metric_alarm.payment_needs_review) == 1

@@ -37,9 +37,10 @@ locals {
 
   payments_secret_arns = { for p, s in aws_secretsmanager_secret.payments : p => s.arn }
 
-  # Saglayiciya ozgu degiskenler yalnizca o saglayici aciksa verilir.
+  # Odeme kapaliyken hicbir odeme degiskeni verilmez; saglayiciya ozgu degiskenler yalnizca o
+  # saglayici aciksa verilir.
   payment_env_keys = concat(
-    ["PAYMENTS_PROVIDERS", "DEFAULT_PAYMENT_PROVIDER", "PAYMENTS_API_BASE_URL", "WEB_APP_URL", "PAYMENTS_POS_RATE_BPS", "PAYMENTS_POS_FIXED_FEE_KURUS"],
+    local.payments_enabled ? ["PAYMENTS_PROVIDERS", "DEFAULT_PAYMENT_PROVIDER", "PAYMENTS_API_BASE_URL", "WEB_APP_URL", "PAYMENTS_POS_RATE_BPS", "PAYMENTS_POS_FIXED_FEE_KURUS"] : [],
     contains(local.payment_providers, "iyzico") ? ["IYZICO_BASE_URL", "IYZICO_SECRET_ARN"] : [],
     contains(local.payment_providers, "paytr") ? ["PAYTR_SECRET_ARN", "PAYTR_TEST_MODE"] : [],
   )
