@@ -30,6 +30,7 @@ const EXACT: Record<string, string> = {
   'payment.intent.create': 'Online ödeme başlatıldı',
   'payment.account.create': 'Ödeme hesabı oluşturuldu',
   'payment.account.update': 'Ödeme hesabı güncellendi',
+  'payment.settings.update': 'Ödeme sağlayıcısı tercihi değişti',
   'support.session.start': 'Destek oturumu açıldı',
   'support.session.end': 'Destek oturumu kapatıldı',
   'support.request': 'Destek oturumunda erişim',

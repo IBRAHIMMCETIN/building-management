@@ -90,7 +90,7 @@ export type AppConfig = {
   apartmentRoleService?: ApartmentRoleService;
   /**
    * Online odeme (Adim 8b). Verilmezse ortam degiskenlerinden (`loadPaymentsConfig`) kurulur;
-   * PAYMENTS_PROVIDER tanimsizsa online odeme kapalidir. `fakePaymentProvider` yalnizca sahte
+   * PAYMENTS_PROVIDERS bossa online odeme kapalidir (P2: birden fazla saglayici + varsayilan). `fakePaymentProvider` yalnizca sahte
    * saglayicinin test sayfasi rotalarini acar.
    */
   paymentsService?: PaymentsService;
@@ -171,7 +171,7 @@ export function createApp(config: AppConfig) {
       portal: portalService,
       ledger: portalRepository,
       finance: financeService,
-      provider: payments.provider,
+      providers: payments.providers,
       apiBaseUrl: payments.apiBaseUrl,
       webAppUrl: payments.webAppUrl,
       intentTtlMinutes: payments.intentTtlMinutes,

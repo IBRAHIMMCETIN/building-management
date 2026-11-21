@@ -443,8 +443,20 @@ describe('odeme anahtarlari (Secrets Manager)', () => {
     expect(() => loadPaymentsConfig({ ...base, IYZICO_BASE_URL: 'https://evil.example' })).toThrow(/IYZICO_BASE_URL/);
     expect(() => loadPaymentsConfig({ ...base, IYZICO_BASE_URL: BASE })).toThrow(/IYZICO_API_KEY/);
     const sandbox = loadPaymentsConfig({ ...base, IYZICO_BASE_URL: `${BASE}/`, IYZICO_API_KEY: 'a', IYZICO_SECRET_KEY: 'b' });
-    expect(sandbox.provider).toMatchObject({ name: 'iyzico', sandbox: true });
+    expect(sandbox.providers.get('iyzico')).toMatchObject({ name: 'iyzico', sandbox: true, capabilities: { checkout: 'redirect', settlement: 'item_approval' } });
     const live = loadPaymentsConfig({ ...base, IYZICO_BASE_URL: 'https://api.iyzipay.com', PAYMENTS_SECRET_ARN: 'arn:x' });
-    expect(live.provider).toMatchObject({ name: 'iyzico', sandbox: false });
+    expect(live.providers.get('iyzico')).toMatchObject({ name: 'iyzico', sandbox: false });
+    // P2: yeni adlar (PAYMENTS_PROVIDERS, IYZICO_SECRET_ARN) ve varsayilan.
+    const multi = loadPaymentsConfig({
+      PAYMENTS_PROVIDERS: 'iyzico, fake',
+      DEFAULT_PAYMENT_PROVIDER: 'iyzico',
+      PAYMENTS_API_BASE_URL: 'https://api.x',
+      WEB_APP_URL: 'https://web.x',
+      IYZICO_BASE_URL: BASE,
+      IYZICO_SECRET_ARN: 'arn:y',
+    });
+    expect(multi.providers.defaultName).toBe('iyzico');
+    expect(multi.providers.list().map((p) => p.name)).toEqual(['iyzico', 'fake']);
+    expect(multi.fake?.name).toBe('fake');
   });
 });

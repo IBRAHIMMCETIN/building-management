@@ -25,6 +25,7 @@ import {
   type PaymentProvider,
   PaymentProviderError,
   type RefundRequest,
+  tokenFromBody,
   type RefundResult,
   type SubMerchantRequest,
   type WebhookInput,
@@ -159,6 +160,11 @@ export function createIyzicoProvider(options: { client: IyzicoClient; sandbox: b
   return {
     name: 'iyzico',
     sandbox,
+    // Checkout Form: iyzico sayfasina yonlendirme; pazaryeri payi kalem onayiyla serbest kalir.
+    capabilities: { checkout: 'redirect', settlement: 'item_approval', requiresBuyerGsm: true },
+
+    // Tarayici callbackUrl'e `token` ile POST eder (form). Sonuc yine token ile sorgulanir.
+    parseCallback: tokenFromBody,
 
     async createCheckout(req: CheckoutRequest): Promise<CheckoutSession> {
       const itemsTotal = req.items.reduce((s, i) => s + i.amount, 0);
@@ -284,7 +290,8 @@ export function createIyzicoProvider(options: { client: IyzicoClient; sandbox: b
       };
     },
 
-    async approveItem({ paymentTransactionId, conversationId }) {
+    /** Pazaryeri kalem onayi (`item/approve`); `providerItemId` = `paymentTransactionId`. */
+    async releaseItem({ providerItemId: paymentTransactionId, conversationId }) {
       const res = await client.post<IyzicoEnvelope & { paymentTransactionId?: string | number }>(IYZICO_PATHS.approve, {
         locale: 'tr',
         conversationId,

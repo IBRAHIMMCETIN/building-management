@@ -755,7 +755,7 @@ run "payments_disabled_by_default" {
     error_message = "Varsayilan: online odeme kapali, secret ve kimliksiz odeme rotasi olusmamali"
   }
   assert {
-    condition     = !contains(keys(aws_lambda_function.api.environment[0].variables), "PAYMENTS_PROVIDER") && !contains(keys(aws_lambda_function.scheduler_worker.environment[0].variables), "PAYMENTS_PROVIDER")
+    condition     = !contains(keys(aws_lambda_function.api.environment[0].variables), "PAYMENTS_PROVIDERS") && !contains(keys(aws_lambda_function.scheduler_worker.environment[0].variables), "PAYMENTS_PROVIDERS") && !contains(keys(aws_lambda_function.api.environment[0].variables), "DEFAULT_PAYMENT_PROVIDER")
     error_message = "Odeme kapaliyken Lambda'lara odeme yapilandirmasi verilmemeli"
   }
   assert {
@@ -831,10 +831,12 @@ run "payments_iyzico" {
   assert {
     condition = alltrue([
       for f in [aws_lambda_function.api, aws_lambda_function.scheduler_worker] :
-      f.environment[0].variables.PAYMENTS_PROVIDER == "iyzico" &&
+      f.environment[0].variables.PAYMENTS_PROVIDERS == "iyzico" &&
+      f.environment[0].variables.DEFAULT_PAYMENT_PROVIDER == "iyzico" &&
+      !contains(keys(f.environment[0].variables), "PAYMENTS_PROVIDER") &&
       f.environment[0].variables.IYZICO_BASE_URL == "https://sandbox-api.iyzipay.com" &&
       f.environment[0].variables.WEB_APP_URL == "https://building-management-apx.pages.dev" &&
-      f.environment[0].variables.PAYMENTS_SECRET_ARN == "arn:aws:secretsmanager:eu-central-1:123456789012:secret:building-management-dev/payments/iyzico-AbCdEf" &&
+      f.environment[0].variables.IYZICO_SECRET_ARN == "arn:aws:secretsmanager:eu-central-1:123456789012:secret:building-management-dev/payments/iyzico-AbCdEf" &&
       f.environment[0].variables.PAYMENTS_POS_RATE_BPS == "249" &&
       f.environment[0].variables.PAYMENTS_POS_FIXED_FEE_KURUS == "25"
     ])

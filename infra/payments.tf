@@ -28,11 +28,14 @@ locals {
   # `kosul ? {...} : {}` nesne tipleri uyusmadigi icin filtreli for ifadesi kullanilir.
   payments_env = {
     for k, v in {
-      PAYMENTS_PROVIDER     = var.payments_provider
-      PAYMENTS_API_BASE_URL = aws_apigatewayv2_api.http.api_endpoint
-      WEB_APP_URL           = var.web_app_url
-      IYZICO_BASE_URL       = var.iyzico_base_url
-      PAYMENTS_SECRET_ARN   = local.payments_secret_arn
+      # P2: kod birden fazla saglayici + varsayilan destekler (config.ts). Altyapi su an tek
+      # saglayici acar (iyzico); PayTR P3'te kendi secret'i ve rotalariyla eklenecek.
+      PAYMENTS_PROVIDERS       = var.payments_provider
+      DEFAULT_PAYMENT_PROVIDER = var.payments_provider
+      PAYMENTS_API_BASE_URL    = aws_apigatewayv2_api.http.api_endpoint
+      WEB_APP_URL              = var.web_app_url
+      IYZICO_BASE_URL          = var.iyzico_base_url
+      IYZICO_SECRET_ARN        = local.payments_secret_arn
       # P1: POS sozlesme orani (komisyon tahmini; hesap bazinda gecersiz kilinabilir).
       PAYMENTS_POS_RATE_BPS        = tostring(var.payments_pos_rate_bps)
       PAYMENTS_POS_FIXED_FEE_KURUS = tostring(var.payments_pos_fixed_fee_kurus)

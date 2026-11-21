@@ -60,17 +60,19 @@ export function paymentCallbackRoutes({ service, fake }: { service: PaymentsServ
   const r = new Hono();
   r.onError(handleError);
 
+  // Saglayici donus bicimini kendisi ayristirir (`parseCallback`): rota yalnizca alanlari toplar.
   r.post('/:provider/callback', async (c) => {
-    const token = await readToken(c);
-    const result = await service.handleCallback(c.req.param('provider'), { ref: c.req.query('ref'), token });
+    const result = await service.handleCallback(c.req.param('provider'), { query: c.req.query(), body: await readBody(c) });
     c.header('Cache-Control', 'no-store');
     return c.redirect(result.redirectUrl, 303);
   });
 
+  // Govde JSON (iyzico) veya form (PayTR bildirimi); yanit bicimi saglayicinin (`webhookReply`).
   r.post('/:provider/webhook', async (c) => {
+    const type = c.req.header('content-type') ?? '';
     let body: unknown;
     try {
-      body = await c.req.json();
+      body = type.includes('application/json') ? await c.req.json() : await c.req.parseBody();
     } catch {
       return c.json({ error: 'invalid_body' }, 400);
     }
@@ -78,8 +80,9 @@ export function paymentCallbackRoutes({ service, fake }: { service: PaymentsServ
     c.req.raw.headers.forEach((value, key) => {
       headers[key.toLowerCase()] = value;
     });
-    const { status } = await service.handleWebhook(c.req.param('provider'), { headers, body });
-    return c.json(status === 200 ? { ok: true } : { error: status === 401 ? 'invalid_signature' : 'unavailable' }, status);
+    const { status, reply } = await service.handleWebhook(c.req.param('provider'), { headers, body });
+    if (status === 200 && reply) return c.body(reply.body, 200, { 'content-type': `${reply.contentType}; charset=utf-8` });
+    return c.json(status === 200 ? { ok: true } : { error: status === 401 ? 'invalid_signature' : status === 404 ? 'not_found' : 'unavailable' }, status);
   });
 
   if (fake) {
@@ -124,17 +127,18 @@ export function paymentCallbackRoutes({ service, fake }: { service: PaymentsServ
   return r;
 }
 
-async function readToken(c: Context): Promise<string | undefined> {
+/** Tarayici donusunun govdesi (form veya JSON); okunamazsa bos. Dosya alanlari alinmaz. */
+async function readBody(c: Context): Promise<Record<string, unknown>> {
   const type = c.req.header('content-type') ?? '';
   try {
     if (type.includes('application/json')) {
-      const json = (await c.req.json()) as { token?: unknown };
-      return typeof json.token === 'string' ? json.token : undefined;
+      const json = (await c.req.json()) as unknown;
+      return json && typeof json === 'object' && !Array.isArray(json) ? (json as Record<string, unknown>) : {};
     }
     const body = await c.req.parseBody();
-    return typeof body.token === 'string' ? body.token : undefined;
+    return Object.fromEntries(Object.entries(body).filter(([, v]) => typeof v === 'string'));
   } catch {
-    return undefined;
+    return {};
   }
 }
 
@@ -150,9 +154,12 @@ function page(title: string, body: string): string {
  * Platform ekibi: `/api/admin/payments/*` (JWT + `platform_admin`; apartman yoldan gelir cunku
  * platform rolunun apartman claim'i yoktur). Her yazim AUDIT logu uretir.
  *   GET   /apartments                        tum apartmanlar + alt uye isyeri durumu
- *   GET   /apartments/:apartmentId/account   alt uye isyeri kaydi
- *   POST  /apartments/:apartmentId/account   saglayicida alt uye isyeri olustur (KYC)
- *   PATCH /apartments/:apartmentId/account   durum (active/disabled) ve platform payi
+ *   GET   /apartments/:apartmentId/settings  saglayici tercihi, etkin saglayici, acik saglayicilar
+ *   PUT   /apartments/:apartmentId/settings  { paymentProvider: <ad> | null, expectedVersion }
+ *   GET   /apartments/:apartmentId/account?provider=   alt uye isyeri kaydi
+ *   POST  /apartments/:apartmentId/account   saglayicida alt uye isyeri olustur (KYC; opsiyonel `provider`)
+ *   PATCH /apartments/:apartmentId/account   durum, platform payi, POS orani (opsiyonel `provider`)
+ *   (provider verilmezse apartmanin cozumlenen saglayicisi: tercih, yoksa ortam varsayilani)
  *   GET   /review                            inceleme bekleyen / iadesi suren odemeler (tum apartmanlar)
  *   GET   /apartments/:apartmentId/intents/:intentId/check     saglayicidan guncel sonuc + yapilabilecek islemler
  *   POST  /apartments/:apartmentId/intents/:intentId/resolve   { action: approve|refund|close, note, expectedVersion }
@@ -168,7 +175,13 @@ export function paymentAdminRoutes({ authenticate, service }: { authenticate: Au
   });
 
   r.get('/apartments', async (c) => c.json(await service.listApartmentAccounts()));
-  r.get('/apartments/:apartmentId/account', async (c) => c.json(await service.getAccount(c.req.param('apartmentId'))));
+  r.get('/apartments/:apartmentId/settings', async (c) => c.json(await service.getSettings(c.req.param('apartmentId'))));
+  r.put('/apartments/:apartmentId/settings', async (c) =>
+    c.json(await service.updateSettings({ userId: c.get('claims').userId }, c.req.param('apartmentId'), await readJson(c))),
+  );
+  r.get('/apartments/:apartmentId/account', async (c) =>
+    c.json(await service.getAccount(c.req.param('apartmentId'), { provider: c.req.query('provider') })),
+  );
   r.post('/apartments/:apartmentId/account', async (c) =>
     c.json(await service.onboardSubMerchant({ userId: c.get('claims').userId }, c.req.param('apartmentId'), await readJson(c)), 201),
   );
