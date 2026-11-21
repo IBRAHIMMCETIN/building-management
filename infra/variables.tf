@@ -322,6 +322,32 @@ variable "web_app_url" {
   }
 }
 
+# Online Odeme v2 (P1): komisyonu apartman oder; sakine ek ucret yansitilmaz (5464 s. K. m.17).
+# Odeme aninda alt uye isyeri payi = tutar - platform ucreti - POS tahmini. POS tahmini, saglayiciyla
+# yapilan sozlesme oranindan hesaplanir; gercek komisyon mutabakat kaydina ayrica yazilir.
+# Hesap bazinda (PATCH /api/admin/payments/apartments/{id}/account) gecersiz kilinabilir.
+variable "payments_pos_rate_bps" {
+  type        = number
+  default     = 0
+  description = "Saglayici sozlesme komisyon orani, baz puan (249 = %2,49). 0-1000."
+
+  validation {
+    condition     = var.payments_pos_rate_bps >= 0 && var.payments_pos_rate_bps <= 1000 && floor(var.payments_pos_rate_bps) == var.payments_pos_rate_bps
+    error_message = "payments_pos_rate_bps 0-1000 arasi tam sayi olmalidir."
+  }
+}
+
+variable "payments_pos_fixed_fee_kurus" {
+  type        = number
+  default     = 0
+  description = "Islem basina sabit saglayici ucreti, kurus (25 = 0,25 TL). 0-5000."
+
+  validation {
+    condition     = var.payments_pos_fixed_fee_kurus >= 0 && var.payments_pos_fixed_fee_kurus <= 5000 && floor(var.payments_pos_fixed_fee_kurus) == var.payments_pos_fixed_fee_kurus
+    error_message = "payments_pos_fixed_fee_kurus 0-5000 arasi tam sayi olmalidir."
+  }
+}
+
 variable "payments_callback_rate_limit" {
   type        = number
   default     = 5

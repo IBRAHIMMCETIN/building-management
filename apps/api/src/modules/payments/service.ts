@@ -21,6 +21,14 @@ import {
   type WebhookInput,
 } from './provider.js';
 import {
+  DEFAULT_PLATFORM_FEE_BASIS_POINTS,
+  type FeePolicy,
+  MAX_POS_FIXED_FEE_KURUS,
+  MAX_POS_RATE_BASIS_POINTS,
+  feePolicyOf,
+  loadPosDefaults,
+} from './fees.js';
+import {
   type PaymentSelection,
   accruedLateFeeOf,
   allocateSelection,
@@ -37,6 +45,8 @@ import {
 } from './repository.js';
 import {
   INTENT_STATUSES,
+  type IntentSettlement,
+  type ItemApproval,
   type IntentKeyRecord,
   type IntentStatus,
   MAX_PLATFORM_FEE_BASIS_POINTS,
@@ -129,6 +139,8 @@ export type PaymentsServiceDeps = {
   webAppUrl: string;
   /** Saglayici sayfasinin gecerlilik suresi (dakika). */
   intentTtlMinutes: number;
+  /** Saglayici sozlesme orani (POS tahmini) varsayilani; hesap ayari gecersiz kilar. */
+  posDefaults: Pick<FeePolicy, 'posRateBasisPoints' | 'posFixedFeeKurus'>;
   now: () => Date;
   newId: () => string;
   log: PaymentsLog;
@@ -152,6 +164,11 @@ export const PENDING_GIVE_UP_HOURS = 24;
  * denenmez: devam eden bir cagri ile yarisip ayni kalemi iki kez iade etmemek icin.
  */
 export const REFUND_RETRY_MINUTES = 5;
+/**
+ * Pazaryeri onayi en fazla bu kadar denenir (mutabakat 15 dakikada bir: ~2,5 saat). Sonra kalem
+ * `failed` olur ve PAYMENT_APPROVAL_FAILED alarmi uretilir (tutar saglayici havuzunda guvende).
+ */
+export const MAX_APPROVAL_ATTEMPTS = 10;
 const MAX_REVIEW_QUEUE = 200;
 const NOTE_MIN = 5;
 const NOTE_MAX = 500;
@@ -327,6 +344,7 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
     apiBaseUrl: 'http://localhost:3000',
     webAppUrl: 'http://localhost:5173',
     intentTtlMinutes: 30,
+    posDefaults: overrides.posDefaults ?? loadPosDefaults(),
     now: () => new Date(),
     newId: () => randomUUID(),
     log: defaultLog,
@@ -341,7 +359,9 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
   const today = (): IsoDate => new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Istanbul' }).format(deps.now());
 
   /** Apartmanin aktif alt uye isyeri hesabi; sahte saglayicida varsayilan hesap. */
-  async function activeAccount(apartmentId: string): Promise<Pick<PaymentAccount, 'subMerchantKey' | 'platformFeeBasisPoints'> | undefined> {
+  async function activeAccount(
+    apartmentId: string,
+  ): Promise<Pick<PaymentAccount, 'subMerchantKey' | 'platformFeeBasisPoints' | 'posRateBasisPoints' | 'posFixedFeeKurus'> | undefined> {
     if (!provider) return undefined;
     const account = await repo.getAccount(apartmentId, provider.name);
     if (account?.status === 'active') return account;
@@ -445,7 +465,8 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
       today: data.today,
       lateFeeMonthlyBasisPoints: data.lateFeeMonthlyBasisPoints,
     });
-    const plan = allocateSelection(q, input.selection, account.platformFeeBasisPoints);
+    // Komisyon (platform payi + POS tahmini) apartmana aktarilacak tutardan dusulur (Karar A).
+    const plan = allocateSelection(q, input.selection, feePolicyOf(account, deps.posDefaults));
     if (plan.amount < 1) throw new PaymentsError('no_debt', 'Ödenecek borcunuz bulunmuyor');
     // Alici bilgisi niyet yazilmadan once: eksikse yarim kalmis niyet olusmaz.
     const buyer = await resolveBuyer(ctx, input, meta.ip, provider.sandbox);
@@ -464,6 +485,7 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
       allocations: plan.allocations,
       amount: plan.amount,
       platformFee: plan.platformFee,
+      posEstimate: plan.posEstimate,
       currency: 'TRY',
       lateFeeAsOf: q.asOf,
       lateFeeMonthlyBasisPoints: q.lateFeeMonthlyBasisPoints,
@@ -600,6 +622,7 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
         lateFee: await lateFeeCap(intent, a.liableParty, a.lateFee),
       })),
     );
+    const settlement = initialSettlement(intent, o);
     await deps.finance.recordOnlinePayment(
       { apartmentId: intent.apartmentId, userId: intent.userId },
       {
@@ -609,6 +632,7 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
         provider: intent.provider,
         providerPaymentId,
         allocations,
+        commission: settlement.commission,
         intentUpdate: ({ payments, transactions }) => ({
           // Inceleme kuyrugu alanlari durumdan turetilir: SUCCEEDED kayit kuyruktan duser.
           item: toStoredIntent({
@@ -621,6 +645,7 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
             paymentIds: payments.map((p) => p.paymentId),
             receiptNumbers: payments.map((p) => p.receiptNumber),
             transactionIds: transactions.map((t) => t.transactionId),
+            settlement,
             updatedAt: stamp(),
             version: intent.version + 1,
           } satisfies PaymentIntent),
@@ -629,6 +654,90 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
         }),
       },
     );
+  }
+
+  /**
+   * Odeme sonrasi mutabakat kaydinin ilk hali: komisyon (deftere yazilan), aktarilacak toplam,
+   * saglayicinin gercek komisyonu ve tahminle farki; onay gerektiren saglayicida kalem onaylari.
+   */
+  function initialSettlement(intent: PaymentIntent, o: CheckoutOutcome): IntentSettlement {
+    const posEstimate = intent.posEstimate ?? 0;
+    const commission = toKurus(intent.platformFee + posEstimate);
+    const approvals: ItemApproval[] = provider?.approveItem
+      ? (o.itemTransactions ?? intent.itemTransactions ?? []).map((t) => ({
+          itemId: t.itemId,
+          paymentTransactionId: t.paymentTransactionId,
+          status: 'pending' as const,
+          attempts: 0,
+        }))
+      : [];
+    if (provider?.approveItem && approvals.length === 0) {
+      // Kalem kimlikleri olmadan onay gonderilemez: tutar havuzda kalir, elle incelenmeli.
+      deps.log('error', 'ALARM pazaryeri onayi gonderilemiyor (kalem kimligi yok)', {
+        alert: 'PAYMENT_APPROVAL_FAILED',
+        intentId: intent.intentId,
+        apartmentId: intent.apartmentId,
+      });
+    }
+    const providerFee = o.providerFee;
+    return {
+      status: provider?.approveItem ? (approvals.length > 0 ? 'pending' : 'failed') : 'approved',
+      commission,
+      subMerchantTotal: toKurus(intent.amount - commission),
+      ...(providerFee !== undefined ? { providerFee, posFeeDrift: toKurus(posEstimate - providerFee) } : {}),
+      approvals,
+    };
+  }
+
+  /**
+   * Bekleyen pazaryeri onaylarini gonderir (finalize sonrasi ve mutabakatta). Defter zaten
+   * yazilmistir; hata finalize'i geri almaz, sonraki mutabakat turunda yeniden denenir.
+   */
+  async function approvePending(intent: PaymentIntent): Promise<PaymentIntent> {
+    const s = intent.settlement;
+    if (intent.status !== 'SUCCEEDED' || !s || s.status !== 'pending' || !provider?.approveItem || provider.name !== intent.provider) {
+      return intent;
+    }
+    const approvals: ItemApproval[] = [];
+    for (const a of s.approvals) {
+      if (a.status !== 'pending') {
+        approvals.push(a);
+        continue;
+      }
+      const at = stamp();
+      try {
+        await provider.approveItem({
+          paymentTransactionId: a.paymentTransactionId,
+          conversationId: `approve:${intent.intentId}:${a.itemId}`,
+        });
+        approvals.push({ ...a, status: 'approved', attempts: a.attempts + 1, lastAttemptAt: at, approvedAt: at });
+      } catch (err) {
+        const attempts = a.attempts + 1;
+        const code = err instanceof PaymentProviderError ? err.code : 'unknown';
+        const exhausted = attempts >= MAX_APPROVAL_ATTEMPTS || (err instanceof PaymentProviderError && !err.retryable);
+        approvals.push({
+          ...a,
+          status: exhausted ? 'failed' : 'pending',
+          attempts,
+          lastAttemptAt: at,
+          error: { code, message: errText(err), at },
+        });
+        deps.log(exhausted ? 'error' : 'warn', exhausted ? 'ALARM pazaryeri onayi basarisiz' : 'pazaryeri onayi ertelendi', {
+          ...(exhausted ? { alert: 'PAYMENT_APPROVAL_FAILED' } : {}),
+          intentId: intent.intentId,
+          apartmentId: intent.apartmentId,
+          paymentTransactionId: a.paymentTransactionId,
+          attempts,
+          code,
+        });
+      }
+    }
+    const status: IntentSettlement['status'] = approvals.every((a) => a.status === 'approved')
+      ? 'approved'
+      : approvals.some((a) => a.status === 'pending')
+        ? 'pending'
+        : 'failed';
+    return transition(intent, { settlement: { ...s, status, approvals } });
   }
 
   /** Saglayicidan sorgulanan sonucu niyete uygular (idempotent). */
@@ -687,7 +796,8 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
         review: { reason: `defter yazimi basarisiz: ${errText(err)}`, at: stamp(), providerPaymentId },
       });
     }
-    return (await repo.getIntent(intent.apartmentId, intent.intentId)) ?? intent;
+    const written = (await repo.getIntent(intent.apartmentId, intent.intentId)) ?? intent;
+    return approvePending(written);
   }
 
   /** PENDING niyetin sonucunu saglayicidan sorgular ve uygular. */
@@ -774,7 +884,22 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
       else if (current.status === 'NEEDS_REVIEW') result.review++;
       else result.stillPending++;
     }
-    return result;
+
+    // Pazaryeri onayi bekleyen (veya ertelenen) basarili odemeler: penceredeki tum SUCCEEDED niyetler.
+    // Bu turda yukarida sonuclananlar zaten bir kez denendi (deneme sayaci iki kez artmasin).
+    const handled = new Set(pending.map((i) => i.intentId));
+    const settled = (await repo.listIntentsBetween(apartmentId, from, `${utcStamp(now)}~`)).filter(
+      (i) => i.status === 'SUCCEEDED' && i.settlement?.status === 'pending' && !handled.has(i.intentId),
+    );
+    const approvals = { checked: settled.length, approved: 0, pending: 0, failed: 0 };
+    for (const intent of settled) {
+      const next = await approvePending(intent);
+      const st = next.settlement?.status;
+      if (st === 'approved') approvals.approved++;
+      else if (st === 'failed') approvals.failed++;
+      else approvals.pending++;
+    }
+    return { ...result, approvals };
   }
 
   // ----- Saglayici webhook'u (kimliksiz, imzali; sunucudan sunucuya) -----
@@ -988,7 +1113,8 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
         throw new PaymentsError('ledger_failed', `Deftere yazılamadı: ${errText(err)}. Ödemeyi iade edebilirsiniz.`);
       }
       deps.log('info', 'AUDIT inceleme sonuclandi: deftere yazildi', { audit: 'PAYMENT_REVIEW_RESOLVED', ...auditFields });
-      return { intent: reviewView((await repo.getIntent(apartmentId, intentId)) ?? intent) };
+      const written = (await repo.getIntent(apartmentId, intentId)) ?? intent;
+      return { intent: reviewView(await approvePending(written)) };
     }
 
     if (input.action === 'close') {
@@ -1162,7 +1288,8 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
 
   function accountView(a: PaymentAccount) {
     const { PK: _pk, SK: _sk, ...rest } = a;
-    return rest;
+    // Etkin komisyon politikasi (hesap ayari yoksa ortam varsayilani) platform ekraninda gorunur.
+    return { ...rest, effectiveFees: feePolicyOf(a, deps.posDefaults) };
   }
 
   async function requireSite(apartmentId: string) {
@@ -1179,6 +1306,39 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
     if (!account) throw new PaymentsError('not_found', 'Bu apartman için alt üye işyeri kaydı yok');
     return accountView(account);
   }
+
+  /**
+   * Hesap bazinda POS sozlesme orani gecersiz kilma: sayi = ayar, `null` = ortam varsayilanina
+   * don, verilmezse degismez.
+   */
+  function parsePosOverrides(o: Record<string, unknown>): Partial<Record<'posRateBasisPoints' | 'posFixedFeeKurus', number | null>> {
+    const out: Partial<Record<'posRateBasisPoints' | 'posFixedFeeKurus', number | null>> = {};
+    for (const [key, max] of [
+      ['posRateBasisPoints', MAX_POS_RATE_BASIS_POINTS],
+      ['posFixedFeeKurus', MAX_POS_FIXED_FEE_KURUS],
+    ] as const) {
+      const v = o[key];
+      if (v === undefined) continue;
+      if (v === null) {
+        out[key] = null;
+        continue;
+      }
+      if (typeof v !== 'number' || !Number.isInteger(v) || v < 0 || v > max) {
+        throw new ValidationError(`${key} 0-${max} tam sayı veya null olmalıdır`, key);
+      }
+      out[key] = v;
+    }
+    return out;
+  }
+
+  const applyPosOverrides = (account: PaymentAccount, pos: ReturnType<typeof parsePosOverrides>): PaymentAccount => {
+    const next = { ...account };
+    for (const key of ['posRateBasisPoints', 'posFixedFeeKurus'] as const) {
+      if (pos[key] === null) delete next[key];
+      else if (pos[key] !== undefined) next[key] = pos[key] as number;
+    }
+    return next;
+  };
 
   function parseSubMerchant(apartmentId: string, body: unknown): { request: SubMerchantRequest; feeBps: number } {
     const o = asObject(body);
@@ -1211,7 +1371,8 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
     if (identityNumber && !TCKN.test(identityNumber)) {
       throw new ValidationError('identityNumber 11 haneli T.C. kimlik numarası olmalıdır', 'identityNumber');
     }
-    const fee = o.platformFeeBasisPoints ?? 0;
+    // Karar (21.11.2026): varsayilan platform payi %0,75; komisyonu apartman yonetimi oder.
+    const fee = o.platformFeeBasisPoints ?? DEFAULT_PLATFORM_FEE_BASIS_POINTS;
     if (typeof fee !== 'number' || !Number.isInteger(fee) || fee < 0 || fee > MAX_PLATFORM_FEE_BASIS_POINTS) {
       throw new ValidationError(`platformFeeBasisPoints 0-${MAX_PLATFORM_FEE_BASIS_POINTS} tam sayı olmalıdır`, 'platformFeeBasisPoints');
     }
@@ -1243,6 +1404,7 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
     await requireSite(apartmentId);
     if (!provider) throw new PaymentsError('payments_disabled', 'Online ödeme yapılandırılmamış');
     const { request, feeBps } = parseSubMerchant(apartmentId, body);
+    const pos = parsePosOverrides(asObject(body));
     if (await repo.getAccount(apartmentId, provider.name)) {
       throw new PaymentsError('conflict', 'Bu apartman zaten kayıtlı; durum ve platform payı için PATCH kullanın');
     }
@@ -1257,7 +1419,7 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
       throw new PaymentsError('provider_unavailable', 'Ödeme sağlayıcısına şu an ulaşılamıyor');
     }
     const ts = stamp();
-    const account: PaymentAccount = {
+    const account: PaymentAccount = applyPosOverrides({
       ...paymentKeys.account(apartmentId, provider.name),
       entityType: 'PAYMENT_ACCOUNT',
       apartmentId,
@@ -1272,7 +1434,7 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
       updatedAt: ts,
       updatedBy: ctx.userId,
       version: 1,
-    };
+    }, pos);
     try {
       await repo.putAccount(account);
     } catch (err) {
@@ -1309,14 +1471,17 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
       }
       fee = v;
     }
-    const next: PaymentAccount = {
-      ...current,
-      status,
-      platformFeeBasisPoints: fee,
-      updatedAt: stamp(),
-      updatedBy: ctx.userId,
-      version: current.version + 1,
-    };
+    const next: PaymentAccount = applyPosOverrides(
+      {
+        ...current,
+        status,
+        platformFeeBasisPoints: fee,
+        updatedAt: stamp(),
+        updatedBy: ctx.userId,
+        version: current.version + 1,
+      },
+      parsePosOverrides(o),
+    );
     try {
       await repo.putAccount(next, current.version);
     } catch (err) {
@@ -1329,6 +1494,8 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
       by: ctx.userId,
       status,
       platformFeeBasisPoints: fee,
+      posRateBasisPoints: next.posRateBasisPoints ?? null,
+      posFixedFeeKurus: next.posFixedFeeKurus ?? null,
     });
     return accountView(next);
   }
@@ -1346,6 +1513,11 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
       currency: 'TRY' as const,
       amount: i.amount,
       platformFee: i.platformFee,
+      // Komisyon apartmanin gideridir (defterde "Online Tahsilat Komisyon Gideri"): yonetici gorur.
+      posEstimate: i.posEstimate ?? 0,
+      commission: i.settlement?.commission ?? i.platformFee + (i.posEstimate ?? 0),
+      transferAmount: i.settlement?.subMerchantTotal ?? i.amount - i.platformFee - (i.posEstimate ?? 0),
+      settlementStatus: i.settlement?.status,
       allocations: i.allocations.map((a) => ({
         liableParty: a.liableParty,
         principal: a.principal,

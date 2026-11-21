@@ -291,7 +291,7 @@ describe('odeme - odenebilir tutar (quote)', () => {
     });
     // Karar A: secili kalem odemesi yalnizca anapara; tazminat tahsil edilmez.
     expect(two.allocations).toEqual([
-      { liableParty: 'occupant', principal: TL(1600), lateFee: 0, amount: TL(1600), subMerchantPrice: TL(1600), transactionIds: [a, b] },
+      { liableParty: 'occupant', principal: TL(1600), lateFee: 0, amount: TL(1600), subMerchantPrice: TL(1600), platformFee: 0, posEstimate: 0, transactionIds: [a, b] },
     ]);
 
     expect(() => allocateSelection(quote, { mode: 'items', items: [{ liableParty: 'occupant', transactionId: b }] })).toThrow(
@@ -767,7 +767,15 @@ describe('odeme - mutabakat', () => {
     expect(await w.payments.reconcile(APT)).toMatchObject({ checked: 0 });
 
     w.clock.now = new Date('2026-11-06T10:31:00.000Z');
-    expect(await w.payments.reconcile(APT)).toEqual({ checked: 1, succeeded: 1, failed: 0, review: 0, stillPending: 0 });
+    expect(await w.payments.reconcile(APT)).toEqual({
+      checked: 1,
+      succeeded: 1,
+      failed: 0,
+      review: 0,
+      stillPending: 0,
+      // Bu turda sonuclanan niyetin onayi ayni turda gonderildi; ikinci kez denenmez.
+      approvals: { checked: 0, approved: 0, pending: 0, failed: 0 },
+    });
     expect(w.intentOf(intentId)).toMatchObject({ status: 'SUCCEEDED', paidAt: '2026-11-06' });
   });
 
@@ -1015,6 +1023,7 @@ describe('odeme - alici bilgisi (Karar C)', () => {
 function fakeIyzicoServer(secretKey: string) {
   const sessions = new Map<string, { body: Record<string, any>; paid?: boolean; paidPrice?: string }>();
   const refunds: Record<string, any>[] = [];
+  const approvals: Record<string, any>[] = [];
   let n = 0;
   const fetchFn = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input));
@@ -1022,7 +1031,15 @@ function fakeIyzicoServer(secretKey: string) {
     const body = JSON.parse(String(init?.body || '{}')) as Record<string, any>;
     const json = (data: unknown) => new Response(JSON.stringify(data), { status: 200, headers: { 'content-type': 'application/json' } });
     const items = (token: string, s: { body: Record<string, any> }) =>
-      (s.body.basketItems as Record<string, any>[]).map((it, i) => ({ itemId: it.id, paymentTransactionId: `ptx-${token}-${i + 1}`, price: it.price, paidPrice: it.price }));
+      (s.body.basketItems as Record<string, any>[]).map((it, i) => ({
+        itemId: it.id,
+        paymentTransactionId: `ptx-${token}-${i + 1}`,
+        price: it.price,
+        paidPrice: it.price,
+        // iyzico komisyonu (kalem bazli; kurus alti ondalik tasiyabilir)
+        iyziCommissionRateAmount: '24.9',
+        iyziCommissionFee: '0.250000',
+      }));
     if (path === IYZICO_PATHS.initialize) {
       const token = `iyz-tok-${++n}`;
       sessions.set(token, { body });
@@ -1057,9 +1074,13 @@ function fakeIyzicoServer(secretKey: string) {
       });
     }
     if (path === '/onboarding/submerchant') return json({ status: 'success', subMerchantKey: `smk-${body.subMerchantExternalId}` });
+    if (path === IYZICO_PATHS.approve) {
+      approvals.push(body);
+      return json({ status: 'success', conversationId: body.conversationId, paymentTransactionId: body.paymentTransactionId });
+    }
     return new Response('{}', { status: 404 });
   }) as typeof fetch;
-  return { fetchFn, sessions, refunds };
+  return { fetchFn, sessions, refunds, approvals };
 }
 
 describe('odeme - iyzico saglayicisi ile uctan uca (sahte HTTP)', () => {
@@ -1113,6 +1134,21 @@ describe('odeme - iyzico saglayicisi ile uctan uca (sahte HTTP)', () => {
     });
     expect(good.status).toBe(200);
     expect(w.intentOf(created.body.intentId)).toMatchObject({ status: 'SUCCEEDED', providerPaymentId: 'pay-iyz-tok-1', platformFee: TL(10) });
+    // Pazaryeri onayi (Online Odeme v2 · P1): kalem bazli gonderildi; gercek komisyon mutabakatta.
+    expect(server.approvals).toEqual([
+      { locale: 'tr', conversationId: `approve:${created.body.intentId}:${created.body.intentId}-occupant`, paymentTransactionId: 'ptx-iyz-tok-1-1' },
+    ]);
+    expect(w.intentOf(created.body.intentId).settlement).toMatchObject({
+      status: 'approved',
+      commission: TL(10),
+      subMerchantTotal: TL(990),
+      providerFee: 2_515, // 24,90 + 0,25
+      posFeeDrift: -2_515, // POS orani tanimsiz (0): komisyonu bu ortamda platform karsiladi
+      approvals: [{ paymentTransactionId: 'ptx-iyz-tok-1-1', status: 'approved', attempts: 1 }],
+    });
+    // Platform payi apartmanin gideri: online tahsilat hesabinda aktarilacak tutar kalir.
+    expect(w.fin.balanceOf('online-collection')).toBe(TL(990));
+    expect(w.fin.balanceOf('exp-online-collection-fee')).toBe(TL(10));
     expect(w.fin.balanceOf('recv-u1-occupant')).toBe(0);
     expect([...w.fin.payments.values()][0]).toMatchObject({ provider: 'iyzico', providerPaymentId: 'pay-iyz-tok-1', method: 'card' });
 
@@ -1226,7 +1262,8 @@ describe('odeme - alt uye isyeri yonetimi (platform_admin)', () => {
     const path = `/api/admin/payments/apartments/${APT}/account`;
     const res = await w.call('POST', path, admin, body);
     expect(res.status).toBe(201);
-    expect(res.body).toMatchObject({ provider: 'fake', subMerchantKey: `fake-sm-${APT}`, platformFeeBasisPoints: 0, version: 1, createdBy: 'ops-1' });
+    // Varsayilan platform payi %0,75 (Online Odeme v2 · P1 karari).
+    expect(res.body).toMatchObject({ provider: 'fake', subMerchantKey: `fake-sm-${APT}`, platformFeeBasisPoints: 75, version: 1, createdBy: 'ops-1' });
     expect(res.body.PK).toBeUndefined();
     const stored = JSON.stringify([...w.fin.docs.values()]);
     expect(stored).not.toContain('1234567890');
@@ -1713,5 +1750,139 @@ describe('odeme deposu - inceleme kuyrugu (DynamoDB GSI1)', () => {
     expect(out[0]).not.toHaveProperty('GSI1PK');
     const input = ddbMock.commandCalls(QueryCommand)[0]!.args[0].input;
     expect(input).toMatchObject({ IndexName: 'GSI1', KeyConditionExpression: 'GSI1PK = :pk', ExpressionAttributeValues: { ':pk': 'PAYMENT_REVIEW' }, Limit: 50 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Online Odeme v2 · P1: komisyonu apartman oder + pazaryeri onayi
+// ---------------------------------------------------------------------------
+
+describe('odeme - komisyon (apartman oder) ve pazaryeri onayi', () => {
+  const feeAccount = (over: Partial<PaymentAccount> = {}): PaymentAccount => ({
+    ...paymentKeys.account(APT, 'fake'),
+    entityType: 'PAYMENT_ACCOUNT',
+    apartmentId: APT,
+    provider: 'fake',
+    subMerchantKey: 'sm-1',
+    subMerchantType: 'PRIVATE_COMPANY',
+    status: 'active',
+    platformFeeBasisPoints: 75,
+    posRateBasisPoints: 249,
+    posFixedFeeKurus: 25,
+    ...audit,
+    ...over,
+  });
+
+  it('sakin borcunu net oder; %0,75 + POS tahmini aktarilacak tutardan duser ve apartmanin giderine yazilir', async () => {
+    const w = setup();
+    await w.payRepo.repo.putAccount(feeAccount());
+    await w.charge('u1', 'occupant', TL(1000), '2026-11-10', 'c1', '2026-11-01');
+    const created = await w.call('POST', '/api/portal/payments', w.token('tenant-1'), { idempotencyKey: 'k-1', mode: 'total' });
+    expect(created.status).toBe(201);
+    const intentId = created.body.intentId as string;
+    // Sakine ek ucret yok: odenen tutar = borc; komisyon alanlari sakine donmez.
+    expect(created.body.amount).toBe(TL(1000));
+    expect(JSON.stringify(created.body)).not.toMatch(/subMerchant|platformFee|posEstimate|commission/);
+    expect(w.fake.sessions.get(`fake_${intentId}`)!.request).toMatchObject({
+      amount: TL(1000),
+      items: [{ amount: TL(1000), subMerchantKey: 'sm-1', subMerchantPrice: 96_735 }], // 1000 - 7,50 - 24,90 - 0,25
+    });
+    expect(w.intentOf(intentId)).toMatchObject({ platformFee: 750, posEstimate: 2_515 });
+
+    w.fake.setProviderFeePerItem(2_600 as Kurus); // gercek komisyon 26,00 TL
+    await w.payThroughProvider(intentId);
+
+    // Defter: tahsilat 1000 TL + komisyon gideri 32,65 TL (tek atomik yazim).
+    expect(w.fin.batches).toHaveLength(1);
+    const feeTx = [...w.fin.transactions.values()].find((t) => t.reference === `ONLINE-FEE:${intentId}`)!;
+    expect(feeTx).toMatchObject({ kind: 'expense', totalAmount: 3_265, date: '2026-11-06' });
+    expect(w.fin.balanceOf('recv-u1-occupant')).toBe(0);
+    expect(w.fin.balanceOf('online-collection')).toBe(96_735);
+    expect(w.fin.balanceOf('exp-online-collection-fee')).toBe(3_265);
+    expect(w.fin.trialBalance()).toBe(0);
+    expect(w.intentOf(intentId).transactionIds).toContain(feeTx.transactionId);
+
+    // Mutabakat: gercek komisyon ve tahmin farki (platformun kaybi; apartmanin defteri degismez).
+    expect(w.intentOf(intentId).settlement).toEqual({
+      status: 'approved',
+      commission: 3_265,
+      subMerchantTotal: 96_735,
+      providerFee: 2_600,
+      posFeeDrift: -85,
+      approvals: [
+        expect.objectContaining({ itemId: `${intentId}-occupant`, paymentTransactionId: 'fakepay-1-t1', status: 'approved', attempts: 1 }),
+      ],
+    });
+    expect(w.fake.approvals.get('fakepay-1-t1')).toBe(1);
+
+    // Yonetici komisyonu ve aktarilacak tutari gorur.
+    const list = await w.call('GET', '/api/finance/online-payments', w.token('mgr-1', 'apartment_manager'));
+    expect(list.body.items[0]).toMatchObject({ amount: TL(1000), commission: 3_265, transferAmount: 96_735, settlementStatus: 'approved' });
+  });
+
+  it('malik + oturan: sabit POS ucreti islem basina bir kez (ilk kalem)', async () => {
+    const w = setup();
+    await w.payRepo.repo.putAccount(feeAccount());
+    await w.charge('u2', 'owner', TL(500), '2026-11-10', 'c1', '2026-11-01');
+    await w.charge('u2', 'occupant', TL(1000), '2026-11-10', 'c2', '2026-11-01');
+    const created = await w.call('POST', '/api/portal/payments', w.token('owner-2'), { idempotencyKey: 'k-1', mode: 'total' });
+    expect(created.status).toBe(201);
+    const items = w.fake.sessions.get(`fake_${created.body.intentId}`)!.request.items;
+    expect(items.map((i) => [i.id.split('-').at(-1), i.amount, i.subMerchantPrice])).toEqual([
+      ['occupant', TL(1000), 96_735],
+      ['owner', TL(500), 48_380], // 500 - 3,75 - 12,45
+    ]);
+  });
+
+  it('onay gecici hatada bekler, mutabakatta yeniden denenir; kalici hatada alarm', async () => {
+    const w = setup();
+    await w.payRepo.repo.putAccount(feeAccount());
+    await w.charge('u1', 'occupant', TL(1000), '2026-11-10', 'c1', '2026-11-01');
+    const { intentId } = (await w.call('POST', '/api/portal/payments', w.token('tenant-1'), { idempotencyKey: 'k-1', mode: 'total' })).body;
+    w.fake.failNextApprove();
+    await w.payThroughProvider(intentId);
+    expect(w.intentOf(intentId)).toMatchObject({
+      status: 'SUCCEEDED',
+      settlement: { status: 'pending', approvals: [{ status: 'pending', attempts: 1, error: { code: 'unavailable' } }] },
+    });
+    // Defter onaydan bagimsiz: tahsilat yazildi.
+    expect(w.fin.balanceOf('recv-u1-occupant')).toBe(0);
+
+    w.clock.now = new Date('2026-11-06T10:40:00.000Z');
+    expect((await w.payments.reconcile(APT)).approvals).toEqual({ checked: 1, approved: 1, pending: 0, failed: 0 });
+    expect(w.intentOf(intentId).settlement).toMatchObject({ status: 'approved', approvals: [{ status: 'approved', attempts: 2 }] });
+
+    // Kalici red (iyzico retryable=false): kalem failed + alarm, bir daha denenmez.
+    await w.charge('u1', 'occupant', TL(200), '2026-11-20', 'c2', '2026-11-01');
+    const second = (await w.call('POST', '/api/portal/payments', w.token('tenant-1'), { idempotencyKey: 'k-2', mode: 'total' })).body;
+    w.fake.failNextApprove(new PaymentProviderError('iyzico_10208', 'Gecersiz islem', false));
+    await w.payThroughProvider(second.intentId);
+    expect(w.intentOf(second.intentId).settlement).toMatchObject({ status: 'failed', approvals: [{ status: 'failed', attempts: 1 }] });
+    expect(w.logs).toContainEqual(expect.objectContaining({ level: 'error', fields: expect.objectContaining({ alert: 'PAYMENT_APPROVAL_FAILED', intentId: second.intentId }) }));
+    w.clock.now = new Date('2026-11-06T11:30:00.000Z');
+    expect((await w.payments.reconcile(APT)).approvals.checked).toBe(0);
+  });
+
+  it('komisyonu karsilamayan cok kucuk tutar online odenemez (400)', async () => {
+    const w = setup();
+    await w.payRepo.repo.putAccount(feeAccount({ posFixedFeeKurus: 5_000 }));
+    await w.charge('u1', 'occupant', TL(40), '2026-11-10', 'c1', '2026-11-01');
+    const res = await w.call('POST', '/api/portal/payments', w.token('tenant-1'), { idempotencyKey: 'k-1', mode: 'total' });
+    expect(res).toMatchObject({ status: 400, body: { error: 'validation_error' } });
+    expect(w.fake.sessions.size).toBe(0);
+  });
+
+  it('platform: POS orani hesap bazinda gecersiz kilinir, null ile ortam varsayilanina doner; etkin politika gorunur', async () => {
+    const w = setup();
+    await w.payRepo.repo.putAccount(feeAccount({ posRateBasisPoints: undefined, posFixedFeeKurus: undefined }));
+    const admin = w.token('ops-1', 'platform_admin', '');
+    const path = `/api/admin/payments/apartments/${APT}/account`;
+    const set = await w.call('PATCH', path, admin, { posRateBasisPoints: 199, posFixedFeeKurus: 30 });
+    expect(set.status).toBe(200);
+    expect(set.body).toMatchObject({ posRateBasisPoints: 199, posFixedFeeKurus: 30, effectiveFees: { platformBasisPoints: 75, posRateBasisPoints: 199, posFixedFeeKurus: 30 } });
+    const reset = await w.call('PATCH', path, admin, { posRateBasisPoints: null });
+    expect(reset.body.posRateBasisPoints).toBeUndefined();
+    expect(reset.body.effectiveFees).toEqual({ platformBasisPoints: 75, posRateBasisPoints: 0, posFixedFeeKurus: 30 });
+    expect((await w.call('PATCH', path, admin, { posRateBasisPoints: 5_000 })).status).toBe(400);
   });
 });

@@ -66,6 +66,8 @@ export type CheckoutOutcome = {
   signatureValid?: boolean;
   /** Basarili sonucta sepet kalemi bazinda saglayici islem kimlikleri (iade bunlarla yapilir). */
   itemTransactions?: ItemTransaction[];
+  /** Saglayicinin bu odemeden aldigi gercek komisyon toplami (mutabakat; bilinmiyorsa yok). */
+  providerFee?: Kurus;
   errorCode?: string;
   errorMessage?: string;
 };
@@ -119,6 +121,12 @@ export interface PaymentProvider {
    * cagrilir: boylece ayni kalem iki kez iade edilmez.
    */
   refundedAmounts(query: { providerPaymentId: string; conversationId: string }): Promise<Map<string, Kurus>>;
+  /**
+   * Pazaryeri dagitim onayi (iyzico `POST /payment/iyzipos/item/approve`): onaylanmayan kalemin
+   * tutari saglayici havuzunda bekler ve alt uye isyerine aktarilmaz. Saglayicida onay kavrami
+   * yoksa tanimlanmaz (servis onayi "gerekmiyor" sayar). Hata: `PaymentProviderError`.
+   */
+  approveItem?(request: { paymentTransactionId: string; conversationId: string }): Promise<void>;
   /**
    * Webhook imzasini dogrular; gecerliyse niyeti bulmak icin `conversationId` doner, degilse
    * null. Govdedeki odeme durumuna guvenilmez: servis sonucu yine saglayicidan sorgular.

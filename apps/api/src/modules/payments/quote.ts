@@ -11,6 +11,7 @@ import { unpostedLateFee } from '../finance/lateFee.js';
 import { cancelledIn, feeInputsOf, linesFromEntries, readSubledger } from '../finance/subledger.js';
 import type { LedgerEntry, Transaction } from '../finance/types.js';
 import { type OpenDue, allocateOpenDues } from '../portal/service.js';
+import { type FeePolicy, ZERO_FEES, computeSplit } from './fees.js';
 import type { IntentAllocation, PaymentMode } from './types.js';
 
 export const receivableAccountId = (unitId: string, party: LiableParty) => `recv-${unitId}-${party}`;
@@ -120,8 +121,9 @@ export function platformFeeOf(amount: number, basisPoints: number): number {
 export function allocateSelection(
   quote: PaymentQuote,
   selection: PaymentSelection,
-  platformFeeBasisPoints = 0,
-): { mode: PaymentMode; allocations: IntentAllocation[]; amount: Kurus; platformFee: Kurus } {
+  /** Komisyon politikasi (`fees.ts`); sayi verilirse yalnizca platform payi (baz puan). */
+  fees: FeePolicy | number = ZERO_FEES,
+): { mode: PaymentMode; allocations: IntentAllocation[]; amount: Kurus; platformFee: Kurus; posEstimate: Kurus } {
   const allocations: IntentAllocation[] = [];
 
   if (selection.mode === 'total') {
@@ -169,12 +171,23 @@ export function allocateSelection(
   }
 
   allocations.sort((a, b) => a.liableParty.localeCompare(b.liableParty));
-  let platformFee = 0;
-  for (const a of allocations) {
-    const fee = platformFeeOf(a.amount, platformFeeBasisPoints);
-    a.subMerchantPrice = toKurus(a.amount - fee);
-    platformFee += fee;
-  }
-  const amount = allocations.reduce((s, a) => s + a.amount, 0);
-  return { mode: selection.mode, allocations, amount: toKurus(amount), platformFee: toKurus(platformFee) };
+  const policy: FeePolicy = typeof fees === 'number' ? { ...ZERO_FEES, platformBasisPoints: fees } : fees;
+  // Sakinin odedigi tutar degismez; komisyon apartmana aktarilacak tutardan dusulur (Karar A).
+  const split = computeSplit(
+    allocations.map((a) => a.amount),
+    policy,
+  );
+  allocations.forEach((a, i) => {
+    const s = split.items[i]!;
+    a.subMerchantPrice = s.subMerchantPrice;
+    a.platformFee = s.platformFee;
+    a.posEstimate = s.posEstimate;
+  });
+  return {
+    mode: selection.mode,
+    allocations,
+    amount: split.amount,
+    platformFee: split.platformFee,
+    posEstimate: split.posEstimate,
+  };
 }

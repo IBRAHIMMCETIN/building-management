@@ -45,6 +45,12 @@ export type FakePaymentProvider = PaymentProvider & {
   failNextRetrieve(error?: Error): void;
   /** Iade kayitlari (`paymentTransactionId` -> istekler). */
   refunds: Map<string, RefundRequest[]>;
+  /** Onaylanan kalemler (`paymentTransactionId` -> onay sayisi). */
+  approvals: Map<string, number>;
+  /** Sonraki `approveItem` cagrisi hata verir. */
+  failNextApprove(error?: Error): void;
+  /** Kalem basina sahte saglayici komisyonu (kurus; varsayilan yok). */
+  setProviderFeePerItem(fee: Kurus | undefined): void;
   /**
    * Sonraki `refundItem` cagrisi hata verir. `applied: true` -> iade saglayicida GERCEKLESIR
    * ama yanit kaybolur (zaman asimi senaryosu).
@@ -60,6 +66,9 @@ export function createFakePaymentProvider(options: { apiBaseUrl: string }): Fake
   let retrieveError: Error | undefined;
   let refundError: { error: Error; applied: boolean } | undefined;
   const refunds = new Map<string, RefundRequest[]>();
+  const approvals = new Map<string, number>();
+  let approveError: Error | undefined;
+  let feePerItem: Kurus | undefined;
   const base = options.apiBaseUrl.replace(/\/+$/, '');
 
   return {
@@ -68,6 +77,24 @@ export function createFakePaymentProvider(options: { apiBaseUrl: string }): Fake
     sessions,
     subMerchants,
     refunds,
+    approvals,
+
+    async approveItem({ paymentTransactionId }) {
+      if (approveError) {
+        const e = approveError;
+        approveError = undefined;
+        throw e;
+      }
+      const known = [...sessions.values()].some((x) => x.itemTransactions?.some((t) => t.paymentTransactionId === paymentTransactionId));
+      if (!known) throw new PaymentProviderError('not_found', 'Islem bulunamadi');
+      approvals.set(paymentTransactionId, (approvals.get(paymentTransactionId) ?? 0) + 1);
+    },
+    failNextApprove(error = new PaymentProviderError('unavailable', 'Saglayiciya ulasilamadi', true)) {
+      approveError = error;
+    },
+    setProviderFeePerItem(fee) {
+      feePerItem = fee;
+    },
 
     async registerSubMerchant(request) {
       const subMerchantKey = `fake-sm-${request.externalId}`;
@@ -111,6 +138,9 @@ export function createFakePaymentProvider(options: { apiBaseUrl: string }): Fake
         fraudApproved: true,
         paidAt: s.paidAt,
         itemTransactions: s.itemTransactions,
+        ...(s.itemTransactions && s.itemTransactions.every((t) => t.providerFee !== undefined)
+          ? { providerFee: toKurus(s.itemTransactions.reduce((sum, t) => sum + (t.providerFee ?? 0), 0)) }
+          : {}),
         ...s.override,
       };
     },
@@ -126,6 +156,7 @@ export function createFakePaymentProvider(options: { apiBaseUrl: string }): Fake
             itemId: it.id,
             paymentTransactionId: `${s.providerPaymentId}-t${i + 1}`,
             paidAmount: it.amount,
+            ...(feePerItem !== undefined ? { providerFee: feePerItem } : {}),
           }));
         }
         s.paidAt = opts.paidAt;

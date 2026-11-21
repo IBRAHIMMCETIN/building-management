@@ -7,6 +7,8 @@
  *   Iade     : POST /payment/refund (kalem bazli, `paymentTransactionId`; Refund V2 kullanilmaz:
  *              iyzico cok kalemli sepetlerde onermez, tek akis icin her sepette kalem bazli)
  *   Rapor    : GET  /v2/reporting/payment/details?paymentId= (kalem bazinda yapilmis iadeler)
+ *   Onay     : POST /payment/iyzipos/item/approve (pazaryeri dagitim onayi, kalem bazli
+ *              `paymentTransactionId`; onaylanmayan tutar iyzico havuzunda bekler)
  *   Webhook  : X-IYZ-SIGNATURE-V3 = hex(HMAC-SHA256(secretKey,
  *                secretKey + iyziEventType + iyziPaymentId + token + paymentConversationId + status))
  *              (HPP/Checkout Form bicimi; imza ozelligi iyzico'dan hesap bazinda acilir)
@@ -44,6 +46,7 @@ export const IYZICO_PATHS = {
   subMerchant: '/onboarding/submerchant',
   refund: '/payment/refund',
   paymentDetails: '/v2/reporting/payment/details',
+  approve: '/payment/iyzipos/item/approve',
 } as const;
 
 /** Raporlamada basarili iade/iptal kaydi (`refundStatus`). Digerleri belirsiz sayilir. */
@@ -64,8 +67,40 @@ type RetrieveResponse = IyzicoEnvelope & {
   paidPrice?: number | string;
   currency?: string;
   signature?: string;
-  itemTransactions?: { itemId?: string; paymentTransactionId?: string | number; paidPrice?: number | string }[];
+  /** Odeme geneli komisyon (kalem alanlari yoksa kullanilir). */
+  iyziCommissionRateAmount?: number | string;
+  iyziCommissionFee?: number | string;
+  itemTransactions?: {
+    itemId?: string;
+    paymentTransactionId?: string | number;
+    paidPrice?: number | string;
+    iyziCommissionRateAmount?: number | string;
+    iyziCommissionFee?: number | string;
+  }[];
 };
+
+/**
+ * iyzico komisyon tutarlari kurusun altinda ondalik tasiyabilir (ornek 0.028875): kurusa
+ * yukari yuvarlanir (mutabakatta platform maliyeti eksik gosterilmesin). Cozumlenemezse yok.
+ */
+export function commissionToKurus(value: unknown): Kurus | undefined {
+  if (value === undefined || value === null || value === '') return undefined;
+  const s = typeof value === 'number' ? value.toFixed(8) : String(value).trim();
+  const m = /^(\d{1,12})(?:\.(\d+))?$/.exec(s);
+  if (!m) return undefined;
+  const frac = (m[2] ?? '').padEnd(2, '0');
+  const base = Number(m[1]) * 100 + Number(frac.slice(0, 2));
+  const rest = frac.slice(2).replace(/0+$/, '');
+  return toKurus(base + (rest.length > 0 ? 1 : 0));
+}
+
+/** Kalem veya odeme geneli komisyon: oran tutari + sabit ucret. */
+function feeOf(src: { iyziCommissionRateAmount?: number | string; iyziCommissionFee?: number | string }): Kurus | undefined {
+  const rate = commissionToKurus(src.iyziCommissionRateAmount);
+  const fixed = commissionToKurus(src.iyziCommissionFee);
+  if (rate === undefined && fixed === undefined) return undefined;
+  return toKurus((rate ?? 0) + (fixed ?? 0));
+}
 
 type RefundResponse = IyzicoEnvelope & {
   paymentId?: string;
@@ -100,7 +135,13 @@ function parseItemTransactions(raw: RetrieveResponse['itemTransactions']): ItemT
     } catch {
       return undefined;
     }
-    out.push({ itemId: t.itemId, paymentTransactionId: String(t.paymentTransactionId), paidAmount });
+    const providerFee = feeOf(t);
+    out.push({
+      itemId: t.itemId,
+      paymentTransactionId: String(t.paymentTransactionId),
+      paidAmount,
+      ...(providerFee !== undefined ? { providerFee } : {}),
+    });
   }
   return out;
 }
@@ -215,6 +256,12 @@ export function createIyzicoProvider(options: { client: IyzicoClient; sandbox: b
       }
 
       const itemTransactions = parseItemTransactions(res.itemTransactions);
+      // Gercek komisyon: kalem bazli varsa toplami, yoksa odeme geneli (mutabakat).
+      const itemFees = itemTransactions?.map((t) => t.providerFee);
+      const providerFee =
+        itemFees && itemFees.length > 0 && itemFees.every((f) => f !== undefined)
+          ? toKurus(itemFees.reduce<number>((s, f) => s + (f as number), 0))
+          : feeOf(res);
       let paidAmount;
       try {
         paidAmount = priceToKurus(res.paidPrice);
@@ -233,7 +280,26 @@ export function createIyzicoProvider(options: { client: IyzicoClient; sandbox: b
         paidAt: istanbulDay(now()),
         signatureValid,
         ...(itemTransactions ? { itemTransactions } : {}),
+        ...(providerFee !== undefined ? { providerFee } : {}),
       };
+    },
+
+    async approveItem({ paymentTransactionId, conversationId }) {
+      const res = await client.post<IyzicoEnvelope & { paymentTransactionId?: string | number }>(IYZICO_PATHS.approve, {
+        locale: 'tr',
+        conversationId,
+        paymentTransactionId,
+      });
+      if (res.status !== 'success') {
+        throw new PaymentProviderError(
+          res.errorCode ? `iyzico_${res.errorCode}` : 'approve_failed',
+          res.errorMessage ?? 'iyzico kalem onayini reddetti',
+          true,
+        );
+      }
+      if (res.paymentTransactionId !== undefined && String(res.paymentTransactionId) !== paymentTransactionId) {
+        throw new PaymentProviderError('invalid_response', 'iyzico onay yaniti kalemle eslesmiyor', true);
+      }
     },
 
     /**
