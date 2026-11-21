@@ -23,6 +23,18 @@ export type AuthClaims = {
   role: Role;
   apartmentId?: string;
   organizationId?: string;
+  /**
+   * Yalnizca sunucu tarafinda (destek erisimi sarmalayicisi) atanir; token'dan okunmaz.
+   * Doluysa istek `platform_admin`'in sureli, gerekceli, denetlenen salt okunur erisimidir.
+   */
+  supportSessionId?: string;
+  /**
+   * Zorunlu MFA (G2) durumu: Pre Token Lambda'nin `mfa_enabled` / `mfa_required` /
+   * `mfa_grace_until` claim'leri. Karari merkezi ara katman (`withMfaPolicy`) verir.
+   */
+  mfaEnabled?: boolean;
+  mfaRequired?: boolean;
+  mfaGraceUntil?: string;
 };
 
 /** Istekten dogrulanmis claim'leri cikarir; kimlik yoksa null doner. */
@@ -39,6 +51,13 @@ function nonEmpty(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 
+/** Cognito claim'leri metindir ("true"); JSON/mock token'da boolean da olabilir. */
+function flag(value: unknown): boolean | undefined {
+  if (value === true || value === 'true') return true;
+  if (value === false || value === 'false') return false;
+  return undefined;
+}
+
 export function claimsFromRecord(raw: unknown): AuthClaims | null {
   if (typeof raw !== 'object' || raw === null) return null;
   const r = raw as Record<string, unknown>;
@@ -46,11 +65,17 @@ export function claimsFromRecord(raw: unknown): AuthClaims | null {
   const userId = nonEmpty(r.sub);
   if (!userId || !isRole(r.role)) return null;
 
+  const mfaEnabled = flag(r.mfa_enabled);
+  const mfaRequired = flag(r.mfa_required);
+  const mfaGraceUntil = nonEmpty(r.mfa_grace_until);
   return {
     userId,
     role: r.role,
     apartmentId: nonEmpty(r.apartmentId),
     organizationId: nonEmpty(r.organizationId),
+    ...(mfaEnabled !== undefined ? { mfaEnabled } : {}),
+    ...(mfaRequired ? { mfaRequired } : {}),
+    ...(mfaGraceUntil ? { mfaGraceUntil } : {}),
   };
 }
 

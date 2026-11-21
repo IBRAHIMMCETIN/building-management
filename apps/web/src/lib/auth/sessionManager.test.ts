@@ -106,4 +106,29 @@ describe('sessionManager', () => {
     await expect(sm.setActiveContext({ apartmentId: 'apt-2', role: 'resident' })).resolves.toBe(next);
     expect(sm.getSession()?.claims.role).toBe('resident');
   });
+
+  it('API MFA_REQUIRED isareti, ayni kullanici TOTP etkinlestirene kadar korunur', async () => {
+    const sm = await load(session({ role: 'apartment_manager', apartmentId: 'apt-1' }));
+    sm.markMfaRequired();
+    expect(sm.getState().mfaRequired).toBe(true);
+    // Sure dolumu yenilemesi: claim hala etkin degil -> isaret kalir.
+    adapter.refresh.mockResolvedValueOnce(session({ role: 'apartment_manager', apartmentId: 'apt-1' }, 'b'));
+    await sm.refresh();
+    expect(sm.getState().mfaRequired).toBe(true);
+    // Kurulumdan sonra yeni token mfa_enabled tasir -> isaret kalkar.
+    adapter.refresh.mockResolvedValueOnce(
+      session({ role: 'apartment_manager', apartmentId: 'apt-1', mfa: { enabled: true, required: false } }, 'c'),
+    );
+    await sm.refresh();
+    expect(sm.getState().mfaRequired).toBe(false);
+  });
+
+  it('oturum yoksa veya MFA etkinse isaretlenmez', async () => {
+    const none = await load(null);
+    none.markMfaRequired();
+    expect(none.getState().mfaRequired).toBeFalsy();
+    const enabled = await load(session({ role: 'observer', apartmentId: 'apt-1', mfa: { enabled: true, required: false } }));
+    enabled.markMfaRequired();
+    expect(enabled.getState().mfaRequired).toBeFalsy();
+  });
 });

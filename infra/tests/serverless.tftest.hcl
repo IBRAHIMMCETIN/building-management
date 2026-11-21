@@ -98,6 +98,23 @@ run "prod_plan" {
       stream_arn = "arn:aws:dynamodb:eu-central-1:123456789012:table/building-management/stream/2026-11-21T00:00:00.000"
     }
   }
+  # Denetim tablosu ARN'i plan asamasinda sabit (rol politikasi kaynak kontrolleri icin).
+  override_resource {
+    target          = aws_dynamodb_table.audit
+    override_during = plan
+    values = {
+      arn = "arn:aws:dynamodb:eu-central-1:123456789012:table/building-management-audit"
+    }
+  }
+  # Pre Token MFA politikasi havuz ARN'ine baglidir: plan asamasinda sabitlenir.
+  override_resource {
+    target          = aws_cognito_user_pool.main
+    override_during = plan
+    values = {
+      arn = "arn:aws:cognito-idp:eu-central-1:123456789012:userpool/eu-central-1_mock"
+      id  = "eu-central-1_mock"
+    }
+  }
 
   # --- DynamoDB ---
   assert {
@@ -199,8 +216,11 @@ run "prod_plan" {
   }
 
   assert {
-    condition     = toset([for a in flatten([for st in data.aws_iam_policy_document.api.statement : st.actions]) : a if startswith(a, "cognito-idp:")]) == toset(["cognito-idp:AdminGetUser", "cognito-idp:AdminCreateUser"])
-    error_message = "API Lambda yalnizca davet icin AdminGetUser/AdminCreateUser yetkisine sahip olmali"
+    condition = toset([for a in flatten([for st in data.aws_iam_policy_document.api.statement : st.actions]) : a if startswith(a, "cognito-idp:")]) == toset([
+      "cognito-idp:AdminGetUser", "cognito-idp:AdminCreateUser",
+      "cognito-idp:AdminListGroupsForUser", "cognito-idp:AdminSetUserMFAPreference", "cognito-idp:AdminUserGlobalSignOut",
+    ])
+    error_message = "API Lambda yalnizca davet (AdminGetUser/AdminCreateUser) ve MFA sifirlama yetkilerine sahip olmali; silme/sifre/group yazma yok"
   }
   assert {
     condition     = aws_lambda_function.api.environment[0].variables.APP_VERSION == "test-sha"
@@ -347,12 +367,65 @@ run "prod_plan" {
     condition = alltrue([
       for st in data.aws_iam_policy_document.scheduler_worker.statement :
       length(setintersection(toset(st.actions), toset(["dynamodb:DeleteItem", "dynamodb:Scan", "dynamodb:BatchWriteItem"]))) == 0
+      if coalesce(st.effect, "Allow") == "Allow"
     ])
     error_message = "Scheduler worker defteri silemez/tarayamaz (append-only)"
   }
   assert {
     condition     = toset(flatten([for st in data.aws_iam_policy_document.scheduler_send.statement : st.actions])) == toset(["sqs:SendMessage"])
     error_message = "Scheduler rolu yalnizca gorev kuyruguna mesaj birakabilmeli"
+  }
+
+  # --- Degistirilemez denetim gunlugu (Guvenlik G1) ---
+  assert {
+    condition = (
+      aws_dynamodb_table.audit.name == "building-management-audit" &&
+      aws_dynamodb_table.audit.point_in_time_recovery[0].enabled &&
+      aws_dynamodb_table.audit.ttl[0].enabled && aws_dynamodb_table.audit.ttl[0].attribute_name == "ttl" &&
+      aws_dynamodb_table.audit.deletion_protection_enabled
+    )
+    error_message = "Denetim tablosu PITR, TTL (10 yil, uygulama yazar) ve silme korumasiyla olmali"
+  }
+  assert {
+    condition = alltrue([
+      for doc in [data.aws_iam_policy_document.api, data.aws_iam_policy_document.scheduler_worker] :
+      toset(one([for st in doc.statement : st.actions if st.sid == "AuditAppendOnly"])) == toset(["dynamodb:PutItem", "dynamodb:GetItem", "dynamodb:Query"])
+    ])
+    error_message = "Uygulama rolleri denetim tablosunda yalnizca PutItem/GetItem/Query yetkisine sahip olmali"
+  }
+  assert {
+    condition = alltrue([
+      for doc in [data.aws_iam_policy_document.api, data.aws_iam_policy_document.scheduler_worker] :
+      anytrue([
+        for st in doc.statement : st.effect == "Deny" && contains(st.actions, "dynamodb:UpdateItem") && contains(st.actions, "dynamodb:DeleteItem") && contains(st.actions, "dynamodb:BatchWriteItem")
+      ])
+    ])
+    error_message = "Uygulama rollerinde denetim tablosu icin UpdateItem/DeleteItem/BatchWriteItem acikca reddedilmeli"
+  }
+  assert {
+    condition = alltrue([
+      for doc in [data.aws_iam_policy_document.api, data.aws_iam_policy_document.scheduler_worker, data.aws_iam_policy_document.notification_worker, data.aws_iam_policy_document.outbox_relay] :
+      length([
+        for st in doc.statement : st
+        if coalesce(st.effect, "Allow") == "Allow" && length(setintersection(toset(st.actions), toset(["dynamodb:UpdateItem", "dynamodb:DeleteItem"]))) > 0 && anytrue([for r in st.resources : strcontains(r, "audit")])
+      ]) == 0
+    ])
+    error_message = "Hicbir rol denetim tablosunda UpdateItem/DeleteItem izniyle tanimlanmamali"
+  }
+  assert {
+    condition = (
+      one(data.aws_iam_policy_document.audit_table.statement).effect == "Deny" &&
+      length(setsubtract(toset(["dynamodb:UpdateItem", "dynamodb:DeleteItem", "dynamodb:BatchWriteItem"]), toset(one(data.aws_iam_policy_document.audit_table.statement).actions))) == 0 &&
+      anytrue([for p in one(data.aws_iam_policy_document.audit_table.statement).principals : contains(p.identifiers, "*")])
+    )
+    error_message = "Denetim tablosu kaynak politikasi degistirme/silmeyi tum principal'lar icin reddetmeli"
+  }
+  assert {
+    condition = (
+      aws_lambda_function.api.environment[0].variables.AUDIT_TABLE_NAME == "building-management-audit" &&
+      aws_lambda_function.scheduler_worker.environment[0].variables.AUDIT_TABLE_NAME == "building-management-audit"
+    )
+    error_message = "API ve zamanlayici denetim tablosunu bilmeli (yoksa hassas yazim reddedilir)"
   }
 
   # --- Transactional outbox relay ---
@@ -401,6 +474,51 @@ run "prod_plan" {
     condition     = one([for st in data.aws_iam_policy_document.outbox_relay.statement : st.resources if st.sid == "ReadTableStream"]) == toset(["arn:aws:dynamodb:eu-central-1:123456789012:table/building-management/stream/*"])
     error_message = "Stream okuma yalnizca bu tablonun akislarina sinirli olmali"
   }
+
+  # --- Zorunlu MFA (Guvenlik G2) ---
+  assert {
+    condition     = aws_cognito_user_pool.main.mfa_configuration == "OPTIONAL" && aws_cognito_user_pool.main.software_token_mfa_configuration[0].enabled
+    error_message = "Havuz TOTP (software token) MFA'yi desteklemeli; zorunluluk uygulama katmaninda (rol bazli)"
+  }
+  assert {
+    condition = alltrue([
+      for vars in [aws_lambda_function.api.environment[0].variables, aws_lambda_function.pre_token.environment[0].variables] :
+      vars.MFA_ENFORCEMENT_MODE == "warn" && vars.MFA_GRACE_PERIOD_DAYS == "7"
+    ])
+    error_message = "Varsayilan MFA modu warn, gecis suresi 7 gun; API ve Pre Token ayni politikayi kullanmali"
+  }
+  assert {
+    condition = [for st in data.aws_iam_policy_document.pre_token_mfa.statement : { actions = toset(st.actions), resources = toset(st.resources) }] == [{
+      actions   = toset(["cognito-idp:AdminGetUser"])
+      resources = toset([aws_cognito_user_pool.main.arn])
+    }]
+    error_message = "Pre Token Lambda yalnizca bu havuzda AdminGetUser (TOTP durumu) yetkisine sahip olmali"
+  }
+  assert {
+    condition     = aws_iam_role_policy.pre_token_mfa.role == aws_iam_role.pre_token.name
+    error_message = "MFA okuma yetkisi Pre Token rolune ayri politikayla baglanmali (havuz <-> Lambda dongusu olmadan)"
+  }
+  assert {
+    condition = (
+      toset(one([for st in data.aws_iam_policy_document.pre_token.statement : st.actions if st.sid == "MfaGraceRecord"])) == toset(["dynamodb:GetItem", "dynamodb:PutItem"]) &&
+      anytrue([
+        for c in one([for st in data.aws_iam_policy_document.pre_token.statement : st.condition if st.sid == "MfaGraceRecord"]) :
+        c.variable == "dynamodb:LeadingKeys" && tolist(c.values) == tolist(["USER#*"])
+      ])
+    )
+    error_message = "Pre Token Lambda yalnizca USER# bolumlerinde gecis suresi kaydini okuyup yazabilmeli"
+  }
+  assert {
+    condition = length([
+      for st in data.aws_iam_policy_document.pre_token.statement : st
+      if coalesce(st.effect, "Allow") == "Allow" && length(setintersection(toset(st.actions), toset(["dynamodb:UpdateItem", "dynamodb:DeleteItem", "dynamodb:Scan", "dynamodb:BatchWriteItem"]))) > 0
+    ]) == 0
+    error_message = "Pre Token Lambda kayit guncelleyemez/silemez/tarayamaz"
+  }
+  assert {
+    condition     = contains(aws_apigatewayv2_api.http.cors_configuration[0].allow_headers, "x-cognito-access-token") && contains(aws_apigatewayv2_api.http.cors_configuration[0].allow_headers, "x-support-session") && contains(aws_apigatewayv2_api.http.cors_configuration[0].expose_headers, "x-mfa-warning")
+    error_message = "CORS: MFA kurulum ve destek basliklarina izin verilmeli, MFA uyari basligi okunabilmeli"
+  }
 }
 
 run "documents_bucket" {
@@ -447,6 +565,7 @@ run "documents_bucket" {
     condition = alltrue([
       for st in data.aws_iam_policy_document.api.statement :
       length(setintersection(toset(st.actions), toset(["s3:DeleteObject", "s3:DeleteObjectVersion", "s3:*", "s3:PutBucketPolicy"]))) == 0
+      if coalesce(st.effect, "Allow") == "Allow"
     ])
     error_message = "API belge silemez / bucket ayari degistiremez"
   }
@@ -805,4 +924,41 @@ run "rejects_unknown_notification_channel" {
   }
 
   expect_failures = [var.notification_channel]
+}
+
+run "mfa_enforce_mode" {
+  command = plan
+
+  variables {
+    mfa_enforcement_mode  = "enforce"
+    mfa_grace_period_days = 14
+  }
+
+  assert {
+    condition = alltrue([
+      for vars in [aws_lambda_function.api.environment[0].variables, aws_lambda_function.pre_token.environment[0].variables] :
+      vars.MFA_ENFORCEMENT_MODE == "enforce" && vars.MFA_GRACE_PERIOD_DAYS == "14"
+    ])
+    error_message = "MFA modu ve gecis suresi degiskenlerden API ve Pre Token Lambda'larina gecmeli"
+  }
+}
+
+run "rejects_invalid_mfa_mode" {
+  command = plan
+
+  variables {
+    mfa_enforcement_mode = "strict"
+  }
+
+  expect_failures = [var.mfa_enforcement_mode]
+}
+
+run "rejects_invalid_mfa_grace" {
+  command = plan
+
+  variables {
+    mfa_grace_period_days = 120
+  }
+
+  expect_failures = [var.mfa_grace_period_days]
 }

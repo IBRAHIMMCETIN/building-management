@@ -84,6 +84,20 @@ data "aws_iam_policy_document" "api" {
     ]
   }
 
+  # Denetim gunlugu (audit.tf): yalnizca ekle + oku. Degistirme/silme acikca reddedilir.
+  statement {
+    sid       = "AuditAppendOnly"
+    actions   = local.audit_app_actions
+    resources = [aws_dynamodb_table.audit.arn, "${aws_dynamodb_table.audit.arn}/index/*"]
+  }
+
+  statement {
+    sid       = "DenyAuditMutation"
+    effect    = "Deny"
+    actions   = local.audit_mutating_actions
+    resources = [aws_dynamodb_table.audit.arn]
+  }
+
   # Domain olaylari API'den dogrudan yayinlanmaz: defter yazimiyla ayni atomik islemde
   # outbox'a yazilir, yayini outbox-relay Lambda'si yapar (outbox.tf). sns:Publish YOK.
 
@@ -112,6 +126,19 @@ data "aws_iam_policy_document" "api" {
   statement {
     sid       = "InviteResidents"
     actions   = ["cognito-idp:AdminGetUser", "cognito-idp:AdminCreateUser"]
+    resources = [aws_cognito_user_pool.main.arn]
+  }
+
+  # Zorunlu MFA (G2): cihaz kaybinda denetimli TOTP sifirlama + tum oturumlari dusurme ve
+  # hedefin platform_admin olup olmadigini okuma. Kullanicinin kendi kurulumu
+  # (Associate/VerifySoftwareToken, SetUserMFAPreference) kendi access token'iyla yapilir; IAM gerekmez.
+  statement {
+    sid = "MfaAdministration"
+    actions = [
+      "cognito-idp:AdminListGroupsForUser",
+      "cognito-idp:AdminSetUserMFAPreference",
+      "cognito-idp:AdminUserGlobalSignOut",
+    ]
     resources = [aws_cognito_user_pool.main.arn]
   }
 
@@ -156,9 +183,12 @@ resource "aws_lambda_function" "api" {
       APP_VERSION         = var.app_version
       AUTH_MODE           = "apigw"
       DYNAMODB_TABLE_NAME = aws_dynamodb_table.main.name
-      # Yalnizca davet icin (AUTH_MODE=apigw oldugundan kimlik dogrulamayi etkilemez).
-      COGNITO_USER_POOL_ID = aws_cognito_user_pool.main.id
-      DOCUMENTS_BUCKET     = aws_s3_bucket.documents.id
+      AUDIT_TABLE_NAME    = aws_dynamodb_table.audit.name
+      # Davet ve MFA yonetimi icin (AUTH_MODE=apigw oldugundan kimlik dogrulamayi etkilemez).
+      COGNITO_USER_POOL_ID  = aws_cognito_user_pool.main.id
+      DOCUMENTS_BUCKET      = aws_s3_bucket.documents.id
+      MFA_ENFORCEMENT_MODE  = var.mfa_enforcement_mode
+      MFA_GRACE_PERIOD_DAYS = tostring(var.mfa_grace_period_days)
     }, local.payments_env)
   }
 
@@ -188,7 +218,7 @@ resource "aws_cloudwatch_metric_alarm" "api_errors" {
 }
 
 # ---------------------------------------------------------------------------
-# Pre Token Generation Lambda: yalnizca GSI1 okur
+# Pre Token Generation Lambda: GSI1 okur; zorunlu MFA icin TOTP durumu ve gecis suresi kaydi
 # ---------------------------------------------------------------------------
 
 resource "aws_iam_role" "pre_token" {
@@ -208,6 +238,37 @@ data "aws_iam_policy_document" "pre_token" {
     actions   = ["dynamodb:Query"]
     resources = ["${aws_dynamodb_table.main.arn}/index/${local.gsi1_name}"]
   }
+
+  # Zorunlu MFA (warn): kullanici bazli gecis suresi baslangici (`USER#<sub>` / `MFAGRACE`).
+  # Yalnizca USER# bolumleri; apartman verisine yazamaz.
+  statement {
+    sid       = "MfaGraceRecord"
+    actions   = ["dynamodb:GetItem", "dynamodb:PutItem"]
+    resources = [aws_dynamodb_table.main.arn]
+
+    condition {
+      test     = "ForAllValues:StringLike"
+      variable = "dynamodb:LeadingKeys"
+      values   = ["USER#*"]
+    }
+  }
+}
+
+# TOTP durumu (AdminGetUser). Havuz bu Lambda'ya bagli oldugu icin (lambda_config) ayri
+# politika: Lambda'nin depends_on'unda olsaydi havuz <-> Lambda dongusu olusurdu.
+data "aws_iam_policy_document" "pre_token_mfa" {
+  statement {
+    sid       = "ReadUserMfaSettings"
+    actions   = ["cognito-idp:AdminGetUser"]
+    resources = [aws_cognito_user_pool.main.arn]
+  }
+}
+
+resource "aws_iam_role_policy" "pre_token_mfa" {
+  name = "pre-token-mfa"
+  # Rol adi (aws_iam_role.id ile ayni deger) plan asamasinda bilinir.
+  role   = aws_iam_role.pre_token.name
+  policy = data.aws_iam_policy_document.pre_token_mfa.json
 }
 
 resource "aws_iam_role_policy" "pre_token" {
@@ -231,9 +292,11 @@ resource "aws_lambda_function" "pre_token" {
 
   environment {
     variables = {
-      NODE_ENV            = "production"
-      DYNAMODB_TABLE_NAME = aws_dynamodb_table.main.name
-      GSI1_NAME           = local.gsi1_name
+      NODE_ENV              = "production"
+      DYNAMODB_TABLE_NAME   = aws_dynamodb_table.main.name
+      GSI1_NAME             = local.gsi1_name
+      MFA_ENFORCEMENT_MODE  = var.mfa_enforcement_mode
+      MFA_GRACE_PERIOD_DAYS = tostring(var.mfa_grace_period_days)
     }
   }
 
@@ -254,10 +317,13 @@ resource "aws_apigatewayv2_api" "http" {
 
   # Preflight icin ayrica kimliksiz OPTIONS rotasi gerekir (bkz. cors_preflight rotasi).
   cors_configuration {
-    allow_origins  = var.cors_allow_origins
-    allow_methods  = ["GET", "POST", "PATCH", "DELETE", "OPTIONS"]
-    allow_headers  = ["authorization", "content-type"]
-    expose_headers = []
+    allow_origins = var.cors_allow_origins
+    allow_methods = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
+    # x-cognito-access-token: MFA kurulumu (LITE'ta Authorization'da ID token gider);
+    # x-support-session: platform_admin destek erisimi (G1).
+    allow_headers = ["authorization", "content-type", "x-cognito-access-token", "x-support-session"]
+    # MFA gecis donemi uyarisi (G2).
+    expose_headers = ["x-mfa-warning"]
     max_age        = 3600
   }
 }

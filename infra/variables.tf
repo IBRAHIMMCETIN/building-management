@@ -108,6 +108,28 @@ variable "notification_channel" {
   }
 }
 
+variable "mfa_enforcement_mode" {
+  type        = string
+  default     = "warn"
+  description = "Yonetici/denetci rolleri icin zorunlu TOTP MFA: off | warn (kullanici bazli gecis suresi, sonra zorunlu) | enforce."
+
+  validation {
+    condition     = contains(["off", "warn", "enforce"], var.mfa_enforcement_mode)
+    error_message = "mfa_enforcement_mode off, warn veya enforce olmalidir."
+  }
+}
+
+variable "mfa_grace_period_days" {
+  type        = number
+  default     = 7
+  description = "warn modunda TOTP kurmamis yonetici/denetciye taninan gun (kullanici bazli, ilk giristen itibaren)."
+
+  validation {
+    condition     = var.mfa_grace_period_days >= 0 && var.mfa_grace_period_days <= 90 && floor(var.mfa_grace_period_days) == var.mfa_grace_period_days
+    error_message = "mfa_grace_period_days 0-90 arasi tam sayi olmalidir."
+  }
+}
+
 variable "notification_from_address" {
   type        = string
   default     = "YÖNESİST <bildirim@yonetimsistemim.com>"

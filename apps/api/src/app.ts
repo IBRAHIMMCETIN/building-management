@@ -1,6 +1,14 @@
 import { Hono } from 'hono';
 import { type Authenticator, type IdentityResolver, denyAll, denyAllIdentity } from './auth/claims.js';
+import { type MfaPolicy, loadMfaPolicy, withMfaPolicy } from './auth/mfa.js';
+import { handleError } from './http/helpers.js';
+import { mfaAdminRoutes } from './modules/mfa/routes.js';
+import { type MfaService, createMfaService } from './modules/mfa/service.js';
 import { announcementRoutes } from './modules/announcements/routes.js';
+import { auditRoutes, requestContext } from './modules/audit/routes.js';
+import type { AuditReader } from './modules/audit/repository.js';
+import { supportRoutes } from './modules/support/routes.js';
+import { type SupportService, createSupportService, withSupportAccess } from './modules/support/service.js';
 import { apartmentRoleRoutes } from './modules/apartment-roles/routes.js';
 import { type ApartmentRoleService, createApartmentRoleService } from './modules/apartment-roles/service.js';
 import { type AnnouncementService, createAnnouncementService } from './modules/announcements/service.js';
@@ -53,6 +61,14 @@ export type AppConfig = {
    */
   identify?: IdentityResolver;
   meService?: MeService;
+  /** `platform_admin` destek erisimi (gerekceli, sureli, denetlenen salt okunur). */
+  supportService?: SupportService;
+  /** Zorunlu MFA politikasi (G2); verilmezse MFA_ENFORCEMENT_MODE / MFA_GRACE_PERIOD_DAYS. */
+  mfaPolicy?: MfaPolicy;
+  /** TOTP kurulumu ve yonetici sifirlamasi (testlerde sahte saglayici). */
+  mfaService?: MfaService;
+  /** Denetim gunlugu okuyucu (`GET /api/audit`). */
+  auditReader?: AuditReader;
   /** Kullanici bildirim tercihleri (`/api/me/notification-preferences`). */
   notificationPreferences?: PreferencesService;
   /** Testlerde sahte repository ile servis enjekte etmek icin. */
@@ -81,7 +97,18 @@ export type AppConfig = {
 // src/modules/<modul>/ altina eklenip burada baglanir.
 export function createApp(config: AppConfig) {
   const app = new Hono();
-  const authenticate = config.authenticate ?? denyAll;
+  // Destek erisimi: `X-Support-Session` basligi yalnizca platform_admin icin, salt okunur ve denetlenir.
+  const supportService = config.supportService ?? createSupportService();
+  // Zorunlu MFA (G2): rol gerektiren TUM uclar bu tek ara katmandan gecer. Destek erisiminden
+  // ONCE (ic katman) uygulanir: karar platform_admin'in kendi token'iyla verilir.
+  const mfaPolicy = config.mfaPolicy ?? loadMfaPolicy();
+  const mfaService = config.mfaService ?? createMfaService({ policy: mfaPolicy });
+  const authenticate = withSupportAccess(withMfaPolicy(config.authenticate ?? denyAll, mfaPolicy), supportService);
+  // Modul rotalari kendi onError'unu baglar; kalan hatalar da (ornek MFA_REQUIRED) ayni bicimde.
+  app.onError(handleError);
+
+  // Denetim baglami (requestId, kisaltilmis IP/UA); tum rotalardan once.
+  app.use('/api/*', requestContext());
 
   // CORS preflight: API Gateway'deki kimliksiz `OPTIONS /api/{proxy+}` rotasi buraya duser.
   // CORS basliklarini API Gateway ekler (cors_configuration); burada yalnizca 2xx donulur.
@@ -89,14 +116,18 @@ export function createApp(config: AppConfig) {
   app.options('/api/*', (c) => c.body(null, 204));
 
   app.route('/api/health', healthRoutes(config));
+  app.route('/api/audit', auditRoutes({ authenticate, ...(config.auditReader ? { reader: config.auditReader } : {}) }));
+  app.route('/api/support/sessions', supportRoutes({ authenticate, service: supportService }));
   app.route(
     '/api/me',
     meRoutes({
       identify: config.identify ?? denyAllIdentity,
       service: config.meService ?? createMeService(),
       preferences: config.notificationPreferences ?? createPreferencesService(),
+      mfa: mfaService,
     }),
   );
+  app.route('/api/mfa', mfaAdminRoutes({ authenticate, service: mfaService }));
   const coreService = config.coreService ?? createCoreService();
   app.route('/api/sites', coreRoutes({ authenticate, service: coreService }));
   app.route('/api/admin/apartments', coreAdminRoutes({ authenticate, service: coreService }));

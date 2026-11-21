@@ -1,3 +1,4 @@
+import { auditedPutNew, auditedPutVersioned, sendWithAudit } from '../audit/log.js';
 import { TransactionCanceledException } from '@aws-sdk/client-dynamodb';
 import { QueryCommand, type QueryCommandOutput, TransactWriteCommand } from '@aws-sdk/lib-dynamodb';
 import {
@@ -94,6 +95,35 @@ export type PaymentsRepository = {
   putAccount(account: PaymentAccount, expectedVersion?: number): Promise<void>;
 };
 
+/**
+ * Odeme niyeti denetimi: olusturma ve her durum gecisi (mutabakat, NEEDS_REVIEW karari, iade).
+ * Saglayici token'i ve kart verisi tasinmaz; yalnizca durum, tutar ve kararlar.
+ */
+function intentAudit(intent: PaymentIntent, action: string) {
+  return {
+    apartmentId: intent.apartmentId,
+    action,
+    target: { type: 'payment_intent', id: intent.intentId },
+    actorId: intent.createdBy,
+    reason: intent.resolution?.note,
+    details: {
+      status: intent.status,
+      unitId: intent.unitId,
+      amount: intent.amount,
+      mode: intent.mode,
+      providerPaymentId: intent.providerPaymentId,
+      paymentIds: intent.paymentIds,
+      failure: intent.failure?.code,
+      review: intent.review?.reason,
+      resolution: intent.resolution ? { action: intent.resolution.action, by: intent.resolution.by } : undefined,
+      refund: intent.refund
+        ? { items: intent.refund.items.length, requestedBy: intent.refund.requestedBy, completedAt: intent.refund.completedAt }
+        : undefined,
+      version: intent.version,
+    },
+  };
+}
+
 function conflictOr(err: unknown): never {
   const mapped = toDataAccessError(err);
   if (mapped.code === 'conflict' || mapped.code === 'transaction_failed') throw new PaymentsConflictError();
@@ -110,13 +140,13 @@ export function createPaymentsRepository(): PaymentsRepository {
       }
       const { client, tableName } = getDynamo();
       try {
-        await client.send(
-          new TransactWriteCommand({
-            TransactItems: [
-              { Put: { TableName: tableName, Item: key, ConditionExpression: 'attribute_not_exists(PK)' } },
-              { Put: { TableName: tableName, Item: intent, ConditionExpression: 'attribute_not_exists(PK)' } },
-            ],
-          }),
+        await sendWithAudit(
+          client,
+          [
+            { Put: { TableName: tableName, Item: key, ConditionExpression: 'attribute_not_exists(PK)' } },
+            { Put: { TableName: tableName, Item: intent, ConditionExpression: 'attribute_not_exists(PK)' } },
+          ],
+          intentAudit(intent, 'payment.intent.create'),
         );
       } catch (err) {
         if (err instanceof TransactionCanceledException) {
@@ -133,7 +163,7 @@ export function createPaymentsRepository(): PaymentsRepository {
     async updateIntent(intent, expectedVersion) {
       if (intent.version !== expectedVersion + 1) throw new Error('Niyet surumu bir artirilmali');
       try {
-        await putVersionedItem(toStoredIntent(intent), expectedVersion);
+        await auditedPutVersioned(toStoredIntent(intent), expectedVersion, intentAudit(intent, `payment.intent.${intent.status.toLowerCase()}`));
       } catch (err) {
         conflictOr(err);
       }
@@ -239,8 +269,15 @@ export function createPaymentsRepository(): PaymentsRepository {
 
     async putAccount(account, expectedVersion) {
       try {
-        if (expectedVersion === undefined) await putNewItem(account);
-        else await putVersionedItem(account, expectedVersion);
+        const audit = {
+          apartmentId: account.apartmentId,
+          action: expectedVersion === undefined ? 'payment.account.create' : 'payment.account.update',
+          target: { type: 'payment_account', id: account.provider },
+          actorId: account.updatedBy,
+          details: { status: account.status, subMerchantType: account.subMerchantType, platformFeeBasisPoints: account.platformFeeBasisPoints },
+        };
+        if (expectedVersion === undefined) await auditedPutNew(account, audit);
+        else await auditedPutVersioned(account, expectedVersion, audit);
       } catch (err) {
         if (err instanceof DataAccessError && err.code !== 'conflict') throw err;
         conflictOr(err);

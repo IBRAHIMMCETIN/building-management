@@ -12,8 +12,22 @@ export type SessionClaims = {
   role?: Role;
   apartmentId?: string;
   organizationId?: string;
+  /**
+   * Zorunlu MFA (G2) durumu: Pre Token Lambda yalnizca kapsamdaki rollerde
+   * (`platform_admin`, `management_company`, `apartment_manager`, `observer`) ve mod `off`
+   * degilken ekler. Yoksa MFA bu oturum icin konu degildir.
+   */
+  mfa?: SessionMfa;
   /** Saniye cinsinden (JWT `exp`). */
   exp: number;
+};
+
+export type SessionMfa = {
+  enabled: boolean;
+  /** Kurulum yapilmadan yonetim ekranlari acilmaz (API 403 MFA_REQUIRED). */
+  required: boolean;
+  /** `warn` modunda kullanici bazli gecis suresinin bitisi (ISO). */
+  graceUntil?: string;
 };
 
 export type AuthSession = {
@@ -79,6 +93,14 @@ function base64UrlDecode(segment: string): string {
 }
 
 const nonEmpty = (v: unknown) => (typeof v === 'string' && v.length > 0 ? v : undefined);
+/** Cognito claim'leri metindir ("true"); mock token'da boolean olabilir. */
+const flag = (v: unknown) => v === true || v === 'true';
+
+function decodeMfa(raw: Record<string, unknown>): SessionMfa | undefined {
+  if (raw.mfa_enabled === undefined && raw.mfa_required === undefined && raw.mfa_grace_until === undefined) return undefined;
+  const graceUntil = nonEmpty(raw.mfa_grace_until);
+  return { enabled: flag(raw.mfa_enabled), required: flag(raw.mfa_required), ...(graceUntil ? { graceUntil } : {}) };
+}
 
 /**
  * Token payload'ini IMZA DOGRULAMADAN okur. Yalnizca arayuzu sekillendirmek icindir;
@@ -94,12 +116,14 @@ export function decodeClaims(token: string): SessionClaims | null {
 
     // Gecersiz/bilinmeyen rol degeri rol yokmus gibi ele alinir (API de 401 doner).
     const role = isRole(raw.role) ? raw.role : undefined;
+    const mfa = role ? decodeMfa(raw) : undefined;
     return {
       sub: raw.sub,
       email: nonEmpty(raw.email),
       role,
       apartmentId: role ? nonEmpty(raw.apartmentId) : undefined,
       organizationId: role ? nonEmpty(raw.organizationId) : undefined,
+      ...(mfa ? { mfa } : {}),
       exp: raw.exp,
     };
   } catch {

@@ -1,7 +1,6 @@
+import { auditedPutNew, auditedPutVersioned } from '../audit/log.js';
 import {
   getTenantItem,
-  putNewItem,
-  putVersionedItem,
   queryTenantAll,
   skKey,
   tenantPk,
@@ -50,6 +49,15 @@ export type PersonRepository = {
 export const personRepository: PersonRepository = {
   get: (apartmentId, userId) => getTenantItem<Person>(personKeys.person(apartmentId, userId)),
   list: (apartmentId) => queryTenantAll<Person>(apartmentId, PERSON_PREFIX, { ConsistentRead: true }),
-  create: (person) => putNewItem(person),
-  update: (person, expectedVersion) => putVersionedItem(person, expectedVersion),
+  // Kisi kaydi (davet): denetimde ad / e-posta tutulmaz, yalnizca kimlik.
+  create: (person) =>
+    auditedPutNew(person, { apartmentId: person.apartmentId, action: 'person.create', target: { type: 'person', id: person.userId }, actorId: person.createdBy }),
+  update: (person, expectedVersion) =>
+    auditedPutVersioned(person, expectedVersion, {
+      apartmentId: person.apartmentId,
+      action: 'person.update',
+      target: { type: 'person', id: person.userId },
+      actorId: person.updatedBy,
+      details: { version: person.version, emailVerified: person.emailVerified },
+    }),
 };

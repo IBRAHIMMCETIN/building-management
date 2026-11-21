@@ -15,8 +15,11 @@ function Where() {
 }
 
 /** Router'daki /admin agacinin ozeti: apartman ve platform gruplari ayri korunur. */
-async function landOn(path: string, role: Role | undefined, apartmentId?: string) {
-  const auth = { user: role ? { sub: 'u1', role, apartmentId, exp: 0 } : { sub: 'u1', exp: 0 } } as unknown as AuthContextValue;
+async function landOn(path: string, role: Role | undefined, apartmentId?: string, mfaSetupRequired = false) {
+  const auth = {
+    user: role ? { sub: 'u1', role, apartmentId, exp: 0 } : { sub: 'u1', exp: 0 },
+    mfaSetupRequired,
+  } as unknown as AuthContextValue;
   const router = createMemoryRouter(
     [
       {
@@ -39,6 +42,7 @@ async function landOn(path: string, role: Role | undefined, apartmentId?: string
         ],
       },
       { path: '/select-context', element: <Where /> },
+      { path: '/mfa-setup', element: <Where /> },
       { path: '*', element: <Where /> },
     ],
     { initialEntries: [path] },
@@ -78,5 +82,11 @@ describe('yonetim paneli yonlendirmesi', () => {
 
   it('rol secilmemisse baglam secimine gider', async () => {
     expect(await landOn('/admin', undefined)).toBe('/select-context');
+  });
+
+  it('zorunlu MFA kurulmamissa her yonetim ekrani kurulum ekranina yonlenir', async () => {
+    expect(await landOn('/admin/finance', 'apartment_manager', 'apt-1', true)).toBe('/mfa-setup');
+    expect(await landOn('/admin/payments', 'platform_admin', undefined, true)).toBe('/mfa-setup');
+    expect(await landOn('/admin', undefined, undefined, true)).toBe('/select-context');
   });
 });

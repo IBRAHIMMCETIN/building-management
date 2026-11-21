@@ -17,7 +17,8 @@ export type CoreRoutesDeps = {
 };
 
 // Veri okuma: yonetici, yonetim firmasi, denetci, bina gorevlisi.
-// platform_admin apartman verisini okuyamaz (erisim audit log ile birlikte eklenecek).
+// platform_admin apartman verisini dogrudan okuyamaz; yalnizca gerekceli ve sureli destek
+// oturumuyla (X-Support-Session) `observer` olarak, her istegi denetlenerek (modules/support).
 const READ_ROLES: readonly Role[] = [
   'apartment_manager',
   'management_company',

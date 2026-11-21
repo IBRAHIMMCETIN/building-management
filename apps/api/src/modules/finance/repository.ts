@@ -19,6 +19,7 @@ import {
   toDataAccessError,
 } from '../../config/dynamodb.js';
 import { toOutboxItems } from '../../events/outbox.js';
+import { type AuditDraft, sendWithAudit } from '../audit/log.js';
 import type { DomainEvent } from '../../events/publisher.js';
 import type { IsoDate, TableKeys } from '../core/types.js';
 import type {
@@ -110,6 +111,8 @@ export type PostInput = {
   record?: Payment | Expense;
   /** Transactional outbox: islemle ayni atomik yazimda saklanacak domain olaylari. */
   outbox?: DomainEvent[];
+  /** Denetim kaydi tarifi; verilmezse islemlerden turetilir (`ledgerAuditDraft`). */
+  audit?: AuditDraft;
 };
 
 /** Surumlu belge (ornegin odeme niyeti): yalnizca mevcut surum `expectedVersion` ise yazilir. */
@@ -150,7 +153,42 @@ export type PostBatchInput = {
    * saklanacak domain olaylari (bkz. `events/outbox.ts`). Yazim basarisizsa olay da yoktur.
    */
   outbox?: DomainEvent[];
+  /**
+   * Denetim kaydi (ayri tablo, ayni atomik yazim). Verilmezse islemlerden turetilir: her defter
+   * yazimi (tahakkuk, tahsilat, gider, ters kayit, tazminat, online tahsilat...) denetlenir.
+   */
+  audit?: AuditDraft;
 };
+
+/** Islemlerden denetim tarifi: tur, tutar, referans ve kayit kimlikleri (kisisel veri yok). */
+export function ledgerAuditDraft(input: PostBatchInput, apartmentId: string): AuditDraft {
+  const txs = input.transactions;
+  const first = txs[0];
+  const kinds = [...new Set(txs.map((t) => t.kind))];
+  const anchor = first?.transactionId ?? input.newDocs?.[0]?.SK ?? input.replaceRecords?.[0]?.label ?? 'document';
+  return {
+    apartmentId,
+    action: kinds.length ? `ledger.${kinds.join('+')}` : 'ledger.document',
+    target: { type: first ? 'transaction' : 'document', id: anchor },
+    actorId: first?.createdBy,
+    reason: first?.reason ?? first?.description,
+    details: {
+      transactions: txs.map((t) => ({
+        id: t.transactionId,
+        kind: t.kind,
+        date: t.date,
+        total: t.totalAmount,
+        ...(t.reference ? { reference: t.reference } : {}),
+        ...(t.reversalOf ? { reversalOf: t.reversalOf } : {}),
+        ...(t.batchId ? { batchId: t.batchId } : {}),
+        accounts: [...new Set(t.lines.map((l) => l.accountId))],
+      })),
+      ...(input.records?.length ? { records: input.records.map((r) => r.SK) } : {}),
+      ...(input.newDocs?.length ? { documents: input.newDocs.map((d) => d.SK) } : {}),
+      ...(input.accountPatches ? { accountPatches: input.accountPatches } : {}),
+    },
+  };
+}
 
 /** DynamoDB TransactWriteItems ust siniri. */
 export const MAX_TRANSACT_ITEMS = 100;
@@ -212,7 +250,7 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
  * optimistic locking uygulanir.
  */
 export async function postTransaction(input: PostInput): Promise<void> {
-  const { transaction, idempotency, expectedVersions, counter, record, outbox } = input;
+  const { transaction, idempotency, expectedVersions, counter, record, outbox, audit } = input;
   await postBatch({
     transactions: [transaction],
     idempotency,
@@ -220,6 +258,7 @@ export async function postTransaction(input: PostInput): Promise<void> {
     counter,
     records: record ? [record] : undefined,
     outbox,
+    audit,
   });
 }
 
@@ -400,10 +439,12 @@ export async function postBatch(input: PostBatchInput): Promise<void> {
   if (items.length > MAX_TRANSACT_ITEMS) {
     throw new Error(`Atomik yazim ${MAX_TRANSACT_ITEMS} ogeyi asamaz (${items.length})`);
   }
+  // Denetim kaydi (varsa) SON oge olarak ayni transaction'a eklenir; zincir yarisi icinde tekrarlanir.
+  const auditDraft = input.audit ?? ledgerAuditDraft(input, apartmentId);
 
   for (let attempt = 1; ; attempt++) {
     try {
-      await client.send(new TransactWriteCommand({ TransactItems: items }));
+      await sendWithAudit(client, items, auditDraft);
       return;
     } catch (err) {
       if (err instanceof TransactionCanceledException) {

@@ -117,6 +117,20 @@ data "aws_iam_policy_document" "scheduler_worker" {
     ]
   }
 
+  # Denetim gunlugu (audit.tf): zamanlanmis defter yazimlari denetlenir, gece zincir dogrulanir. Degistirme/silme acikca reddedilir.
+  statement {
+    sid       = "AuditAppendOnly"
+    actions   = local.audit_app_actions
+    resources = [aws_dynamodb_table.audit.arn, "${aws_dynamodb_table.audit.arn}/index/*"]
+  }
+
+  statement {
+    sid       = "DenyAuditMutation"
+    effect    = "Deny"
+    actions   = local.audit_mutating_actions
+    resources = [aws_dynamodb_table.audit.arn]
+  }
+
   statement {
     sid       = "PublishDomainEvents"
     actions   = ["sns:Publish"]
@@ -167,6 +181,7 @@ resource "aws_lambda_function" "scheduler_worker" {
     variables = merge({
       NODE_ENV             = "production"
       DYNAMODB_TABLE_NAME  = aws_dynamodb_table.main.name
+      AUDIT_TABLE_NAME     = aws_dynamodb_table.audit.name
       EVENTS_MODE          = "sns"
       EVENTS_SNS_TOPIC_ARN = aws_sns_topic.events.arn
       # EMF metriklerinin `Stack` boyutu (operations.tf alarmlari ayni degeri bekler).
