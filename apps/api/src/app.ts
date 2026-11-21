@@ -30,6 +30,8 @@ import { membershipRepository } from './modules/memberships/repository.js';
 import { membershipRoutes } from './modules/memberships/routes.js';
 import { type MembershipService, createMembershipService } from './modules/memberships/service.js';
 import { loadPaymentsConfig } from './modules/payments/config.js';
+import { type InvoiceService, createInvoiceService } from './modules/payments/invoices.js';
+import { type PayoutService, createPayoutService } from './modules/payments/payouts.js';
 import type { FakePaymentProvider } from './modules/payments/fakeProvider.js';
 import {
   paymentAdminRoutes,
@@ -94,6 +96,9 @@ export type AppConfig = {
    * saglayicinin test sayfasi rotalarini acar.
    */
   paymentsService?: PaymentsService;
+  /** P4: platform transferi izleme ve platform komisyon faturasi (verilmezse ortamdan kurulur). */
+  payoutService?: PayoutService;
+  invoiceService?: InvoiceService;
   fakePaymentProvider?: FakePaymentProvider;
 };
 
@@ -164,6 +169,8 @@ export function createApp(config: AppConfig) {
   // rotalarindan ONCE baglanir (daha ozel yol); callback/webhook kimliksizdir.
   let paymentsService = config.paymentsService;
   let fakePaymentProvider = config.fakePaymentProvider;
+  let payoutService = config.payoutService;
+  let invoiceService = config.invoiceService;
   if (!paymentsService) {
     const payments = loadPaymentsConfig();
     fakePaymentProvider = payments.fake;
@@ -172,10 +179,14 @@ export function createApp(config: AppConfig) {
       ledger: portalRepository,
       finance: financeService,
       providers: payments.providers,
+      // P4: API yalnizca SIFRELER; transferleri zamanlanmis worker gonderir (payoutMode varsayilan 'defer').
+      ...(payments.vault ? { vault: payments.vault } : {}),
       apiBaseUrl: payments.apiBaseUrl,
       webAppUrl: payments.webAppUrl,
       intentTtlMinutes: payments.intentTtlMinutes,
     });
+    payoutService ??= createPayoutService({ providers: payments.providers, ...(payments.vault ? { vault: payments.vault } : {}) });
+    invoiceService ??= createInvoiceService({ settings: payments.invoices });
   }
   app.route('/api/finance/online-payments', paymentManagerRoutes({ authenticate, service: paymentsService }));
   app.route(
@@ -186,8 +197,8 @@ export function createApp(config: AppConfig) {
       closures: config.closureService ?? (config.financeService ? undefined : createClosureService({ finance: financeService })),
     }),
   );
-  app.route('/api/payments', paymentCallbackRoutes({ service: paymentsService, fake: fakePaymentProvider }));
-  app.route('/api/admin/payments', paymentAdminRoutes({ authenticate, service: paymentsService }));
+  app.route('/api/payments', paymentCallbackRoutes({ service: paymentsService, payouts: payoutService, fake: fakePaymentProvider }));
+  app.route('/api/admin/payments', paymentAdminRoutes({ authenticate, service: paymentsService, payouts: payoutService, invoices: invoiceService }));
 
   const membershipService = config.membershipService ?? createMembershipService();
   app.route('/api/memberships', membershipRoutes({ authenticate, service: membershipService }));

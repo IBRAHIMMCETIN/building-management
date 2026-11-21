@@ -322,6 +322,50 @@ variable "default_payment_provider" {
   }
 }
 
+variable "paytr_transfer_delay_hours" {
+  type        = number
+  default     = 24
+  description = "P4: PayTR odeme onayindan sonra Platform Transfer talimati icin bekleme (saat, 0-720). Talimat en erken odemenin ertesi gunu verilir."
+
+  validation {
+    condition     = var.paytr_transfer_delay_hours >= 0 && var.paytr_transfer_delay_hours <= 720 && floor(var.paytr_transfer_delay_hours) == var.paytr_transfer_delay_hours
+    error_message = "paytr_transfer_delay_hours 0-720 arasi tam sayi olmalidir."
+  }
+}
+
+variable "platform_invoice_mode" {
+  type        = string
+  default     = "monthly"
+  description = "P4: platform komisyon faturasi modeli: monthly (donemsel) | per_payment (odeme bazli)."
+
+  validation {
+    condition     = contains(["monthly", "per_payment"], var.platform_invoice_mode)
+    error_message = "platform_invoice_mode monthly veya per_payment olmalidir."
+  }
+}
+
+variable "platform_invoice_vat_bps" {
+  type        = number
+  default     = 2000
+  description = "P4: platform komisyon faturasinda KDV orani (baz puan; 2000 = %20)."
+
+  validation {
+    condition     = var.platform_invoice_vat_bps >= 0 && var.platform_invoice_vat_bps <= 5000 && floor(var.platform_invoice_vat_bps) == var.platform_invoice_vat_bps
+    error_message = "platform_invoice_vat_bps 0-5000 arasi tam sayi olmalidir."
+  }
+}
+
+variable "platform_invoice_vat_mode" {
+  type        = string
+  default     = "exclusive"
+  description = "P4: exclusive (platform payi KDV haric, KDV ustune) | inclusive (pay KDV dahil)."
+
+  validation {
+    condition     = contains(["exclusive", "inclusive"], var.platform_invoice_vat_mode)
+    error_message = "platform_invoice_vat_mode exclusive veya inclusive olmalidir."
+  }
+}
+
 variable "paytr_test_mode" {
   type        = bool
   default     = true

@@ -22,6 +22,9 @@ export const PAYTR_PATHS = {
   token: '/odeme/api/get-token',
   status: '/odeme/durum-sorgu',
   refund: '/odeme/iade',
+  transfer: '/odeme/platform/transfer',
+  returned: '/odeme/geri-donen-transfer',
+  resend: '/odeme/hesaptan-gonder',
 } as const;
 
 /** iFrame odeme sayfasi: `https://www.paytr.com/odeme/guvenli/<token>`. */

@@ -73,6 +73,14 @@ export type ItemApproval = {
   lastAttemptAt?: IsoDateTime;
   approvedAt?: IsoDateTime;
   error?: { code: string; message: string; at: IsoDateTime };
+  /**
+   * P4 (platform transferi): bu andan once gonderilmez (`PAYTR_TRANSFER_DELAY_HOURS`, en erken
+   * odemenin ertesi gunu). Platform ekibi elle one cekebilir.
+   */
+  releaseAfter?: IsoDateTime;
+  /** P4: gonderilen transfer talimatinin kimligi (PayTR `trans_id`) ve saglayici referansi. */
+  transferId?: string;
+  providerReference?: string;
 };
 
 /** Odeme sonrasi mutabakat kaydi (niyet uzerinde). */
@@ -234,6 +242,14 @@ export type PaymentAccount = TableKeys & {
   posRateBasisPoints?: number;
   /** Islem basina sabit saglayici ucreti (kurus); yoksa `PAYMENTS_POS_FIXED_FEE_KURUS`. */
   posFixedFeeKurus?: number;
+  /**
+   * P4: aktarim alicisi (IBAN + hesap sahibi adi) KMS ile sifreli (`payee.ts`). Yanitlarda
+   * yalnizca `ibanMasked` gorunur; cozme yalnizca transfer talimatini gonderen worker'da.
+   */
+  payeeCiphertext?: string;
+  payeeUpdatedAt?: IsoDateTime;
+  /** P4: platform komisyon faturasinin muhatabi (apartman/site yonetimi, VKN). */
+  invoiceRecipient?: InvoiceRecipient;
   createdAt: IsoDateTime;
   createdBy: string;
   updatedAt: IsoDateTime;
@@ -270,4 +286,120 @@ export type IntentRefRecord = TableKeys & {
   apartmentId: string;
   intentId: string;
   createdAt: IsoDateTime;
+};
+
+// ---------------------------------------------------------------------------
+// P4: platform transferi (PayTR) ve platform komisyon faturasi
+// ---------------------------------------------------------------------------
+
+/**
+ * SENT           talimat saglayicida kabul edildi
+ * SETTLED        saglayici transferin sonuclandigini bildirdi
+ * RETURNED       banka aktarimi iade etti (hatali IBAN/ad); para saglayicida bekliyor -> alarm
+ * RESEND_PENDING platform ekibi (duzeltilmis alici ile) yeniden gonderim istedi; worker gonderir
+ * RESEND_SENT    yeniden gonderim saglayicida kabul edildi, sonuc bekleniyor
+ * RESENT         yeniden gonderim basarili
+ * RESEND_FAILED  yeniden gonderim reddedildi -> alarm, tekrar istenebilir
+ */
+export const PAYOUT_STATUSES = ['SENT', 'SETTLED', 'RETURNED', 'RESEND_PENDING', 'RESEND_SENT', 'RESENT', 'RESEND_FAILED'] as const;
+export type PayoutStatus = (typeof PAYOUT_STATUSES)[number];
+/** Platform ekibinin ilgilenmesi gereken durumlar. */
+export const PAYOUT_ATTENTION_STATUSES: readonly PayoutStatus[] = ['RETURNED', 'RESEND_PENDING', 'RESEND_SENT', 'RESEND_FAILED'];
+
+/**
+ * Pazaryeri payinin apartmana aktarim kaydi (kalem basina bir talimat).
+ *   PK = `APT#<apartmentId>`, SK = `PAYOUT#<transferId>`
+ *   GSI1PK = `PAYOUT`, GSI1SK = `<sentAt>#<transferId>#APT#<apartmentId>` (tum apartmanlar, zamana gore)
+ * IBAN'in kendisi tutulmaz: maskeli hali ve son 4 hane (geri donen aktarim eslemesi).
+ */
+export type PayoutTransfer = TableKeys & {
+  entityType: 'PAYOUT_TRANSFER';
+  apartmentId: string;
+  provider: PaymentProviderName;
+  intentId: string;
+  itemId: string;
+  transferId: string;
+  /** Odemenin saglayici kimligi (PayTR `merchant_oid`). */
+  providerPaymentId: string;
+  /** Alt uye isyerine aktarilan (`submerchant_amount`). */
+  amount: Kurus;
+  /** Kalemin brut tutari (`total_amount`). */
+  grossAmount: Kurus;
+  ibanMasked: string;
+  ibanLast4: string;
+  status: PayoutStatus;
+  sentAt: IsoDateTime;
+  providerReference?: string;
+  settledAt?: IsoDateTime;
+  returned?: { refNo: string; detectedAt: IsoDateTime; returnedOn?: string; amount: Kurus };
+  /** Kac kez yeniden gonderim istendi (yeniden gonderim kimligi `<transferId>R<n>`). */
+  resendCount?: number;
+  resend?: {
+    resendId: string;
+    requestedAt: IsoDateTime;
+    requestedBy: string;
+    note: string;
+    /** Yeniden gonderimde kullanilacak alici (KMS ile sifreli, apartman hesabindan). */
+    payeeCiphertext: string;
+    ibanMasked: string;
+    attempts: number;
+    sentAt?: IsoDateTime;
+    completedAt?: IsoDateTime;
+    error?: { code: string; message: string; at: IsoDateTime };
+  };
+  createdAt: IsoDateTime;
+  updatedAt: IsoDateTime;
+  version: number;
+};
+
+/** Saglayici transfer kimligi -> apartman (transfer sonuc bildirimi yalnizca kimlik tasir). */
+export type PayoutRefRecord = TableKeys & {
+  entityType: 'PAYOUT_REF';
+  provider: PaymentProviderName;
+  reference: string;
+  apartmentId: string;
+  transferId: string;
+  createdAt: IsoDateTime;
+};
+
+/** Platform komisyon faturasinin muhatabi: apartman/site yonetimi (VKN). */
+export type InvoiceRecipient = { title: string; taxNumber: string; taxOffice: string };
+
+export const INVOICE_STATUSES = ['DRAFT', 'NEEDS_RECIPIENT', 'ISSUED', 'CANCELLED'] as const;
+export type InvoiceStatus = (typeof INVOICE_STATUSES)[number];
+
+/**
+ * Platform komisyon faturasi taslagi / mutabakat kaydi (saglayici bagimsiz; `invoices.ts`).
+ *   PK = `APT#<apartmentId>`, SK = `PINV#<invoiceId>`
+ *   invoiceId: aylik `M-<YYYY-MM>`, odeme bazli `P-<intentId>`
+ * Satirlar yalnizca deftere yazilmis (SUCCEEDED) online odemelerin platform payidir.
+ */
+export type PlatformInvoice = TableKeys & {
+  entityType: 'PLATFORM_INVOICE';
+  invoiceId: string;
+  apartmentId: string;
+  mode: 'monthly' | 'per_payment';
+  period: string;
+  status: InvoiceStatus;
+  recipient?: InvoiceRecipient;
+  lines: { intentId: string; paidAt?: IsoDate; amount: Kurus; platformFee: Kurus }[];
+  /** KDV haric tutar. */
+  netAmount: Kurus;
+  vatRateBasisPoints: number;
+  /** `exclusive`: platform payi KDV haric (KDV ustune eklenir); `inclusive`: pay KDV dahil. */
+  vatMode: 'exclusive' | 'inclusive';
+  vatAmount: Kurus;
+  totalAmount: Kurus;
+  reconciliation: { intentCount: number; platformFeeTotal: Kurus; sourceHash: string; generatedAt: IsoDateTime };
+  /** Fatura saglayicisi (`manual` = entegrator yok, numara elle girilir). */
+  invoiceProvider: string;
+  externalId?: string;
+  invoiceNumber?: string;
+  issuedAt?: IsoDateTime;
+  issuedBy?: string;
+  cancelledAt?: IsoDateTime;
+  cancelReason?: string;
+  createdAt: IsoDateTime;
+  updatedAt: IsoDateTime;
+  version: number;
 };

@@ -38,7 +38,14 @@ function site(id: string, over: Partial<Site> = {}): Site {
   } as Site;
 }
 
-function setup(sites: Site[] = [site('apt-1'), site('apt-2')], options: { payments?: { reconcile: (apt: string) => Promise<unknown>; reconcileRefunds?: () => Promise<unknown> } | null } = {}) {
+function setup(
+  sites: Site[] = [site('apt-1'), site('apt-2')],
+  options: {
+    payments?: { reconcile: (apt: string) => Promise<unknown>; reconcileRefunds?: () => Promise<unknown> } | null;
+    payouts?: { detectReturned: () => Promise<unknown>; processResends: () => Promise<unknown> } | null;
+    invoices?: { draftPeriod: (apt: string, period: string) => Promise<unknown> } | null;
+  } = {},
+) {
   const events = createInMemoryEventPublisher();
   const finance = {
     autoChargeDues: vi.fn(async () => ({
@@ -79,7 +86,16 @@ function setup(sites: Site[] = [site('apt-1'), site('apt-2')], options: { paymen
       : options.payments === null
         ? null
         : { reconcileRefunds: vi.fn(async () => ({ checked: 0, refunded: 0, stillPending: 0 })), ...options.payments };
-  const worker = createSchedulerWorker({ core, finance, events, now: () => NOW, log: quiet, payments: payments as never });
+  const worker = createSchedulerWorker({
+    core,
+    finance,
+    events,
+    now: () => NOW,
+    log: quiet,
+    payments: payments as never,
+    payouts: (options.payouts ?? null) as never,
+    invoices: (options.invoices ?? null) as never,
+  });
   const run = (body: object, messageId = 'm1') => worker({ Records: [{ messageId, body: JSON.stringify(body) }] });
   return { worker, run, finance, core, events, payments };
 }
@@ -226,6 +242,42 @@ describe('scheduler worker - online odeme mutabakati (Adim 8b)', () => {
     expect(await failing.run({ job: 'payment_reconcile', scheduledTime: '2026-11-20T10:15:00Z' }, 'm9')).toEqual({
       batchItemFailures: [{ itemIdentifier: 'm9' }],
     });
+  });
+});
+
+describe('scheduler worker - platform transferi ve fatura (P4)', () => {
+  const payoutsMock = () => ({
+    detectReturned: vi.fn(async () => ({ checked: 1, returned: 1, alreadyKnown: 0, unmatched: 0 })),
+    processResends: vi.fn(async () => ({ checked: 0, sent: 0, failed: 0, pending: 0 })),
+  });
+
+  it('payout_returns: tek tur (apartman dongusu yok); hata mesaji tekrar denetir; kapaliysa atlanir', async () => {
+    const payouts = payoutsMock();
+    const { run, payments } = setup(undefined, { payouts });
+    expect(await run({ job: 'payout_returns', scheduledTime: '2026-11-20T08:30:00Z' })).toEqual({ batchItemFailures: [] });
+    expect(payouts.detectReturned).toHaveBeenCalledTimes(1);
+    expect(payments!.reconcile).not.toHaveBeenCalled();
+    const failing = setup(undefined, { payouts: { ...payoutsMock(), detectReturned: vi.fn(async () => { throw new Error('paytr'); }) } });
+    expect(await failing.run({ job: 'payout_returns', scheduledTime: '2026-11-20T08:30:00Z' }, 'm2')).toEqual({ batchItemFailures: [{ itemIdentifier: 'm2' }] });
+    expect(await setup().run({ job: 'payout_returns', scheduledTime: '2026-11-20T08:30:00Z' })).toEqual({ batchItemFailures: [] });
+  });
+
+  it('payment_reconcile: tum apartmanlar turunda yeniden gonderimler de islenir', async () => {
+    const payouts = payoutsMock();
+    const { run } = setup(undefined, { payouts });
+    await run({ job: 'payment_reconcile', scheduledTime: '2026-11-20T10:15:00Z' });
+    expect(payouts.processResends).toHaveBeenCalledTimes(1);
+    await run({ job: 'payment_reconcile', scheduledTime: '2026-11-20T10:30:00Z', apartmentId: 'apt-1' });
+    expect(payouts.processResends).toHaveBeenCalledTimes(1);
+  });
+
+  it('platform_invoices: her aktif apartman icin onceki donem (Istanbul gunune gore)', async () => {
+    const invoices = { draftPeriod: vi.fn(async () => ({ created: 1 })) };
+    const { run } = setup([site('apt-1'), site('apt-2', { status: 'inactive' })], { invoices });
+    // Istanbul 1 Ocak 2027 04:10 -> donem 2026-12.
+    expect(await run({ job: 'platform_invoices', scheduledTime: '2027-01-01T01:10:00Z' })).toEqual({ batchItemFailures: [] });
+    expect(invoices.draftPeriod).toHaveBeenCalledTimes(1);
+    expect(invoices.draftPeriod).toHaveBeenCalledWith('apt-1', '2026-12');
   });
 });
 

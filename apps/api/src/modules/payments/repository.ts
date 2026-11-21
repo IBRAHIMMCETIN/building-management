@@ -7,6 +7,7 @@ import {
   getTenantItem,
   putNewItem,
   putVersionedItem,
+  queryTenantAll,
   skKey,
   tenantPk,
   toDataAccessError,
@@ -20,6 +21,9 @@ import {
   type PaymentIntent,
   type PaymentProviderName,
   type PaymentSettings,
+  type PayoutRefRecord,
+  type PayoutTransfer,
+  type PlatformInvoice,
   REVIEW_QUEUE_STATUSES,
 } from './types.js';
 
@@ -64,6 +68,20 @@ export const paymentKeys = {
   ref: (provider: PaymentProviderName, reference: string): TableKeys => ({
     PK: ['PAYREF', provider, reference].join('#'),
     SK: 'PAYREF',
+  }),
+  /** P4: aktarim kaydi ve transfer kimligi -> apartman eslemesi. */
+  payout: (apartmentId: string, transferId: string): TableKeys => ({
+    PK: tenantPk(apartmentId),
+    SK: skKey('PAYOUT', transferId),
+  }),
+  payoutRef: (provider: PaymentProviderName, reference: string): TableKeys => ({
+    PK: ['PAYOUTREF', provider, reference].join('#'),
+    SK: 'PAYOUTREF',
+  }),
+  /** P4: platform komisyon faturasi. */
+  invoice: (apartmentId: string, invoiceId: string): TableKeys => ({
+    PK: tenantPk(apartmentId),
+    SK: skKey('PINV', invoiceId),
   }),
   /** Apartmanin online odeme tercihi (saglayici secimi). */
   settings: (apartmentId: string): TableKeys => ({
@@ -110,6 +128,18 @@ export type PaymentsRepository = {
   /** Yeni hesap (`expectedVersion` yok) veya surum kosullu guncelleme. */
   putAccount(account: PaymentAccount, expectedVersion?: number): Promise<void>;
   getSettings(apartmentId: string): Promise<PaymentSettings | undefined>;
+  /** Yeni aktarim kaydi + kimlik eslemesi (atomik); varsa `PaymentsConflictError`. */
+  createPayout(payout: PayoutTransfer, ref: PayoutRefRecord): Promise<void>;
+  /** Surum kosullu guncelleme (`payout.version === expectedVersion + 1`); ek esleme kaydi opsiyonel. */
+  updatePayout(payout: PayoutTransfer, expectedVersion: number, ref?: PayoutRefRecord): Promise<void>;
+  getPayout(apartmentId: string, transferId: string): Promise<PayoutTransfer | undefined>;
+  getPayoutRef(provider: PaymentProviderName, reference: string): Promise<PayoutRefRecord | undefined>;
+  /** Tum apartmanlarin aktarimlari, `sentAt >= fromSentAt` (GSI1, zamana gore). */
+  listPayoutsSince(fromSentAt: string): Promise<PayoutTransfer[]>;
+  getInvoice(apartmentId: string, invoiceId: string): Promise<PlatformInvoice | undefined>;
+  /** Yeni (`expectedVersion` yok) veya surum kosullu. */
+  putInvoice(invoice: PlatformInvoice, expectedVersion?: number): Promise<void>;
+  listInvoices(apartmentId: string): Promise<PlatformInvoice[]>;
   /** Yeni kayit (`expectedVersion` yok) veya surum kosullu guncelleme; denetim kaydiyla. */
   putSettings(settings: PaymentSettings, expectedVersion?: number): Promise<void>;
 };
@@ -140,6 +170,32 @@ function intentAudit(intent: PaymentIntent, action: string) {
         : undefined,
       version: intent.version,
     },
+  };
+}
+
+/** Aktarim indeksi (tum apartmanlar). */
+export const PAYOUT_INDEX_PK = 'PAYOUT';
+const MAX_PAYOUT_SCAN = 5_000;
+
+export function toStoredPayout(p: PayoutTransfer): PayoutTransfer {
+  return { ...p, GSI1PK: PAYOUT_INDEX_PK, GSI1SK: `${p.sentAt}#${p.transferId}#APT#${p.apartmentId}` } as PayoutTransfer;
+}
+
+function fromStoredPayout<T extends PayoutTransfer | undefined>(item: T): T {
+  if (!item) return item;
+  const { GSI1PK: _pk, GSI1SK: _sk, ...rest } = item as PayoutTransfer & { GSI1PK?: string; GSI1SK?: string };
+  return rest as T;
+}
+
+/** Aktarim denetimi: IBAN yok, yalnizca maskeli hali ve durum. */
+function payoutAudit(p: PayoutTransfer, action: string) {
+  return {
+    apartmentId: p.apartmentId,
+    action,
+    target: { type: 'payout_transfer', id: p.transferId },
+    actorId: p.resend?.requestedBy,
+    reason: p.resend?.note,
+    details: { status: p.status, intentId: p.intentId, amount: p.amount, ibanMasked: p.ibanMasked, returnedRef: p.returned?.refNo, version: p.version },
   };
 }
 
@@ -310,6 +366,104 @@ export function createPaymentsRepository(): PaymentsRepository {
     },
 
     getSettings: (apartmentId) => getTenantItem<PaymentSettings>(paymentKeys.settings(apartmentId)),
+
+    async createPayout(payout, ref) {
+      const { client, tableName } = getDynamo();
+      try {
+        await sendWithAudit(
+          client,
+          [
+            { Put: { TableName: tableName, Item: toStoredPayout(payout), ConditionExpression: 'attribute_not_exists(PK)' } },
+            { Put: { TableName: tableName, Item: ref, ConditionExpression: 'attribute_not_exists(PK)' } },
+          ],
+          payoutAudit(payout, 'payment.payout.sent'),
+        );
+      } catch (err) {
+        if (err instanceof TransactionCanceledException && (err.CancellationReasons ?? []).some((r) => r.Code === 'ConditionalCheckFailed')) {
+          throw new PaymentsConflictError();
+        }
+        throw toDataAccessError(err);
+      }
+    },
+
+    async updatePayout(payout, expectedVersion, ref) {
+      if (payout.version !== expectedVersion + 1) throw new Error('Aktarim surumu bir artirilmali');
+      const { client, tableName } = getDynamo();
+      try {
+        await sendWithAudit(
+          client,
+          [
+            {
+              Put: {
+                TableName: tableName,
+                Item: toStoredPayout(payout),
+                ConditionExpression: '#v = :v',
+                ExpressionAttributeNames: { '#v': 'version' },
+                ExpressionAttributeValues: { ':v': expectedVersion },
+              },
+            },
+            ...(ref ? [{ Put: { TableName: tableName, Item: ref, ConditionExpression: 'attribute_not_exists(PK)' } }] : []),
+          ],
+          payoutAudit(payout, `payment.payout.${payout.status.toLowerCase()}`),
+        );
+      } catch (err) {
+        if (err instanceof TransactionCanceledException && (err.CancellationReasons ?? []).some((r) => r.Code === 'ConditionalCheckFailed')) {
+          throw new PaymentsConflictError();
+        }
+        throw toDataAccessError(err);
+      }
+    },
+
+    getPayout: async (apartmentId, transferId) =>
+      fromStoredPayout(await getTenantItem<PayoutTransfer>(paymentKeys.payout(apartmentId, transferId))),
+
+    getPayoutRef: (provider, reference) => getTenantItem<PayoutRefRecord>(paymentKeys.payoutRef(provider, reference)),
+
+    async listPayoutsSince(fromSentAt) {
+      const { client, tableName } = getDynamo();
+      const items: PayoutTransfer[] = [];
+      let startKey: QueryCommandOutput['LastEvaluatedKey'];
+      try {
+        do {
+          const out: QueryCommandOutput = await client.send(
+            new QueryCommand({
+              TableName: tableName,
+              IndexName: 'GSI1',
+              KeyConditionExpression: 'GSI1PK = :pk AND GSI1SK >= :from',
+              ExpressionAttributeValues: { ':pk': PAYOUT_INDEX_PK, ':from': fromSentAt },
+              ...(startKey ? { ExclusiveStartKey: startKey } : {}),
+            }),
+          );
+          items.push(...((out.Items ?? []) as PayoutTransfer[]));
+          startKey = out.LastEvaluatedKey;
+        } while (startKey && items.length < MAX_PAYOUT_SCAN);
+      } catch (err) {
+        throw toDataAccessError(err);
+      }
+      return items.filter((p) => p.entityType === 'PAYOUT_TRANSFER').map((p) => fromStoredPayout(p) as PayoutTransfer);
+    },
+
+    getInvoice: (apartmentId, invoiceId) => getTenantItem<PlatformInvoice>(paymentKeys.invoice(apartmentId, invoiceId)),
+
+    async putInvoice(invoice, expectedVersion) {
+      try {
+        const audit = {
+          apartmentId: invoice.apartmentId,
+          action: `payment.invoice.${invoice.status.toLowerCase()}`,
+          target: { type: 'platform_invoice', id: invoice.invoiceId },
+          actorId: invoice.issuedBy,
+          details: { netAmount: invoice.netAmount, vatAmount: invoice.vatAmount, totalAmount: invoice.totalAmount, lines: invoice.lines.length, invoiceNumber: invoice.invoiceNumber, version: invoice.version },
+        };
+        if (expectedVersion === undefined) await auditedPutNew(invoice, audit);
+        else await auditedPutVersioned(invoice, expectedVersion, audit);
+      } catch (err) {
+        if (err instanceof DataAccessError && err.code !== 'conflict') throw err;
+        conflictOr(err);
+      }
+    },
+
+    listInvoices: (apartmentId) =>
+      queryTenantAll<PlatformInvoice>(apartmentId, 'PINV#').then((items) => items.filter((i) => i.entityType === 'PLATFORM_INVOICE')),
 
     async putSettings(settings, expectedVersion) {
       try {

@@ -157,6 +157,20 @@ data "aws_iam_policy_document" "scheduler_worker" {
       resources = statement.value
     }
   }
+  # P4: transfer talimati aninda aktarim alicisini COZME (Encrypt yok); yalnizca payment-payee baglamiyla.
+  dynamic "statement" {
+    for_each = local.payments_enabled ? [local.payee_kms_key_arn] : []
+    content {
+      sid       = "DecryptPaymentPayee"
+      actions   = ["kms:Decrypt"]
+      resources = [statement.value]
+      condition {
+        test     = "StringEquals"
+        variable = "kms:EncryptionContext:purpose"
+        values   = ["payment-payee"]
+      }
+    }
+  }
 }
 
 resource "aws_iam_role_policy" "scheduler_worker" {

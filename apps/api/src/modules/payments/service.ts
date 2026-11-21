@@ -24,6 +24,7 @@ import {
   type WebhookReply,
 } from './provider.js';
 import { type ProviderRegistry, type ProviderResolution, createProviderRegistry, resolveProvider } from './registry.js';
+import { type Payee, type PayeeVault, ibanLast4, isValidTrIban, maskIban, normalizeIban, normalizePayeeName } from './payee.js';
 import {
   DEFAULT_PLATFORM_FEE_BASIS_POINTS,
   type FeePolicy,
@@ -60,6 +61,8 @@ import {
   type PaymentMode,
   type PaymentProviderName,
   type PaymentSettings,
+  type PayoutTransfer,
+  type InvoiceRecipient,
   type ProviderCheck,
   REVIEW_ACTIONS,
   type RefundItem,
@@ -82,9 +85,11 @@ export type PaymentsErrorCode =
   | 'provider_rejected'
   | 'provider_unavailable'
   | 'action_not_allowed'
-  | 'ledger_failed';
+  | 'ledger_failed'
+  | 'payee_vault_unavailable';
 
 const STATUS: Record<PaymentsErrorCode, 404 | 409 | 422 | 502> = {
+  payee_vault_unavailable: 502,
   not_found: 404,
   no_debt: 422,
   payments_disabled: 422,
@@ -144,6 +149,16 @@ export type PaymentsServiceDeps = {
   providers?: ProviderRegistry;
   /** Kisayol (yerel/test): tek saglayici, varsayilan olarak kaydedilir. `providers` onceliklidir. */
   provider?: PaymentProvider;
+  /**
+   * P4: aktarim alicisi (IBAN + ad) KMS kasasi. API Lambda'da yalnizca `seal` yetkisi vardir;
+   * `open` (cozme) yalnizca transfer gonderen zamanlanmis worker'da calisir.
+   */
+  vault?: PayeeVault;
+  /**
+   * P4: `send` -> vadesi gelen platform transferleri gonderilir (zamanlanmis worker).
+   * `defer` (varsayilan; API) -> gonderilmez, worker'in sonraki turuna kalir.
+   */
+  payoutMode?: 'send' | 'defer';
   /** API'nin disaridan erisilen adresi (saglayici callback'i buraya POST eder). */
   apiBaseUrl: string;
   /** Odeme sonrasi kullanicinin donecegi web uygulamasi (Cloudflare Pages). */
@@ -157,7 +172,7 @@ export type PaymentsServiceDeps = {
   log: PaymentsLog;
 };
 
-const defaultLog: PaymentsLog = (level, message, fields = {}) => {
+export const defaultLog: PaymentsLog = (level, message, fields = {}) => {
   const line = JSON.stringify({ level, module: 'payments', message, ...fields });
   if (level === 'error') console.error(line);
   else if (level === 'warn') console.warn(line);
@@ -199,22 +214,8 @@ export function normalizeGsm(value: string): string | undefined {
 }
 
 /** TR IBAN: TR + 24 hane, ISO 13616 mod-97 kontrolu. */
-export function isValidTrIban(value: string): boolean {
-  const iban = value.replace(/\s/g, '').toUpperCase();
-  if (!/^TR\d{24}$/.test(iban)) return false;
-  const rearranged = iban.slice(4) + iban.slice(0, 4);
-  const numeric = rearranged.replace(/[A-Z]/g, (ch) => String(ch.charCodeAt(0) - 55));
-  let rem = 0;
-  for (const d of numeric) rem = (rem * 10 + Number(d)) % 97;
-  return rem === 1;
-}
-
-/** Yalnizca son 4 hane: "TR** **** **** **** **** **12 34". */
-export function maskIban(value: string): string {
-  const iban = value.replace(/\s/g, '').toUpperCase();
-  const last4 = iban.slice(-4);
-  return `TR** **** **** **** **** **${last4.slice(0, 2)} ${last4.slice(2)}`;
-}
+// IBAN yardimcilari P4'te `payee.ts`'e tasindi (mod-97 + maskeleme); eski import yolu korunur.
+export { isValidTrIban, maskIban };
 
 /** "Ayşe Nur Yılmaz" -> { name: "Ayşe Nur", surname: "Yılmaz" } */
 function splitFullName(fullName: string): { name: string; surname: string } {
@@ -276,6 +277,30 @@ function withItemTransactions(intent: PaymentIntent, o: CheckoutOutcome): Checko
       paidAmount: a.amount,
     })),
   };
+}
+
+/** Istanbul takvim gununun (YYYY-MM-DD) ertesi gunu 00:00 (+03:00, yaz saati yok) -> ISO. */
+export function nextDayStart(day: IsoDate): string {
+  const d = new Date(`${day}T00:00:00+03:00`);
+  return new Date(d.getTime() + 86_400_000).toISOString();
+}
+
+/**
+ * P4: transfer talimatinin en erken zamani = max(onay + bekleme, odemenin ertesi gunu 00:00 Istanbul).
+ * PayTR: talimat odemenin ayni gunu olusturulmaz; saat 10:00'a kadar verilenler o gun islenir.
+ */
+export function payoutReleaseAfter(paid: Date, delayHours: number): string {
+  const day = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Istanbul' }).format(paid) as IsoDate;
+  return new Date(Math.max(paid.getTime() + delayHours * 3_600_000, Date.parse(nextDayStart(day)))).toISOString();
+}
+
+/**
+ * P4: kalem transfer kimligi (PayTR `trans_id`, alfanumerik <= 60): siparis kimligi + taraf harfi
+ * (W = malik, O = oturan). Deterministik: ayni kalem icin tekrar gonderimde ayni kimlik.
+ */
+export function transferIdOf(intent: Pick<PaymentIntent, 'intentId' | 'providerReference'>, itemId: string): string {
+  const party = itemId.endsWith('-owner') ? 'W' : 'O';
+  return `${(intent.providerReference ?? intent.intentId).replace(/[^A-Za-z0-9]/g, '').slice(0, 58)}${party}`;
 }
 
 /** Sepet kalemi icin sakinden tahsil edilen brut tutar. */
@@ -758,13 +783,18 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
   function initialSettlement(intent: PaymentIntent, o: CheckoutOutcome): IntentSettlement {
     const posEstimate = intent.posEstimate ?? 0;
     const commission = toKurus(intent.platformFee + posEstimate);
-    const releases = releasesItems(registry.get(intent.provider));
+    const provider = registry.get(intent.provider);
+    const releases = releasesItems(provider);
+    // P4: transfer saglayicisinda talimat bekleme suresinden sonra ve en erken ertesi gun.
+    const releaseAfter =
+      provider?.capabilities.settlement === 'payout_transfer' ? payoutReleaseAfter(deps.now(), provider.capabilities.releaseDelayHours ?? 24) : undefined;
     const approvals: ItemApproval[] = releases
       ? (o.itemTransactions ?? intent.itemTransactions ?? []).map((t) => ({
           itemId: t.itemId,
           paymentTransactionId: t.paymentTransactionId,
           status: 'pending' as const,
           attempts: 0,
+          ...(releaseAfter ? { releaseAfter } : {}),
         }))
       : [];
     if (releases && approvals.length === 0) {
@@ -792,28 +822,60 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
   async function approvePending(intent: PaymentIntent): Promise<PaymentIntent> {
     const s = intent.settlement;
     const provider = registry.get(intent.provider);
-    // P4 kancasi: saglayici serbest birakmayi henuz uygulamiyorsa (PayTR transferi) kalemler bekler.
     if (intent.status !== 'SUCCEEDED' || !s || s.status !== 'pending' || !provider?.releaseItem || !releasesItems(provider)) {
       return intent;
     }
+    const payout = provider.capabilities.settlement === 'payout_transfer';
+    // Platform transferi yalnizca zamanlanmis worker'da gonderilir (API'de IBAN cozme yetkisi yok).
+    if (payout && deps.payoutMode !== 'send') return intent;
+    const nowMs = deps.now().getTime();
+    const due = (a: ItemApproval) => a.status === 'pending' && (!a.releaseAfter || Date.parse(a.releaseAfter) <= nowMs);
+    if (!s.approvals.some(due)) return intent; // bekleme suresi dolmadi: kayit degismez
+
+    // Transfer saglayicisinda alici bir kez cozulur (yalnizca bellekte, bu cagri boyunca).
+    let payee: Payee | undefined;
+    let payeeError: unknown;
+    if (payout) {
+      try {
+        payee = await openPayee(intent);
+      } catch (err) {
+        payeeError = err;
+      }
+    }
+
     const approvals: ItemApproval[] = [];
     for (const a of s.approvals) {
-      if (a.status !== 'pending') {
+      if (!due(a)) {
         approvals.push(a);
         continue;
       }
       const at = stamp();
+      const transferId = transferIdOf(intent, a.itemId);
       try {
-        await provider.releaseItem({
+        if (payeeError) throw payeeError;
+        const r = await provider.releaseItem({
           itemId: a.itemId,
           providerItemId: a.paymentTransactionId,
           providerPaymentId: intent.providerPaymentId,
           subMerchantKey: intent.subMerchantKey,
           amount: subMerchantPriceOf(intent, a.itemId),
           grossAmount: grossAmountOf(intent, a.itemId),
+          transferId,
+          ...(payee ? { payee } : {}),
           conversationId: `approve:${intent.intentId}:${a.itemId}`,
         });
-        approvals.push({ ...a, status: 'approved', attempts: a.attempts + 1, lastAttemptAt: at, approvedAt: at });
+        const providerReference = r && 'providerReference' in r ? r.providerReference : undefined;
+        if (payout && payee) await recordPayout(intent, a, transferId, payee, at, providerReference);
+        approvals.push({
+          ...a,
+          status: 'approved',
+          attempts: a.attempts + 1,
+          lastAttemptAt: at,
+          approvedAt: at,
+          error: undefined,
+          ...(payout ? { transferId } : {}),
+          ...(providerReference ? { providerReference } : {}),
+        });
       } catch (err) {
         const attempts = a.attempts + 1;
         const code = err instanceof PaymentProviderError ? err.code : 'unknown';
@@ -825,14 +887,19 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
           lastAttemptAt: at,
           error: { code, message: errText(err), at },
         });
-        deps.log(exhausted ? 'error' : 'warn', exhausted ? 'ALARM pazaryeri onayi basarisiz' : 'pazaryeri onayi ertelendi', {
-          ...(exhausted ? { alert: 'PAYMENT_APPROVAL_FAILED' } : {}),
-          intentId: intent.intentId,
-          apartmentId: intent.apartmentId,
-          paymentTransactionId: a.paymentTransactionId,
-          attempts,
-          code,
-        });
+        deps.log(
+          exhausted ? 'error' : 'warn',
+          exhausted ? (payout ? 'ALARM platform transferi basarisiz' : 'ALARM pazaryeri onayi basarisiz') : 'pazaryeri onayi/transferi ertelendi',
+          {
+            ...(exhausted ? { alert: 'PAYMENT_APPROVAL_FAILED' } : {}),
+            intentId: intent.intentId,
+            apartmentId: intent.apartmentId,
+            paymentTransactionId: a.paymentTransactionId,
+            ...(payout ? { transferId } : {}),
+            attempts,
+            code,
+          },
+        );
       }
     }
     const status: IntentSettlement['status'] = approvals.every((a) => a.status === 'approved')
@@ -841,6 +908,80 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
         ? 'pending'
         : 'failed';
     return transition(intent, { settlement: { ...s, status, approvals } });
+  }
+
+  /** P4: apartman hesabindaki sifreli aliciyi cozer (yalnizca worker). */
+  async function openPayee(intent: PaymentIntent): Promise<Payee> {
+    const account = await repo.getAccount(intent.apartmentId, intent.provider);
+    if (!account?.payeeCiphertext) throw new PaymentProviderError('payee_missing', 'Apartmanin aktarim alicisi (IBAN) kayitli degil', true);
+    if (!deps.vault) throw new PaymentProviderError('payee_vault_unavailable', 'Alici kasasi yapilandirilmamis', true);
+    return deps.vault.open({ apartmentId: intent.apartmentId, provider: intent.provider }, account.payeeCiphertext);
+  }
+
+  /** P4: gonderilen talimatin aktarim kaydi (geri donus izleme). Kayit varsa (tekrar) dokunulmaz. */
+  async function recordPayout(intent: PaymentIntent, a: ItemApproval, transferId: string, payee: Payee, at: string, providerReference?: string) {
+    const record: PayoutTransfer = {
+      ...paymentKeys.payout(intent.apartmentId, transferId),
+      entityType: 'PAYOUT_TRANSFER',
+      apartmentId: intent.apartmentId,
+      provider: intent.provider,
+      intentId: intent.intentId,
+      itemId: a.itemId,
+      transferId,
+      providerPaymentId: intent.providerPaymentId as string,
+      amount: subMerchantPriceOf(intent, a.itemId),
+      grossAmount: grossAmountOf(intent, a.itemId),
+      ibanMasked: maskIban(payee.iban),
+      ibanLast4: ibanLast4(payee.iban),
+      status: 'SENT',
+      sentAt: at,
+      ...(providerReference ? { providerReference } : {}),
+      createdAt: at,
+      updatedAt: at,
+      version: 1,
+    };
+    try {
+      await repo.createPayout(record, {
+        ...paymentKeys.payoutRef(intent.provider, transferId),
+        entityType: 'PAYOUT_REF',
+        provider: intent.provider,
+        reference: transferId,
+        apartmentId: intent.apartmentId,
+        transferId,
+        createdAt: at,
+      });
+    } catch (err) {
+      if (!(err instanceof PaymentsConflictError)) throw err;
+    }
+  }
+
+  /**
+   * Platform: bekleyen/basarisiz pazaryeri kalemlerini simdi serbest birakmaya hazirlar (gonderim
+   * worker'in sonraki turunda). Transfer saglayicisinda en erken odemenin ertesi gunu.
+   */
+  async function releaseNow(ctx: { userId: string }, apartmentId: string, intentId: string, body: unknown) {
+    assertId(apartmentId, 'apartmentId');
+    assertId(intentId, 'intentId');
+    const o = asObject(body);
+    const note = typeof o.note === 'string' ? o.note.trim() : '';
+    if (note.length < NOTE_MIN || note.length > NOTE_MAX) throw new ValidationError(`note ${NOTE_MIN}-${NOTE_MAX} karakter olmalıdır`, 'note');
+    const intent = await repo.getIntent(apartmentId, intentId);
+    if (!intent) throw new PaymentsError('not_found', 'Ödeme bulunamadı');
+    if (o.expectedVersion !== intent.version) throw new PaymentsError('conflict', 'Ödeme başka bir işlemle değişti; güncel hali alıp tekrar deneyin');
+    const s = intent.settlement;
+    if (intent.status !== 'SUCCEEDED' || !s || !s.approvals.some((a) => a.status !== 'approved')) {
+      throw new PaymentsError('action_not_allowed', 'Bu ödemede gönderilecek bekleyen aktarım yok');
+    }
+    const provider = registry.get(intent.provider);
+    const earliest = provider?.capabilities.settlement === 'payout_transfer' ? nextDayStart(intent.paidAt ?? today()) : undefined;
+    const at = stamp();
+    const releaseAfter = earliest && Date.parse(earliest) > Date.parse(at) ? earliest : at;
+    const approvals = s.approvals.map((a) =>
+      a.status === 'approved' ? a : { ...a, status: 'pending' as const, attempts: 0, error: undefined, releaseAfter },
+    );
+    const next = await transition(intent, { settlement: { ...s, status: 'pending', approvals } });
+    deps.log('info', 'AUDIT aktarim elle tetiklendi', { audit: 'PAYMENT_RELEASE_REQUESTED', apartmentId, intentId, by: ctx.userId, note, releaseAfter });
+    return { intentId, settlement: next.settlement, version: next.version };
   }
 
   /** Saglayicidan sorgulanan sonucu niyete uygular (idempotent). */
@@ -1494,9 +1635,44 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
   // ----- Platform: alt uye isyeri (Karar 1) -----
 
   function accountView(a: PaymentAccount) {
-    const { PK: _pk, SK: _sk, ...rest } = a;
+    // Sifreli alici hicbir yanitta donmez: yalnizca maskeli IBAN ve "kayitli" bilgisi.
+    const { PK: _pk, SK: _sk, payeeCiphertext, ...rest } = a;
     // Etkin komisyon politikasi (hesap ayari yoksa ortam varsayilani) platform ekraninda gorunur.
-    return { ...rest, effectiveFees: feePolicyOf(a, deps.posDefaults) };
+    return { ...rest, payeeOnFile: Boolean(payeeCiphertext), effectiveFees: feePolicyOf(a, deps.posDefaults) };
+  }
+
+  /** P4: alicinin KMS ile sifrelenmesi (API'de yalnizca sifreleme yetkisi). */
+  async function sealPayee(apartmentId: string, provider: PaymentProvider, payee: Payee): Promise<string> {
+    if (!deps.vault) throw new PaymentsError('payee_vault_unavailable', 'IBAN güvenli olarak saklanamıyor (şifreleme anahtarı yapılandırılmamış)');
+    try {
+      return await deps.vault.seal({ apartmentId, provider: provider.name }, payee);
+    } catch (err) {
+      deps.log('error', 'alici sifrelenemedi', { apartmentId, code: err instanceof PaymentProviderError ? err.code : 'unknown' });
+      throw new PaymentsError('payee_vault_unavailable', 'IBAN şu an güvenli olarak saklanamıyor, lütfen tekrar deneyin');
+    }
+  }
+
+  /** Transfer saglayicisi (PayTR) alicisiz calisamaz: kasa yoksa kayit/guncelleme reddedilir. */
+  const needsPayee = (provider: PaymentProvider) => provider.capabilities.settlement === 'payout_transfer';
+
+  /** `accountHolderName` (2-140): banka hesabindaki ad/unvan (PayTR `transfer_name`). */
+  function parseHolderName(v: unknown): string {
+    const name = typeof v === 'string' ? normalizePayeeName(v) : undefined;
+    if (!name) throw new ValidationError('accountHolderName 2-140 karakter olmalıdır (banka hesabındaki ad/unvan)', 'accountHolderName');
+    return name;
+  }
+
+  /** `invoiceRecipient`: `{ title, taxNumber (10 hane VKN), taxOffice }`; `null` kaldirir. */
+  function parseInvoiceRecipient(v: unknown): InvoiceRecipient | null {
+    if (v === null) return null;
+    const o = asObject(v);
+    const title = typeof o.title === 'string' ? o.title.replace(/\s+/g, ' ').trim() : '';
+    const taxNumber = typeof o.taxNumber === 'string' ? o.taxNumber.trim() : '';
+    const taxOffice = typeof o.taxOffice === 'string' ? o.taxOffice.replace(/\s+/g, ' ').trim() : '';
+    if (title.length < 2 || title.length > 300) throw new ValidationError('invoiceRecipient.title 2-300 karakter olmalıdır', 'invoiceRecipient');
+    if (!/^\d{10}$/.test(taxNumber)) throw new ValidationError('invoiceRecipient.taxNumber 10 haneli VKN olmalıdır', 'invoiceRecipient');
+    if (taxOffice.length < 2 || taxOffice.length > 100) throw new ValidationError('invoiceRecipient.taxOffice 2-100 karakter olmalıdır', 'invoiceRecipient');
+    return { title, taxNumber, taxOffice };
   }
 
   async function requireSite(apartmentId: string) {
@@ -1632,10 +1808,25 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
     await requireSite(apartmentId);
     const provider = await adminProvider(apartmentId, asObject(body).provider);
     const { request, feeBps } = parseSubMerchant(apartmentId, body);
-    const pos = parsePosOverrides(asObject(body));
+    const o = asObject(body);
+    const pos = parsePosOverrides(o);
+    // Aktarim alicisi: hesap sahibi adi verilmezse sirket unvani / yetkili adi.
+    const holder = parseHolderName(
+      o.accountHolderName ?? request.legalCompanyTitle ?? (request.contactName ? `${request.contactName} ${request.contactSurname ?? ''}` : request.name),
+    );
+    const recipient =
+      o.invoiceRecipient !== undefined
+        ? parseInvoiceRecipient(o.invoiceRecipient)
+        : request.legalCompanyTitle && request.taxNumber && request.taxOffice
+          ? { title: request.legalCompanyTitle, taxNumber: request.taxNumber, taxOffice: request.taxOffice }
+          : null;
     if (await repo.getAccount(apartmentId, provider.name)) {
       throw new PaymentsError('conflict', 'Bu apartman zaten kayıtlı; durum ve platform payı için PATCH kullanın');
     }
+    // IBAN saglayici kaydindan ONCE sifrelenir: kasa yoksa yarim kayit olusmaz. Transfer yapan
+    // saglayicida (PayTR) zorunlu; digerlerinde kasa varsa yine saklanir (P5 mutabakat).
+    const payeeCiphertext =
+      deps.vault || needsPayee(provider) ? await sealPayee(apartmentId, provider, { iban: normalizeIban(request.iban), name: holder }) : undefined;
     let subMerchantKey: string;
     try {
       ({ subMerchantKey } = await provider.registerSubMerchant(request));
@@ -1655,6 +1846,8 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
       subMerchantKey,
       subMerchantType: request.subMerchantType,
       ibanMasked: maskIban(request.iban),
+      ...(payeeCiphertext ? { payeeCiphertext, payeeUpdatedAt: ts } : {}),
+      ...(recipient ? { invoiceRecipient: recipient } : {}),
       status: 'active',
       platformFeeBasisPoints: feeBps,
       createdAt: ts,
@@ -1700,9 +1893,24 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
       }
       fee = v;
     }
+    // P4: alici (IBAN + ad) birlikte degisir; API cozemez, bu yuzden ikisi de verilmeli.
+    let payee: Pick<PaymentAccount, 'payeeCiphertext' | 'payeeUpdatedAt' | 'ibanMasked'> = {};
+    if (o.iban !== undefined || o.accountHolderName !== undefined) {
+      if (typeof o.iban !== 'string' || !isValidTrIban(o.iban)) throw new ValidationError('iban geçerli bir TR IBAN olmalıdır', 'iban');
+      const name = parseHolderName(o.accountHolderName);
+      const iban = normalizeIban(o.iban);
+      payee = { payeeCiphertext: await sealPayee(apartmentId, provider, { iban, name }), payeeUpdatedAt: stamp(), ibanMasked: maskIban(iban) };
+    }
+    const base: PaymentAccount = { ...current };
+    if (o.invoiceRecipient !== undefined) {
+      const r = parseInvoiceRecipient(o.invoiceRecipient);
+      if (r) base.invoiceRecipient = r;
+      else delete base.invoiceRecipient;
+    }
     const next: PaymentAccount = applyPosOverrides(
       {
-        ...current,
+        ...base,
+        ...payee,
         status,
         platformFeeBasisPoints: fee,
         updatedAt: stamp(),
@@ -1726,6 +1934,7 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
       platformFeeBasisPoints: fee,
       posRateBasisPoints: next.posRateBasisPoints ?? null,
       posFixedFeeKurus: next.posFixedFeeKurus ?? null,
+      ...(payee.ibanMasked ? { payeeChanged: true, ibanMasked: payee.ibanMasked } : {}),
     });
     return accountView(next);
   }
@@ -1919,6 +2128,7 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
 
   return {
     providers: registry,
+    releaseNow,
     getSettings,
     updateSettings,
     quote,

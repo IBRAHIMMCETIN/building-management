@@ -26,10 +26,13 @@ import {
   paymentKeys,
   toStoredIntent,
 } from '../src/modules/payments/repository.js';
-import { createPaymentsService, utcStamp } from '../src/modules/payments/service.js';
+import { createPaymentsService, payoutReleaseAfter, utcStamp } from '../src/modules/payments/service.js';
 import type { PaymentAccount, PaymentIntent, PaymentProviderName } from '../src/modules/payments/types.js';
 import { createProviderRegistry, resolveProvider } from '../src/modules/payments/registry.js';
-import { createPaytrClient, notificationHash, paytrToken } from '../src/modules/payments/paytr/client.js';
+import { type PayeeVault, createLocalPayeeVault } from '../src/modules/payments/payee.js';
+import { createPayoutService } from '../src/modules/payments/payouts.js';
+import { createInvoiceService } from '../src/modules/payments/invoices.js';
+import { createPaytrClient, notificationHash, paytrHash, paytrToken } from '../src/modules/payments/paytr/client.js';
 import { createPaytrProvider, paytrMerchantOid } from '../src/modules/payments/paytr/provider.js';
 import { type PaymentProvider, PaymentProviderError } from '../src/modules/payments/provider.js';
 import { createIyzicoClient, hmacHex, responseSignature, signaturePrice } from '../src/modules/payments/iyzico/client.js';
@@ -126,6 +129,10 @@ function setup(
     /** P2: birden fazla saglayici (sahte saglayici `fake` her zaman eklenir) + varsayilan. */
     extraProviders?: PaymentProvider[];
     defaultProvider?: PaymentProviderName;
+    /** P4: transfer gonderimi (`send`: zamanlanmis worker gibi). */
+    payoutMode?: 'send' | 'defer';
+    /** P4: alici kasasi (varsayilan bellek ici; `false` = yok). */
+    vault?: PayeeVault | false;
   } = {},
 ) {
   const clock = { now: new Date(options.at ?? '2026-11-06T10:00:00.000Z') }; // Istanbul 13:00
@@ -169,6 +176,8 @@ function setup(
   const provider: PaymentProvider | undefined =
     options.customProvider ?? (options.provider === false ? undefined : options.provider === 'live' ? { ...fake, sandbox: false } : fake);
   const logs: { level: string; message: string; fields?: Record<string, unknown> }[] = [];
+  const vault = options.vault === false ? undefined : (options.vault ?? createLocalPayeeVault());
+  const log = (level: 'info' | 'warn' | 'error', message: string, fields?: Record<string, unknown>) => logs.push({ level, message, fields });
   const payments = createPaymentsService({
     repository: payRepo.repo,
     portal,
@@ -179,18 +188,25 @@ function setup(
     ...(options.extraProviders
       ? { providers: createProviderRegistry([fake, ...options.extraProviders], options.defaultProvider) }
       : { provider }),
+    ...(vault ? { vault } : {}),
+    ...(options.payoutMode ? { payoutMode: options.payoutMode } : {}),
     apiBaseUrl: 'https://api.test',
     webAppUrl: 'https://web.test',
     now,
     newId,
-    log: (level, message, fields) => logs.push({ level, message, fields }),
+    log,
   });
+  const registry = payments.providers;
+  const payouts = createPayoutService({ repository: payRepo.repo, providers: registry, ...(vault ? { vault } : {}), core, now, log });
+  const invoices = createInvoiceService({ repository: payRepo.repo, core, settings: { mode: 'monthly', vatRateBasisPoints: 2000, vatMode: 'exclusive' }, now, log });
   const app = createApp({
     version: 'test',
     authenticate: createMockAuthenticator(),
     financeService: finance,
     portalService: portal,
     paymentsService: payments,
+    payoutService: payouts,
+    invoiceService: invoices,
     fakePaymentProvider: fake,
   });
 
@@ -237,7 +253,7 @@ function setup(
 
   const intentOf = (id: string) => fin.docs.get(`APT#${APT}|PI#${id}`) as unknown as PaymentIntent;
 
-  return { clock, app, call, token, fin, payRepo, finance, portal, payments, fake, logs, charge, cashPayment, payThroughProvider, intentOf, portalRepo, people };
+  return { clock, app, call, token, fin, payRepo, finance, portal, payments, payouts, invoices, vault, fake, logs, charge, cashPayment, payThroughProvider, intentOf, portalRepo, people };
 }
 
 // ---------------------------------------------------------------------------
@@ -1272,18 +1288,22 @@ describe('odeme - alt uye isyeri yonetimi (platform_admin)', () => {
     expect((await w.call('GET', path, w.token('tenant-1'))).status).toBe(403);
   });
 
-  it('kayit: KYC verisi saklanmaz, audit logu yazilir, ikinci kayit 409, olmayan apartman 404', async () => {
+  it('kayit: KYC verisi saklanmaz (IBAN yalnizca sifreli), audit logu yazilir, ikinci kayit 409, olmayan apartman 404', async () => {
     const w = setup();
     const admin = w.token('ops-1', 'platform_admin', '');
     const path = `/api/admin/payments/apartments/${APT}/account`;
     const res = await w.call('POST', path, admin, body);
     expect(res.status).toBe(201);
     // Varsayilan platform payi %0,75 (Online Odeme v2 · P1 karari).
-    expect(res.body).toMatchObject({ provider: 'fake', subMerchantKey: `fake-sm-${APT}`, platformFeeBasisPoints: 75, version: 1, createdBy: 'ops-1' });
+    expect(res.body).toMatchObject({ provider: 'fake', subMerchantKey: `fake-sm-${APT}`, platformFeeBasisPoints: 75, version: 1, createdBy: 'ops-1', payeeOnFile: true });
     expect(res.body.PK).toBeUndefined();
+    expect(JSON.stringify(res.body)).not.toMatch(/payeeCiphertext|TR330006100519786457841326/);
+    // P4: sirket VKN'si platform faturasinin muhatabi olarak tutulur; IBAN duz metin olarak hicbir yerde yok.
+    expect(res.body.invoiceRecipient).toEqual({ title: 'Lale Apartmanı Yönetimi', taxNumber: '1234567890', taxOffice: 'Kadıköy' });
     const stored = JSON.stringify([...w.fin.docs.values()]);
-    expect(stored).not.toContain('1234567890');
     expect(stored).not.toContain('TR330006100519786457841326');
+    expect(stored).not.toContain('11111111111');
+    expect(JSON.stringify(w.logs)).not.toContain('TR330006100519786457841326');
     expect(w.fake.subMerchants.get(`fake-sm-${APT}`)).toMatchObject({ taxNumber: '1234567890', gsmNumber: '+905321234567' });
     expect(w.logs.some((l) => l.fields?.audit === 'PAYMENT_ACCOUNT_ONBOARDED' && l.fields.by === 'ops-1')).toBe(true);
 
@@ -2098,6 +2118,11 @@ const PAYTR = { merchantId: '100001', merchantKey: 'KEY123', merchantSalt: 'SALT
 function fakePaytrServer() {
   const tokens: Record<string, string>[] = [];
   const refunds: Record<string, string>[] = [];
+  // P4: platform transferi, geri donen aktarimlar, yeniden gonderim.
+  const transfers: Record<string, string>[] = [];
+  const resends: Record<string, string>[] = [];
+  const returned: Record<string, string>[] = [];
+  const failNext: { transfer?: Record<string, unknown>; resend?: Record<string, unknown> } = {};
   const paid = new Map<string, { amount: string; fee?: string }>();
   const bad: string[] = [];
   const fetchFn = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -2120,6 +2145,31 @@ function fakePaytrServer() {
       const returns = refunds.filter((r) => r.merchant_oid === form.merchant_oid).map((r) => ({ return_amount: r.return_amount }));
       return json({ status: 'success', payment_amount: p.amount, payment_total: p.amount, payment_date: '2026-11-06 13:05:00', currency: 'TL', kesinti_tutari: p.fee ?? '0', returns });
     }
+    if (path === '/odeme/platform/transfer') {
+      expectToken(form.merchant_id! + form.merchant_oid + form.trans_id + form.submerchant_amount + form.total_amount + form.transfer_name + form.transfer_iban);
+      if (failNext.transfer) {
+        const e = failNext.transfer;
+        failNext.transfer = undefined;
+        return json(e);
+      }
+      transfers.push(form);
+      return json({ status: 'success', merchant_amount: '0', submerchant_amount: form.submerchant_amount, trans_id: form.trans_id, reference: `REF${transfers.length}` });
+    }
+    if (path === '/odeme/geri-donen-transfer') {
+      expectToken(form.merchant_id! + form.start_date + form.end_date);
+      if (!/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(form.start_date ?? '')) bad.push('returned:date');
+      return json(returned.length ? { status: 'success', data: returned } : { status: 'failed' });
+    }
+    if (path === '/odeme/hesaptan-gonder') {
+      expectToken(form.merchant_id! + form.trans_id);
+      if (failNext.resend) {
+        const e = failNext.resend;
+        failNext.resend = undefined;
+        return json(e);
+      }
+      resends.push(form);
+      return json({ status: 'success', trans_id: form.trans_id });
+    }
     if (path === '/odeme/iade') {
       expectToken(form.merchant_id! + form.merchant_oid + form.return_amount);
       refunds.push(form);
@@ -2127,7 +2177,7 @@ function fakePaytrServer() {
     }
     return new Response('{}', { status: 404 });
   }) as typeof fetch;
-  return { fetchFn, tokens, refunds, paid, bad };
+  return { fetchFn, tokens, refunds, paid, bad, transfers, resends, returned, failNext };
 }
 
 describe('odeme - PayTR iFrame ile uctan uca (P3, sahte HTTP)', () => {
@@ -2276,5 +2326,358 @@ describe('odeme - PayTR iFrame ile uctan uca (P3, sahte HTTP)', () => {
     expect((await w.app.request('/api/payments/paytr/webhook', { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: 'a=1' })).status).toBe(401);
     // Sahte saglayicinin niyetine ait bir oid PayTR esleme kaydinda yoktur.
     expect(w.fin.docs.has('PAYREF#fake#x|PAYREF')).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Online Odeme v2 · P4: PayTR Platform Transfer, KMS ile sifreli alici, geri donen aktarimlar
+// ---------------------------------------------------------------------------
+
+const IBAN1 = 'TR330006100519786457841326';
+const IBAN2 = 'TR320010009999901234567890';
+
+describe('odeme - PayTR Platform Transfer ve geri donen aktarimlar (P4)', () => {
+  async function world(opts: { payoutMode?: 'send' | 'defer'; delayHours?: number } = {}) {
+    const server = fakePaytrServer();
+    const paytr = createPaytrProvider({
+      client: createPaytrClient({ credentials: async () => PAYTR, fetch: server.fetchFn }),
+      testMode: true,
+      ...(opts.delayHours !== undefined ? { transferDelayHours: opts.delayHours } : {}),
+    });
+    const w = setup({ extraProviders: [paytr], defaultProvider: 'paytr', payoutMode: opts.payoutMode ?? 'send' });
+    const admin = w.token('ops-1', 'platform_admin', '');
+    const onboard = await w.call('POST', `/api/admin/payments/apartments/${APT}/account`, admin, {
+      email: 'yonetim@lale.test',
+      gsmNumber: '0532 123 45 67',
+      address: 'Lale Sk. 1, Kadıköy',
+      iban: 'TR33 0006 1005 1978 6457 8413 26',
+      accountHolderName: 'Lale Apartmanı  Yönetimi',
+      taxOffice: 'Kadıköy',
+      taxNumber: '1234567890',
+      legalCompanyTitle: 'Lale Apartmanı Yönetimi',
+      platformFeeBasisPoints: 75,
+    });
+    expect(onboard.status).toBe(201);
+    await w.charge('u1', 'occupant', TL(1000), '2026-11-10', 'c1', '2026-11-01');
+    const intentId = (await w.call('POST', '/api/portal/payments', w.token('tenant-1'), { idempotencyKey: 'k-1', mode: 'total' })).body.intentId as string;
+    const oid = paytrMerchantOid(intentId);
+    server.paid.set(oid, { amount: '1000.00' });
+    const ok = await w.app.request('/api/payments/paytr/webhook', {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ merchant_oid: oid, status: 'success', total_amount: '100000', hash: notificationHash(PAYTR, { merchantOid: oid, status: 'success', totalAmount: '100000' }) }).toString(),
+    });
+    expect(await ok.text()).toBe('OK');
+    expect(w.intentOf(intentId).status).toBe('SUCCEEDED');
+    return { w, server, admin, intentId, oid, transferId: `${oid}O`, onboard };
+  }
+
+  const transferHook = (w: ReturnType<typeof setup>, fields: Record<string, string>) =>
+    w.app.request('/api/payments/paytr/transfer-webhook', {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams(fields).toString(),
+    });
+
+  it('alici KMS kasasinda: kayitta yalnizca sifreli metin, yanitta/logda yalnizca maskeli IBAN', async () => {
+    const { w, onboard } = await world();
+    expect(onboard.body).toMatchObject({ provider: 'paytr', payeeOnFile: true, ibanMasked: 'TR** **** **** **** **** **13 26' });
+    expect(JSON.stringify(onboard.body)).not.toMatch(/payeeCiphertext|TR330006/);
+    const acc = w.fin.docs.get(`APT#${APT}|PAYACCT#paytr`) as unknown as PaymentAccount;
+    expect(acc.payeeCiphertext).toMatch(/^local:/);
+    // Sifreleme baglami apartmana bagli: baska apartman adina cozulemez.
+    expect(await w.vault!.open({ apartmentId: APT, provider: 'paytr' }, acc.payeeCiphertext!)).toEqual({ iban: IBAN1, name: 'Lale Apartmanı Yönetimi' });
+    await expect(w.vault!.open({ apartmentId: OTHER_APT, provider: 'paytr' }, acc.payeeCiphertext!)).rejects.toMatchObject({ code: 'payee_corrupt' });
+    const everything = JSON.stringify([...w.fin.docs.values()]) + JSON.stringify(w.logs);
+    expect(everything).not.toContain(IBAN1);
+
+    // Guncelleme: IBAN ve ad birlikte; gecersiz IBAN (mod-97) reddedilir.
+    const path = `/api/admin/payments/apartments/${APT}/account`;
+    const admin = w.token('ops-1', 'platform_admin', '');
+    expect((await w.call('PATCH', path, admin, { iban: 'TR320010009999901234567891', accountHolderName: 'X Y' })).body).toMatchObject({ error: 'validation_error', field: 'iban' });
+    expect((await w.call('PATCH', path, admin, { iban: IBAN2 })).body).toMatchObject({ error: 'validation_error', field: 'accountHolderName' });
+    const upd = await w.call('PATCH', path, admin, { iban: IBAN2, accountHolderName: 'Lale Site Yönetimi' });
+    expect(upd.body).toMatchObject({ ibanMasked: 'TR** **** **** **** **** **78 90', payeeOnFile: true });
+    expect(JSON.stringify([...w.fin.docs.values()]) + JSON.stringify(w.logs)).not.toContain(IBAN2);
+  });
+
+  it('kasa yoksa PayTR hesabi acilmaz (alicisiz transfer yapilamaz)', async () => {
+    const server = fakePaytrServer();
+    const paytr = createPaytrProvider({ client: createPaytrClient({ credentials: async () => PAYTR, fetch: server.fetchFn }), testMode: true });
+    const w = setup({ extraProviders: [paytr], defaultProvider: 'paytr', vault: false });
+    const res = await w.call('POST', `/api/admin/payments/apartments/${APT}/account`, w.token('ops-1', 'platform_admin', ''), {
+      email: 'y@l.test',
+      gsmNumber: '05321234567',
+      address: 'Lale Sk. 1',
+      iban: IBAN1,
+      taxOffice: 'Kadıköy',
+      legalCompanyTitle: 'Lale Yönetimi',
+    });
+    expect(res).toMatchObject({ status: 502, body: { error: 'payee_vault_unavailable' } });
+    expect(w.fin.docs.has(`APT#${APT}|PAYACCT#paytr`)).toBe(false);
+  });
+
+  it('bekleme suresi -> worker talimati gonderir -> sonuc bildirimi SETTLED; API (defer) gondermez', async () => {
+    const { w, server, intentId, oid, transferId } = await world();
+    const a0 = w.intentOf(intentId).settlement!.approvals[0]!;
+    // 10:00Z + 24 saat (ertesi gun kuralindan sonra).
+    expect(a0).toMatchObject({ status: 'pending', releaseAfter: '2026-11-07T10:00:00.000Z' });
+    const v = w.intentOf(intentId).version;
+
+    // Sure dolmadan: talimat yok, kayit degismez (surum ayni).
+    w.clock.now = new Date('2026-11-07T09:00:00.000Z');
+    expect((await w.payments.reconcile(APT)).approvals).toMatchObject({ checked: 1, pending: 1 });
+    expect(server.transfers).toHaveLength(0);
+    expect(w.intentOf(intentId).version).toBe(v);
+
+    w.clock.now = new Date('2026-11-07T10:05:00.000Z');
+    expect((await w.payments.reconcile(APT)).approvals).toMatchObject({ approved: 1 });
+    expect(server.transfers).toEqual([
+      {
+        merchant_id: '100001',
+        merchant_oid: oid,
+        trans_id: transferId,
+        submerchant_amount: String(TL(1000) - 750),
+        total_amount: String(TL(1000)),
+        transfer_name: 'Lale Apartmanı Yönetimi',
+        transfer_iban: IBAN1,
+        paytr_token: expect.any(String),
+      },
+    ]);
+    expect(server.bad).toEqual([]);
+    expect(w.intentOf(intentId).settlement).toMatchObject({ status: 'approved', approvals: [{ status: 'approved', transferId, providerReference: 'REF1' }] });
+    const payout = await w.payRepo.repo.getPayout(APT, transferId);
+    expect(payout).toMatchObject({ status: 'SENT', amount: TL(1000) - 750, grossAmount: TL(1000), ibanMasked: 'TR** **** **** **** **** **13 26', ibanLast4: '1326', providerReference: 'REF1' });
+    expect(w.fin.docs.get(`PAYOUTREF#paytr#${transferId}|PAYOUTREF`)).toMatchObject({ apartmentId: APT, transferId });
+    expect(JSON.stringify([...w.fin.docs.values()])).not.toContain(IBAN1);
+
+    // Transfer sonuc bildirimi: imza ters bolu cizgisiz `trans_ids` + salt uzerinden.
+    const raw = JSON.stringify([transferId]).replace(/"/g, '\\"');
+    const good = { trans_ids: raw, hash: paytrHash(PAYTR.merchantKey, JSON.stringify([transferId]) + PAYTR.merchantSalt) };
+    expect((await transferHook(w, { ...good, hash: 'AAAA' })).status).toBe(401);
+    const res = await transferHook(w, good);
+    expect(await res.text()).toBe('OK');
+    expect(await w.payRepo.repo.getPayout(APT, transferId)).toMatchObject({ status: 'SETTLED', settledAt: '2026-11-07T10:05:00.000Z' });
+    expect(await (await transferHook(w, good)).text()).toBe('OK'); // tekrar: degismez
+
+    // API servisi (defer) vadesi gelmis olsa da gondermez.
+    const api = await world({ payoutMode: 'defer' });
+    api.w.clock.now = new Date('2026-11-08T10:00:00.000Z');
+    await api.w.payments.reconcile(APT);
+    expect(api.server.transfers).toHaveLength(0);
+  });
+
+  it('ayni gun kurali: bekleme 0 saat olsa da talimat en erken ertesi gun (Istanbul)', async () => {
+    const { w, intentId } = await world({ delayHours: 0 });
+    expect(w.intentOf(intentId).settlement!.approvals[0]!.releaseAfter).toBe('2026-11-06T21:00:00.000Z');
+    expect(payoutReleaseAfter(new Date('2026-11-06T20:59:00.000Z'), 0)).toBe('2026-11-06T21:00:00.000Z');
+    expect(payoutReleaseAfter(new Date('2026-11-06T21:30:00.000Z'), 0)).toBe('2026-11-07T21:00:00.000Z');
+    expect(payoutReleaseAfter(new Date('2026-11-06T10:00:00.000Z'), 48)).toBe('2026-11-08T10:00:00.000Z');
+  });
+
+  it('red: talimat basarisiz -> alarm; platform elle one ceker ve yeniden gonderir', async () => {
+    const { w, server, admin, intentId } = await world();
+    w.clock.now = new Date('2026-11-07T10:05:00.000Z');
+    server.failNext.transfer = { status: 'error', err_no: '010', err_msg: 'Toplam transfer tutari kalan tutari asamaz' };
+    await w.payments.reconcile(APT);
+    expect(w.intentOf(intentId).settlement).toMatchObject({ status: 'failed', approvals: [{ status: 'failed', error: { code: 'paytr_010' } }] });
+    expect(w.logs).toContainEqual(expect.objectContaining({ fields: expect.objectContaining({ alert: 'PAYMENT_APPROVAL_FAILED', intentId }) }));
+
+    const path = `/api/admin/payments/apartments/${APT}/intents/${intentId}/release`;
+    expect((await w.call('POST', path, admin, { note: 'kisa', expectedVersion: w.intentOf(intentId).version })).status).toBe(400);
+    expect((await w.call('POST', path, admin, { note: 'Tutar duzeltildi, tekrar gonder', expectedVersion: 1 })).status).toBe(409);
+    const rel = await w.call('POST', path, admin, { note: 'Tutar duzeltildi, tekrar gonder', expectedVersion: w.intentOf(intentId).version });
+    expect(rel.status).toBe(200);
+    expect(rel.body.settlement).toMatchObject({ status: 'pending', approvals: [{ status: 'pending', attempts: 0, releaseAfter: '2026-11-07T10:05:00.000Z' }] });
+    await w.payments.reconcile(APT);
+    expect(server.transfers).toHaveLength(1);
+    expect(w.intentOf(intentId).settlement?.status).toBe('approved');
+    // Gonderilecek kalem kalmadi.
+    expect((await w.call('POST', path, admin, { note: 'Tekrar gonderim denemesi', expectedVersion: w.intentOf(intentId).version })).body.error).toBe('action_not_allowed');
+  });
+
+  it('geri donen aktarim: gunluk tarama esler (kritik alarm), platform duzeltilmis IBAN ile yeniden gonderir', async () => {
+    const { w, server, admin, transferId } = await world();
+    w.clock.now = new Date('2026-11-07T10:05:00.000Z');
+    await w.payments.reconcile(APT);
+    w.clock.now = new Date('2026-11-09T09:00:00.000Z');
+    server.returned.push(
+      {
+        ref_no: '1000001',
+        transfer_iban: IBAN1,
+        transfer_name: 'Lale Apartmanı Yönetimi',
+        transfer_amount: '992.50',
+        transfer_currency: 'TL',
+        transfer_date: '2026-11-07 13:05:00',
+        date_detected: '2026-11-08 11:00:00',
+        date_reimbursed: '2026-11-08 15:00:00',
+      },
+      { ref_no: '1000002', transfer_iban: 'TR000000000000000000009999', transfer_name: 'Baska', transfer_amount: '5.00', transfer_currency: 'TL', transfer_date: '2026-11-07 13:05:00' },
+    );
+    expect(await w.payouts.detectReturned()).toEqual({ checked: 2, returned: 1, alreadyKnown: 0, unmatched: 1 });
+    expect(await w.payRepo.repo.getPayout(APT, transferId)).toMatchObject({ status: 'RETURNED', returned: { refNo: '1000001', amount: 99_250, returnedOn: '2026-11-08 15:00:00' } });
+    expect(w.logs).toContainEqual(expect.objectContaining({ fields: expect.objectContaining({ alert: 'PAYOUT_RETURNED', severity: 'critical', transferId }) }));
+    expect(w.logs).toContainEqual(expect.objectContaining({ fields: expect.objectContaining({ alert: 'PAYOUT_RETURN_UNMATCHED', refNo: '1000002' }) }));
+    expect(await w.payouts.detectReturned()).toMatchObject({ returned: 0, alreadyKnown: 1 });
+    expect(server.bad).toEqual([]);
+
+    // Platform listesi (varsayilan: ilgilenilmesi gerekenler).
+    const list = await w.call('GET', '/api/admin/payments/payouts', admin);
+    expect(list.body.items).toEqual([expect.objectContaining({ transferId, status: 'RETURNED', apartmentName: 'Lale Apartmani', ibanMasked: 'TR** **** **** **** **** **13 26' })]);
+    expect((await w.call('GET', '/api/admin/payments/payouts?status=bogus', admin)).status).toBe(400);
+    expect((await w.call('GET', '/api/admin/payments/payouts', w.token('mgr-1', 'apartment_manager'))).status).toBe(403);
+
+    // Duzeltilmis IBAN ile yeniden gonderim: hesap da guncellenir; gonderim worker'da.
+    const path = `/api/admin/payments/apartments/${APT}/payouts/${transferId}/resend`;
+    const v = (await w.payRepo.repo.getPayout(APT, transferId))!.version;
+    expect((await w.call('POST', path, admin, { note: 'IBAN duzeltildi', expectedVersion: v, iban: 'TR320010009999901234567891', accountHolderName: 'X Y' })).body.field).toBe('iban');
+    const req = await w.call('POST', path, admin, { note: 'IBAN duzeltildi', expectedVersion: v, iban: IBAN2, accountHolderName: 'Lale Site Yönetimi' });
+    expect(req.status).toBe(200);
+    expect(req.body).toMatchObject({ status: 'RESEND_PENDING', resendCount: 1, resend: { resendId: `${transferId}R1`, ibanMasked: 'TR** **** **** **** **** **78 90', attempts: 0 } });
+    expect(JSON.stringify(req.body)).not.toMatch(/payeeCiphertext/);
+    expect((w.fin.docs.get(`APT#${APT}|PAYACCT#paytr`) as unknown as PaymentAccount).ibanMasked).toBe('TR** **** **** **** **** **78 90');
+    expect((await w.call('POST', path, admin, { note: 'IBAN duzeltildi', expectedVersion: req.body.version })).body.error).toBe('action_not_allowed');
+
+    expect(await w.payouts.processResends()).toMatchObject({ checked: 1, sent: 1 });
+    expect(server.resends).toEqual([
+      {
+        merchant_id: '100001',
+        trans_id: `${transferId}R1`,
+        trans_info: JSON.stringify([{ amount: '99250', receiver: 'Lale Site Yönetimi', iban: IBAN2 }]),
+        paytr_token: expect.any(String),
+      },
+    ]);
+    expect(server.bad).toEqual([]);
+    expect(await w.payRepo.repo.getPayout(APT, transferId)).toMatchObject({ status: 'RESEND_SENT' });
+
+    // Sonuc bildirimi (mode=cashout): basarili -> RESENT.
+    const resendId = `${transferId}R1`;
+    const hook = (result: string) => ({
+      mode: 'cashout',
+      merchant_id: '100001',
+      trans_id: resendId,
+      processed_result: JSON.stringify([{ amount: 992.5, receiver: 'Lale Site Yönetimi', iban: IBAN2, result }]),
+      success_total: '1',
+      failed_total: '0',
+      hash: paytrHash(PAYTR.merchantKey, `100001${resendId}${PAYTR.merchantSalt}`),
+    });
+    expect((await transferHook(w, { ...hook('success'), merchant_id: '999' })).status).toBe(401);
+    expect(await (await transferHook(w, hook('success'))).text()).toBe('OK');
+    expect(await w.payRepo.repo.getPayout(APT, transferId)).toMatchObject({ status: 'RESENT', resend: { completedAt: '2026-11-09T09:00:00.000Z' } });
+    expect(JSON.stringify([...w.fin.docs.values()]) + JSON.stringify(w.logs)).not.toMatch(new RegExp(`${IBAN1}|${IBAN2}`));
+  });
+
+  it('yeniden gonderim reddi -> RESEND_FAILED + alarm; tekrar istenebilir (kayitli alici ile)', async () => {
+    const { w, server, admin, transferId } = await world();
+    w.clock.now = new Date('2026-11-07T10:05:00.000Z');
+    await w.payments.reconcile(APT);
+    server.returned.push({ ref_no: '77', transfer_iban: IBAN1, transfer_amount: '992,50', transfer_date: '2026-11-07 13:05:00' });
+    await w.payouts.detectReturned();
+    const path = `/api/admin/payments/apartments/${APT}/payouts/${transferId}/resend`;
+    let v = (await w.payRepo.repo.getPayout(APT, transferId))!.version;
+    expect((await w.call('POST', path, admin, { note: 'Ayni IBANa tekrar', expectedVersion: v })).body.status).toBe('RESEND_PENDING');
+    server.failNext.resend = { status: 'error', err_no: '011', err_msg: 'Yetersiz bakiye' };
+    expect(await w.payouts.processResends()).toMatchObject({ failed: 1 });
+    expect(await w.payRepo.repo.getPayout(APT, transferId)).toMatchObject({ status: 'RESEND_FAILED', resend: { error: { code: 'paytr_011' } } });
+    expect(w.logs).toContainEqual(expect.objectContaining({ fields: expect.objectContaining({ alert: 'PAYOUT_FAILED', transferId }) }));
+    v = (await w.payRepo.repo.getPayout(APT, transferId))!.version;
+    const again = await w.call('POST', path, admin, { note: 'Bakiye yuklendi', expectedVersion: v });
+    expect(again.body).toMatchObject({ status: 'RESEND_PENDING', resend: { resendId: `${transferId}R2` } });
+    await w.payouts.processResends();
+    expect(server.resends.map((r) => r.trans_id)).toEqual([`${transferId}R2`]);
+  });
+});
+
+describe('platform komisyon faturasi (P4)', () => {
+  async function paidWorld() {
+    const w = setup();
+    const admin = w.token('ops-1', 'platform_admin', '');
+    await w.call('POST', `/api/admin/payments/apartments/${APT}/account`, admin, {
+      email: 'yonetim@lale.test',
+      gsmNumber: '0532 123 45 67',
+      address: 'Lale Sk. 1, Kadıköy',
+      iban: IBAN1,
+      taxOffice: 'Kadıköy',
+      taxNumber: '1234567890',
+      legalCompanyTitle: 'Lale Apartmanı Yönetimi',
+    });
+    await w.charge('u1', 'occupant', TL(1000), '2026-11-10', 'c1', '2026-11-01');
+    await w.charge('u2', 'owner', TL(333), '2026-11-10', 'c2', '2026-11-01');
+    const a = (await w.call('POST', '/api/portal/payments', w.token('tenant-1'), { idempotencyKey: 'k-1', mode: 'total' })).body.intentId as string;
+    await w.payThroughProvider(a);
+    w.clock.now = new Date('2026-11-06T10:05:00.000Z');
+    const b = (await w.call('POST', '/api/portal/payments', w.token('owner-2'), { idempotencyKey: 'k-2', mode: 'total' })).body.intentId as string;
+    await w.payThroughProvider(b);
+    w.clock.now = new Date('2026-11-06T10:10:00.000Z');
+    await w.charge('u1', 'occupant', TL(50), '2026-11-20', 'c3', '2026-11-06');
+    const c = (await w.call('POST', '/api/portal/payments', w.token('tenant-1'), { idempotencyKey: 'k-3', mode: 'total' })).body.intentId as string;
+    await w.payThroughProvider(c, 'failure');
+    return { w, admin, a, b, c };
+  }
+
+  it('aylik taslak: yalnizca deftere yazilmis odemelerin platform payi, %20 KDV haric; idempotent', async () => {
+    const { w, admin, a, b } = await paidWorld();
+    w.clock.now = new Date('2026-12-01T01:10:00.000Z');
+    const d = await w.call('POST', `/api/admin/payments/apartments/${APT}/invoices/draft`, admin, { period: '2026-11' });
+    expect(d.body).toEqual({ period: '2026-11', mode: 'monthly', created: 1, updated: 0, unchanged: 0, locked: 0, intents: 2 });
+    const inv = (await w.call('GET', `/api/admin/payments/apartments/${APT}/invoices`, admin)).body.items[0];
+    // 1000 TL x %0,75 = 7,50 TL; 333 TL x %0,75 = 2,4975 -> 2,49 (asagi); net 9,99 TL, KDV 1,998 -> 2,00 (yarim yukari).
+    expect(inv).toMatchObject({
+      invoiceId: 'M-2026-11',
+      status: 'DRAFT',
+      recipient: { title: 'Lale Apartmanı Yönetimi', taxNumber: '1234567890', taxOffice: 'Kadıköy' },
+      netAmount: 999,
+      vatRateBasisPoints: 2000,
+      vatMode: 'exclusive',
+      vatAmount: 200,
+      totalAmount: 1_199,
+      reconciliation: { intentCount: 2, platformFeeTotal: 999 },
+      invoiceProvider: 'manual',
+      version: 1,
+    });
+    expect(inv.lines.map((l: { intentId: string }) => l.intentId).sort()).toEqual([a, b].sort());
+    expect(inv.PK).toBeUndefined();
+    expect((await w.call('POST', `/api/admin/payments/apartments/${APT}/invoices/draft`, admin, { period: '2026-11' })).body).toMatchObject({ unchanged: 1 });
+    expect((await w.call('POST', `/api/admin/payments/apartments/${APT}/invoices/draft`, admin, { period: '2026-13' })).status).toBe(400);
+    expect((await w.call('POST', '/api/admin/payments/apartments/yok/invoices/draft', admin, { period: '2026-11' })).status).toBe(404);
+
+    // Kesim: manual saglayicida fatura numarasi zorunlu; kesilen taslak yeniden uretilmez/iptal edilmez.
+    const base = `/api/admin/payments/apartments/${APT}/invoices/M-2026-11`;
+    expect((await w.call('POST', `${base}/issue`, admin, { expectedVersion: 1 })).body.field).toBe('invoiceNumber');
+    expect((await w.call('POST', `${base}/issue`, admin, { expectedVersion: 9, invoiceNumber: 'ABC2026000000001' })).status).toBe(409);
+    const issued = await w.call('POST', `${base}/issue`, admin, { expectedVersion: 1, invoiceNumber: 'ABC2026000000001' });
+    expect(issued.body).toMatchObject({ status: 'ISSUED', invoiceNumber: 'ABC2026000000001', issuedBy: 'ops-1', version: 2 });
+    expect((await w.call('POST', `/api/admin/payments/apartments/${APT}/invoices/draft`, admin, { period: '2026-11' })).body).toMatchObject({ locked: 1 });
+    expect((await w.call('POST', `${base}/cancel`, admin, { expectedVersion: 2, reason: 'Hatali taslak' })).body.error).toBe('action_not_allowed');
+
+    const all = await w.call('GET', '/api/admin/payments/invoices?period=2026-11', admin);
+    expect(all.body).toMatchObject({ period: '2026-11', totals: { net: 999, vat: 200, total: 1_199 }, items: [{ invoiceId: 'M-2026-11', apartmentName: 'Lale Apartmani' }] });
+    expect((await w.call('GET', '/api/admin/payments/invoices?period=2026-11', w.token('mgr-1', 'apartment_manager'))).status).toBe(403);
+  });
+
+  it('muhatap (VKN) yoksa NEEDS_RECIPIENT; muhatap girilince taslak yenilenir; odeme bazli model ve KDV dahil', async () => {
+    const { w, admin } = await paidWorld();
+    const acct = `/api/admin/payments/apartments/${APT}/account`;
+    expect((await w.call('PATCH', acct, admin, { invoiceRecipient: { title: 'X', taxNumber: '1', taxOffice: 'Y' } })).status).toBe(400);
+    await w.call('PATCH', acct, admin, { invoiceRecipient: null });
+    await w.invoices.draftPeriod(APT, '2026-11');
+    expect(await w.payRepo.repo.getInvoice(APT, 'M-2026-11')).toMatchObject({ status: 'NEEDS_RECIPIENT', version: 1 });
+    expect((await w.call('POST', `/api/admin/payments/apartments/${APT}/invoices/M-2026-11/issue`, admin, { expectedVersion: 1, invoiceNumber: 'ABC1' })).body.error).toBe('action_not_allowed');
+    await w.call('PATCH', acct, admin, { invoiceRecipient: { title: 'Lale Yönetimi', taxNumber: '1234567890', taxOffice: 'Kadıköy' } });
+    expect(await w.invoices.draftPeriod(APT, '2026-11')).toMatchObject({ updated: 1 });
+    expect(await w.payRepo.repo.getInvoice(APT, 'M-2026-11')).toMatchObject({ status: 'DRAFT', version: 2, recipient: { taxNumber: '1234567890' } });
+    expect((await w.call('POST', `/api/admin/payments/apartments/${APT}/invoices/M-2026-11/cancel`, admin, { expectedVersion: 2, reason: 'Elle kesilecek' })).body.status).toBe('CANCELLED');
+
+    const perPayment = createInvoiceService({
+      repository: w.payRepo.repo,
+      settings: { mode: 'per_payment', vatRateBasisPoints: 2000, vatMode: 'inclusive' },
+      core: { getSite: async () => undefined, listSiteIds: async () => [] },
+      now: () => w.clock.now,
+    });
+    expect(await perPayment.draftPeriod(APT, '2026-11')).toMatchObject({ created: 2 });
+    const items = (await w.payRepo.repo.listInvoices(APT)).filter((i) => i.mode === 'per_payment');
+    // KDV dahil: 7,50 TL -> net round(750 / 1,2) = 625 kurus, KDV 125.
+    expect(items.find((i) => i.totalAmount === 750)).toMatchObject({ netAmount: 625, vatAmount: 125, vatMode: 'inclusive' });
+    expect(await perPayment.draftPeriod(APT, '2026-10')).toMatchObject({ intents: 0, created: 0 });
   });
 });

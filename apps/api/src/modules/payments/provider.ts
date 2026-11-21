@@ -10,6 +10,7 @@
  * saglayiciyi kullanir.
  */
 import type { IsoDate, Kurus } from '../core/types.js';
+import type { Payee } from './payee.js';
 import type { ItemTransaction, PaymentProviderName, SubMerchantType } from './types.js';
 
 export type CheckoutItem = {
@@ -73,6 +74,11 @@ export type ProviderCapabilities = {
   /** Odeme sayfasi: tam sayfa yonlendirme veya sayfaya gomulu iframe. */
   checkout: 'redirect' | 'iframe';
   settlement: SettlementMode;
+  /**
+   * `payout_transfer`: odeme onayindan sonra transfer talimati icin bekleme (saat). Talimat
+   * ayrica en erken odemenin ERTESI gunu verilir (PayTR: ayni gun talimat olusturulmaz).
+   */
+  releaseDelayHours?: number;
   /** Canli ortamda alicinin cep telefonu zorunlu mu (sandbox'ta test degeri kullanilir). */
   requiresBuyerGsm: boolean;
 };
@@ -93,6 +99,10 @@ export type ReleaseRequest = {
   amount: Kurus;
   /** Kalemin sakinden tahsil edilen brut tutari (PayTR transferinde `total_amount`). */
   grossAmount: Kurus;
+  /** Bizim urettigimiz transfer kimligi (PayTR `trans_id`, alfanumerik); talimat bununla izlenir. */
+  transferId: string;
+  /** `payout_transfer`: cozulmus alici (IBAN + hesap sahibi). Yalnizca talimat aninda bellekte. */
+  payee?: Payee;
   /** Izleme / idempotency kimligi. */
   conversationId: string;
 };
@@ -168,6 +178,28 @@ export type WebhookEvent = {
   notice?: { status: 'success' | 'failure'; code?: string; message?: string };
 };
 
+export type ReleaseResult = { providerReference?: string };
+
+/** Imzasi dogrulanmis transfer sonuc bildirimi (PayTR "Platform Transfer Sonucu Bildirim URL"). */
+export type TransferEvent =
+  | { kind: 'settled'; transferIds: string[] }
+  | {
+      kind: 'resend_result';
+      resendId: string;
+      results: { amount?: Kurus; ibanLast4: string; result: 'success' | 'failed' }[];
+    };
+
+/** Banka tarafindan iade edilen (geri donen) aktarim; saglayici transfer kimligi vermeyebilir. */
+export type ReturnedTransfer = {
+  refNo: string;
+  ibanLast4: string;
+  amount: Kurus;
+  /** Orijinal talimatin tarihi (Istanbul, YYYY-MM-DD). */
+  transferDate?: IsoDate;
+  detectedAt?: string;
+  returnedOn?: string;
+};
+
 /** Webhook'a saglayicinin bekledigi yanit (iyzico JSON, PayTR duz metin `OK`). */
 export type WebhookReply = { contentType: 'application/json' | 'text/plain'; body: string };
 
@@ -217,7 +249,13 @@ export interface PaymentProvider {
    * `automatic` saglayicida tanimlanmaz. Idempotent olmali (ayni kalem tekrar gonderilebilir).
    * Hata: `PaymentProviderError` (`retryable` ile).
    */
-  releaseItem?(request: ReleaseRequest): Promise<void>;
+  releaseItem?(request: ReleaseRequest): Promise<ReleaseResult | void>;
+  /** P4: transfer sonuc bildirimi (imza dogrulama). Gecersizse null. */
+  verifyTransferWebhook?(input: WebhookInput): Promise<TransferEvent | null>;
+  /** P4: tarih araliginda geri donen aktarimlar (gunluk kontrol). */
+  listReturnedTransfers?(range: { from: Date; to: Date }): Promise<ReturnedTransfer[]>;
+  /** P4: geri donen tutari (duzeltilmis) aliciya yeniden gonderir; sonuc bildirimle gelir. */
+  resendReturned?(request: { resendId: string; amount: Kurus; payee: Payee }): Promise<void>;
   /**
    * Webhook imzasini dogrular; gecerliyse niyeti bulmak icin `conversationId` veya `reference`
    * doner, degilse null. Govdedeki basari durumuna guvenilmez: servis sonucu saglayicidan sorgular.
