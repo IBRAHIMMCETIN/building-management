@@ -932,7 +932,9 @@ run "payments_iyzico" {
   assert {
     condition = alltrue([
       for f in [aws_lambda_function.api, aws_lambda_function.scheduler_worker] :
-      f.environment[0].variables.PAYEE_KMS_KEY_ID == "arn:aws:kms:eu-central-1:123456789012:key/0f8fad5b-d9cb-469f-a165-70867728950e" &&
+      # Anahtar ARN'si plan asamasinda bilinmez: yalnizca degiskenin verildigi dogrulanir;
+      # anahtarin kendisi (dondurme, alias) ayri assert'te plan degerlerinden kontrol edilir.
+      contains(keys(f.environment[0].variables), "PAYEE_KMS_KEY_ID") &&
       f.environment[0].variables.PLATFORM_INVOICE_MODE == "monthly" &&
       f.environment[0].variables.PLATFORM_INVOICE_VAT_BPS == "2000" &&
       f.environment[0].variables.PLATFORM_INVOICE_VAT_MODE == "exclusive" &&
