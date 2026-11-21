@@ -150,11 +150,11 @@ data "aws_iam_policy_document" "scheduler_worker" {
 
   # payment_reconcile: saglayicidan sonuc sorgulamak icin anahtar okuma.
   dynamic "statement" {
-    for_each = aws_secretsmanager_secret.payments[*].arn
+    for_each = local.payments_enabled ? [values(local.payments_secret_arns)] : []
     content {
       sid       = "ReadPaymentProviderSecret"
       actions   = ["secretsmanager:GetSecretValue"]
-      resources = [statement.value]
+      resources = statement.value
     }
   }
 }

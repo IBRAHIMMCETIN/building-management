@@ -1,45 +1,66 @@
 # ---------------------------------------------------------------------------
-# Online odeme (Adim 8b): iyzico Checkout Form + Pazaryeri.
+# Online odeme: iyzico Checkout Form + Pazaryeri (Adim 8b), PayTR iFrame (Online Odeme v2 · P3).
 #
 # Kod: apps/api/src/modules/payments (API Lambda + scheduler worker'daki payment_reconcile).
-# - Anahtarlar Secrets Manager'da: Terraform yalnizca bos secret'i olusturur, DEGERI GIRMEZ
-#   (state'e gizli bilgi yazilmaz). Deger elle girilir:
-#     aws secretsmanager put-secret-value --secret-id <payments_secret_arn> \
-#       --secret-string '{"apiKey":"sandbox-...","secretKey":"sandbox-..."}'
+# - Acik saglayicilar `payments_providers` (eski tekil `payments_provider` da okunur), varsayilan
+#   `default_payment_provider`; apartman bazinda tercih API'den (PUT .../settings).
+# - Anahtarlar saglayici basina Secrets Manager'da: Terraform yalnizca bos secret'i olusturur,
+#   DEGERI GIRMEZ (state'e gizli bilgi yazilmaz). Deger elle girilir (`terraform output payments_secret_arns`):
+#     iyzico: aws secretsmanager put-secret-value --secret-id <arn> \
+#               --secret-string '{"apiKey":"sandbox-...","secretKey":"sandbox-..."}'
+#     paytr : aws secretsmanager put-secret-value --secret-id <arn> \
+#               --secret-string '{"merchantId":"123456","merchantKey":"...","merchantSalt":"..."}'
 #   Lambda anahtari ilk istekte okur ve 5 dk bellekte tutar.
-# - Kimliksiz rotalar YALNIZCA iki tam yol: saglayici callback'i (tarayici POST) ve webhook.
-#   Guven, sonucun saglayicidan token ile SORGULANMASINDAN gelir; rota bazli throttling uygulanir.
+# - Kimliksiz rotalar YALNIZCA saglayici basina tam yollar: callback (tarayici donusu) ve webhook.
+#   PayTR'nin ok/fail donusu GET veya POST olabildigi icin PayTR'de callback'in GET'i de acilir.
+#   Guven, sonucun saglayicidan SORGULANMASINDAN (iyzico token, PayTR durum sorgusu) ve imzali
+#   bildirimden gelir; rota bazli throttling uygulanir. PayTR panelindeki "Bildirim URL":
+#   `terraform output payments_callback_urls` -> paytr.webhook.
 # - "Incelemeye alinan" odemeler (PAYMENT_NEEDS_REVIEW logu) alarm uretir.
 # - Pazaryeri kalem onayi (iyzico approve) kalici basarisiz olursa (PAYMENT_APPROVAL_FAILED)
 #   para iyzico havuzunda bekler, apartmana aktarilmaz: alarm uretir.
 # ---------------------------------------------------------------------------
 
 locals {
-  payments_enabled = var.payments_provider != "disabled"
+  # Yeni liste verilmisse o; yoksa eski tekil ayar (`disabled` = kapali).
+  payment_providers = length(var.payments_providers) > 0 ? var.payments_providers : compact([var.payments_provider == "disabled" ? "" : var.payments_provider])
+  payments_enabled  = length(local.payment_providers) > 0
+  # Varsayilan verilmezse listedeki ilk saglayici.
+  default_payment_provider = var.default_payment_provider != "" ? var.default_payment_provider : (local.payments_enabled ? local.payment_providers[0] : "")
 
-  payment_public_routes = local.payments_enabled ? toset([
-    "POST /api/payments/${var.payments_provider}/callback",
-    "POST /api/payments/${var.payments_provider}/webhook",
-  ]) : toset([])
+  payment_public_routes = toset(flatten([
+    for p in local.payment_providers : concat(
+      ["POST /api/payments/${p}/callback", "POST /api/payments/${p}/webhook"],
+      p == "paytr" ? ["GET /api/payments/paytr/callback"] : [],
+    )
+  ]))
 
-  payments_secret_arn = one(aws_secretsmanager_secret.payments[*].arn)
+  payments_secret_arns = { for p, s in aws_secretsmanager_secret.payments : p => s.arn }
+
+  # Odeme kapaliyken hicbir odeme degiskeni verilmez; saglayiciya ozgu degiskenler yalnizca o
+  # saglayici aciksa verilir.
+  payment_env_keys = concat(
+    local.payments_enabled ? ["PAYMENTS_PROVIDERS", "DEFAULT_PAYMENT_PROVIDER", "PAYMENTS_API_BASE_URL", "WEB_APP_URL", "PAYMENTS_POS_RATE_BPS", "PAYMENTS_POS_FIXED_FEE_KURUS"] : [],
+    contains(local.payment_providers, "iyzico") ? ["IYZICO_BASE_URL", "IYZICO_SECRET_ARN"] : [],
+    contains(local.payment_providers, "paytr") ? ["PAYTR_SECRET_ARN", "PAYTR_TEST_MODE"] : [],
+  )
 
   # API Lambda ve scheduler worker ayni yapilandirmayi kullanir (config.ts).
   # `kosul ? {...} : {}` nesne tipleri uyusmadigi icin filtreli for ifadesi kullanilir.
   payments_env = {
     for k, v in {
-      # P2: kod birden fazla saglayici + varsayilan destekler (config.ts). Altyapi su an tek
-      # saglayici acar (iyzico); PayTR P3'te kendi secret'i ve rotalariyla eklenecek.
-      PAYMENTS_PROVIDERS       = var.payments_provider
-      DEFAULT_PAYMENT_PROVIDER = var.payments_provider
+      PAYMENTS_PROVIDERS       = join(",", local.payment_providers)
+      DEFAULT_PAYMENT_PROVIDER = local.default_payment_provider
       PAYMENTS_API_BASE_URL    = aws_apigatewayv2_api.http.api_endpoint
       WEB_APP_URL              = var.web_app_url
       IYZICO_BASE_URL          = var.iyzico_base_url
-      IYZICO_SECRET_ARN        = local.payments_secret_arn
+      IYZICO_SECRET_ARN        = lookup(local.payments_secret_arns, "iyzico", "")
+      PAYTR_SECRET_ARN         = lookup(local.payments_secret_arns, "paytr", "")
+      PAYTR_TEST_MODE          = var.paytr_test_mode ? "1" : "0"
       # P1: POS sozlesme orani (komisyon tahmini; hesap bazinda gecersiz kilinabilir).
       PAYMENTS_POS_RATE_BPS        = tostring(var.payments_pos_rate_bps)
       PAYMENTS_POS_FIXED_FEE_KURUS = tostring(var.payments_pos_fixed_fee_kurus)
-    } : k => v if local.payments_enabled
+    } : k => v if contains(local.payment_env_keys, k)
   }
 
   payment_jobs = {
@@ -53,10 +74,12 @@ locals {
 }
 
 resource "aws_secretsmanager_secret" "payments" {
-  count = local.payments_enabled ? 1 : 0
+  for_each = toset(local.payment_providers)
 
-  name        = "${local.name}/payments/${var.payments_provider}"
-  description = "Online odeme saglayicisi anahtarlari: {\"apiKey\",\"secretKey\"}. Deger Terraform disinda girilir."
+  name = "${local.name}/payments/${each.key}"
+  description = each.key == "paytr" ? (
+    "PayTR magaza anahtarlari: {\"merchantId\",\"merchantKey\",\"merchantSalt\"}. Deger Terraform disinda girilir."
+  ) : "iyzico anahtarlari: {\"apiKey\",\"secretKey\"}. Deger Terraform disinda girilir."
   # prod'da yanlislikla silinen anahtar 30 gun geri alinabilir; diger ortamlarda aninda silinir.
   recovery_window_in_days = local.is_prod ? 30 : 0
 
@@ -65,7 +88,18 @@ resource "aws_secretsmanager_secret" "payments" {
       condition     = var.web_app_url != ""
       error_message = "Online odeme acikken web_app_url zorunludur (odeme sonrasi donus adresi)."
     }
+    precondition {
+      condition     = contains(local.payment_providers, local.default_payment_provider)
+      error_message = "default_payment_provider acik saglayicilardan (payments_providers) biri olmalidir."
+    }
   }
+}
+
+# P3: tek saglayicili (count) secret saglayici anahtarli (for_each) yapiya tasindi; mevcut iyzico
+# secret'i (ve degeri) yeniden olusturulmaz.
+moved {
+  from = aws_secretsmanager_secret.payments[0]
+  to   = aws_secretsmanager_secret.payments["iyzico"]
 }
 
 # Kimliksiz odeme rotalari (daha ozel rota `ANY /api/{proxy+}` JWT rotasindan onceliklidir).

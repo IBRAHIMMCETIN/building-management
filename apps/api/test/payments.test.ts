@@ -29,6 +29,8 @@ import {
 import { createPaymentsService, utcStamp } from '../src/modules/payments/service.js';
 import type { PaymentAccount, PaymentIntent, PaymentProviderName } from '../src/modules/payments/types.js';
 import { createProviderRegistry, resolveProvider } from '../src/modules/payments/registry.js';
+import { createPaytrClient, notificationHash, paytrToken } from '../src/modules/payments/paytr/client.js';
+import { createPaytrProvider, paytrMerchantOid } from '../src/modules/payments/paytr/provider.js';
 import { type PaymentProvider, PaymentProviderError } from '../src/modules/payments/provider.js';
 import { createIyzicoClient, hmacHex, responseSignature, signaturePrice } from '../src/modules/payments/iyzico/client.js';
 import { IYZICO_PATHS, createIyzicoProvider } from '../src/modules/payments/iyzico/provider.js';
@@ -1222,7 +1224,7 @@ describe('odeme - iyzico saglayicisi ile uctan uca (sahte HTTP)', () => {
 
     // Raporlama: kalem bazinda iade edilen tutar.
     const provider = w.payments.providers.get('iyzico')!;
-    expect(await provider.refundedAmounts({ providerPaymentId: 'pay-iyz-tok-1', conversationId: `${APT}:${intentId}` })).toEqual(new Map([['ptx-iyz-tok-1-1', TL(1000)]]));
+    expect(await provider.refundedAmounts({ providerPaymentId: 'pay-iyz-tok-1', conversationId: `${APT}:${intentId}`, items: [] })).toEqual(new Map([['ptx-iyz-tok-1-1', TL(1000)]]));
   });
 
   it('iyzico saglayicisinda alt uye kaydi yoksa online odeme kapali (varsayilan hesap yalnizca sahte saglayicida)', async () => {
@@ -1941,7 +1943,7 @@ describe('odeme saglayici kaydi ve cozumleyici (P2)', () => {
     expect(resolveProvider(createProviderRegistry([]), undefined)).toEqual({ source: 'none' });
   });
 
-  it('yapilandirma: PAYMENTS_PROVIDERS + DEFAULT_PAYMENT_PROVIDER kurallari; PayTR adaptoru P3e kadar kapali', () => {
+  it('yapilandirma: PAYMENTS_PROVIDERS + DEFAULT_PAYMENT_PROVIDER kurallari', () => {
     const urls = { PAYMENTS_API_BASE_URL: 'https://a.b', WEB_APP_URL: 'https://c.d' };
     expect(loadPaymentsConfig({ PAYMENTS_PROVIDERS: 'fake', ...urls }).providers.defaultName).toBe('fake');
     expect(() => loadPaymentsConfig({ PAYMENTS_PROVIDERS: 'fake,iyzico', ...urls })).toThrow(/DEFAULT_PAYMENT_PROVIDER zorunlu/);
@@ -1949,7 +1951,8 @@ describe('odeme saglayici kaydi ve cozumleyici (P2)', () => {
     expect(() => loadPaymentsConfig({ PAYMENTS_PROVIDERS: 'fake', DEFAULT_PAYMENT_PROVIDER: 'stripe', ...urls })).toThrow(/Bilinmeyen/);
     expect(() => loadPaymentsConfig({ PAYMENTS_PROVIDERS: 'fake,fake', ...urls })).toThrow(/iki kez/);
     expect(() => loadPaymentsConfig({ DEFAULT_PAYMENT_PROVIDER: 'iyzico' })).toThrow(/acik saglayici yok/);
-    expect(() => loadPaymentsConfig({ PAYMENTS_PROVIDERS: 'paytr', ...urls })).toThrow(/P3/);
+    // P3: PayTR fabrikasi bagli; anahtar kaynagi zorunlu.
+    expect(() => loadPaymentsConfig({ PAYMENTS_PROVIDERS: 'paytr', ...urls })).toThrow(/PAYTR_MERCHANT_ID/);
     // Yeni ad eski tekil adi gecersiz kilar.
     expect(loadPaymentsConfig({ PAYMENTS_PROVIDERS: 'disabled', PAYMENTS_PROVIDER: 'fake', ...urls }).providers.list()).toEqual([]);
   });
@@ -2083,5 +2086,195 @@ describe('odeme - apartman bazinda saglayici secimi (P2, uctan uca)', () => {
     expect((await w.call('GET', settingsPath, admin)).body).toMatchObject({ paymentProvider: 'paytr', effectiveProvider: null, source: 'apartment' });
     expect((await w.call('GET', `/api/admin/payments/apartments/${APT}/account`, admin)).body.error).toBe('payments_disabled');
     expect((await w.call('GET', '/api/admin/payments/apartments', admin)).body.items[0]).toMatchObject({ effectiveProvider: null, account: null });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Online Odeme v2 · P3: PayTR iFrame (sahte PayTR HTTP sunucusu)
+// ---------------------------------------------------------------------------
+
+const PAYTR = { merchantId: '100001', merchantKey: 'KEY123', merchantSalt: 'SALT456' };
+
+function fakePaytrServer() {
+  const tokens: Record<string, string>[] = [];
+  const refunds: Record<string, string>[] = [];
+  const paid = new Map<string, { amount: string; fee?: string }>();
+  const bad: string[] = [];
+  const fetchFn = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const path = new URL(String(input)).pathname;
+    const form = Object.fromEntries(new URLSearchParams(String(init?.body ?? '')));
+    const json = (data: unknown) => new Response(JSON.stringify(data), { status: 200, headers: { 'content-type': 'application/json' } });
+    const expectToken = (hashStr: string) => {
+      if (form.paytr_token !== paytrToken(PAYTR, hashStr)) bad.push(path);
+    };
+    if (form.merchant_key || form.merchant_salt) bad.push(`${path}:secret-sent`);
+    if (path === '/odeme/api/get-token') {
+      expectToken(form.merchant_id! + form.user_ip + form.merchant_oid + form.email + form.payment_amount + form.user_basket + form.no_installment + form.max_installment + form.currency + form.test_mode);
+      tokens.push(form);
+      return json({ status: 'success', token: `ptk-${tokens.length}` });
+    }
+    if (path === '/odeme/durum-sorgu') {
+      expectToken(form.merchant_id! + form.merchant_oid);
+      const p = paid.get(form.merchant_oid!);
+      if (!p) return json({ status: 'error', err_no: '004', err_msg: 'merchant_oid ile basarili odeme bulunamadi' });
+      const returns = refunds.filter((r) => r.merchant_oid === form.merchant_oid).map((r) => ({ return_amount: r.return_amount }));
+      return json({ status: 'success', payment_amount: p.amount, payment_total: p.amount, payment_date: '2026-11-06 13:05:00', currency: 'TL', kesinti_tutari: p.fee ?? '0', returns });
+    }
+    if (path === '/odeme/iade') {
+      expectToken(form.merchant_id! + form.merchant_oid + form.return_amount);
+      refunds.push(form);
+      return json({ status: 'success', is_test: 1, merchant_oid: form.merchant_oid, return_amount: form.return_amount, reference_no: form.reference_no });
+    }
+    return new Response('{}', { status: 404 });
+  }) as typeof fetch;
+  return { fetchFn, tokens, refunds, paid, bad };
+}
+
+describe('odeme - PayTR iFrame ile uctan uca (P3, sahte HTTP)', () => {
+  async function world() {
+    const server = fakePaytrServer();
+    const paytr = createPaytrProvider({ client: createPaytrClient({ credentials: async () => PAYTR, fetch: server.fetchFn }), testMode: true });
+    const w = setup({ extraProviders: [paytr], defaultProvider: 'paytr' });
+    const admin = w.token('ops-1', 'platform_admin', '');
+    const onboard = await w.call('POST', `/api/admin/payments/apartments/${APT}/account`, admin, {
+      email: 'yonetim@lale.test',
+      gsmNumber: '0532 123 45 67',
+      address: 'Lale Sk. 1, Kadıköy',
+      iban: 'TR33 0006 1005 1978 6457 8413 26',
+      taxOffice: 'Kadıköy',
+      legalCompanyTitle: 'Lale Apartmanı Yönetimi',
+      platformFeeBasisPoints: 0,
+    });
+    expect(onboard.body).toMatchObject({ provider: 'paytr', subMerchantKey: 'paytr-apt1', status: 'active' });
+    await w.charge('u1', 'occupant', TL(1000), '2026-11-10', 'c1', '2026-11-01');
+    const created = await w.call('POST', '/api/portal/payments', w.token('tenant-1'), { idempotencyKey: 'k-1', mode: 'total' });
+    expect(created.status).toBe(201);
+    const intentId = created.body.intentId as string;
+    return { w, server, admin, created, intentId, oid: paytrMerchantOid(intentId) };
+  }
+
+  const notify = (w: ReturnType<typeof setup>, fields: Record<string, string>, hash?: string) =>
+    w.app.request('/api/payments/paytr/webhook', {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        ...fields,
+        hash: hash ?? notificationHash(PAYTR, { merchantOid: fields.merchant_oid!, status: fields.status!, totalAmount: fields.total_amount! }),
+      }).toString(),
+    });
+
+  it('token (iFrame) -> donus -> imzali bildirim (OK) -> durum sorgusu -> defter; transfer P4e kadar bekler', async () => {
+    const { w, server, created, intentId, oid } = await world();
+    expect(created.body).toMatchObject({ checkoutKind: 'iframe', paymentPageUrl: 'https://www.paytr.com/odeme/guvenli/ptk-1', amount: TL(1000) });
+    // Alfanumerik (gercekte 14 hane zaman + 32 hex = 46 karakter; testte kisa kimlik).
+    expect(oid).toBe(intentId.replace(/-/g, ''));
+    const t = server.tokens[0]!;
+    expect(t).toMatchObject({
+      merchant_id: '100001',
+      user_ip: '203.0.113.7',
+      merchant_oid: oid,
+      email: 'ayse@example.com',
+      payment_amount: '100000',
+      no_installment: '1',
+      max_installment: '0',
+      currency: 'TL',
+      test_mode: '1',
+      timeout_limit: '30',
+      user_name: 'Ayşe Nur Yılmaz',
+      user_phone: '+905350000000',
+      merchant_ok_url: `https://api.test/api/payments/paytr/callback?ref=${encodeURIComponent(`${APT}:${intentId}`)}&result=ok`,
+      merchant_fail_url: `https://api.test/api/payments/paytr/callback?ref=${encodeURIComponent(`${APT}:${intentId}`)}&result=fail`,
+    });
+    expect(JSON.parse(Buffer.from(t.user_basket!, 'base64').toString('utf8'))).toEqual([['Aidat ödemesi · Daire U1 · Sakin', '1000.00', 1]]);
+    expect(server.bad).toEqual([]);
+    // Esleme kaydi niyetle ayni atomik yazimda.
+    expect(w.fin.docs.get(`PAYREF#paytr#${oid}|PAYREF`)).toMatchObject({ apartmentId: APT, intentId, provider: 'paytr' });
+    expect(w.intentOf(intentId)).toMatchObject({ provider: 'paytr', providerReference: oid, checkout: { kind: 'iframe', token: 'ptk-1' } });
+
+    // Tarayici donusu (GET, bildirimden once): sonuc henuz yok; web sonuc sayfasina tasinir.
+    const back = await w.app.request(`/api/payments/paytr/callback?ref=${encodeURIComponent(`${APT}:${intentId}`)}&result=ok`);
+    expect(back.status).toBe(303);
+    expect(back.headers.get('location')).toBe(`https://web.test/app/odeme/sonuc?intent=${intentId}&result=ok`);
+    expect(w.intentOf(intentId).status).toBe('PENDING');
+
+    // Gecersiz imza: 401, islem yok.
+    server.paid.set(oid, { amount: '1000,00', fee: '26.50' });
+    const forged = await notify(w, { merchant_oid: oid, status: 'success', total_amount: '100000' }, 'AAAA');
+    expect(forged.status).toBe(401);
+    expect(w.intentOf(intentId).status).toBe('PENDING');
+
+    const ok = await notify(w, { merchant_oid: oid, status: 'success', total_amount: '100000', payment_type: 'card', currency: 'TL' });
+    expect(ok.status).toBe(200);
+    expect(await ok.text()).toBe('OK');
+    expect(ok.headers.get('content-type')).toMatch(/^text\/plain/);
+    expect(w.intentOf(intentId)).toMatchObject({
+      status: 'SUCCEEDED',
+      providerPaymentId: oid,
+      paidAt: '2026-11-06',
+      itemTransactions: [{ itemId: `${intentId}-occupant`, paymentTransactionId: `${oid}-occupant`, paidAmount: TL(1000) }],
+      settlement: { status: 'pending', providerFee: 2_650, approvals: [{ status: 'pending', attempts: 0 }] },
+    });
+    expect([...w.fin.payments.values()][0]).toMatchObject({ provider: 'paytr', providerPaymentId: oid });
+    expect(w.fin.balanceOf('recv-u1-occupant')).toBe(0);
+
+    // Tekrar gelen bildirim (PayTR OK alamazsa dakikada bir dener): yine OK, cift yazim yok.
+    const again = await notify(w, { merchant_oid: oid, status: 'success', total_amount: '100000' });
+    expect(await again.text()).toBe('OK');
+    expect(w.fin.batches).toHaveLength(1);
+
+    // P4 kancasi: Platform Transfer henuz yok -> kalem bekler, deneme harcanmaz, alarm yok.
+    w.clock.now = new Date('2026-11-06T11:00:00.000Z');
+    expect((await w.payments.reconcile(APT)).approvals).toEqual({ checked: 1, approved: 0, pending: 1, failed: 0 });
+    expect(w.intentOf(intentId).settlement?.approvals[0]).toMatchObject({ status: 'pending', attempts: 0 });
+    expect(w.logs.some((l) => l.fields?.alert === 'PAYMENT_APPROVAL_FAILED')).toBe(false);
+  });
+
+  it('basarisiz bildirim: niyet hemen dusmez, sure dolunca FAILED; gec basari NEEDS_REVIEW -> iade', async () => {
+    const { w, server, intentId, oid } = await world();
+    const failed = await notify(w, { merchant_oid: oid, status: 'failed', total_amount: '100000', failed_reason_code: '2', failed_reason_msg: 'Kart limiti yetersiz' });
+    expect(await failed.text()).toBe('OK');
+    expect(w.intentOf(intentId)).toMatchObject({ status: 'PENDING', providerNotice: { status: 'failure', code: '2', message: 'Kart limiti yetersiz' } });
+    expect((await w.call('GET', `/api/portal/payments/${intentId}`, w.token('tenant-1'))).body).toMatchObject({
+      status: 'PENDING',
+      failureMessage: 'Ödeme tamamlanamadı: Kart limiti yetersiz',
+    });
+
+    // Sayfa suresi (30 dk) dolmadan mutabakat sonuclandirmaz; dolunca bildirimin koduyla FAILED.
+    w.clock.now = new Date('2026-11-06T10:31:00.000Z');
+    expect((await w.payments.reconcile(APT)).checked).toBe(1);
+    expect(w.intentOf(intentId).status).toBe('FAILED');
+    expect(w.intentOf(intentId).failure).toMatchObject({ code: 'provider_2', message: 'Kart limiti yetersiz' });
+
+    // Gec gelen basari (para tahsil edilmis): defter yazilmaz, inceleme + alarm.
+    server.paid.set(oid, { amount: '1000.00' });
+    expect(await (await notify(w, { merchant_oid: oid, status: 'success', total_amount: '100000' })).text()).toBe('OK');
+    expect(w.intentOf(intentId)).toMatchObject({ status: 'NEEDS_REVIEW', providerPaymentId: oid });
+    expect(w.logs).toContainEqual(expect.objectContaining({ fields: expect.objectContaining({ alert: 'PAYMENT_NEEDS_REVIEW', intentId }) }));
+    expect(w.fin.batches).toHaveLength(0);
+
+    // Platform tam iade: PayTR siparis bazli `/odeme/iade`.
+    const r = await w.call('POST', `/api/admin/payments/apartments/${APT}/intents/${intentId}/resolve`, w.token('ops-1', 'platform_admin', ''), {
+      action: 'refund',
+      note: 'Gec gelen basari, tam iade',
+      expectedVersion: w.intentOf(intentId).version,
+    });
+    expect(r.status).toBe(200);
+    expect(r.body.intent).toMatchObject({ status: 'REFUNDED', refundedAmount: TL(1000) });
+    expect(server.refunds).toEqual([
+      expect.objectContaining({ merchant_id: '100001', merchant_oid: oid, return_amount: '1000.00', reference_no: `refund${intentId.replace(/-/g, '')}1` }),
+    ]);
+    expect(server.bad).toEqual([]);
+    const provider = w.payments.providers.get('paytr')!;
+    expect(await provider.refundedAmounts({ providerPaymentId: oid, conversationId: `${APT}:${intentId}`, items: [{ paymentTransactionId: `${oid}-occupant`, amount: toKurus(TL(1000)) }] })).toEqual(
+      new Map([[`${oid}-occupant`, TL(1000)]]),
+    );
+  });
+
+  it('bilinmeyen siparis gecerli imzayla OK; imzasiz/eksik govde 401; baska saglayicinin niyeti etkilenmez', async () => {
+    const { w } = await world();
+    expect(await (await notify(w, { merchant_oid: 'YOK123', status: 'success', total_amount: '100' })).text()).toBe('OK');
+    expect((await w.app.request('/api/payments/paytr/webhook', { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: 'a=1' })).status).toBe(401);
+    // Sahte saglayicinin niyetine ait bir oid PayTR esleme kaydinda yoktur.
+    expect(w.fin.docs.has('PAYREF#fake#x|PAYREF')).toBe(false);
   });
 });

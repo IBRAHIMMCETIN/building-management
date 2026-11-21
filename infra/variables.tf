@@ -292,12 +292,40 @@ variable "scheduler_enabled" {
 variable "payments_provider" {
   type        = string
   default     = "disabled"
-  description = "Online odeme saglayicisi: disabled | iyzico. (fake yalnizca yerel gelistirme icindir.)"
+  description = "Eski tekil ayar: disabled | iyzico | paytr. `payments_providers` verilmisse yok sayilir. (fake yalnizca yerel gelistirme icindir.)"
 
   validation {
-    condition     = contains(["disabled", "iyzico"], var.payments_provider)
-    error_message = "payments_provider disabled veya iyzico olmalidir."
+    condition     = contains(["disabled", "iyzico", "paytr"], var.payments_provider)
+    error_message = "payments_provider disabled, iyzico veya paytr olmalidir."
   }
+}
+
+variable "payments_providers" {
+  type        = list(string)
+  default     = []
+  description = "Online Odeme v2: acik saglayicilar (iyzico, paytr). Bos ise `payments_provider` kullanilir."
+
+  validation {
+    condition     = alltrue([for p in var.payments_providers : contains(["iyzico", "paytr"], p)]) && length(distinct(var.payments_providers)) == length(var.payments_providers)
+    error_message = "payments_providers yalnizca iyzico ve/veya paytr icerebilir (tekrarsiz)."
+  }
+}
+
+variable "default_payment_provider" {
+  type        = string
+  default     = ""
+  description = "Apartman tercihi yoksa kullanilan saglayici (DEFAULT_PAYMENT_PROVIDER). Bos: listedeki ilk saglayici."
+
+  validation {
+    condition     = contains(["", "iyzico", "paytr"], var.default_payment_provider)
+    error_message = "default_payment_provider bos, iyzico veya paytr olmalidir."
+  }
+}
+
+variable "paytr_test_mode" {
+  type        = bool
+  default     = true
+  description = "PayTR `test_mode` (PAYTR_TEST_MODE). Canli magazada gercek tahsilat icin false."
 }
 
 variable "iyzico_base_url" {

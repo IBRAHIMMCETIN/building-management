@@ -1,5 +1,5 @@
 import { PaymentsConflictError, type PaymentsRepository, REVIEW_QUEUE_PK, toStoredIntent } from '../../src/modules/payments/repository.js';
-import type { IntentKeyRecord, PaymentAccount, PaymentIntent, PaymentSettings } from '../../src/modules/payments/types.js';
+import type { IntentKeyRecord, IntentRefRecord, PaymentAccount, PaymentIntent, PaymentSettings } from '../../src/modules/payments/types.js';
 
 type Doc = Record<string, unknown> & { PK: string; SK: string; version?: number };
 
@@ -13,11 +13,13 @@ export function createFakePaymentsRepo(docs: Map<string, Doc>) {
 
   const repo: PaymentsRepository = {
     getIntent: async (apt, id) => docs.get(`APT#${apt}|PI#${id}`) as PaymentIntent | undefined,
-    createIntent: async (intent, k) => {
-      if (docs.has(key(intent)) || docs.has(key(k))) throw new PaymentsConflictError();
+    createIntent: async (intent, k, ref) => {
+      if (docs.has(key(intent)) || docs.has(key(k)) || (ref && docs.has(key(ref)))) throw new PaymentsConflictError();
       docs.set(key(k), { ...k });
+      if (ref) docs.set(key(ref), { ...ref } as unknown as Doc);
       docs.set(key(intent), structuredClone(intent) as unknown as Doc);
     },
+    getIntentRef: async (provider, reference) => docs.get(`PAYREF#${provider}#${reference}|PAYREF`) as IntentRefRecord | undefined,
     getIntentKey: async (apt, userId, idem) =>
       docs.get(`APT#${apt}|PIKEY#${userId}#${idem}`) as IntentKeyRecord | undefined,
     updateIntent: async (intent, expectedVersion) => {

@@ -18,6 +18,16 @@ describe('odeme sonuc metinleri', () => {
     expect(timedOut.body).toMatch(/tekrar ödeme yapmayın/);
   });
 
+  it('iFrame saglayici donusu (PayTR): basarisiz donus veya bildirim PENDING iken hemen gosterilir', () => {
+    expect(intentResultView({ status: 'PENDING' }, false, 'ok')).toMatchObject({ tone: 'info', terminal: false });
+    const fail = intentResultView({ status: 'PENDING' }, false, 'fail');
+    expect(fail).toMatchObject({ tone: 'danger', title: 'Ödeme tamamlanamadı', terminal: true, canRetry: true });
+    const noticed = intentResultView({ status: 'PENDING', failureMessage: 'Ödeme tamamlanamadı: Kart limiti yetersiz' });
+    expect(noticed.body).toMatch(/^Ödeme tamamlanamadı: Kart limiti yetersiz Kartınızdan/);
+    // Durum kesinlestiyse donus parametresi yok sayilir (sonuc API'den gelir).
+    expect(intentResultView({ status: 'SUCCEEDED' }, false, 'fail')).toMatchObject({ tone: 'success' });
+  });
+
   it('callback hatalari', () => {
     expect(callbackErrorView('not_found').title).toMatch(/bulunamadı/);
     expect(callbackErrorView('invalid').title).toMatch(/doğrulanamadı/);

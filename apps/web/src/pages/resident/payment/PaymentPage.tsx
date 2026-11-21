@@ -10,6 +10,7 @@ import { ApiError, errorMessage } from '@/lib/api/errors';
 import type { PartyQuote, PaymentQuote } from '@/lib/api/payments';
 import { formatDate } from '@/lib/dates';
 import { formatTRY } from '@/lib/money';
+import { checkoutAction } from '@/lib/payments/checkout';
 import { partyLabel } from '@/lib/payments/result';
 import {
   type ItemSelection,
@@ -148,6 +149,39 @@ function BuyerFields({
   );
 }
 
+/**
+ * Gomulu odeme formu (PayTR iFrame). Kart verisi yalnizca saglayicinin formunda girilir; odeme
+ * sonrasi form iframe icinde sonuc sayfasina doner ve sonuc sayfasi ust pencereye tasinir.
+ */
+function CheckoutFrame({ url, intentId, onClose }: { url: string; intentId: string; onClose: () => void }) {
+  return (
+    <Card className="flex flex-col gap-4">
+      <p className="flex items-start gap-2 text-small text-muted">
+        <Lock className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+        Kart bilgilerinizi ödeme sağlayıcısının güvenli formunda 3D Secure ile girersiniz; bu uygulama kart bilginizi görmez.
+      </p>
+      <iframe
+        src={url}
+        title="Güvenli ödeme formu"
+        className="h-[720px] w-full rounded-md border border-border bg-white"
+        allow="payment"
+        referrerPolicy="strict-origin-when-cross-origin"
+      />
+      <div className="flex flex-wrap gap-3 border-t border-border pt-4">
+        <Link
+          to={`/app/odeme/sonuc?intent=${encodeURIComponent(intentId)}`}
+          className="inline-flex h-10 items-center rounded-md border border-border-strong px-4 text-small font-medium hover:bg-surface-muted"
+        >
+          Ödeme durumunu kontrol et
+        </Link>
+        <Button variant="secondary" onClick={onClose}>
+          Vazgeç
+        </Button>
+      </div>
+    </Card>
+  );
+}
+
 function PaymentForm({ quote }: { quote: PaymentQuote }) {
   const { unitId } = usePortalUnit();
   const [mode, setMode] = useState<Mode>('total');
@@ -157,6 +191,7 @@ function PaymentForm({ quote }: { quote: PaymentQuote }) {
   const [fieldErrors, setFieldErrors] = useState<{ gsm?: string; tckn?: string }>({});
   const [key, renewKey] = useIdempotencyKey();
   const create = useCreatePayment();
+  const [frame, setFrame] = useState<{ url: string; intentId: string } | null>(null);
 
   const items = useMemo(() => selectedItems(quote, selection), [quote, selection]);
   const amount = mode === 'total' ? quote.totalDue : selectedTotal(quote, selection);
@@ -191,9 +226,15 @@ function PaymentForm({ quote }: { quote: PaymentQuote }) {
         ...(gsmNumber ? { gsmNumber } : {}),
         ...(quote.requiresGsmNumber && tckn ? { identityNumber: tckn } : {}),
       });
-      if (intent.status === 'PENDING' && intent.paymentPageUrl) {
+      const action = checkoutAction(intent);
+      if (action.kind === 'iframe') {
+        // PayTR: odeme formu bu sayfada gomulu acilir; donuste /app/odeme/sonuc acilir.
+        setFrame({ url: action.url, intentId: intent.intentId });
+        return;
+      }
+      if (action.kind === 'redirect') {
         // Kart bilgisi saglayicinin sayfasinda girilir; donuste /app/odeme/sonuc acilir.
-        window.location.assign(intent.paymentPageUrl);
+        window.location.assign(action.url);
         return;
       }
       // Ayni anahtarla daha once sonuclanmis istek: yeni anahtarla tekrar denenebilir.
@@ -206,6 +247,21 @@ function PaymentForm({ quote }: { quote: PaymentQuote }) {
   };
 
   const fieldError = create.error instanceof ApiError && (create.error.field === 'gsmNumber' || create.error.field === 'identityNumber');
+
+  if (frame) {
+    return (
+      <CheckoutFrame
+        url={frame.url}
+        intentId={frame.intentId}
+        onClose={() => {
+          // Yarim kalan niyet suresi dolunca kapanir; yeni deneme yeni anahtarla.
+          setFrame(null);
+          renewKey();
+          create.reset();
+        }}
+      />
+    );
+  }
 
   return (
     <Card className="flex flex-col gap-5">
@@ -264,7 +320,7 @@ function PaymentForm({ quote }: { quote: PaymentQuote }) {
         </Button>
       </div>
       <p className="text-small text-muted">
-        Kart bilgilerinizi ödeme sağlayıcısının (iyzico) güvenli sayfasında 3D Secure ile girersiniz; bu uygulama kart bilginizi görmez.
+        Kart bilgilerinizi ödeme sağlayıcısının güvenli sayfasında 3D Secure ile girersiniz; bu uygulama kart bilginizi görmez.
       </p>
     </Card>
   );

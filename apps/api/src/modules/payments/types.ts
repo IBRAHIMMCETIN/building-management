@@ -170,6 +170,8 @@ export type PaymentIntent = TableKeys & {
   subMerchantKey: string;
   /** Saglayiciya giden `conversationId` (`<apartmentId>:<intentId>`). */
   conversationId: string;
+  /** Saglayici siparis kimligi (PayTR `merchant_oid`); esleme kaydi `PAYREF#<saglayici>#<ref>`. */
+  providerReference?: string;
   status: IntentStatus;
   /** `kind` yoksa `redirect` (P2 oncesi niyetler). */
   checkout?: { token: string; paymentPageUrl: string; kind?: 'redirect' | 'iframe'; createdAt: IsoDateTime };
@@ -179,6 +181,11 @@ export type PaymentIntent = TableKeys & {
   transactionIds?: string[];
   receiptNumbers?: string[];
   failure?: { code: string; message: string; at: IsoDateTime };
+  /**
+   * Imzali bildirimdeki basarisizlik (PayTR). Niyet hemen FAILED olmaz (gec gelen basari kaybolmasin);
+   * sayfa suresi dolunca mutabakat bu kodla FAILED yapar. Sakin sonuc ekraninda bilgilendirilir.
+   */
+  providerNotice?: { status: 'failure'; code?: string; message?: string; at: IsoDateTime };
   review?: { reason: string; at: IsoDateTime; providerPaymentId?: string };
   /** Saglayicinin kalem islem kimlikleri (basarili sonucta kaydedilir; iade icin gerekir). */
   itemTransactions?: ItemTransaction[];
@@ -249,4 +256,18 @@ export type PaymentSettings = TableKeys & {
   updatedAt: IsoDateTime;
   updatedBy: string;
   version: number;
+};
+
+/**
+ * Saglayici siparis kimligi -> niyet eslemesi (PayTR bildirimi yalnizca `merchant_oid` tasir).
+ * Niyetle ayni atomik yazimda olusturulur; tenant disi anahtar yalnizca bu eslemeyi tasir.
+ *   PK = `PAYREF#<provider>#<reference>`, SK = `PAYREF`
+ */
+export type IntentRefRecord = TableKeys & {
+  entityType: 'PAYMENT_INTENT_REF';
+  provider: PaymentProviderName;
+  reference: string;
+  apartmentId: string;
+  intentId: string;
+  createdAt: IsoDateTime;
 };
