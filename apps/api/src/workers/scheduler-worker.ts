@@ -195,6 +195,8 @@ export function createSchedulerWorker(overrides: Partial<SchedulerDeps> = {}) {
       const chain = await auditChain().verify(PLATFORM_SCOPE);
       metrics().emit({ LedgerDrift: chain.findings.length, AuditChainBroken: chain.findings.length }, { msg: 'ledger_audit_metrics', apartmentId: '_platform' });
       if (chain.findings.length > 0) log.error(JSON.stringify({ level: 'error', msg: 'ledger_audit', apartmentId: '_platform', findings: chain.findings }));
+      // Kalp atisi: gece denetimi calisti (alarm: 1 gun boyunca veri yoksa denetim calismiyor).
+      metrics().emit({ AuditRun: 1 }, { msg: 'ledger_audit_run' });
       return { apartmentId: '_platform', status: 'done', detail: { findings: chain.findings.length, auditEntriesChecked: chain.checked } };
     } catch (err) {
       return { apartmentId: '_platform', status: 'failed', error: errorText(err) };

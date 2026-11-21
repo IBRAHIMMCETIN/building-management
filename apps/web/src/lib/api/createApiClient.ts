@@ -14,6 +14,11 @@ export type RequestOptions<T> = {
   auth?: boolean;
   /** Verilirse yanit zod ile dogrulanir; sozlesme kaymasi erken yakalanir. */
   schema?: z.ZodType<T>;
+  /**
+   * false: destek modundayken bile `X-Support-Session` eklenmez (destek oturumunu yoneten
+   * platform uclari; baslikla rol denetciye duser). Varsayilan true.
+   */
+  support?: boolean;
 };
 
 export type TokenProvider = (options: { forceRefresh?: boolean }) => Promise<string | null>;
@@ -26,6 +31,8 @@ export type ApiClientConfig = {
   onAuthFailure?: () => void;
   /** API `403 MFA_REQUIRED` dondu: kullanici TOTP kurulum ekranina yonlendirilmeli. */
   onMfaRequired?: () => void;
+  /** Destek modunda (platform yoneticisi) eklenecek `X-Support-Session` degeri; yoksa undefined. */
+  getSupportHeader?: () => string | undefined;
   fetchImpl?: typeof fetch;
 };
 
@@ -49,6 +56,8 @@ export function createApiClient(config: ApiClientConfig) {
     const headers: Record<string, string> = { accept: 'application/json', ...options.headers };
     if (options.body !== undefined) headers['content-type'] = 'application/json';
     if (token) headers.authorization = `Bearer ${token}`;
+    const support = token && options.support !== false ? config.getSupportHeader?.() : undefined;
+    if (support) headers['x-support-session'] = support;
 
     try {
       return await doFetch(buildUrl(path, options.query), {

@@ -8,6 +8,8 @@ export type { ApiClient, ApiClientConfig, RequestOptions, TokenProvider } from '
 export const apiClient = createApiClient({
   baseUrl: env.apiUrl,
   getToken: (options) => sessionManager.getApiToken(options),
-  onAuthFailure: () => sessionManager.expire(),
+  // Destek modunda 401: destek oturumu gecersiz/suresi dolmus; ana oturum korunur, mod kapanir.
+  onAuthFailure: () => (sessionManager.getState().support ? sessionManager.endSupport('rejected') : sessionManager.expire()),
   onMfaRequired: () => sessionManager.markMfaRequired(),
+  getSupportHeader: () => sessionManager.getSupportHeader(),
 });

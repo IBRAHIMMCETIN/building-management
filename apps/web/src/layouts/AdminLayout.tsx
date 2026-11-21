@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import { NavLink, Outlet, useLocation } from 'react-router';
 import { ContextSwitchDialog, useCanSwitchContext } from '@/components/context/ContextSwitcher';
 import { MfaGraceBanner } from '@/components/MfaGraceBanner';
+import { SupportBanner } from '@/components/support/SupportBanner';
 import { Button, Dialog } from '@/components/ui';
 import { useActiveApartmentName } from '@/hooks/useActiveContextLabel';
 import { useAuth } from '@/hooks/useAuth';
@@ -104,6 +105,7 @@ export function AdminLayout() {
           </div>
           <UserMenu />
         </header>
+        <SupportBanner />
         <MfaGraceBanner />
         <main className="mx-auto w-full max-w-page flex-1 px-4 py-8 md:px-8">
           <Outlet />

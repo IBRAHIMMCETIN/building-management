@@ -7,18 +7,21 @@ import { APARTMENT_NAV, PLATFORM_NAV, navItemsFor, panelTitleFor } from './admin
 describe('yonetim menusu: platform ve apartman ayrimi', () => {
   it('platform_admin yalnizca platform geneli ogeleri gorur; apartman ekranlari yok', () => {
     const paths = navItemsFor('platform_admin').map((n) => n.to);
-    expect(paths).toEqual(['/admin/apartments', '/admin/payments']);
+    expect(paths).toEqual(['/admin/apartments', '/admin/payments', '/admin/users', '/admin/audit']);
     for (const p of ['/admin', '/admin/units', '/admin/finance', '/admin/announcements', '/admin/import', '/admin/settings']) {
       expect(paths).not.toContain(p);
     }
     expect(panelTitleFor('platform_admin')).toBe('Platform Yönetimi');
   });
 
-  it('apartman rolleri platform ogelerini gormez', () => {
+  it('apartman rolleri platform ogelerini gormez; denetim/guvenlik yalnizca yetkili rollere', () => {
+    expect(navItemsFor('apartment_manager').map((n) => n.to)).toEqual(APARTMENT_NAV.map((n) => n.to));
+    expect(navItemsFor('observer').map((n) => n.to)).toContain('/admin/audit');
+    expect(navItemsFor('observer').map((n) => n.to)).not.toContain('/admin/security');
+    expect(navItemsFor('building_staff').map((n) => n.to)).not.toContain('/admin/audit');
     for (const role of APARTMENT_ADMIN_ROLES) {
       const paths = navItemsFor(role).map((n) => n.to);
-      expect(paths).toEqual(APARTMENT_NAV.map((n) => n.to));
-      for (const p of PLATFORM_NAV.map((n) => n.to)) expect(paths).not.toContain(p);
+      for (const p of ['/admin/apartments', '/admin/payments', '/admin/users']) expect(paths).not.toContain(p);
       expect(panelTitleFor(role)).toBe('Yönetim Paneli');
     }
   });

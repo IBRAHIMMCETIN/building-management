@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AuthAdapter, AuthSession } from './session';
 
@@ -121,6 +122,40 @@ describe('sessionManager', () => {
     );
     await sm.refresh();
     expect(sm.getState().mfaRequired).toBe(false);
+  });
+
+  it('destek modu: yalnizca platform yoneticisi; baslik verir, sure dolunca kapanir ve bildirim birakir', async () => {
+    const admin = session({ role: 'platform_admin' });
+    const sm = await load(admin);
+    const mode = { apartmentId: 'apt-1', apartmentName: 'Çınar', sessionId: 'sess12345', header: 'apt-1.sess12345', expiresAt: new Date(Date.now() + 60_000).toISOString() };
+    sm.startSupport(mode);
+    expect(sm.getState().support).toMatchObject({ ...mode, sub: 'u1' });
+    expect(sm.getSupportHeader()).toBe('apt-1.sess12345');
+    expect(JSON.parse(sessionStorage.getItem('bm.support-session') ?? '{}')).toMatchObject({ apartmentId: 'apt-1' });
+
+    sm.startSupport({ ...mode, expiresAt: new Date(Date.now() - 1000).toISOString() });
+    expect(sm.getSupportHeader()).toBeUndefined();
+    expect(sm.getState().support).toBeUndefined();
+    expect(sm.consumeSupportNotice()).toBe('expired');
+    expect(sessionStorage.getItem('bm.support-session')).toBeNull();
+
+    const manager = await load(session({ role: 'apartment_manager', apartmentId: 'apt-1' }));
+    expect(() => manager.startSupport(mode)).toThrow(/platform/);
+  });
+
+  it('destek modu sayfa yenilemede geri yuklenir; cikis ve baska kullanicida temizlenir', async () => {
+    const admin = session({ role: 'platform_admin' });
+    const mode = { apartmentId: 'apt-1', sessionId: 'sess12345', header: 'apt-1.sess12345', expiresAt: new Date(Date.now() + 60_000).toISOString(), sub: 'u1' };
+    sessionStorage.setItem('bm.support-session', JSON.stringify(mode));
+    const sm = await load(admin);
+    expect(sm.getState().support).toEqual(mode);
+    adapter.signOut.mockResolvedValue(undefined);
+    await sm.signOut();
+    expect(sm.getState().support).toBeUndefined();
+    expect(sessionStorage.getItem('bm.support-session')).toBeNull();
+
+    sessionStorage.setItem('bm.support-session', JSON.stringify({ ...mode, sub: 'baska' }));
+    expect((await load(admin)).getState().support).toBeUndefined();
   });
 
   it('oturum yoksa veya MFA etkinse isaretlenmez', async () => {

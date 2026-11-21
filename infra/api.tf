@@ -189,6 +189,8 @@ resource "aws_lambda_function" "api" {
       DOCUMENTS_BUCKET      = aws_s3_bucket.documents.id
       MFA_ENFORCEMENT_MODE  = var.mfa_enforcement_mode
       MFA_GRACE_PERIOD_DAYS = tostring(var.mfa_grace_period_days)
+      # EMF guvenlik metrikleri (MfaVerifyFailed, MfaReset, MfaRequiredDenied) icin boyut.
+      METRICS_STACK = local.name
     }, local.payments_env)
   }
 
@@ -385,6 +387,17 @@ resource "aws_apigatewayv2_stage" "default" {
     throttling_burst_limit = var.api_throttle_burst_limit
   }
 
+  # Hassas yazma uclari (security_monitoring.tf): MFA kurulumu, MFA sifirlama, destek oturumu,
+  # davet, toplu tahakkuk ve toplu aktarim. Rota basina sinir (istemci basina degil).
+  dynamic "route_settings" {
+    for_each = local.sensitive_routes
+    content {
+      route_key              = route_settings.key
+      throttling_rate_limit  = route_settings.value.rate
+      throttling_burst_limit = route_settings.value.burst
+    }
+  }
+
   # Kimliksiz odeme rotalari (payments.tf) icin daha siki sinir.
   dynamic "route_settings" {
     for_each = local.payment_public_routes
@@ -413,7 +426,7 @@ resource "aws_apigatewayv2_stage" "default" {
   }
 
   # route_settings yalnizca var olan rotalar icin tanimlanabilir.
-  depends_on = [aws_apigatewayv2_route.payments_public]
+  depends_on = [aws_apigatewayv2_route.payments_public, aws_apigatewayv2_route.sensitive]
 }
 
 resource "aws_lambda_permission" "apigw" {

@@ -305,6 +305,8 @@ describe('zamanlayici - ledger_audit isi', () => {
     expect(metrics.emit).toHaveBeenCalledWith({ LedgerDrift: 1, LedgerAuditUnstable: 0, AuditChainBroken: 0 }, expect.objectContaining({ apartmentId: 'apt-2' }));
     // Platform zinciri tum apartmanlar turunda bir kez dogrulanir.
     expect(metrics.emit).toHaveBeenCalledWith({ LedgerDrift: 0, AuditChainBroken: 0 }, expect.objectContaining({ apartmentId: '_platform' }));
+    // Kalp atisi: gece denetimi calisti (alarm: 1 gun veri yoksa).
+    expect(metrics.emit).toHaveBeenCalledWith({ AuditRun: 1 }, { msg: 'ledger_audit_run' });
     const lines = log.error.mock.calls.map((c) => JSON.parse(c[0] as string)).filter((l) => l.msg === 'ledger_audit');
     expect(lines.find((l) => l.apartmentId === 'apt-2')).toMatchObject({ findings: [{ code: 'balance_mismatch' }] });
     expect(lines.find((l) => l.apartmentId === 'apt-1')).toMatchObject({ findings: [{ code: 'audit_chain_hash_mismatch', seq: 2 }], counts: { auditEntriesChecked: 3 } });

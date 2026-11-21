@@ -37,6 +37,12 @@ export const APARTMENT_ADMIN_ROLES = ADMIN_ROLES.filter((r) => r !== 'platform_a
 
 export const isPlatformRole = (role: Role | undefined): role is 'platform_admin' => role === 'platform_admin';
 
+/** Denetim gunlugu (/admin/audit): apartman rolleri kendi zincirini, platform yoneticisi platform zincirini. */
+export const AUDIT_ROLES = ['apartment_manager', 'management_company', 'observer', 'platform_admin'] as const satisfies readonly Role[];
+
+/** Guvenlik / MFA sifirlama (/admin/security): apartman yoneticisi ve yonetim firmasi. */
+export const SECURITY_ROLES = ['apartment_manager', 'management_company'] as const satisfies readonly Role[];
+
 /** Platform yoneticisinin acilis sayfasi. */
 export const PLATFORM_HOME = '/admin/apartments';
 

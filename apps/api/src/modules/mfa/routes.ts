@@ -23,12 +23,23 @@ export function accessTokenFrom(c: Context): string | undefined {
  *       baska apartmanda yonetici/denetci olmayan, platform_admin olmayan kullanicilar
  *       (denetim kaydi apartman zincirine). Kendi MFA'sini sifirlayamaz.
  *     Destek oturumu (salt okunur) ile yapilamaz.
+ *   GET  /users/:userId          -> { userId, email?, mfaEnabled, accountEnabled, status?, canReset, blockedReason? }
+ *     Ayni yetki kurallari (apartman rolleri: hedef aktif apartmanda olmali, yoksa 404).
+ *   GET  /users?email=           -> yalnizca platform_admin: e-postayla kullanici + `isPlatformAdmin`.
  */
 export function mfaAdminRoutes({ authenticate, service }: { authenticate: Authenticator; service: MfaService }) {
   const r = new Hono<Env>();
   r.onError(handleError);
   r.use('*', authenticateWith(authenticate));
   r.use('*', requireRole(MFA_RESET_ROLES));
+  r.get('/users', async (c) => {
+    c.header('cache-control', 'no-store');
+    return c.json(await service.findUser(c.get('claims'), c.req.query('email') ?? ''));
+  });
+  r.get('/users/:userId', async (c) => {
+    c.header('cache-control', 'no-store');
+    return c.json(await service.userStatus(c.get('claims'), c.req.param('userId')));
+  });
   r.post('/users/:userId/reset', async (c) =>
     c.json(await service.reset(c.get('claims'), c.req.param('userId'), await readJson(c))),
   );

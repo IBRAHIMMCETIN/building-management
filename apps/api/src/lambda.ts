@@ -1,6 +1,7 @@
 import { handle } from '@hono/aws-lambda';
 import { createApp } from './app.js';
 import { createAuthFromEnv } from './auth/authenticators.js';
+import { createEmfEmitterFromEnv } from './observability/metrics.js';
 
 /**
  * AWS Lambda giris noktasi (API Gateway HTTP API, payload v2.0).
@@ -19,6 +20,8 @@ const app = createApp({
   version: process.env.APP_VERSION ?? 'dev',
   authenticate: auth.authenticate,
   identify: auth.identify,
+  // MFA ve guvenlik metrikleri (EMF; METRICS_STACK = yigin adi).
+  metrics: createEmfEmitterFromEnv(),
 });
 
 export const handler = handle(app);

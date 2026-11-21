@@ -271,6 +271,77 @@ describe('atomik denetim yazimi', () => {
 // Zincir dogrulamasi
 // ---------------------------------------------------------------------------
 
+describe('API ve tarayici ayni hash\'i uretir', () => {
+  // apps/web/src/lib/audit/fixture.ts ile AYNI sabit (GET /api/audit yanit bicimi).
+  const FIXTURE = [
+    {
+      "PK": "APT#apt-1",
+      "SK": "SEQ#000000000002",
+      "entityType": "AUDIT_ENTRY",
+      "scope": "APT#apt-1",
+      "seq": 2,
+      "auditId": "05e142eb-5e2b-43ae-bc2e-d9a7cdb12bfa",
+      "at": "2026-11-21T10:05:00.000Z",
+      "action": "membership.create",
+      "actor": {
+        "userId": "sys",
+        "role": "system"
+      },
+      "apartmentId": "apt-1",
+      "target": {
+        "type": "membership",
+        "id": "u9:u1"
+      },
+      "prevHash": "e5e6cfc7b7ed4d739b514900600a02c218a710ec75572c852fe70be5cba371fc",
+      "ttl": 2110788300,
+      "hash": "4b933a1b66ac0c4722749470551c4b7fb30ae9ebc125649fe5ae0077c751102e"
+    },
+    {
+      "PK": "APT#apt-1",
+      "SK": "SEQ#000000000001",
+      "entityType": "AUDIT_ENTRY",
+      "scope": "APT#apt-1",
+      "seq": 1,
+      "auditId": "497dd13d-a5eb-48ea-bd87-220d4df26919",
+      "at": "2026-11-21T10:00:00.000Z",
+      "action": "ledger.payment",
+      "actor": {
+        "userId": "mgr-1",
+        "role": "apartment_manager"
+      },
+      "apartmentId": "apt-1",
+      "target": {
+        "type": "transaction",
+        "id": "t-1"
+      },
+      "reason": "Tahsilat — Daire 5",
+      "details": {
+        "total": 150050,
+        "accounts": [
+          "cash",
+          "recv-u1"
+        ],
+        "nested": {
+          "ok": true
+        }
+      },
+      "request": {
+        "requestId": "req-1",
+        "ip": "203.0.113.0/24",
+        "userAgent": "Mozilla/5.0 (Türkçe ğüşıöç)"
+      },
+      "prevHash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "ttl": 2110788000,
+      "hash": "e5e6cfc7b7ed4d739b514900600a02c218a710ec75572c852fe70be5cba371fc"
+    }
+  ] as unknown as AuditEntry[];
+
+  it('yanit bicimindeki kayitlardan hash yeniden hesaplanir ve zincir saglamdir', () => {
+    for (const e of FIXTURE) expect(computeHash(e.prevHash, e)).toBe(e.hash);
+    expect(verifyChain('APT#apt-1', [...FIXTURE].reverse()).findings).toEqual([]);
+  });
+});
+
 describe('zincir dogrulamasi', () => {
   it('saglam zincir bulgusuz; ustune yazma, silme ve bag kopmasi yakalanir', () => {
     const c = chain(4);
@@ -400,15 +471,16 @@ function supportWorld() {
 const REASON = 'Destek talebi #1234: makbuz goruntuleme sorunu inceleniyor';
 
 describe('GET /api/audit', () => {
-  it('yonetici ve denetci kendi apartmaninin kayitlarini gorur; tablo alanlari gizli', async () => {
+  it('yonetici ve denetci kendi apartmaninin kayitlarini gorur; indeks alanlari gizli', async () => {
     const w = supportWorld();
     const res = await w.call('GET', '/api/audit?limit=10&action=membership.', w.token('mgr-1', 'apartment_manager', APT));
     expect(res.status).toBe(200);
     expect(w.listCalls[0]).toMatchObject({ scope: 'APT#apt-1', q: { limit: 10, action: 'membership.' } });
     expect(res.body.items).toHaveLength(2);
-    expect(res.body.items[0]).not.toHaveProperty('PK');
-    expect(res.body.items[0]).not.toHaveProperty('ttl');
-    expect(res.body.items[0]).toHaveProperty('hash');
+    // Hash'e giren alanlar istemcide yeniden hesaplanabilsin diye kalir; indeks alanlari gizli.
+    expect(res.body.items[0]).not.toHaveProperty('GSI1PK');
+    expect(res.body.items[0]).not.toHaveProperty('GSI1SK');
+    expect(res.body.items[0]).toMatchObject({ PK: 'APT#apt-1', hash: expect.any(String), ttl: expect.any(Number) });
     expect((await w.call('GET', '/api/audit', w.token('obs-1', 'observer', APT))).status).toBe(200);
   });
 

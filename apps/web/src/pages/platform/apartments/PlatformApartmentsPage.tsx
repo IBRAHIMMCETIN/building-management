@@ -1,5 +1,7 @@
-import { Building, CreditCard, Search, ShieldAlert } from 'lucide-react';
+import { Building, CreditCard, LifeBuoy, Search, ShieldAlert } from 'lucide-react';
 import { useMemo, useState } from 'react';
+import { SupportDialog } from '@/components/support/SupportDialog';
+import { sessionManager } from '@/lib/auth/sessionManager';
 import { Link } from 'react-router';
 import { Alert, Badge, Button, Card, FilterChips, Input, Skeleton } from '@/components/ui';
 import { usePlatformPaymentApartments, useReviewQueue } from '@/hooks/usePayments';
@@ -39,6 +41,9 @@ export function PlatformApartmentsPage() {
   const review = useReviewQueue();
   const [filter, setFilter] = useState<Filter>('all');
   const [q, setQ] = useState('');
+  const [supportFor, setSupportFor] = useState<{ siteId: string; name: string }>();
+  // Destek modu sunucu tarafinda reddedildiyse / suresi dolduysa bir kez bilgi verilir.
+  const [supportNotice] = useState(() => sessionManager.consumeSupportNotice());
 
   // Odeme hesabi durumu ayri uctan gelir; yuklenemezse dizin yine gosterilir.
   const accountOf = useMemo(
@@ -98,6 +103,7 @@ export function PlatformApartmentsPage() {
                   {s.district} / {s.city} · kayıt {formatDate(s.createdAt.slice(0, 10))} · <span className="font-mono text-xs">{s.siteId}</span>
                 </p>
               </div>
+              <div className="flex shrink-0 flex-wrap items-center gap-2">
               {paymentsOn && (
                 <div className="flex shrink-0 items-center gap-2 text-small">
                   <CreditCard className="size-4 text-muted" aria-hidden="true" />
@@ -110,6 +116,11 @@ export function PlatformApartmentsPage() {
                   )}
                 </div>
               )}
+                <Button variant="secondary" size="sm" onClick={() => setSupportFor({ siteId: s.siteId, name: s.name })}>
+                  <LifeBuoy className="size-4" aria-hidden="true" />
+                  Destek erişimi
+                </Button>
+              </div>
             </li>
           );
         })}
@@ -119,6 +130,13 @@ export function PlatformApartmentsPage() {
 
   return (
     <div className="flex flex-col gap-6">
+      {supportNotice && (
+        <Alert tone="info">
+          {supportNotice === 'expired' ? 'Destek oturumunun süresi doldu.' : 'Destek oturumu sunucu tarafından sonlandırıldı.'} Platform
+          paneline dönüldü.
+        </Alert>
+      )}
+      <SupportDialog apartment={supportFor} onClose={() => setSupportFor(undefined)} />
       <div>
         <h1 className="text-title font-bold">Apartmanlar</h1>
         <p className="text-small text-muted">Platformdaki tüm apartman ve siteler. Apartman içi veriler (daire, kişi, finans) yalnızca o apartmanın yöneticilerine açıktır.</p>

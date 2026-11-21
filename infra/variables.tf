@@ -218,6 +218,67 @@ variable "api_throttle_burst_limit" {
   default = 100
 }
 
+# --- Hassas rotalarda throttling (security_monitoring.tf) ---
+
+variable "mfa_route_rate_limit" {
+  type        = number
+  default     = 1
+  description = "MFA kurulum/dogrulama rotalari (POST /api/me/mfa/totp/*): saniyede ortalama istek."
+}
+
+variable "mfa_route_burst_limit" {
+  type    = number
+  default = 5
+}
+
+variable "security_admin_route_rate_limit" {
+  type        = number
+  default     = 1
+  description = "MFA sifirlama ve destek oturumu acma rotalari: saniyede ortalama istek."
+}
+
+variable "security_admin_route_burst_limit" {
+  type    = number
+  default = 3
+}
+
+variable "bulk_write_route_rate_limit" {
+  type        = number
+  default     = 2
+  description = "Davet, toplu tahakkuk ve toplu aktarim baslatma rotalari: saniyede ortalama istek."
+}
+
+variable "bulk_write_route_burst_limit" {
+  type    = number
+  default = 5
+}
+
+# --- Guvenlik alarm esikleri (security_monitoring.tf) ---
+
+variable "signin_failure_alarm_threshold" {
+  type        = number
+  default     = 20
+  description = "5 dakikada bu sayiyi asan basarisiz Cognito girisi alarm uretir."
+}
+
+variable "mfa_verify_failure_alarm_threshold" {
+  type        = number
+  default     = 10
+  description = "5 dakikada bu sayiyi asan hatali TOTP kurulum kodu alarm uretir."
+}
+
+variable "mfa_reset_alarm_threshold" {
+  type        = number
+  default     = 3
+  description = "1 saatte bu sayiyi asan MFA sifirlama alarm uretir."
+}
+
+variable "api_5xx_alarm_threshold" {
+  type        = number
+  default     = 5
+  description = "5 dakikada bu sayida veya daha fazla API Gateway 5xx yaniti alarm uretir."
+}
+
 variable "scheduler_enabled" {
   description = "Zamanlanmis gorevler (aylik aidat, gecikme tazminati, hatirlatma) acik mi? Kapaliyken zamanlamalar DISABLED olur; worker ve kuyruk yine kurulur (elle tetiklenebilir)."
   type        = bool

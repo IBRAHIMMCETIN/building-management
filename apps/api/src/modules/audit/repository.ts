@@ -214,8 +214,76 @@ export async function verifyAuditScope(
   const entries = await deps.reader.listAfter(scope, cp?.seq ?? 0);
   const result = verifyChain(scope, entries, start);
   findings.push(...result.findings);
-  if (findings.length === 0 && result.last && (!cp || result.last.seq > cp.seq)) {
-    await deps.checkpoints.put(scope, { ...result.last, verifiedAt: deps.now().toISOString() });
+  // Bulgu yoksa kontrol noktasi ilerler; yeni kayit olmasa da `verifiedAt` tazelenir (sessiz
+  // apartmanlarda "dogrulama bayat" yanlis alarmi olmasin). Bulguda ilerlemez.
+  const tip = result.last ?? start;
+  if (findings.length === 0 && tip) {
+    await deps.checkpoints.put(scope, { ...tip, verifiedAt: deps.now().toISOString() });
   }
   return { scope, checked: entries.length, findings, ...(result.last ? { last: result.last } : {}) };
+}
+
+// ---------------------------------------------------------------------------
+// Zincir butunlugu durumu (arayuz gostergesi: `GET /api/audit/integrity`)
+// ---------------------------------------------------------------------------
+
+/** Gecelik dogrulama (03:40) + tolerans: bu sureden eski dogrulama "bayat" sayilir. */
+export const INTEGRITY_STALE_HOURS = 26;
+
+export type AuditIntegrityStatus = 'empty' | 'verified' | 'pending' | 'stale';
+
+export type AuditIntegrity = {
+  status: AuditIntegrityStatus;
+  /** Zincirdeki son kayit. */
+  latestSeq: number;
+  latestAt?: string;
+  /** Gecelik dogrulamanin bulgusuz ulastigi son kayit. */
+  verifiedSeq: number;
+  verifiedAt?: string;
+  staleAfterHours: number;
+};
+
+/**
+ * - `empty`    : zincirde kayit yok.
+ * - `verified` : son kayda kadar dogrulandi ve dogrulama taze.
+ * - `pending`  : dogrulama taze; sonraki kayitlar gece dogrulanacak (normal).
+ * - `stale`    : son basarili dogrulama 26 saatten eski (veya hic yapilmadi ve zincir eski).
+ *                Ya gece denetimi calismiyor ya da zincirde bulgu var (kontrol noktasi bulguda
+ *                ilerlemez): platform alarmina bakilmali.
+ */
+export function assessIntegrity(
+  input: { latest?: { seq: number; at: string }; checkpoint?: Checkpoint; first?: { at: string } },
+  now: Date,
+  staleHours = INTEGRITY_STALE_HOURS,
+): AuditIntegrity {
+  const base = { staleAfterHours: staleHours, verifiedSeq: input.checkpoint?.seq ?? 0 };
+  if (!input.latest) {
+    return { status: 'empty', latestSeq: 0, ...base, ...(input.checkpoint ? { verifiedAt: input.checkpoint.verifiedAt } : {}) };
+  }
+  const older = (iso: string | undefined) => !!iso && now.getTime() - Date.parse(iso) > staleHours * 3_600_000;
+  const latest = { latestSeq: input.latest.seq, latestAt: input.latest.at };
+  const cp = input.checkpoint;
+  if (!cp) {
+    return { status: older(input.first?.at ?? input.latest.at) ? 'stale' : 'pending', ...latest, ...base };
+  }
+  const status: AuditIntegrityStatus = older(cp.verifiedAt) ? 'stale' : cp.seq >= input.latest.seq ? 'verified' : 'pending';
+  return { status, ...latest, ...base, verifiedAt: cp.verifiedAt };
+}
+
+/** Kapsamin butunluk durumunu okur (son kayit, ilk kayit, kontrol noktasi). */
+export async function readIntegrity(
+  scope: string,
+  deps: { reader: Pick<AuditReader, 'list' | 'listAfter'>; checkpoints: Pick<CheckpointStore, 'get'>; now: () => Date },
+): Promise<AuditIntegrity> {
+  const [page, checkpoint] = await Promise.all([deps.reader.list(scope, { limit: 1 }), deps.checkpoints.get(scope)]);
+  const last = page.items[0];
+  const first = !checkpoint && last ? (await deps.reader.listAfter(scope, 0, 1))[0] : undefined;
+  return assessIntegrity(
+    {
+      ...(last ? { latest: { seq: last.seq, at: last.at } } : {}),
+      ...(checkpoint ? { checkpoint } : {}),
+      ...(first ? { first: { at: first.at } } : {}),
+    },
+    deps.now(),
+  );
 }
