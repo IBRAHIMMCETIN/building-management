@@ -106,6 +106,14 @@ run "prod_plan" {
       arn = "arn:aws:dynamodb:eu-central-1:123456789012:table/building-management-audit"
     }
   }
+  # Guvenlik alarmlarinin hedefi (alarm_actions) plan asamasinda karsilastirilabilsin.
+  override_resource {
+    target          = aws_sns_topic.alerts
+    override_during = plan
+    values = {
+      arn = "arn:aws:sns:eu-central-1:123456789012:building-management-alerts"
+    }
+  }
   # Pre Token MFA politikasi havuz ARN'ine baglidir: plan asamasinda sabitlenir.
   override_resource {
     target          = aws_cognito_user_pool.main
@@ -515,6 +523,70 @@ run "prod_plan" {
     ]) == 0
     error_message = "Pre Token Lambda kayit guncelleyemez/silemez/tarayamaz"
   }
+  # --- Guvenlik izleme: hassas rotalar ve alarmlar ---
+  assert {
+    condition = (
+      toset(keys(aws_apigatewayv2_route.sensitive)) == toset([
+        "POST /api/me/mfa/totp/setup", "POST /api/me/mfa/totp/verify", "POST /api/mfa/users/{userId}/reset",
+        "POST /api/support/sessions", "POST /api/residents/invite", "POST /api/finance/dues", "POST /api/imports",
+      ]) &&
+      alltrue([for r in aws_apigatewayv2_route.sensitive : r.authorization_type == "JWT"])
+    )
+    error_message = "Hassas yazma uclari ayri JWT rotalari olarak tanimlanmali (kimliksiz rota yok)"
+  }
+  assert {
+    condition = alltrue([
+      for k, want in {
+        "POST /api/me/mfa/totp/verify"       = [1, 5]
+        "POST /api/mfa/users/{userId}/reset" = [1, 3]
+        "POST /api/support/sessions"         = [1, 3]
+        "POST /api/finance/dues"             = [2, 5]
+      } :
+      anytrue([for rs in aws_apigatewayv2_stage.default.route_settings : rs.route_key == k && rs.throttling_rate_limit == want[0] && rs.throttling_burst_limit == want[1]])
+    ])
+    error_message = "Hassas rotalarda varsayilan throttling: MFA 1/5, yonetici guvenlik 1/3, toplu yazim 2/5"
+  }
+  assert {
+    condition = alltrue([
+      for a in [
+        aws_cloudwatch_metric_alarm.cognito_signin_failures, aws_cloudwatch_metric_alarm.mfa_verify_failed,
+        aws_cloudwatch_metric_alarm.mfa_reset_spike, aws_cloudwatch_metric_alarm.api_5xx,
+        aws_cloudwatch_metric_alarm.audit_chain_broken, aws_cloudwatch_metric_alarm.audit_run_missing[0],
+      ] : contains(a.alarm_actions, aws_sns_topic.alerts.arn)
+    ])
+    error_message = "Tum guvenlik alarmlari platform uyari topic'ine gitmeli"
+  }
+  assert {
+    condition = (
+      aws_cloudwatch_metric_alarm.cognito_signin_failures.threshold == 20 &&
+      one([for q in aws_cloudwatch_metric_alarm.cognito_signin_failures.metric_query : q.expression if q.id == "failures"]) == "attempts - successes" &&
+      toset([for q in aws_cloudwatch_metric_alarm.cognito_signin_failures.metric_query : one(q.metric).stat if q.id != "failures"]) == toset(["SampleCount", "Sum"]) &&
+      alltrue([for q in aws_cloudwatch_metric_alarm.cognito_signin_failures.metric_query : one(q.metric).metric_name == "SignInSuccesses" if q.id != "failures"])
+    )
+    error_message = "Basarisiz giris = SignInSuccesses SampleCount - Sum, esik 20 / 5 dk"
+  }
+  assert {
+    condition = (
+      aws_cloudwatch_metric_alarm.mfa_verify_failed.metric_name == "MfaVerifyFailed" && aws_cloudwatch_metric_alarm.mfa_verify_failed.threshold == 10 &&
+      aws_cloudwatch_metric_alarm.mfa_reset_spike.metric_name == "MfaReset" && aws_cloudwatch_metric_alarm.mfa_reset_spike.threshold == 3 && aws_cloudwatch_metric_alarm.mfa_reset_spike.period == 3600 &&
+      aws_cloudwatch_metric_alarm.api_5xx.namespace == "AWS/ApiGateway" && aws_cloudwatch_metric_alarm.api_5xx.metric_name == "5xx" && aws_cloudwatch_metric_alarm.api_5xx.threshold == 5 &&
+      aws_cloudwatch_metric_alarm.audit_chain_broken.metric_name == "AuditChainBroken" && aws_cloudwatch_metric_alarm.audit_chain_broken.threshold == 0
+    )
+    error_message = "MFA, 5xx ve denetim zinciri alarmlari dogru metrik ve esiklerle tanimlanmali"
+  }
+  assert {
+    condition = (
+      aws_cloudwatch_metric_alarm.audit_run_missing[0].metric_name == "AuditRun" &&
+      aws_cloudwatch_metric_alarm.audit_run_missing[0].period == 86400 &&
+      aws_cloudwatch_metric_alarm.audit_run_missing[0].comparison_operator == "LessThanThreshold" &&
+      aws_cloudwatch_metric_alarm.audit_run_missing[0].treat_missing_data == "breaching"
+    )
+    error_message = "Gece denetimi 24 saat calismazsa (veri yoksa) alarm uretmeli"
+  }
+  assert {
+    condition     = aws_lambda_function.api.environment[0].variables.METRICS_STACK == "building-management"
+    error_message = "API Lambda guvenlik metriklerini yigin adi boyutuyla yayinlamali (METRICS_STACK)"
+  }
   assert {
     condition     = contains(aws_apigatewayv2_api.http.cors_configuration[0].allow_headers, "x-cognito-access-token") && contains(aws_apigatewayv2_api.http.cors_configuration[0].allow_headers, "x-support-session") && contains(aws_apigatewayv2_api.http.cors_configuration[0].expose_headers, "x-mfa-warning")
     error_message = "CORS: MFA kurulum ve destek basliklarina izin verilmeli, MFA uyari basligi okunabilmeli"
@@ -594,6 +666,10 @@ run "scheduler_can_be_disabled" {
   assert {
     condition     = alltrue([for s in aws_scheduler_schedule.jobs : s.state == "DISABLED"])
     error_message = "scheduler_enabled=false iken zamanlamalar kapali olmali"
+  }
+  assert {
+    condition     = length(aws_cloudwatch_metric_alarm.audit_run_missing) == 0
+    error_message = "Zamanlamalar kapaliyken 'gece denetimi calismadi' alarmi kurulmamali (surekli alarm verirdi)"
   }
 }
 
@@ -743,8 +819,8 @@ run "payments_iyzico" {
   }
   assert {
     condition = (
-      toset([for r in aws_apigatewayv2_stage.default.route_settings : r.route_key]) == toset(["POST /api/payments/iyzico/callback", "POST /api/payments/iyzico/webhook"]) &&
-      alltrue([for r in aws_apigatewayv2_stage.default.route_settings : r.throttling_rate_limit == 5 && r.throttling_burst_limit == 10])
+      toset([for r in aws_apigatewayv2_stage.default.route_settings : r.route_key if startswith(r.route_key, "POST /api/payments/")]) == toset(["POST /api/payments/iyzico/callback", "POST /api/payments/iyzico/webhook"]) &&
+      alltrue([for r in aws_apigatewayv2_stage.default.route_settings : r.throttling_rate_limit == 5 && r.throttling_burst_limit == 10 if startswith(r.route_key, "POST /api/payments/")])
     )
     error_message = "Kimliksiz odeme rotalari siki throttling ile sinirlanmali"
   }
@@ -961,4 +1037,35 @@ run "rejects_invalid_mfa_grace" {
   }
 
   expect_failures = [var.mfa_grace_period_days]
+}
+
+run "security_thresholds_configurable" {
+  command = plan
+
+  variables {
+    mfa_route_rate_limit               = 2
+    mfa_route_burst_limit              = 4
+    bulk_write_route_rate_limit        = 3
+    signin_failure_alarm_threshold     = 50
+    mfa_verify_failure_alarm_threshold = 25
+    mfa_reset_alarm_threshold          = 6
+    api_5xx_alarm_threshold            = 12
+  }
+
+  assert {
+    condition = (
+      anytrue([for rs in aws_apigatewayv2_stage.default.route_settings : rs.route_key == "POST /api/me/mfa/totp/setup" && rs.throttling_rate_limit == 2 && rs.throttling_burst_limit == 4]) &&
+      anytrue([for rs in aws_apigatewayv2_stage.default.route_settings : rs.route_key == "POST /api/imports" && rs.throttling_rate_limit == 3])
+    )
+    error_message = "Rota sinirlari degiskenlerden gelmeli"
+  }
+  assert {
+    condition = (
+      aws_cloudwatch_metric_alarm.cognito_signin_failures.threshold == 50 &&
+      aws_cloudwatch_metric_alarm.mfa_verify_failed.threshold == 25 &&
+      aws_cloudwatch_metric_alarm.mfa_reset_spike.threshold == 6 &&
+      aws_cloudwatch_metric_alarm.api_5xx.threshold == 12
+    )
+    error_message = "Alarm esikleri degiskenlerden gelmeli"
+  }
 }

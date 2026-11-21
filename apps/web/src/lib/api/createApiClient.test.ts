@@ -80,6 +80,18 @@ describe('createApiClient', () => {
     await expect(client.get('/api/sites')).rejects.toBeInstanceOf(NetworkError);
   });
 
+  it('destek modunda X-Support-Session eklenir; support:false ve kimliksiz isteklerde eklenmez', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () => json(200, {}));
+    const client = createApiClient({ baseUrl: '', getToken: async () => 't', fetchImpl, getSupportHeader: () => 'apt-1.sess12345' });
+    await client.get('/api/finance/summary');
+    await client.post('/api/support/sessions', {}, { support: false });
+    await client.get('/api/health', { auth: false });
+    const header = (i: number) => new Headers(fetchImpl.mock.calls[i]?.[1]?.headers).get('x-support-session');
+    expect(header(0)).toBe('apt-1.sess12345');
+    expect(header(1)).toBeNull();
+    expect(header(2)).toBeNull();
+  });
+
   it('403 MFA_REQUIRED kurulum geri cagirimini tetikler; diger 403 tetiklemez', async () => {
     const fetchImpl = vi
       .fn<typeof fetch>()

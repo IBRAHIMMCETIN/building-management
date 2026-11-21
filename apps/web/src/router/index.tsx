@@ -6,7 +6,10 @@ import { AnnouncementsPage } from '@/pages/admin/announcements/AnnouncementsPage
 import { DashboardPage } from '@/pages/admin/DashboardPage';
 import { FinancePage } from '@/pages/admin/finance/FinancePage';
 import { ImportPage } from '@/pages/admin/import/ImportPage';
+import { AuditPage } from '@/pages/admin/audit/AuditPage';
+import { SecurityPage } from '@/pages/admin/security/SecurityPage';
 import { SettingsPage } from '@/pages/admin/settings/SettingsPage';
+import { PlatformUsersPage } from '@/pages/platform/users/PlatformUsersPage';
 import { UnitsPage } from '@/pages/admin/units/UnitsPage';
 import { ForgotPasswordPage } from '@/pages/auth/ForgotPasswordPage';
 import { LoginPage } from '@/pages/auth/LoginPage';
@@ -21,7 +24,7 @@ import { DuesPage } from '@/pages/resident/DuesPage';
 import { PaymentPage } from '@/pages/resident/payment/PaymentPage';
 import { PaymentResultPage } from '@/pages/resident/payment/PaymentResultPage';
 import { ResidentHomePage } from '@/pages/resident/ResidentHomePage';
-import { ADMIN_ROLES, APARTMENT_ADMIN_ROLES, PLATFORM_ROLES, RESIDENT_ROLES } from '@/types/roles';
+import { ADMIN_ROLES, APARTMENT_ADMIN_ROLES, AUDIT_ROLES, PLATFORM_ROLES, RESIDENT_ROLES, SECURITY_ROLES } from '@/types/roles';
 import { RedirectIfAuthenticated, RequireRole, RequireSession, RootRedirect } from './guards';
 
 export const router = createBrowserRouter([
@@ -74,11 +77,21 @@ export const router = createBrowserRouter([
                 ],
               },
               {
+                // Denetim gunlugu: apartman rolleri kendi zinciri, platform yoneticisi platform zinciri.
+                element: <RequireRole roles={AUDIT_ROLES} redirectHome />,
+                children: [{ path: 'audit', element: <AuditPage /> }],
+              },
+              {
+                element: <RequireRole roles={SECURITY_ROLES} redirectHome />,
+                children: [{ path: 'security', element: <SecurityPage /> }],
+              },
+              {
                 // Platform geneli ekranlar; apartman rolleri kendi panellerine yonlenir.
                 element: <RequireRole roles={PLATFORM_ROLES} redirectHome />,
                 children: [
                   { path: 'apartments', element: <PlatformApartmentsPage /> },
                   { path: 'payments', element: <PlatformPaymentsPage /> },
+                  { path: 'users', element: <PlatformUsersPage /> },
                 ],
               },
             ],

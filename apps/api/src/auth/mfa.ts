@@ -1,3 +1,4 @@
+import type { MetricsEmitter } from '../observability/metrics.js';
 import type { Authenticator, Role } from './claims.js';
 
 /**
@@ -105,7 +106,12 @@ export class MfaRequiredError extends Error {
  *  - `grace`    -> yanita `X-MFA-Warning: grace; until=<ISO>` basligi.
  * Rol gerektirmeyen `/api/me/*` (baglam secimi, MFA kurulumu) bu katmandan gecmez.
  */
-export function withMfaPolicy(authenticate: Authenticator, policy: MfaPolicy, now: () => Date = () => new Date()): Authenticator {
+export function withMfaPolicy(
+  authenticate: Authenticator,
+  policy: MfaPolicy,
+  now: () => Date = () => new Date(),
+  metrics?: MetricsEmitter,
+): Authenticator {
   return async (c) => {
     const claims = await authenticate(c);
     if (!claims) return null;
@@ -119,7 +125,11 @@ export function withMfaPolicy(authenticate: Authenticator, policy: MfaPolicy, no
       policy,
       now(),
     );
-    if (decision.status === 'required') throw new MfaRequiredError(decision.graceUntil);
+    if (decision.status === 'required') {
+      // Alarm: MFA'siz yetkili erisim denemesi (EMF `MfaRequiredDenied`).
+      metrics?.emit({ MfaRequiredDenied: 1 }, { msg: 'mfa_required_denied', role: claims.role });
+      throw new MfaRequiredError(decision.graceUntil);
+    }
     if (decision.status === 'grace') {
       c.header(MFA_WARNING_HEADER, decision.graceUntil ? `grace; until=${decision.graceUntil}` : 'grace');
     }

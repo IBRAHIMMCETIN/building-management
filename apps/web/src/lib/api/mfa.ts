@@ -42,6 +42,29 @@ export function verifyTotp(input: { code: string; deviceName?: string }) {
   return apiClient.post<{ enabled: true }>('/api/me/mfa/totp/verify', input, { headers: accessTokenHeader() });
 }
 
+/** Yonetici gorunumu: hedef kullanicinin MFA durumu ve sifirlanabilirligi. */
+export const mfaUserSchema = z.object({
+  userId: z.string(),
+  email: z.string().optional(),
+  mfaEnabled: z.boolean(),
+  accountEnabled: z.boolean(),
+  status: z.string().optional(),
+  canReset: z.boolean(),
+  blockedReason: z.string().optional(),
+  isPlatformAdmin: z.boolean().optional(),
+});
+export type MfaUser = z.infer<typeof mfaUserSchema>;
+
+/** GET /api/mfa/users/:userId (apartman rolleri: yalnizca kendi apartmanindaki kullanici). */
+export function fetchMfaUser(userId: string, signal?: AbortSignal) {
+  return apiClient.get(`/api/mfa/users/${encodeURIComponent(userId)}`, { signal, schema: mfaUserSchema });
+}
+
+/** GET /api/mfa/users?email= (yalnizca platform yoneticisi). */
+export function findMfaUser(email: string, signal?: AbortSignal) {
+  return apiClient.get('/api/mfa/users', { signal, query: { email }, schema: mfaUserSchema });
+}
+
 /** Yonetici: cihaz kaybinda kullanicinin TOTP'sini sifirlar (denetim gunlugune yazilir). */
 export function resetUserMfa(userId: string, reason: string) {
   return apiClient.post<{ userId: string; reset: true; signedOut: true }>(

@@ -18,8 +18,20 @@ import { MfaError } from './errors.js';
  * yapilir: Cognito token'i kendisi dogrular ve IAM yetkisi gerekmez. Yonetici islemleri
  * (durum okuma, sifirlama) API rolunun IAM yetkisiyle ve kullanicinin `sub`'i ile yapilir.
  */
+export type MfaUserInfo = {
+  userId: string;
+  email?: string;
+  mfaEnabled: boolean;
+  /** Cognito hesabi etkin mi (devre disi kullanici giris yapamaz). */
+  accountEnabled: boolean;
+  /** CONFIRMED, FORCE_CHANGE_PASSWORD (davet edildi, ilk giris yapilmadi) ... */
+  status?: string;
+};
+
 export type MfaProvider = {
   readonly kind: 'cognito' | 'mock';
+  /** Kullaniciyi e-posta veya `sub` ile bulur; yoksa undefined. */
+  lookup(usernameOrEmail: string): Promise<MfaUserInfo | undefined>;
   /** TOTP etkin mi. Kullanici yoksa MfaError('not_found'). */
   isEnabled(userId: string): Promise<boolean>;
   /** Yeni TOTP gizli anahtari (onceki kurulmamis anahtar gecersizlesir). */
@@ -75,6 +87,23 @@ export function createCognitoMfaProvider(
 ): MfaProvider {
   return {
     kind: 'cognito',
+    lookup: async (usernameOrEmail) => {
+      try {
+        const out = await client.send(new AdminGetUserCommand({ UserPoolId: userPoolId, Username: usernameOrEmail }));
+        const attrs = out.UserAttributes ?? [];
+        const attr = (name: string) => attrs.find((a) => a.Name === name)?.Value;
+        return {
+          userId: attr('sub') ?? out.Username ?? usernameOrEmail,
+          ...(attr('email') ? { email: attr('email') } : {}),
+          mfaEnabled: (out.UserMFASettingList ?? []).includes('SOFTWARE_TOKEN_MFA'),
+          accountEnabled: out.Enabled !== false,
+          ...(out.UserStatus ? { status: out.UserStatus } : {}),
+        };
+      } catch (err) {
+        if (err instanceof Error && err.name === 'UserNotFoundException') return undefined;
+        return mapCognitoError(err);
+      }
+    },
     isEnabled: (userId) =>
       guard(async () => {
         const out = await client.send(new AdminGetUserCommand({ UserPoolId: userPoolId, Username: userId }));
@@ -139,7 +168,9 @@ const MOCK_SECRET = 'JBSWY3DPEHPK3PXPMOCKDEVSECRET234';
  * YALNIZCA yerel gelistirme ve testler: bellek ici. Anahtar sabittir, kod `123456`.
  * Gercek bir TOTP dogrulamasi yapmaz; production'da (Lambda) kullanilmaz.
  */
-export function createMockMfaProvider(seed: { enabled?: string[]; platformAdmins?: string[] } = {}): MfaProvider & {
+export function createMockMfaProvider(
+  seed: { enabled?: string[]; platformAdmins?: string[]; users?: Record<string, string> } = {},
+): MfaProvider & {
   enabledUsers: Set<string>;
   resets: string[];
 } {
@@ -160,6 +191,14 @@ export function createMockMfaProvider(seed: { enabled?: string[]; platformAdmins
     kind: 'mock',
     enabledUsers,
     resets,
+    async lookup(key) {
+      // `users`: e-posta -> userId (verilmezse anahtar kimlik kabul edilir).
+      const byEmail = seed.users?.[key.toLowerCase()];
+      const userId = byEmail ?? (key.includes('@') ? undefined : key);
+      if (!userId) return undefined;
+      const email = Object.entries(seed.users ?? {}).find(([, id]) => id === userId)?.[0];
+      return { userId, ...(email ? { email } : {}), mfaEnabled: enabledUsers.has(userId), accountEnabled: true, status: 'CONFIRMED' };
+    },
     async isEnabled(userId) {
       return enabledUsers.has(userId);
     },

@@ -53,3 +53,6 @@ export function createEmfEmitter(options: {
 export function createEmfEmitterFromEnv(env: NodeJS.ProcessEnv = process.env): MetricsEmitter {
   return createEmfEmitter({ stack: env.METRICS_STACK ?? 'local' });
 }
+
+/** Metrik yayinlamayan yayinci (yerel gelistirme ve testler). */
+export const noopMetrics: MetricsEmitter = { emit: () => {} };

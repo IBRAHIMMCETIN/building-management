@@ -1,14 +1,24 @@
 import { useQueryClient } from '@tanstack/react-query';
-import { type ReactNode, createContext, useMemo, useSyncExternalStore } from 'react';
+import { type ReactNode, createContext, useEffect, useMemo, useSyncExternalStore } from 'react';
 import { FullPageSpinner } from '@/components/ui';
 import { authAdapter } from '@/lib/auth';
 import { needsMfaSetup } from '@/lib/auth/mfa';
 import type { ActiveContext, AuthSession, SessionClaims, SignInStep } from '@/lib/auth/session';
-import { sessionManager } from '@/lib/auth/sessionManager';
+import { type SupportMode, sessionManager } from '@/lib/auth/sessionManager';
 
 export type AuthContextValue = {
   session: AuthSession | null;
+  /**
+   * Arayuzun esas aldigi kullanici. Destek modunda platform yoneticisi, oturumun apartmaninda
+   * DENETCI (`observer`) olarak gorunur; API de istegi ayni sekilde (salt okunur) ele alir.
+   */
   user: SessionClaims | null;
+  /** Platform yoneticisinin aktif destek oturumu (yoksa undefined). */
+  support?: SupportMode;
+  /** Destek oturumu acildiktan sonra modu baslatir (onbellek temizlenir). */
+  startSupport: (mode: Omit<SupportMode, 'sub'>) => void;
+  /** Destek modundan cikar (API'de oturumu bitirme cagrisi ayrica yapilir). */
+  leaveSupport: () => void;
   isAuthenticated: boolean;
   /** Oturum var ama aktif apartman/rol secilmemis (token'da rol claim'i yok). */
   needsContext: boolean;
@@ -38,11 +48,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       queryClient.clear();
       return step;
     };
+    const support = state.support;
+    const claims = session?.claims ?? null;
+    const user: SessionClaims | null =
+      claims && support ? { ...claims, role: 'observer', apartmentId: support.apartmentId, organizationId: undefined } : claims;
     return {
       session,
-      user: session?.claims ?? null,
+      user,
+      ...(support ? { support } : {}),
+      startSupport: (mode) => {
+        sessionManager.startSupport(mode);
+        queryClient.clear();
+      },
+      leaveSupport: () => {
+        sessionManager.endSupport('ended');
+        queryClient.clear();
+      },
       isAuthenticated: session !== null,
-      needsContext: session !== null && !session.claims.role,
+      needsContext: session !== null && !user?.role,
       mfaSetupRequired: needsMfaSetup(session?.claims, state.mfaRequired),
       refreshSession: () => sessionManager.refresh(),
       signIn: (input) => sessionManager.signIn(input).then(resetCache),
@@ -53,7 +76,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       confirmPasswordReset: (input) => authAdapter.confirmPasswordReset(input),
       setActiveContext: (ctx) => sessionManager.setActiveContext(ctx).then(resetCache),
     };
-  }, [session, state.mfaRequired, queryClient]);
+  }, [session, state.mfaRequired, state.support, queryClient]);
+
+  // Destek modu sunucu tarafinda (401) veya sure dolumuyla kapanirsa apartman verisi onbellekte kalmasin.
+  useEffect(() => {
+    if (!state.support) queryClient.removeQueries({ predicate: (q) => q.queryKey[0] !== 'me' && q.queryKey[0] !== 'platform' });
+  }, [state.support, queryClient]);
 
   // Saklanan oturum geri yuklenmeden guard'lar calismasin (yanlis /login yonlendirmesi olur).
   if (state.status === 'initializing') return <FullPageSpinner />;
