@@ -74,6 +74,14 @@ output "api_token_use" {
   value       = local.api_token_use
 }
 
+output "outbox_relay_function_name" {
+  value = aws_lambda_function.outbox_relay.function_name
+}
+
+output "outbox_relay_dlq_url" {
+  value = aws_sqs_queue.outbox_relay_dlq.url
+}
+
 output "scheduler_worker_function_name" {
   value = aws_lambda_function.scheduler_worker.function_name
 }

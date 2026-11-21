@@ -23,7 +23,10 @@ mock_provider "aws" {
     }
   }
   mock_resource "aws_dynamodb_table" {
-    defaults = { arn = "arn:aws:dynamodb:eu-central-1:123456789012:table/mock" }
+    defaults = {
+      arn        = "arn:aws:dynamodb:eu-central-1:123456789012:table/mock"
+      stream_arn = "arn:aws:dynamodb:eu-central-1:123456789012:table/mock/stream/2026-11-21T00:00:00.000"
+    }
   }
   mock_resource "aws_iam_role" {
     defaults = { arn = "arn:aws:iam::123456789012:role/mock" }
@@ -86,6 +89,15 @@ run "prod_plan" {
       url = "https://sqs.eu-central-1.amazonaws.com/123456789012/building-management-prod-notifications"
     }
   }
+  # Outbox relay baglantisi: tablo ve stream ARN'leri plan asamasinda sabitlenir.
+  override_resource {
+    target          = aws_dynamodb_table.main
+    override_during = plan
+    values = {
+      arn        = "arn:aws:dynamodb:eu-central-1:123456789012:table/building-management"
+      stream_arn = "arn:aws:dynamodb:eu-central-1:123456789012:table/building-management/stream/2026-11-21T00:00:00.000"
+    }
+  }
 
   # --- DynamoDB ---
   assert {
@@ -146,9 +158,9 @@ run "prod_plan" {
   # --- SNS / SQS ---
   assert {
     condition = jsondecode(aws_sns_topic_subscription.notification.filter_policy).eventType == [
-      "DUE_GENERATED", "PAYMENT_RECEIVED", "ANNOUNCEMENT_PUBLISHED", "LATE_FEE_POSTED", "DUES_REMINDER",
+      "DUE_GENERATED", "PAYMENT_RECEIVED", "ANNOUNCEMENT_PUBLISHED", "LATE_FEE_POSTED", "DUES_REMINDER", "DUES_BATCH_SUMMARY",
     ]
-    error_message = "Bildirim kuyrugu bes olay turune abone olmali (zamanlanmis gorev olaylari dahil)"
+    error_message = "Bildirim kuyrugu alti olay turune abone olmali (zamanlanmis gorev olaylari ve toplu tahakkuk ozeti dahil)"
   }
   assert {
     condition     = aws_sns_topic_subscription.notification.raw_message_delivery
@@ -173,8 +185,17 @@ run "prod_plan" {
     error_message = "Handler adlari build:lambda ciktisiyla eslesmeli"
   }
   assert {
-    condition     = aws_lambda_function.api.environment[0].variables.AUTH_MODE == "apigw" && aws_lambda_function.api.environment[0].variables.EVENTS_MODE == "sns"
-    error_message = "Lambda AUTH_MODE=apigw ve EVENTS_MODE=sns ile calismali"
+    condition     = aws_lambda_function.api.environment[0].variables.AUTH_MODE == "apigw"
+    error_message = "Lambda AUTH_MODE=apigw ile calismali"
+  }
+  # Olaylar outbox'tan yayinlanir: API Lambda'si olay yayinlamaz.
+  assert {
+    condition     = !contains(keys(aws_lambda_function.api.environment[0].variables), "EVENTS_MODE") && !contains(keys(aws_lambda_function.api.environment[0].variables), "EVENTS_SNS_TOPIC_ARN")
+    error_message = "API Lambda'sinda EVENTS_* degiskenleri olmamali (olaylar outbox-relay'den yayinlanir)"
+  }
+  assert {
+    condition     = length([for a in flatten([for st in data.aws_iam_policy_document.api.statement : st.actions]) : a if startswith(a, "sns:")]) == 0
+    error_message = "API Lambda'sinin sns yetkisi olmamali"
   }
 
   assert {
@@ -224,6 +245,24 @@ run "prod_plan" {
     error_message = "Gorunurluk zaman asimi worker zaman asiminin 6 kati olmali"
   }
 
+  # --- Bildirim e-postasi (Asama 4): varsayilan log, SES yetkisi yok ---
+  assert {
+    condition = (
+      aws_lambda_function.notification_worker.environment[0].variables.NOTIFICATION_CHANNEL == "log" &&
+      aws_lambda_function.notification_worker.environment[0].variables.SES_FROM_ADDRESS == "YÖNESİST <bildirim@yonetimsistemim.com>" &&
+      !contains(keys(aws_lambda_function.notification_worker.environment[0].variables), "SES_CONFIGURATION_SET")
+    )
+    error_message = "Varsayilan bildirim kanali log, gonderen YÖNESİST adresi olmali"
+  }
+  assert {
+    condition     = length([for a in flatten([for st in data.aws_iam_policy_document.notification_worker.statement : st.actions]) : a if startswith(a, "ses:")]) == 0
+    error_message = "log kanalinda worker'a SES yetkisi verilmemeli"
+  }
+  assert {
+    condition     = contains(jsondecode(aws_sns_topic_subscription.notification.filter_policy).eventType, "DUES_BATCH_SUMMARY")
+    error_message = "Toplu tahakkuk ozet olayi bildirim kuyruguna ulasmali"
+  }
+
   # --- Zamanlanmis gorevler ---
   assert {
     condition = (
@@ -234,8 +273,59 @@ run "prod_plan" {
     error_message = "Zamanlama ifadeleri hatali (tazminat 02:30, aidat 03:00, hatirlatma 10:00)"
   }
   assert {
-    condition     = alltrue([for s in aws_scheduler_schedule.jobs : s.schedule_expression_timezone == "Europe/Istanbul" && s.state == "ENABLED"])
-    error_message = "Zamanlamalar Europe/Istanbul ve varsayilan acik olmali"
+    condition     = alltrue([for s in aws_scheduler_schedule.jobs : (startswith(s.schedule_expression, "cron(") ? s.schedule_expression_timezone == "Europe/Istanbul" : s.schedule_expression_timezone == null) && s.state == "ENABLED"])
+    error_message = "cron zamanlamalari Europe/Istanbul, rate() zamanlamalari saat dilimsiz ve varsayilan acik olmali"
+  }
+
+  # --- Outbox suprucusu ve defter denetimi (Asama 3) ---
+  assert {
+    condition = (
+      aws_scheduler_schedule.jobs["outbox_sweep"].schedule_expression == "rate(5 minutes)" &&
+      aws_scheduler_schedule.jobs["outbox_sweep"].schedule_expression_timezone == null &&
+      jsondecode(aws_scheduler_schedule.jobs["outbox_sweep"].target[0].input).job == "outbox_sweep"
+    )
+    error_message = "outbox_sweep 5 dakikada bir calismali"
+  }
+  assert {
+    condition = (
+      aws_scheduler_schedule.jobs["ledger_audit"].schedule_expression == "cron(40 3 * * ? *)" &&
+      aws_scheduler_schedule.jobs["ledger_audit"].schedule_expression_timezone == "Europe/Istanbul" &&
+      jsondecode(aws_scheduler_schedule.jobs["ledger_audit"].target[0].input).job == "ledger_audit"
+    )
+    error_message = "ledger_audit her gece 03:40 (Istanbul) calismali"
+  }
+  assert {
+    condition = (
+      aws_lambda_function.scheduler_worker.environment[0].variables.METRICS_STACK == "building-management" &&
+      aws_lambda_function.scheduler_worker.environment[0].variables.OUTBOX_SWEEP_MIN_AGE_SECONDS == "120"
+    )
+    error_message = "Scheduler worker metrik boyutu yigin adi, suprucu esigi 120 sn olmali"
+  }
+  assert {
+    condition = alltrue([
+      for a in [aws_cloudwatch_metric_alarm.ledger_drift, aws_cloudwatch_metric_alarm.outbox_sweep_failed, aws_cloudwatch_metric_alarm.outbox_stuck] :
+      a.namespace == "BuildingManagement" && length(a.dimensions) == 1 && a.dimensions["Stack"] == "building-management" && a.treat_missing_data == "notBreaching"
+    ])
+    error_message = "Operasyon alarmlari worker'in EMF namespace ve Stack boyutunu dinlemeli"
+  }
+  assert {
+    condition = (
+      aws_cloudwatch_metric_alarm.ledger_drift.metric_name == "LedgerDrift" &&
+      aws_cloudwatch_metric_alarm.ledger_drift.statistic == "Sum" &&
+      aws_cloudwatch_metric_alarm.ledger_drift.threshold == 0 &&
+      aws_cloudwatch_metric_alarm.ledger_drift.comparison_operator == "GreaterThanThreshold" &&
+      aws_cloudwatch_metric_alarm.outbox_sweep_failed.metric_name == "OutboxSweepFailed" &&
+      aws_cloudwatch_metric_alarm.outbox_stuck.metric_name == "OutboxOldestPendingSeconds" &&
+      aws_cloudwatch_metric_alarm.outbox_stuck.threshold == 900
+    )
+    error_message = "Defter sapmasi ilk bulguda, outbox takilmasi 15 dakikada alarm uretmeli"
+  }
+  assert {
+    condition = length([
+      for st in data.aws_iam_policy_document.scheduler_worker.statement : st
+      if anytrue([for a in st.actions : startswith(a, "cloudwatch:")])
+    ]) == 0
+    error_message = "Metrikler EMF log satiriyla yazilir; scheduler worker'a cloudwatch yetkisi verilmemeli"
   }
   assert {
     condition     = alltrue([for k, s in aws_scheduler_schedule.jobs : jsondecode(s.target[0].input).job == k && jsondecode(s.target[0].input).scheduledTime == "<aws.scheduler.scheduled-time>"])
@@ -263,6 +353,53 @@ run "prod_plan" {
   assert {
     condition     = toset(flatten([for st in data.aws_iam_policy_document.scheduler_send.statement : st.actions])) == toset(["sqs:SendMessage"])
     error_message = "Scheduler rolu yalnizca gorev kuyruguna mesaj birakabilmeli"
+  }
+
+  # --- Transactional outbox relay ---
+  assert {
+    condition     = aws_dynamodb_table.main.stream_enabled && aws_dynamodb_table.main.stream_view_type == "NEW_IMAGE"
+    error_message = "Tablo akisi NEW_IMAGE ile acik olmali"
+  }
+  assert {
+    condition     = aws_lambda_function.outbox_relay.handler == "outbox-relay.handler" && tolist(aws_lambda_function.outbox_relay.architectures) == tolist(["arm64"])
+    error_message = "Relay handler/mimari hatali"
+  }
+  assert {
+    condition     = aws_lambda_function.outbox_relay.environment[0].variables.EVENTS_MODE == "sns"
+    error_message = "Relay olaylari SNS'e yayinlamali"
+  }
+  assert {
+    condition     = aws_lambda_event_source_mapping.outbox.event_source_arn == aws_dynamodb_table.main.stream_arn && aws_dynamodb_table.main.stream_arn == "arn:aws:dynamodb:eu-central-1:123456789012:table/building-management/stream/2026-11-21T00:00:00.000"
+    error_message = "Relay tablo akisina bagli olmali"
+  }
+  assert {
+    condition = (
+      contains(aws_lambda_event_source_mapping.outbox.function_response_types, "ReportBatchItemFailures") &&
+      aws_lambda_event_source_mapping.outbox.bisect_batch_on_function_error &&
+      aws_lambda_event_source_mapping.outbox.starting_position == "LATEST" &&
+      aws_lambda_event_source_mapping.outbox.maximum_retry_attempts > 0 &&
+      length(aws_lambda_event_source_mapping.outbox.destination_config) == 1
+    )
+    error_message = "Relay kismi hata bildirimi, bisect, tekrar deneme ve DLQ hedefiyle calismali"
+  }
+  assert {
+    condition = (
+      jsondecode(one(aws_lambda_event_source_mapping.outbox.filter_criteria[0].filter).pattern).eventName == ["INSERT"] &&
+      jsondecode(one(aws_lambda_event_source_mapping.outbox.filter_criteria[0].filter).pattern).dynamodb.Keys.SK.S[0].prefix == "OUTBOX#"
+    )
+    error_message = "Akis filtresi yalnizca OUTBOX# INSERT kayitlarini gecirmeli"
+  }
+  assert {
+    condition = toset(flatten([for st in data.aws_iam_policy_document.outbox_relay.statement : st.actions])) == toset([
+      "logs:CreateLogStream", "logs:PutLogEvents",
+      "dynamodb:DescribeStream", "dynamodb:GetRecords", "dynamodb:GetShardIterator", "dynamodb:ListStreams",
+      "dynamodb:UpdateItem", "sns:Publish", "sqs:SendMessage",
+    ])
+    error_message = "Relay rolu en az yetkili olmali (Put/Delete/Query/Scan yok)"
+  }
+  assert {
+    condition     = one([for st in data.aws_iam_policy_document.outbox_relay.statement : st.resources if st.sid == "ReadTableStream"]) == toset(["arn:aws:dynamodb:eu-central-1:123456789012:table/building-management/stream/*"])
+    error_message = "Stream okuma yalnizca bu tablonun akislarina sinirli olmali"
   }
 }
 
@@ -604,4 +741,68 @@ run "rejects_invalid_payment_urls" {
   }
 
   expect_failures = [var.iyzico_base_url, var.web_app_url]
+}
+
+run "notifications_ses" {
+  command = plan
+
+  variables {
+    notification_channel  = "ses"
+    ses_identity_arn      = "arn:aws:ses:eu-central-1:123456789012:identity/yonetimsistemim.com"
+    ses_from_address      = "YÖNESİST <bildirim@yonetimsistemim.com>"
+    ses_configuration_set = "bm-events"
+    web_app_url           = "https://app.yonetimsistemim.com"
+  }
+
+  assert {
+    condition = (
+      aws_lambda_function.notification_worker.environment[0].variables.NOTIFICATION_CHANNEL == "ses" &&
+      aws_lambda_function.notification_worker.environment[0].variables.SES_CONFIGURATION_SET == "bm-events" &&
+      aws_lambda_function.notification_worker.environment[0].variables.WEB_APP_URL == "https://app.yonetimsistemim.com"
+    )
+    error_message = "SES kanali ortam degiskenleri eksik"
+  }
+  assert {
+    condition     = [for st in data.aws_iam_policy_document.notification_worker.statement : { actions = toset(st.actions), resources = toset(st.resources) } if st.sid == "SendNotificationEmail"] == [{ actions = toset(["ses:SendEmail", "ses:SendRawEmail"]), resources = toset(["arn:aws:ses:eu-central-1:123456789012:identity/yonetimsistemim.com", "arn:aws:ses:eu-central-1:123456789012:configuration-set/bm-events"]) }]
+    error_message = "Worker yalnizca dogrulanmis kimlik ve yapilandirma seti uzerinden e-posta gonderebilmeli"
+  }
+  assert {
+    condition = anytrue([
+      for c in one([for st in data.aws_iam_policy_document.notification_worker.statement : st.condition if st.sid == "SendNotificationEmail"]) :
+      c.test == "StringEqualsIgnoreCase" && c.variable == "ses:FromAddress" && tolist(c.values) == tolist(["bildirim@yonetimsistemim.com"])
+    ])
+    error_message = "Gonderim yalnizca yapilandirilmis gonderen adresle sinirli olmali"
+  }
+}
+
+run "notifications_ses_requires_identity" {
+  command = plan
+
+  variables {
+    notification_channel = "ses"
+  }
+
+  expect_failures = [aws_lambda_function.notification_worker]
+}
+
+run "notifications_ses_identity_must_cover_sender" {
+  command = plan
+
+  variables {
+    notification_channel = "ses"
+    ses_identity_arn     = "arn:aws:ses:eu-central-1:123456789012:identity/ornek.com"
+    ses_from_address     = "Bina Yonetim <no-reply@ornek.com>"
+  }
+
+  expect_failures = [aws_lambda_function.notification_worker]
+}
+
+run "rejects_unknown_notification_channel" {
+  command = plan
+
+  variables {
+    notification_channel = "sms"
+  }
+
+  expect_failures = [var.notification_channel]
 }

@@ -12,6 +12,23 @@
 locals {
   worker_function        = "${local.name}-notification-worker"
   worker_timeout_seconds = 30
+
+  # E-posta kanali (Asama 4): gonderen adres, alan adi ve SES izin kapsamlari.
+  notification_ses         = var.notification_channel == "ses"
+  notification_from_email  = lower(length(regexall("<([^<>]+)>", var.notification_from_address)) > 0 ? regex("<([^<>]+)>", var.notification_from_address)[0] : trimspace(var.notification_from_address))
+  notification_from_domain = element(split("@", local.notification_from_email), 1)
+  notification_ses_resources = compact([
+    local.notification_ses ? var.ses_identity_arn : "",
+    local.notification_ses && var.ses_configuration_set != "" ? "arn:${local.partition}:ses:${local.region}:${data.aws_caller_identity.current.account_id}:configuration-set/${var.ses_configuration_set}" : "",
+  ])
+  notification_env = merge(
+    {
+      NOTIFICATION_CHANNEL = var.notification_channel
+      SES_FROM_ADDRESS     = var.notification_from_address
+    },
+    var.ses_configuration_set != "" ? { SES_CONFIGURATION_SET = var.ses_configuration_set } : {},
+    var.web_app_url != "" ? { WEB_APP_URL = var.web_app_url } : {},
+  )
 }
 
 resource "aws_cloudwatch_log_group" "notification_worker" {
@@ -31,7 +48,8 @@ data "aws_iam_policy_document" "notification_worker" {
     resources = ["${aws_cloudwatch_log_group.notification_worker.arn}:*"]
   }
 
-  # Okuma: uyelikler ve daireler (alici cozumleme). Yazma: yalnizca NOTIF# isleme kaydi.
+  # Okuma: uyelikler, daireler, kisi (e-posta) ve kullanici tercihi. Yazma: yalnizca NOTIF#
+  # isleme kaydi ve NOTIFSENT# alici bazli gonderim kaydi.
   statement {
     sid       = "DynamoDb"
     actions   = ["dynamodb:GetItem", "dynamodb:Query", "dynamodb:PutItem"]
@@ -47,6 +65,23 @@ data "aws_iam_policy_document" "notification_worker" {
       "sqs:GetQueueAttributes",
     ]
     resources = [aws_sqs_queue.notification.arn]
+  }
+
+  # E-posta: yalnizca dogrulanmis SES kimligi (ve varsa yapilandirma seti) uzerinden, yalnizca
+  # yapilandirilmis gonderen adresle. Kanal `log` iken SES yetkisi yok.
+  dynamic "statement" {
+    for_each = local.notification_ses ? [1] : []
+    content {
+      sid       = "SendNotificationEmail"
+      actions   = ["ses:SendEmail", "ses:SendRawEmail"]
+      resources = local.notification_ses_resources
+
+      condition {
+        test     = "StringEqualsIgnoreCase"
+        variable = "ses:FromAddress"
+        values   = [local.notification_from_email]
+      }
+    }
   }
 }
 
@@ -69,10 +104,10 @@ resource "aws_lambda_function" "notification_worker" {
   timeout          = local.worker_timeout_seconds
 
   environment {
-    variables = {
+    variables = merge({
       NODE_ENV            = "production"
       DYNAMODB_TABLE_NAME = aws_dynamodb_table.main.name
-    }
+    }, local.notification_env)
   }
 
   depends_on = [
@@ -84,6 +119,16 @@ resource "aws_lambda_function" "notification_worker" {
     precondition {
       condition     = local.notification_visibility_timeout >= 6 * local.worker_timeout_seconds
       error_message = "Kuyruk gorunurluk zaman asimi worker zaman asiminin en az 6 kati olmali."
+    }
+    # SES kimligi gonderen adresin alan adini veya adresini kapsamali (aksi halde SES reddeder).
+    precondition {
+      condition = !local.notification_ses || (
+        var.ses_identity_arn != "" && (
+          endswith(var.ses_identity_arn, "identity/${local.notification_from_domain}") ||
+          endswith(var.ses_identity_arn, "identity/${local.notification_from_email}")
+        )
+      )
+      error_message = "notification_channel=ses icin ses_identity_arn, notification_from_address alan adini (veya adresini) kapsayan dogrulanmis SES kimligi olmalidir."
     }
   }
 }

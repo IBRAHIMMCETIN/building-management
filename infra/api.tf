@@ -84,11 +84,8 @@ data "aws_iam_policy_document" "api" {
     ]
   }
 
-  statement {
-    sid       = "PublishDomainEvents"
-    actions   = ["sns:Publish"]
-    resources = [aws_sns_topic.events.arn]
-  }
+  # Domain olaylari API'den dogrudan yayinlanmaz: defter yazimiyla ayni atomik islemde
+  # outbox'a yazilir, yayini outbox-relay Lambda'si yapar (outbox.tf). sns:Publish YOK.
 
   # Sakin daveti (/api/residents/invite): e-postayla kullanici bul / olustur. Yalnizca bu
   # havuz; silme, sifre sifirlama, group veya nitelik yazma yetkisi YOK.
@@ -155,12 +152,10 @@ resource "aws_lambda_function" "api" {
 
   environment {
     variables = merge({
-      NODE_ENV             = "production"
-      APP_VERSION          = var.app_version
-      AUTH_MODE            = "apigw"
-      DYNAMODB_TABLE_NAME  = aws_dynamodb_table.main.name
-      EVENTS_MODE          = "sns"
-      EVENTS_SNS_TOPIC_ARN = aws_sns_topic.events.arn
+      NODE_ENV            = "production"
+      APP_VERSION         = var.app_version
+      AUTH_MODE           = "apigw"
+      DYNAMODB_TABLE_NAME = aws_dynamodb_table.main.name
       # Yalnizca davet icin (AUTH_MODE=apigw oldugundan kimlik dogrulamayi etkilemez).
       COGNITO_USER_POOL_ID = aws_cognito_user_pool.main.id
       DOCUMENTS_BUCKET     = aws_s3_bucket.documents.id

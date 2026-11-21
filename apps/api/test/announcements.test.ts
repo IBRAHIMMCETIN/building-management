@@ -1,10 +1,11 @@
-import { DynamoDBDocumentClient, PutCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
+import { TransactionCanceledException } from '@aws-sdk/client-dynamodb';
+import { DynamoDBDocumentClient, PutCommand, QueryCommand, TransactWriteCommand } from '@aws-sdk/lib-dynamodb';
 import { mockClient } from 'aws-sdk-client-mock';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createApp } from '../src/app.js';
 import { createMockAuthenticator, encodeMockToken } from '../src/auth/authenticators.js';
 import { DataAccessError, resetDynamoCache } from '../src/config/dynamodb.js';
-import { type EventPublisher, createInMemoryEventPublisher } from '../src/events/publisher.js';
+import type { DomainEvent } from '../src/events/publisher.js';
 import {
   type AnnouncementRepository,
   announcementKeys,
@@ -28,6 +29,8 @@ function block(id: string, status: Block['status'] = 'active'): Block {
 
 function createFakeRepo() {
   const items = new Map<string, Announcement>();
+  /** Transactional outbox: duyuru guncellemesiyle ayni atomik yazimda saklanan olaylar. */
+  const outbox: DomainEvent[] = [];
   const k = (apt: string, id: string) => `${apt}|${id}`;
   const repo: AnnouncementRepository = {
     get: async (apt, id) => items.get(k(apt, id)),
@@ -36,21 +39,22 @@ function createFakeRepo() {
       if (items.has(k(a.apartmentId, a.announcementId))) throw new DataAccessError('conflict', 'var');
       items.set(k(a.apartmentId, a.announcementId), a);
     },
-    update: async (a, expectedVersion) => {
+    update: async (a, expectedVersion, events = []) => {
       if (items.get(k(a.apartmentId, a.announcementId))?.version !== expectedVersion) {
         throw new DataAccessError('conflict', 'surum');
       }
+      if (events.some((e) => outbox.some((o) => o.eventId === e.eventId))) throw new DataAccessError('conflict', 'olay');
       items.set(k(a.apartmentId, a.announcementId), a);
+      outbox.push(...structuredClone(events));
     },
   };
-  return { repo, items };
+  return { repo, items, outbox };
 }
 
-function setup(options: { events?: EventPublisher } = {}) {
+function setup() {
   let now = T0;
   const clock = { set: (iso: string) => void (now = new Date(iso)) };
   const fake = createFakeRepo();
-  const events = options.events ?? createInMemoryEventPublisher();
   const blocks = [block('b1'), block('b2'), block('eski', 'inactive')];
   const units: Unit[] = [
     { PK: `APT#${APT}`, SK: 'UNIT#u1', entityType: 'UNIT', status: 'active', ...seedAudit, unitId: 'u1', siteId: APT, blockId: 'b1', number: '1', type: 'flat', grossAreaTenthsM2: 900, exemptions: [] },
@@ -66,7 +70,6 @@ function setup(options: { events?: EventPublisher } = {}) {
     core,
     now: () => now,
     newId: () => `ann${++n}`,
-    events,
   });
 
   const membership: UnitMembership = {
@@ -106,7 +109,7 @@ function setup(options: { events?: EventPublisher } = {}) {
     return ((await res.json()) as any).items.map((a: any) => a.announcementId);
   };
 
-  return { ...fake, app, call, token, events, clock, residentFeed };
+  return { ...fake, app, call, token, clock, residentFeed };
 }
 
 const draft = { title: 'Su kesintisi', body: 'Yarin 10:00-14:00 arasi su kesilecektir.' };
@@ -190,9 +193,8 @@ describe('announcements - olusturma ve dogrulama', () => {
 });
 
 describe('announcements - yasam dongusu', () => {
-  it('taslak duzenlenir; onaylaninca yayinda olur ve olay yayinlanir', async () => {
-    const events = createInMemoryEventPublisher();
-    const { call, clock } = setup({ events });
+  it('taslak duzenlenir; onaylaninca yayinda olur ve olay ayni yazimda outbox\'a girer', async () => {
+    const { call, clock, outbox } = setup();
     await call('POST', '', draft);
 
     const edited = await call('PATCH', '/ann1', { version: 1, title: 'Planli su kesintisi', blockIds: ['b1'] });
@@ -210,15 +212,17 @@ describe('announcements - yasam dongusu', () => {
       version: 3,
     });
 
-    expect(events.published).toHaveLength(1);
-    expect(events.published[0]).toMatchObject({
+    expect(outbox).toHaveLength(1);
+    expect(outbox[0]).toMatchObject({
       eventId: 'ANNOUNCEMENT_PUBLISHED:ann1',
       type: 'ANNOUNCEMENT_PUBLISHED',
       apartmentId: APT,
       actorId: 'mgr-1',
       payload: { announcementId: 'ann1', title: 'Planli su kesintisi', blockIds: ['b1'] },
     });
-    expect(JSON.stringify(events.published[0])).not.toContain('10:00-14:00'); // govde tasinmaz
+    expect(JSON.stringify(outbox[0])).not.toContain('10:00-14:00'); // govde tasinmaz
+    // Taslak duzenleme olay uretmez.
+    expect(outbox.map((e) => e.type)).toEqual(['ANNOUNCEMENT_PUBLISHED']);
   });
 
   it('ileri tarihli duyuru ileri tarihte kalir', async () => {
@@ -263,14 +267,14 @@ describe('announcements - yasam dongusu', () => {
     expect(items.size).toBe(1);
   });
 
-  it('olay yayini basarisiz olsa da onay kaydedilir', async () => {
-    const failing: EventPublisher = { publish: vi.fn(async () => { throw new Error('sns down'); }) };
-    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
-    const { call, items } = setup({ events: failing });
+  it('onay ve olay atomiktir: olay yazilamazsa duyuru taslak kalir (409), olay cogalmaz', async () => {
+    const { call, items, outbox } = setup();
     await call('POST', '', draft);
-    expect((await call('POST', '/ann1/approve', { version: 1 })).status).toBe(200);
-    expect(items.get(`${APT}|ann1`)!.status).toBe('published');
-    spy.mockRestore();
+    // Ayni kimlikli olay zaten var (ornegin yarisan ikinci onay): tum yazim reddedilir.
+    outbox.push({ eventId: 'ANNOUNCEMENT_PUBLISHED:ann1' } as DomainEvent);
+    expect((await call('POST', '/ann1/approve', { version: 1 })).status).toBe(409);
+    expect(items.get(`${APT}|ann1`)!.status).toBe('draft');
+    expect(outbox).toHaveLength(1);
   });
 
   it('listeleme: durum filtresi, en yeni once', async () => {
@@ -338,6 +342,55 @@ describe('announcements repository (DynamoDB)', () => {
     const [create, update] = ddb.commandCalls(PutCommand).map((c) => c.args[0].input);
     expect(create!.ConditionExpression).toBe('attribute_not_exists(PK)');
     expect(update!.ExpressionAttributeValues).toEqual({ ':expectedVersion': 1 });
+  });
+
+  const published = (): DomainEvent => ({
+    eventId: 'ANNOUNCEMENT_PUBLISHED:ann1',
+    type: 'ANNOUNCEMENT_PUBLISHED',
+    version: 1,
+    occurredAt: T0.toISOString(),
+    apartmentId: APT,
+    actorId: 'mgr-1',
+    groupKey: APT,
+    payload: { announcementId: 'ann1', title: 't', blockIds: [], publishAt: T0.toISOString() },
+  });
+
+  it('outbox verilirse surumlu guncelleme ve olay TEK TransactWriteItems ile yazilir', async () => {
+    ddb.on(TransactWriteCommand).resolves({});
+    await repo.update({ ...item(), status: 'published', version: 2 }, 1, [published()]);
+    expect(ddb.commandCalls(PutCommand)).toHaveLength(0);
+    const items = ddb.commandCalls(TransactWriteCommand)[0]!.args[0].input.TransactItems!;
+    expect(items).toHaveLength(2);
+    expect(items[0]!.Put).toMatchObject({
+      ConditionExpression: 'attribute_exists(PK) AND #version = :expectedVersion',
+      ExpressionAttributeValues: { ':expectedVersion': 1 },
+    });
+    expect(items[1]!.Put).toMatchObject({
+      TableName: 'bm-test-table',
+      ConditionExpression: 'attribute_not_exists(PK)',
+      Item: {
+        PK: 'APT#apt-1',
+        SK: 'OUTBOX#ANNOUNCEMENT_PUBLISHED:ann1',
+        entityType: 'OUTBOX_EVENT',
+        status: 'pending',
+        GSI1PK: 'OUTBOX#PENDING',
+        event: { type: 'ANNOUNCEMENT_PUBLISHED', apartmentId: APT },
+      },
+    });
+  });
+
+  it('outbox yaziminda kosul hatasi conflict olarak doner; baska tenant olayi reddedilir', async () => {
+    ddb.on(TransactWriteCommand).rejects(
+      new TransactionCanceledException({
+        message: 'cancelled',
+        $metadata: {},
+        CancellationReasons: [{ Code: 'ConditionalCheckFailed' }, { Code: 'None' }],
+      }),
+    );
+    await expect(repo.update({ ...item(), version: 2 }, 1, [published()])).rejects.toMatchObject({ code: 'conflict' });
+    await expect(
+      repo.update({ ...item(), version: 2 }, 1, [{ ...published(), apartmentId: 'apt-2' }]),
+    ).rejects.toThrow(/tenant/);
   });
 
   it('anahtar tutarsizligi reddedilir; list ANN# on ekiyle sorgular', async () => {

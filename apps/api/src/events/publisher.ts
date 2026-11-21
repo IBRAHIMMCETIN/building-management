@@ -10,9 +10,9 @@ import type { IsoDate, IsoDateTime, Kurus, LiableParty } from '../modules/core/t
  * Faz 3 - Domain olaylari ve soyut olay firlatici.
  *
  * Kurallar:
- *  - Olaylar defter yazimi BASARIYLA tamamlandiktan sonra yayinlanir; yayin hatasi
- *    finansal islemi geri almaz (para zaten kaydedildi). Yayin kaybi riskine karsi kalici
- *    cozum transactional outbox / DynamoDB Streams'tir (bkz. `publishSafely`).
+ *  - Defter/belge yazimindan doguan olaylar dogrudan yayinlanmaz: yazimla AYNI atomik islemde
+ *    outbox'a yazilir (`events/outbox.ts`), yayini relay yapar. Yazim yoksa olay da yoktur.
+ *  - Yazim icermeyen zamanlanmis olaylar (DUES_REMINDER) dogrudan yayinlanir.
  *  - `eventId` deterministiktir (defter `transactionId`/`batchId` kaynakli): SQS at-least-once
  *    teslimde tuketiciler `eventId` ile idempotent calismalidir.
  *  - Payload'da kisisel veri (ad, telefon, TC no) TASINMAZ; tuketici gerekirse kendisi okur.
@@ -29,6 +29,7 @@ export const EVENT_TYPES = [
   'ANNOUNCEMENT_PUBLISHED',
   'LATE_FEE_POSTED',
   'DUES_REMINDER',
+  'DUES_BATCH_SUMMARY',
 ] as const;
 export type EventType = (typeof EVENT_TYPES)[number];
 
@@ -55,6 +56,24 @@ export type PaymentReceivedPayload = {
   paidAt: IsoDate;
   /** Ayrilan sakin/malik carisine tahsilat: dairenin bugunku sakinlerine bildirim gitmez. */
   receivableAccountId?: string;
+};
+
+/**
+ * Toplu tahakkukun tamamlandigini bildiren TEK ozet olay (batchId basina). Kalem olaylari
+ * (`DUE_GENERATED`, mode=bulk) kayipsizlik icin yine yazilir ama bildirim uretmez; sakine
+ * bu olaydan kullanici bazinda tek ozet gider. Cok buyuk sitelerde `part` ile bolunur.
+ */
+export type DuesBatchSummaryPayload = {
+  batchId: string;
+  /** 1'den baslar; `parts` toplam parca sayisi. */
+  part: number;
+  parts: number;
+  date: IsoDate;
+  dueDate: IsoDate;
+  description: string;
+  liableParty: LiableParty;
+  totalAmount: Kurus;
+  items: { unitId: string; amount: Kurus; transactionId: string; liableParty: LiableParty }[];
 };
 
 /** Bildirim worker'i sakinlere SMS/push gonderir; govde tasinmaz, worker kaydi okur. */
@@ -90,6 +109,7 @@ type PayloadByType = {
   ANNOUNCEMENT_PUBLISHED: AnnouncementPublishedPayload;
   LATE_FEE_POSTED: LateFeePostedPayload;
   DUES_REMINDER: DuesReminderPayload;
+  DUES_BATCH_SUMMARY: DuesBatchSummaryPayload;
 };
 
 export type DomainEvent<T extends EventType = EventType> = {
@@ -142,9 +162,8 @@ export class EventPublishError extends Error {
 }
 
 /**
- * Defter yazimindan SONRA cagrilir: hata loglanir, istek basarisiz sayilmaz.
- * TODO(outbox): olay, defterle ayni TransactWriteItems icinde `OUTBOX#` kaydi olarak yazilip
- * DynamoDB Streams ile yayinlanirsa "yazildi ama yayinlanmadi" penceresi tamamen kapanir.
+ * Hata loglanir, cagiran basarisiz sayilmaz. Defter yazimina bagli olaylar icin KULLANILMAZ
+ * (onlar outbox'tan yayinlanir); yalnizca kaybi tolere edilebilen, tekrar uretilebilen yayinlar.
  */
 export async function publishSafely(
   publisher: EventPublisher,

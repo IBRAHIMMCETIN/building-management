@@ -119,24 +119,10 @@ describe('scheduler worker - isler', () => {
     });
   });
 
-  it('late_fees: ONCEKI ayi kesinlestirir ve yalnizca yeni yazilanlar icin olay yayinlar', async () => {
+  it('late_fees: ONCEKI ayi kesinlestirir; olaylar defterle birlikte outbox\'a girdigi icin worker ayrica yayinlamaz', async () => {
     const { run, finance, events } = setup([site('apt-1')]);
     await run({ job: 'late_fees', scheduledTime: at });
     expect(finance.postLateFees).toHaveBeenCalledWith('apt-1', { period: '2026-11', monthlyBasisPoints: 500, dueDayOfMonth: 5 });
-    expect(events.published).toHaveLength(1);
-    expect(events.published[0]).toMatchObject({
-      eventId: 'LATE_FEE_POSTED:2026-11:tx-new',
-      type: 'LATE_FEE_POSTED',
-      apartmentId: 'apt-1',
-      actorId: 'system-scheduler',
-      payload: { period: '2026-11', items: [{ unitId: 'u1', amount: 8667, transactionId: 'tx-new' }] },
-    });
-  });
-
-  it('late_fees: yeni kayit yoksa olay yayinlanmaz', async () => {
-    const { run, finance, events } = setup([site('apt-1')]);
-    finance.postLateFees.mockResolvedValueOnce({ period: '2026-11', count: 0, totalAmount: toKurus(0), items: [] });
-    await run({ job: 'late_fees', scheduledTime: at });
     expect(events.published).toHaveLength(0);
   });
 

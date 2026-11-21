@@ -24,6 +24,11 @@ export type Person = TableKeys &
     userId: string;
     fullName: string;
     email: string;
+    /**
+     * E-posta dogrulama durumu. Davet akisi Cognito'da adresi dogrulanmis olarak olusturur;
+     * alan yoksa dogrulanmis sayilir. `false` ise bildirim e-postasi gonderilmez.
+     */
+    emailVerified?: boolean;
   };
 
 const PERSON_PREFIX = 'PERSON#';

@@ -1,5 +1,6 @@
 # ---------------------------------------------------------------------------
-# Domain olaylari: API Lambda -> SNS topic -> SQS (bildirim kuyrugu) -> worker (worker.tf).
+# Domain olaylari: outbox-relay Lambda (outbox.tf; defter yazimlarinin olaylari) ve scheduler
+# worker'i (DUES_REMINDER) -> SNS topic -> SQS (bildirim kuyrugu) -> worker (worker.tf).
 #
 # Uygulama (src/events/publisher.ts) her mesaja `eventType` ve `apartmentId` mesaj
 # niteliklerini ekler; abonelik filtresi bunlara gore calisir. Raw delivery acik: SQS
@@ -11,7 +12,7 @@
 # ---------------------------------------------------------------------------
 
 locals {
-  notification_event_types = ["DUE_GENERATED", "PAYMENT_RECEIVED", "ANNOUNCEMENT_PUBLISHED", "LATE_FEE_POSTED", "DUES_REMINDER"]
+  notification_event_types = ["DUE_GENERATED", "PAYMENT_RECEIVED", "ANNOUNCEMENT_PUBLISHED", "LATE_FEE_POSTED", "DUES_REMINDER", "DUES_BATCH_SUMMARY"]
   # Worker Lambda zaman asimi x 6 (AWS onerisi); worker 30 sn varsayilir.
   notification_visibility_timeout = 180
 }

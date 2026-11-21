@@ -6,7 +6,6 @@ import { createApp } from '../src/app.js';
 import { createMockAuthenticator, encodeMockToken } from '../src/auth/authenticators.js';
 import type { Role } from '../src/auth/claims.js';
 import { resetDynamoCache } from '../src/config/dynamodb.js';
-import { createInMemoryEventPublisher } from '../src/events/publisher.js';
 import type { CoreRepository } from '../src/modules/core/repository.js';
 import { type Kurus, type LiableParty, type Site, type Unit, toKurus } from '../src/modules/core/types.js';
 import {
@@ -126,7 +125,6 @@ function setup(options: { provider?: boolean | 'live'; at?: string; customProvid
   ];
   const fin = createFakeFinanceRepo(APT);
   const payRepo = createFakePaymentsRepo(fin.docs as never);
-  const events = createInMemoryEventPublisher();
   let n = 0;
   const newId = () => `id${String(++n).padStart(4, '0')}`;
   const now = () => clock.now;
@@ -151,7 +149,7 @@ function setup(options: { provider?: boolean | 'live'; at?: string; customProvid
     listPublishedAnnouncements: async () => [],
   };
 
-  const finance = createFinanceService({ repository: fin.repo, core, now, newId, events });
+  const finance = createFinanceService({ repository: fin.repo, core, now, newId });
   const portal = createPortalService({ repository: portalRepo, core, now });
   const fake = createFakePaymentProvider({ apiBaseUrl: 'https://api.test' });
   const people = [person('tenant-1', 'Ayşe Nur Yılmaz', 'ayse@example.com'), person('owner-2', 'Mehmet Kaya', 'mehmet@example.com')];
@@ -225,7 +223,7 @@ function setup(options: { provider?: boolean | 'live'; at?: string; customProvid
 
   const intentOf = (id: string) => fin.docs.get(`APT#${APT}|PI#${id}`) as unknown as PaymentIntent;
 
-  return { clock, app, call, token, fin, payRepo, finance, portal, payments, fake, events, logs, charge, cashPayment, payThroughProvider, intentOf, portalRepo, people };
+  return { clock, app, call, token, fin, payRepo, finance, portal, payments, fake, logs, charge, cashPayment, payThroughProvider, intentOf, portalRepo, people };
 }
 
 // ---------------------------------------------------------------------------
@@ -426,7 +424,11 @@ describe('odeme - uctan uca (sahte saglayici)', () => {
       provider: 'fake',
       providerPaymentId: 'fakepay-1',
     });
-    expect(w.events.published.filter((e) => e.type === 'PAYMENT_RECEIVED')).toHaveLength(1);
+    // Olay, tahsilat + niyet durum gecisiyle ayni atomik yazimda outbox'ta.
+    const received = w.fin.events('PAYMENT_RECEIVED');
+    expect(received).toHaveLength(1);
+    expect(received[0]).toMatchObject({ eventId: `PAYMENT_RECEIVED:${payment.paymentId}`, payload: { paymentId: payment.paymentId, method: 'card' } });
+    expect(w.fin.batches.at(-1)!.outbox!.map((e) => e.eventId)).toEqual([`PAYMENT_RECEIVED:${payment.paymentId}`]);
 
     // Portal ozeti: borc kapandi, islemis tazminat sifir.
     const summary = await w.call('GET', '/api/portal/my-summary', w.token('tenant-1'));

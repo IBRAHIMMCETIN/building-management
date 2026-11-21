@@ -53,6 +53,8 @@ React (Vite, PWA)  ──►  API Gateway (HTTP API, JWT authorizer, throttling)
 | CI/CD | GitHub Actions (OIDC ile AWS erişimi) |
 | Test | Vitest + `aws-sdk-client-mock`, `terraform test` (mock provider) |
 
+Domain olayları API'den doğrudan yayınlanmaz: defter yazımıyla aynı atomik işlemde `OUTBOX#` kaydı olarak yazılır; **DynamoDB Streams → outbox-relay Lambda → SNS** hattı yayınlar (transactional outbox).
+
 AWS SDK yalnızca **v3** (`@aws-sdk/client-*`) kullanılır.
 
 ---
@@ -78,7 +80,7 @@ building-management/
 │   │   └── test/                 # Vitest testleri
 │   └── web/                      # @bm/web — React + Vite
 ├── infra/                        # Serverless Terraform yığını
-│   ├── api.tf  cognito.tf  dynamodb.tf  sns_sqs.tf  worker.tf
+│   ├── api.tf  cognito.tf  dynamodb.tf  sns_sqs.tf  worker.tf  outbox.tf  operations.tf
 │   ├── tests/serverless.tftest.hcl
 │   ├── github-oidc/              # GitHub Actions için OIDC rolü
 │   ├── budget/                   # AWS bütçe alarmı
@@ -168,6 +170,12 @@ npm run dev:api
 | `AWS_REGION` | AWS bölgesi. |
 | `APP_VERSION` | Sağlık kontrolünde dönen sürüm (CI'da commit SHA). |
 | `PORT` | Yerel sunucu portu (varsayılan `3000`). |
+| `EVENTS_MODE` | Yalnızca yayın yapan süreçler: outbox relay ve zamanlayıcı Lambda'ları (`sns`), yerel sunucunun outbox relay'i (`local`, varsayılan; `none` kapatır). API Lambda'sı olay yayınlamaz. |
+| `NOTIFICATION_CHANNEL` | Bildirim worker'ı: `log` (varsayılan, dış gönderim yok) veya `ses` (e-posta). |
+| `SES_FROM_ADDRESS` | Bildirim e-postalarının göndereni (varsayılan `YÖNESİST <bildirim@yonetimsistemim.com>`; ASCII dışı görünen ad MIME ile kodlanır). |
+| `SES_CONFIGURATION_SET` | İsteğe bağlı SES yapılandırma seti (geri dönüş/şikâyet olayları). |
+| `WEB_APP_URL` | E-postalardaki portal bağlantılarının kökü (`<WEB_APP_URL>/app/...`); yalnızca `https`. |
+| `OUTBOX_LOCAL_RELAY` | Yerel sunucuda `off` ise bekleyen outbox kayıtlarını yoklayan bellek içi relay çalışmaz. |
 
 Gizli bilgiler koda gömülmez; AWS kimlik bilgileri SDK'nın varsayılan credential zincirinden gelir.
 
@@ -199,6 +207,8 @@ Serverless yığın `infra/` kök modülündedir:
 | `dynamodb.tf` | Tek tablo, GSI'lar, PITR, silme koruması |
 | `sns_sqs.tf` | Olay topic'i, bildirim kuyruğu + DLQ, alarm topic'i |
 | `worker.tf` | Bildirim worker Lambda ve SQS event source mapping |
+| `outbox.tf` | Transactional outbox relay: tablo akışı (`NEW_IMAGE`) → yalnızca `OUTBOX#` INSERT filtresi → relay Lambda → SNS; DLQ, hata/gecikme alarmları, en az yetkili rol |
+| `operations.tf` | Platform alarmları (EMF özel metrikleri, `BuildingManagement` / `Stack`): `LedgerDrift` (gecelik defter denetimi sapması), `OutboxSweepFailed`, `OutboxOldestPendingSeconds` |
 
 Önemli değişkenler: `environment` (`prod` / `staging`), `alert_email`, `cors_allow_origins`, `cognito_user_pool_tier` (`LITE` / `ESSENTIALS`), `ses_identity_arn`, `ses_from_address`, `api_throttle_rate_limit`, `api_throttle_burst_limit`.
 
@@ -258,7 +268,7 @@ Tüm uçlar `/api` altındadır. `GET /api/health` dışındakiler JWT ile korun
 | Modül | Önek | Kapsam |
 | --- | --- | --- |
 | `health` | `/api/health` | Sağlık ve sürüm bilgisi |
-| `me` | `/api/me` | Oturum sahibinin seçebileceği apartman/rol bağlamları (`GET /contexts`). **Rol claim'i gerektirmez**: bağlam seçilmeden önce de çalışır |
+| `me` | `/api/me` | Oturum sahibinin seçebileceği apartman/rol bağlamları (`GET /contexts`); bildirim tercihleri (`GET\|PUT /notification-preferences`, `{ email: { enabled } }`, varsayılan açık). **Rol claim'i gerektirmez**: bağlam seçilmeden önce de çalışır |
 | `core` | `/api/sites` | Site, blok ve bağımsız bölüm (daire/dükkan) yönetimi; m², arsa payı, sayaç kuralları |
 | `finance` | `/api/finance` | Hesaplar, toplu aidat tahakkuku, tahsilat, gider, ters kayıt, bakiye; raporlar: `GET /summary`, `/dues-status` (FIFO gecikme), `/transactions` (sayfalı), `/former-accounts` (ayrılan sakin carileri). Taşınmada cari kapama: `GET /units/:unitId/closures/preview`, `GET\|POST /units/:unitId/closures`, `GET /closures/:closureId`, `POST /closures/:closureId/reverse` |
 | `memberships` | `/api/memberships` | Kullanıcı–daire bağlantıları (malik / kiracı) |
@@ -289,6 +299,8 @@ Yedi rol: `platform_admin`, `management_company`, `apartment_manager`, `resident
 - **Taşınmada cari kapama:** Çıkış tarihine kadarki açık kalemler ve o güne kadar işlemiş tazminat tek atomik yazımla ayrılan sakin carisine (`recv-<daire>-<taraf>-c<kapama>`), malik carisine veya satışta yeni malike devredilir; avans iade edilebilir. Kaynak cari çıkış tarihine kadar kilitlenir (`closedThrough`), yeni sakin temiz bir cariyle başlar. Kapama ters kayıtla geri alınabilir.
 - **Dağıtım anahtarları:** Eşit, m², arsa payı.
 - **Atomiklik ve idempotency:** Çoklu kayıtlar `TransactWriteItems` ile yazılır; tekrar gelen istekler parmak izi + `attribute_not_exists` koşullu yazımla etkisiz kalır.
+- **Defter denetimi:** Her gece `ledger_audit` hesap bakiyelerini `LE#` toplamlarıyla, işlem dengesini, kapama kilidini, makbuz sayacını ve tamamlanmış online ödemelerin defter kaydını karşılaştırır. Sapma otomatik düzeltilmez; yalnızca platform alarmı üretir (düzeltme ters kayıtla).
+- **Transactional outbox:** Defter ve belge yazımından doğan olaylar (`DUE_GENERATED`, `PAYMENT_RECEIVED`, `LATE_FEE_POSTED`, `ANNOUNCEMENT_PUBLISHED`) doğrudan yayınlanmaz; aynı `TransactWriteItems` içinde `OUTBOX#<eventId>` kaydı olarak yazılır (`events/outbox.ts`). Yazım yoksa olay da yoktur; toplu tahakkukta her kalemin olayı kendi kaydıyla birlikte yazılır.
 
 ---
 
@@ -367,7 +379,7 @@ Yedi rol: `platform_admin`, `management_company`, `apartment_manager`, `resident
 **Platform ve operasyon**
 
 - [ ] Eski soneksiz `building-management` (prod) yığını hakkında karar ve ilk `prod` sürümü
-- [ ] Transactional outbox (`events/publisher.ts`)
+- [ ] Güvenilir olay ve bildirim hattı (`feature/outbox-bildirim`): ~~1. outbox'a atomik yazım~~ ✓ · ~~2. Streams relay~~ ✓ · ~~3. `outbox_sweep` (5 dk) + `ledger_audit` (03:40, salt okunur)~~ ✓ · ~~4. SES e-posta kanalı, Türkçe şablonlar, toplu tahakkuk özeti, bildirim tercihleri~~ ✓
 - [ ] Arıza/görev, ziyaretçi QR, anket/oylama, rezervasyon, ihale
 - [ ] Yönetim firması portföyü, abonelik/lisans
 - [ ] Özel alan adı + Cloudflare WAF (HTTP API'ye AWS WAF bağlanamaz), Cloudflare Pages Terraform modülü, audit log
@@ -376,6 +388,8 @@ Yedi rol: `platform_admin`, `management_company`, `apartment_manager`, `resident
 ### Canlıya Geçiş Kontrol Listesi
 
 Bilinen, bilerek ertelenmiş adımlar:
+
+- [ ] Bildirim e-postaları: SES'te `yonetimsistemim.com` alan adı doğrulaması (DKIM/SPF/DMARC), sandbox'tan çıkış talebi, isteğe bağlı yapılandırma seti (geri dönüş/şikâyet); ardından `notification_channel = "ses"`, `ses_identity_arn` (alan adı kimliği) ve `web_app_url` ile uygulama. Sandbox'ta yalnızca doğrulanmış alıcılara gönderilebilir; diğerleri `rejected` olarak atlanır.
 
 - [ ] iyzico Sandbox hesabındaki (Üye İşyeri No: `3438668`) Pazaryeri (Marketplace / SubMerchant) yetki başvurusu ve test kartıyla ilk uçtan uca online ödeme doğrulaması, projenin tüm modülleri tamamlandıktan sonra hayata geçirilecektir. Yetki açılana kadar alt üye işyeri kaydı `provider_rejected` döner; doğrulamada `paymentStatus` / `fraudStatus` eşlemeleri ve webhook imzası da kontrol edilecektir.
 - [ ] Aynı sandbox doğrulamasında iade akışı: Checkout Form sonucundaki `itemTransactions[].paymentTransactionId` alanı, `/payment/refund` yanıtı, raporlama servisinde (`GET /v2/reporting/payment/details`) başarılı iadenin `refundStatus = 1` olduğu varsayımı ve GET isteğinde sorgu dizgisinin IYZWSv2 imzasına katılmadığı varsayımı kontrol edilecektir.
