@@ -355,6 +355,7 @@ run "prod_plan" {
     condition = alltrue([
       for st in data.aws_iam_policy_document.scheduler_worker.statement :
       length(setintersection(toset(st.actions), toset(["dynamodb:DeleteItem", "dynamodb:Scan", "dynamodb:BatchWriteItem"]))) == 0
+      if coalesce(st.effect, "Allow") == "Allow"
     ])
     error_message = "Scheduler worker defteri silemez/tarayamaz (append-only)"
   }
@@ -394,7 +395,7 @@ run "prod_plan" {
       for doc in [data.aws_iam_policy_document.api, data.aws_iam_policy_document.scheduler_worker, data.aws_iam_policy_document.notification_worker, data.aws_iam_policy_document.outbox_relay] :
       length([
         for st in doc.statement : st
-        if st.effect != "Deny" && length(setintersection(toset(st.actions), toset(["dynamodb:UpdateItem", "dynamodb:DeleteItem"]))) > 0 && anytrue([for r in st.resources : strcontains(r, "audit")])
+        if coalesce(st.effect, "Allow") == "Allow" && length(setintersection(toset(st.actions), toset(["dynamodb:UpdateItem", "dynamodb:DeleteItem"]))) > 0 && anytrue([for r in st.resources : strcontains(r, "audit")])
       ]) == 0
     ])
     error_message = "Hicbir rol denetim tablosunda UpdateItem/DeleteItem izniyle tanimlanmamali"
@@ -507,6 +508,7 @@ run "documents_bucket" {
     condition = alltrue([
       for st in data.aws_iam_policy_document.api.statement :
       length(setintersection(toset(st.actions), toset(["s3:DeleteObject", "s3:DeleteObjectVersion", "s3:*", "s3:PutBucketPolicy"]))) == 0
+      if coalesce(st.effect, "Allow") == "Allow"
     ])
     error_message = "API belge silemez / bucket ayari degistiremez"
   }
