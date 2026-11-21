@@ -1,6 +1,8 @@
 import type { Context, MiddlewareHandler } from 'hono';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import type { AuthClaims, Authenticator, Role } from '../auth/claims.js';
+import { MFA_REQUIRED_CODE, MfaRequiredError } from '../auth/mfa.js';
+import { MfaError } from '../modules/mfa/errors.js';
 import { DataAccessError } from '../config/dynamodb.js';
 import { AccessDeniedError } from './errors.js';
 import { setRequestActor } from '../modules/audit/context.js';
@@ -55,6 +57,17 @@ export function requireRole(roles: readonly Role[]): MiddlewareHandler<Env> {
 }
 
 export function handleError(err: Error, c: Context) {
+  if (err instanceof MfaRequiredError) {
+    c.header('cache-control', 'no-store');
+    return c.json(
+      { error: MFA_REQUIRED_CODE, message: err.message, ...(err.graceUntil ? { graceUntil: err.graceUntil } : {}) },
+      403,
+    );
+  }
+  if (err instanceof MfaError) {
+    if (err.httpStatus >= 500) console.error(err);
+    return c.json({ error: err.code, message: err.message }, err.httpStatus);
+  }
   if (err instanceof ValidationError) {
     return c.json({ error: 'validation_error', message: err.message, field: err.field }, 400);
   }

@@ -79,4 +79,19 @@ describe('createApiClient', () => {
     const client = createApiClient({ baseUrl: '', getToken: async () => 't', fetchImpl });
     await expect(client.get('/api/sites')).rejects.toBeInstanceOf(NetworkError);
   });
+
+  it('403 MFA_REQUIRED kurulum geri cagirimini tetikler; diger 403 tetiklemez', async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(json(403, { error: 'MFA_REQUIRED', message: 'TOTP zorunlu' }))
+      .mockResolvedValueOnce(json(403, { error: 'forbidden' }));
+    const onMfaRequired = vi.fn();
+    const client = createApiClient({ baseUrl: '', getToken: async () => 't', fetchImpl, onMfaRequired });
+    const err = await client.get('/api/finance/summary').catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    expect((err as ApiError).isMfaRequired).toBe(true);
+    expect(onMfaRequired).toHaveBeenCalledOnce();
+    await expect(client.get('/api/sites')).rejects.toMatchObject({ code: 'forbidden', isMfaRequired: false });
+    expect(onMfaRequired).toHaveBeenCalledOnce();
+  });
 });

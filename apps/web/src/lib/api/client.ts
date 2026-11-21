@@ -9,4 +9,5 @@ export const apiClient = createApiClient({
   baseUrl: env.apiUrl,
   getToken: (options) => sessionManager.getApiToken(options),
   onAuthFailure: () => sessionManager.expire(),
+  onMfaRequired: () => sessionManager.markMfaRequired(),
 });

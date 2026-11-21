@@ -4,8 +4,9 @@ import { authAdapter } from './index';
 import { type ActiveContext, type AuthSession, type SignInStep, apiTokenFor, isExpiring } from './session';
 
 export type SessionState =
-  | { status: 'initializing'; session: null }
-  | { status: 'ready'; session: AuthSession | null };
+  | { status: 'initializing'; session: null; mfaRequired?: false }
+  /** `mfaRequired`: API bu oturumda `403 MFA_REQUIRED` dondu (token eski olsa bile kurulum gerekli). */
+  | { status: 'ready'; session: AuthSession | null; mfaRequired?: boolean };
 
 type Listener = () => void;
 
@@ -41,7 +42,17 @@ class SessionManager {
   }
 
   set(session: AuthSession | null): void {
-    this.setState({ status: 'ready', session });
+    // API'nin MFA_REQUIRED isareti ayni kullanici TOTP'yi etkinlestirene kadar korunur.
+    const prev = this.state.session;
+    const mfaRequired =
+      !!session && !!this.state.mfaRequired && prev?.claims.sub === session.claims.sub && !session.claims.mfa?.enabled;
+    this.setState({ status: 'ready', session, mfaRequired });
+  }
+
+  /** API `403 MFA_REQUIRED`: arayuz kurulum ekranina yonlenir. */
+  markMfaRequired(): void {
+    if (!this.state.session || this.state.mfaRequired || this.state.session.claims.mfa?.enabled) return;
+    this.setState({ status: 'ready', session: this.state.session, mfaRequired: true });
   }
 
   private applyStep(step: SignInStep): SignInStep {

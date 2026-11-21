@@ -207,8 +207,11 @@ run "prod_plan" {
   }
 
   assert {
-    condition     = toset([for a in flatten([for st in data.aws_iam_policy_document.api.statement : st.actions]) : a if startswith(a, "cognito-idp:")]) == toset(["cognito-idp:AdminGetUser", "cognito-idp:AdminCreateUser"])
-    error_message = "API Lambda yalnizca davet icin AdminGetUser/AdminCreateUser yetkisine sahip olmali"
+    condition = toset([for a in flatten([for st in data.aws_iam_policy_document.api.statement : st.actions]) : a if startswith(a, "cognito-idp:")]) == toset([
+      "cognito-idp:AdminGetUser", "cognito-idp:AdminCreateUser",
+      "cognito-idp:AdminListGroupsForUser", "cognito-idp:AdminSetUserMFAPreference", "cognito-idp:AdminUserGlobalSignOut",
+    ])
+    error_message = "API Lambda yalnizca davet (AdminGetUser/AdminCreateUser) ve MFA sifirlama yetkilerine sahip olmali; silme/sifre/group yazma yok"
   }
   assert {
     condition     = aws_lambda_function.api.environment[0].variables.APP_VERSION == "test-sha"
@@ -461,6 +464,51 @@ run "prod_plan" {
   assert {
     condition     = one([for st in data.aws_iam_policy_document.outbox_relay.statement : st.resources if st.sid == "ReadTableStream"]) == toset(["arn:aws:dynamodb:eu-central-1:123456789012:table/building-management/stream/*"])
     error_message = "Stream okuma yalnizca bu tablonun akislarina sinirli olmali"
+  }
+
+  # --- Zorunlu MFA (Guvenlik G2) ---
+  assert {
+    condition     = aws_cognito_user_pool.main.mfa_configuration == "OPTIONAL" && aws_cognito_user_pool.main.software_token_mfa_configuration[0].enabled
+    error_message = "Havuz TOTP (software token) MFA'yi desteklemeli; zorunluluk uygulama katmaninda (rol bazli)"
+  }
+  assert {
+    condition = alltrue([
+      for vars in [aws_lambda_function.api.environment[0].variables, aws_lambda_function.pre_token.environment[0].variables] :
+      vars.MFA_ENFORCEMENT_MODE == "warn" && vars.MFA_GRACE_PERIOD_DAYS == "7"
+    ])
+    error_message = "Varsayilan MFA modu warn, gecis suresi 7 gun; API ve Pre Token ayni politikayi kullanmali"
+  }
+  assert {
+    condition = [for st in data.aws_iam_policy_document.pre_token_mfa.statement : { actions = toset(st.actions), resources = toset(st.resources) }] == [{
+      actions   = toset(["cognito-idp:AdminGetUser"])
+      resources = toset(["arn:aws:cognito-idp:eu-central-1:123456789012:userpool/eu-central-1_mock"])
+    }]
+    error_message = "Pre Token Lambda yalnizca bu havuzda AdminGetUser (TOTP durumu) yetkisine sahip olmali"
+  }
+  assert {
+    condition     = aws_iam_role_policy.pre_token_mfa.role == aws_iam_role.pre_token.id
+    error_message = "MFA okuma yetkisi Pre Token rolune ayri politikayla baglanmali (havuz <-> Lambda dongusu olmadan)"
+  }
+  assert {
+    condition = (
+      toset(one([for st in data.aws_iam_policy_document.pre_token.statement : st.actions if st.sid == "MfaGraceRecord"])) == toset(["dynamodb:GetItem", "dynamodb:PutItem"]) &&
+      anytrue([
+        for c in one([for st in data.aws_iam_policy_document.pre_token.statement : st.condition if st.sid == "MfaGraceRecord"]) :
+        c.variable == "dynamodb:LeadingKeys" && tolist(c.values) == tolist(["USER#*"])
+      ])
+    )
+    error_message = "Pre Token Lambda yalnizca USER# bolumlerinde gecis suresi kaydini okuyup yazabilmeli"
+  }
+  assert {
+    condition = length([
+      for st in data.aws_iam_policy_document.pre_token.statement : st
+      if coalesce(st.effect, "Allow") == "Allow" && length(setintersection(toset(st.actions), toset(["dynamodb:UpdateItem", "dynamodb:DeleteItem", "dynamodb:Scan", "dynamodb:BatchWriteItem"]))) > 0
+    ]) == 0
+    error_message = "Pre Token Lambda kayit guncelleyemez/silemez/tarayamaz"
+  }
+  assert {
+    condition     = contains(aws_apigatewayv2_api.http.cors_configuration[0].allow_headers, "x-cognito-access-token") && contains(aws_apigatewayv2_api.http.cors_configuration[0].allow_headers, "x-support-session") && contains(aws_apigatewayv2_api.http.cors_configuration[0].expose_headers, "x-mfa-warning")
+    error_message = "CORS: MFA kurulum ve destek basliklarina izin verilmeli, MFA uyari basligi okunabilmeli"
   }
 }
 
@@ -867,4 +915,41 @@ run "rejects_unknown_notification_channel" {
   }
 
   expect_failures = [var.notification_channel]
+}
+
+run "mfa_enforce_mode" {
+  command = plan
+
+  variables {
+    mfa_enforcement_mode  = "enforce"
+    mfa_grace_period_days = 14
+  }
+
+  assert {
+    condition = alltrue([
+      for vars in [aws_lambda_function.api.environment[0].variables, aws_lambda_function.pre_token.environment[0].variables] :
+      vars.MFA_ENFORCEMENT_MODE == "enforce" && vars.MFA_GRACE_PERIOD_DAYS == "14"
+    ])
+    error_message = "MFA modu ve gecis suresi degiskenlerden API ve Pre Token Lambda'larina gecmeli"
+  }
+}
+
+run "rejects_invalid_mfa_mode" {
+  command = plan
+
+  variables {
+    mfa_enforcement_mode = "strict"
+  }
+
+  expect_failures = [var.mfa_enforcement_mode]
+}
+
+run "rejects_invalid_mfa_grace" {
+  command = plan
+
+  variables {
+    mfa_grace_period_days = 120
+  }
+
+  expect_failures = [var.mfa_grace_period_days]
 }

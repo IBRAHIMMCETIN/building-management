@@ -1,6 +1,15 @@
-import { type DynamoDBDocumentClient, QueryCommand, type QueryCommandOutput } from '@aws-sdk/lib-dynamodb';
+import { AdminGetUserCommand, CognitoIdentityProviderClient } from '@aws-sdk/client-cognito-identity-provider';
+import { ConditionalCheckFailedException } from '@aws-sdk/client-dynamodb';
+import {
+  type DynamoDBDocumentClient,
+  GetCommand,
+  PutCommand,
+  QueryCommand,
+  type QueryCommandOutput,
+} from '@aws-sdk/lib-dynamodb';
 import { getDynamo } from '../config/dynamodb.js';
 import { ROLES, type Role } from './claims.js';
+import { MFA_CLAIMS, type MfaPolicy, evaluateMfa, graceUntilFrom, isMfaRole, loadMfaPolicy } from './mfa.js';
 
 /**
  * Cognito Pre Token Generation mantigi (V1 ve V2 olaylari).
@@ -23,6 +32,15 @@ import { ROLES, type Role } from './claims.js';
  *  - Gecerli baglam yoksa rol claim'i eklenmez; API korumali uclarda 401 doner (guvenli varsayilan).
  *  - Ayni apartmanda birden fazla rol varsa tercih gecerliyse o, degilse en yetkili rol secilir.
  *  - Istemcinin gonderebilecegi ayni adli claim'ler her durumda bastirilir.
+ *
+ * Zorunlu MFA (Guvenlik G2, `auth/mfa.ts`): aktif rol kapsamdaysa (`platform_admin`,
+ * `management_company`, `apartment_manager`, `observer`) ve mod `off` degilse TOTP durumu
+ * `AdminGetUser` ile okunur ve `mfa_enabled` claim'i eklenir. TOTP yoksa:
+ *  - `warn`: kullanici bazli gecis suresi ilk kez burada baslar (`USER#<sub>` / `MFAGRACE`),
+ *    bitisi `mfa_grace_until` claim'idir; sure dolduysa `mfa_required`.
+ *  - `enforce`: `mfa_required`.
+ * `mfa_required` token'inda rol claim'i korunur ama API (merkezi ara katman) bu token'la
+ * yalnizca MFA kurulum uclarini (`/api/me/*`) acar; diger tum uclar `403 MFA_REQUIRED`.
  */
 
 // ---------------------------------------------------------------------------
@@ -38,6 +56,7 @@ export type PreTokenGenerationEvent = {
   version: string;
   triggerSource: string;
   userName: string;
+  userPoolId?: string;
   request: {
     userAttributes: Record<string, string>;
     groupConfiguration?: { groupsToOverride?: string[] };
@@ -84,7 +103,7 @@ export const ROLE_PRECEDENCE: readonly Grant['role'][] = [
   'resident',
 ];
 
-const CONTEXT_CLAIMS = ['role', 'apartmentId', 'organizationId'] as const;
+const CONTEXT_CLAIMS = ['role', 'apartmentId', 'organizationId', MFA_CLAIMS.enabled, MFA_CLAIMS.required, MFA_CLAIMS.graceUntil] as const;
 
 export function isCurrent(item: GrantItem, today: string): boolean {
   return (
@@ -155,9 +174,62 @@ export function selectContext(
 export type PreTokenDeps = {
   /** Kullanicinin tum GSI1 kayitlari. */
   loadGrantItems: (userId: string) => Promise<GrantItem[]>;
+  /** Zorunlu MFA politikasi (MFA_ENFORCEMENT_MODE / MFA_GRACE_PERIOD_DAYS). */
+  mfaPolicy: MfaPolicy;
+  /** Kullanici TOTP (software token) MFA'yi etkinlestirmis mi (AdminGetUser). */
+  loadMfaEnabled: (userPoolId: string, userName: string) => Promise<boolean>;
+  /** Kullanici bazli gecis suresi baslangici; yoksa `now` ile olusturur (idempotent). */
+  startGrace: (userId: string, now: Date) => Promise<string>;
   now: () => Date;
   log: Pick<Console, 'info'>;
 };
+
+export const mfaGraceKeys = (userId: string) => ({ PK: `USER#${userId}`, SK: 'MFAGRACE' });
+
+let cognito: CognitoIdentityProviderClient | undefined;
+
+/** TOTP etkin mi: `UserMFASettingList` icinde `SOFTWARE_TOKEN_MFA`. Gereken IAM: cognito-idp:AdminGetUser. */
+export async function cognitoMfaEnabled(
+  userPoolId: string,
+  userName: string,
+  client: Pick<CognitoIdentityProviderClient, 'send'> = (cognito ??= new CognitoIdentityProviderClient({})),
+): Promise<boolean> {
+  const out = await client.send(new AdminGetUserCommand({ UserPoolId: userPoolId, Username: userName }));
+  return (out.UserMFASettingList ?? []).includes('SOFTWARE_TOKEN_MFA');
+}
+
+/**
+ * Gecis suresi baslangicini okur; yoksa kosullu yazimla olusturur (yaris: ilk yazan kazanir).
+ * Kayit, MFA kurulduktan veya sifirlandiktan sonra da korunur: sifirlanan yonetici `warn`
+ * modunda yeni sure almaz, bir sonraki giriste kuruluma yonlendirilir.
+ */
+export async function startGraceInDynamo(
+  userId: string,
+  now: Date,
+  dynamo: { client: Pick<DynamoDBDocumentClient, 'send'>; tableName: string } = getDynamo(),
+): Promise<string> {
+  const Key = mfaGraceKeys(userId);
+  const read = async () =>
+    ((await dynamo.client.send(new GetCommand({ TableName: dynamo.tableName, Key, ConsistentRead: true }))).Item as
+      | { startedAt?: string }
+      | undefined)?.startedAt;
+  const existing = await read();
+  if (existing) return existing;
+  const startedAt = now.toISOString();
+  try {
+    await dynamo.client.send(
+      new PutCommand({
+        TableName: dynamo.tableName,
+        Item: { ...Key, entityType: 'MFA_GRACE', userId, startedAt },
+        ConditionExpression: 'attribute_not_exists(PK)',
+      }),
+    );
+    return startedAt;
+  } catch (err) {
+    if (err instanceof ConditionalCheckFailedException) return (await read()) ?? startedAt;
+    throw err;
+  }
+}
 
 export async function queryGrantItems(
   userId: string,
@@ -186,6 +258,9 @@ export async function queryGrantItems(
 export function createPreTokenHandler(overrides: Partial<PreTokenDeps> = {}) {
   const deps: PreTokenDeps = {
     loadGrantItems: (userId) => queryGrantItems(userId),
+    mfaPolicy: overrides.mfaPolicy ?? loadMfaPolicy(),
+    loadMfaEnabled: (poolId, userName) => cognitoMfaEnabled(poolId, userName),
+    startGrace: (userId, now) => startGraceInDynamo(userId, now),
     now: () => new Date(),
     log: console,
     ...overrides,
@@ -222,6 +297,26 @@ export function createPreTokenHandler(overrides: Partial<PreTokenDeps> = {}) {
           role: claims.role ?? null,
           apartmentId: claims.apartmentId ?? null,
         }),
+      );
+    }
+
+    // Zorunlu MFA: yalnizca kapsamdaki aktif rol icin Cognito'ya sorulur (diger rollerde maliyet yok).
+    // Hata firlatilirsa giris basarisiz olur (kapali-hata): MFA durumu bilinmeden yetkili token uretilmez.
+    if (isMfaRole(claims.role) && deps.mfaPolicy.mode !== 'off' && userId) {
+      const userPoolId = event.userPoolId ?? process.env.COGNITO_USER_POOL_ID;
+      if (!userPoolId) throw new Error('Pre Token: userPoolId yok, MFA durumu okunamadi');
+      const now = deps.now();
+      const mfaEnabled = await deps.loadMfaEnabled(userPoolId, event.userName);
+      let graceUntil: string | undefined;
+      if (!mfaEnabled && deps.mfaPolicy.mode === 'warn') {
+        graceUntil = graceUntilFrom(await deps.startGrace(userId, now), deps.mfaPolicy.graceDays);
+      }
+      const decision = evaluateMfa({ role: claims.role, mfaEnabled, graceUntil }, deps.mfaPolicy, now);
+      claims[MFA_CLAIMS.enabled] = String(mfaEnabled);
+      if (decision.status === 'required') claims[MFA_CLAIMS.required] = 'true';
+      if (decision.status === 'grace' && decision.graceUntil) claims[MFA_CLAIMS.graceUntil] = decision.graceUntil;
+      deps.log.info(
+        JSON.stringify({ msg: 'pre_token_mfa', role: claims.role, mode: deps.mfaPolicy.mode, status: decision.status }),
       );
     }
 

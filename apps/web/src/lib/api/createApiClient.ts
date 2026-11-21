@@ -24,6 +24,8 @@ export type ApiClientConfig = {
   getToken: TokenProvider;
   /** Yenileme sonrasi da 401 alinirsa cagrilir (oturumu kapatip girise yonlendirmek icin). */
   onAuthFailure?: () => void;
+  /** API `403 MFA_REQUIRED` dondu: kullanici TOTP kurulum ekranina yonlendirilmeli. */
+  onMfaRequired?: () => void;
   fetchImpl?: typeof fetch;
 };
 
@@ -65,7 +67,11 @@ export function createApiClient(config: ApiClientConfig) {
     if (res.status === 204) return undefined as T;
     const text = await res.text();
     const data: unknown = text ? JSON.parse(text) : undefined;
-    if (!res.ok) throw new ApiError(res.status, isApiErrorBody(data) ? data : undefined);
+    if (!res.ok) {
+      const body = isApiErrorBody(data) ? data : undefined;
+      if (res.status === 403 && body?.error === 'MFA_REQUIRED') config.onMfaRequired?.();
+      throw new ApiError(res.status, body);
+    }
     return schema ? schema.parse(data) : (data as T);
   }
 

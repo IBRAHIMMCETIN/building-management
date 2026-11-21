@@ -31,6 +31,11 @@ export class ApiError extends Error {
   get isForbidden() {
     return this.status === 403;
   }
+
+  /** Rol zorunlu MFA kapsaminda ve TOTP kurulmamis. */
+  get isMfaRequired() {
+    return this.status === 403 && this.code === 'MFA_REQUIRED';
+  }
 }
 
 /** Ag hatasi, zaman asimi vb. (sunucudan yanit hic gelmedi). */

@@ -96,7 +96,7 @@ describe('pre token generation - yetki cozumleme', () => {
 describe('pre token generation - handler', () => {
   it('tek apartmanli sakin icin access ve id token a claim ekler', async () => {
     const out = await run([unitGrant('apt-1')]);
-    const expected = { claimsToAddOrOverride: { role: 'resident', apartmentId: 'apt-1' }, claimsToSuppress: ['organizationId'] };
+    const expected = { claimsToAddOrOverride: { role: 'resident', apartmentId: 'apt-1' }, claimsToSuppress: ['organizationId', 'mfa_enabled', 'mfa_required', 'mfa_grace_until'] };
     expect(accessClaims(out)).toEqual(expected);
     expect(out.response.claimsAndScopeOverrideDetails?.idTokenGeneration).toEqual(expected);
   });
@@ -117,7 +117,7 @@ describe('pre token generation - handler', () => {
     const out = await run([unitGrant('apt-1'), unitGrant('apt-2')], { 'custom:active_apartment': 'apt-x' });
     expect(accessClaims(out)).toEqual({
       claimsToAddOrOverride: {},
-      claimsToSuppress: ['role', 'apartmentId', 'organizationId'],
+      claimsToSuppress: ['role', 'apartmentId', 'organizationId', 'mfa_enabled', 'mfa_required', 'mfa_grace_until'],
     });
   });
 
@@ -126,7 +126,7 @@ describe('pre token generation - handler', () => {
     const out = await handler({ ...event({}), version: '1' });
     expect(out.response.claimsOverrideDetails).toEqual({
       claimsToAddOrOverride: { role: 'resident', apartmentId: 'apt-1' },
-      claimsToSuppress: ['organizationId'],
+      claimsToSuppress: ['organizationId', 'mfa_enabled', 'mfa_required', 'mfa_grace_until'],
     });
     expect(out.response.claimsAndScopeOverrideDetails).toBeUndefined();
   });

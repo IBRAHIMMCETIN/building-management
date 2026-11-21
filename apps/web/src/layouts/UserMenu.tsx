@@ -1,9 +1,10 @@
-import { LogOut } from 'lucide-react';
+import { LogOut, ShieldCheck } from 'lucide-react';
 import { useNavigate } from 'react-router';
 import { ContextSwitcher } from '@/components/context/ContextSwitcher';
 import { Button } from '@/components/ui';
 import { useActiveApartmentName } from '@/hooks/useActiveContextLabel';
 import { useAuth } from '@/hooks/useAuth';
+import { MFA_SETUP_PATH } from '@/lib/auth/mfa';
 import { ROLE_LABELS } from '@/types/roles';
 
 /**
@@ -26,6 +27,20 @@ export function UserMenu() {
         <p className="truncate text-small text-muted">{roleLabel}</p>
       </div>
       <ContextSwitcher />
+      {/* Iki adimli dogrulama: kapsamdaki rollerde zorunlu, digerlerinde istege bagli. */}
+      {!user.mfa?.enabled && (
+        <Button
+          variant="ghost"
+          size="sm"
+          aria-label="İki adımlı doğrulama"
+          title="İki adımlı doğrulama"
+          className="shrink-0"
+          onClick={() => navigate(MFA_SETUP_PATH)}
+        >
+          <ShieldCheck className="size-4" aria-hidden="true" />
+          <span className="hidden lg:inline">2FA</span>
+        </Button>
+      )}
       <Button
         variant="ghost"
         size="sm"

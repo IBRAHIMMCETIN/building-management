@@ -10,6 +10,7 @@ import { SettingsPage } from '@/pages/admin/settings/SettingsPage';
 import { UnitsPage } from '@/pages/admin/units/UnitsPage';
 import { ForgotPasswordPage } from '@/pages/auth/ForgotPasswordPage';
 import { LoginPage } from '@/pages/auth/LoginPage';
+import { MfaSetupPage } from '@/pages/auth/MfaSetupPage';
 import { SelectContextPage } from '@/pages/auth/SelectContextPage';
 import { ForbiddenPage, NotFoundPage, RouteErrorPage } from '@/pages/errors/ErrorPages';
 import { PlaceholderPage } from '@/pages/PlaceholderPage';
@@ -43,7 +44,14 @@ export const router = createBrowserRouter([
       {
         element: <RequireSession />,
         children: [
-          { element: <AuthLayout wide />, children: [{ path: 'select-context', element: <SelectContextPage /> }] },
+          {
+            element: <AuthLayout wide />,
+            children: [
+              { path: 'select-context', element: <SelectContextPage /> },
+              // Zorunlu MFA kurulumu: rol kontrolu yok (MFA_REQUIRED kullanicisi buraya yonlenir).
+              { path: 'mfa-setup', element: <MfaSetupPage /> },
+            ],
+          },
         ],
       },
       {

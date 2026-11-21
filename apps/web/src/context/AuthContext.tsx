@@ -2,6 +2,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { type ReactNode, createContext, useMemo, useSyncExternalStore } from 'react';
 import { FullPageSpinner } from '@/components/ui';
 import { authAdapter } from '@/lib/auth';
+import { needsMfaSetup } from '@/lib/auth/mfa';
 import type { ActiveContext, AuthSession, SessionClaims, SignInStep } from '@/lib/auth/session';
 import { sessionManager } from '@/lib/auth/sessionManager';
 
@@ -11,6 +12,10 @@ export type AuthContextValue = {
   isAuthenticated: boolean;
   /** Oturum var ama aktif apartman/rol secilmemis (token'da rol claim'i yok). */
   needsContext: boolean;
+  /** Rol zorunlu MFA kapsaminda ve TOTP kurulmamis: yalnizca kurulum ekrani acilir. */
+  mfaSetupRequired: boolean;
+  /** Token'i yeniler (MFA kurulumundan sonra `mfa_enabled` claim'i icin). */
+  refreshSession: () => Promise<AuthSession>;
   signIn: (input: { email: string; password: string }) => Promise<SignInStep>;
   confirmNewPassword: (newPassword: string) => Promise<SignInStep>;
   confirmTotp: (code: string) => Promise<SignInStep>;
@@ -38,6 +43,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       user: session?.claims ?? null,
       isAuthenticated: session !== null,
       needsContext: session !== null && !session.claims.role,
+      mfaSetupRequired: needsMfaSetup(session?.claims, state.mfaRequired),
+      refreshSession: () => sessionManager.refresh(),
       signIn: (input) => sessionManager.signIn(input).then(resetCache),
       confirmNewPassword: (pw) => sessionManager.confirmNewPassword(pw).then(resetCache),
       confirmTotp: (code) => sessionManager.confirmTotp(code).then(resetCache),
@@ -46,7 +53,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       confirmPasswordReset: (input) => authAdapter.confirmPasswordReset(input),
       setActiveContext: (ctx) => sessionManager.setActiveContext(ctx).then(resetCache),
     };
-  }, [session, queryClient]);
+  }, [session, state.mfaRequired, queryClient]);
 
   // Saklanan oturum geri yuklenmeden guard'lar calismasin (yanlis /login yonlendirmesi olur).
   if (state.status === 'initializing') return <FullPageSpinner />;
