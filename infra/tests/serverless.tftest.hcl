@@ -245,6 +245,24 @@ run "prod_plan" {
     error_message = "Gorunurluk zaman asimi worker zaman asiminin 6 kati olmali"
   }
 
+  # --- Bildirim e-postasi (Asama 4): varsayilan log, SES yetkisi yok ---
+  assert {
+    condition = (
+      aws_lambda_function.notification_worker.environment[0].variables.NOTIFICATION_CHANNEL == "log" &&
+      aws_lambda_function.notification_worker.environment[0].variables.SES_FROM_ADDRESS == "YÖNESİST <bildirim@yonetimsistemim.com>" &&
+      !contains(keys(aws_lambda_function.notification_worker.environment[0].variables), "SES_CONFIGURATION_SET")
+    )
+    error_message = "Varsayilan bildirim kanali log, gonderen YÖNESİST adresi olmali"
+  }
+  assert {
+    condition     = length([for a in flatten([for st in data.aws_iam_policy_document.notification_worker.statement : st.actions]) : a if startswith(a, "ses:")]) == 0
+    error_message = "log kanalinda worker'a SES yetkisi verilmemeli"
+  }
+  assert {
+    condition     = contains(jsondecode(aws_sns_topic_subscription.notification.filter_policy).eventType, "DUES_BATCH_SUMMARY")
+    error_message = "Toplu tahakkuk ozet olayi bildirim kuyruguna ulasmali"
+  }
+
   # --- Zamanlanmis gorevler ---
   assert {
     condition = (
@@ -723,4 +741,68 @@ run "rejects_invalid_payment_urls" {
   }
 
   expect_failures = [var.iyzico_base_url, var.web_app_url]
+}
+
+run "notifications_ses" {
+  command = plan
+
+  variables {
+    notification_channel  = "ses"
+    ses_identity_arn      = "arn:aws:ses:eu-central-1:123456789012:identity/yonetimsistemim.com"
+    ses_from_address      = "YÖNESİST <bildirim@yonetimsistemim.com>"
+    ses_configuration_set = "bm-events"
+    web_app_url           = "https://app.yonetimsistemim.com"
+  }
+
+  assert {
+    condition = (
+      aws_lambda_function.notification_worker.environment[0].variables.NOTIFICATION_CHANNEL == "ses" &&
+      aws_lambda_function.notification_worker.environment[0].variables.SES_CONFIGURATION_SET == "bm-events" &&
+      aws_lambda_function.notification_worker.environment[0].variables.WEB_APP_URL == "https://app.yonetimsistemim.com"
+    )
+    error_message = "SES kanali ortam degiskenleri eksik"
+  }
+  assert {
+    condition     = [for st in data.aws_iam_policy_document.notification_worker.statement : { actions = toset(st.actions), resources = toset(st.resources) } if st.sid == "SendNotificationEmail"] == [{ actions = toset(["ses:SendEmail", "ses:SendRawEmail"]), resources = toset(["arn:aws:ses:eu-central-1:123456789012:identity/yonetimsistemim.com", "arn:aws:ses:eu-central-1:123456789012:configuration-set/bm-events"]) }]
+    error_message = "Worker yalnizca dogrulanmis kimlik ve yapilandirma seti uzerinden e-posta gonderebilmeli"
+  }
+  assert {
+    condition = anytrue([
+      for c in one([for st in data.aws_iam_policy_document.notification_worker.statement : st.condition if st.sid == "SendNotificationEmail"]) :
+      c.test == "StringEqualsIgnoreCase" && c.variable == "ses:FromAddress" && tolist(c.values) == tolist(["bildirim@yonetimsistemim.com"])
+    ])
+    error_message = "Gonderim yalnizca yapilandirilmis gonderen adresle sinirli olmali"
+  }
+}
+
+run "notifications_ses_requires_identity" {
+  command = plan
+
+  variables {
+    notification_channel = "ses"
+  }
+
+  expect_failures = [aws_lambda_function.notification_worker]
+}
+
+run "notifications_ses_identity_must_cover_sender" {
+  command = plan
+
+  variables {
+    notification_channel = "ses"
+    ses_identity_arn     = "arn:aws:ses:eu-central-1:123456789012:identity/ornek.com"
+    ses_from_address     = "Bina Yonetim <no-reply@ornek.com>"
+  }
+
+  expect_failures = [aws_lambda_function.notification_worker]
+}
+
+run "rejects_unknown_notification_channel" {
+  command = plan
+
+  variables {
+    notification_channel = "sms"
+  }
+
+  expect_failures = [var.notification_channel]
 }

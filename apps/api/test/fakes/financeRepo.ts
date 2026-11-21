@@ -172,6 +172,16 @@ export function createFakeFinanceRepo(defaultApartmentId = 'apt-1') {
       await postBatch(input);
       batches.push(input);
     },
+    recordEvents: async (apt, list) => {
+      let written = 0;
+      for (const e of list) {
+        if (e.apartmentId !== apt) throw new Error('olay tenant');
+        if (outbox.has(k(apt, e.eventId))) continue;
+        outbox.set(k(apt, e.eventId), structuredClone(e));
+        written++;
+      }
+      return written;
+    },
   };
 
   const balanceOf = (id: string, apt = defaultApartmentId) => accounts.get(k(apt, id))?.balance ?? 0;

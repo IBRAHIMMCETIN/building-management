@@ -475,6 +475,12 @@ export type FinanceRepository = {
 
   postTransaction(input: PostInput): Promise<void>;
   postBatch(input: PostBatchInput): Promise<void>;
+  /**
+   * Defter yazimina bagli olmayan (ozet) olaylari outbox'a yazar: her olay tek kayit,
+   * `attribute_not_exists` kosullu. Olay zaten varsa sessizce atlanir (deterministik kimlik;
+   * ayni toplu islemin tekrari ikinci ozet uretmez). Yazilan olay sayisini doner.
+   */
+  recordEvents(apartmentId: string, events: DomainEvent[]): Promise<number>;
 };
 
 export type TransactionQuery = {
@@ -622,6 +628,20 @@ export function createFinanceRepository(): FinanceRepository {
 
     postTransaction,
     postBatch,
+    async recordEvents(apartmentId, events) {
+      const { client, tableName } = getDynamo();
+      let written = 0;
+      for (const item of toOutboxItems(events, new Date().toISOString(), apartmentId)) {
+        try {
+          await client.send(new PutCommand({ TableName: tableName, Item: item, ConditionExpression: 'attribute_not_exists(PK)' }));
+          written++;
+        } catch (err) {
+          if (err instanceof ConditionalCheckFailedException) continue;
+          throw toDataAccessError(err);
+        }
+      }
+      return written;
+    },
   };
 }
 

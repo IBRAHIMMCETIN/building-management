@@ -181,6 +181,11 @@ function createWorld() {
     postBatch: async () => {
       throw new Error('portal testlerinde kullanilmaz');
     },
+    recordEvents: async (_apt, list) => {
+      const fresh = list.filter((e) => !outbox.some((o) => o.eventId === e.eventId));
+      outbox.push(...structuredClone(fresh));
+      return fresh.length;
+    },
   };
 
   const portalRepo: PortalRepository = {
@@ -644,8 +649,18 @@ describe('olaylar - finans islemlerinde outbox', () => {
     }
     expect(due.reduce((sum, e) => sum + e.payload.totalAmount, 0)).toBe(300001);
 
+    // Bildirim icin TEK ozet olay: tum kalemler, ayni batchId.
+    const summary = events.filter((e): e is DomainEvent<'DUES_BATCH_SUMMARY'> => e.type === 'DUES_BATCH_SUMMARY');
+    expect(summary).toHaveLength(1);
+    expect(summary[0]).toMatchObject({
+      eventId: `DUES_BATCH_SUMMARY:${first.body.batchId}`,
+      payload: { batchId: first.body.batchId, part: 1, parts: 1, totalAmount: 300001, dueDate: '2026-11-15', description: 'Kasim aidati' },
+    });
+    expect(summary[0]!.payload.items.map((i) => i.transactionId)).toEqual(first.body.items.map((i: { transactionId: string }) => i.transactionId));
+
+    // Tekrar istegi: yeni kalem olayi da, ikinci ozet de yok.
     expect((await post('/dues', body)).status).toBe(200);
-    expect(events).toHaveLength(3);
+    expect(events).toHaveLength(4);
   });
 
   it('toplu tahakkuk yarida kesilirse yazilan kalemlerin olayi kaybolmaz; tamamlama yalnizca kalanlari ekler', async () => {
@@ -668,6 +683,8 @@ describe('olaylar - finans islemlerinde outbox', () => {
     };
     expect((await post('/dues', body)).status).toBe(500);
     expect(events.filter((e) => e.type === 'DUE_GENERATED')).toHaveLength(1);
+    // Yarim kalan toplu islemin ozeti yok (sakine eksik ozet gitmez).
+    expect(events.filter((e) => e.type === 'DUES_BATCH_SUMMARY')).toHaveLength(0);
 
     world.financeRepo.postTransaction = real;
     const done = await post('/dues', body);
@@ -678,6 +695,10 @@ describe('olaylar - finans islemlerinde outbox', () => {
     expect(new Set(due.map((e) => e.payload.items[0]!.transactionId))).toEqual(
       new Set(done.body.items.map((i: { transactionId: string }) => i.transactionId)),
     );
+    // Tamamlamada ozet, kesintiden once yazilan kalem dahil TUM kalemleri tasir.
+    const [summary] = events.filter((e): e is DomainEvent<'DUES_BATCH_SUMMARY'> => e.type === 'DUES_BATCH_SUMMARY');
+    expect(summary!.payload.items).toHaveLength(3);
+    expect(summary!.payload.totalAmount).toBe(300000);
   });
 
   it('defter yazimi basarisizsa ne odeme ne olay vardir (atomik)', async () => {

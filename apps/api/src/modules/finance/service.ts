@@ -288,6 +288,9 @@ const fingerprint = (value: unknown): string =>
 
 const compact = (d: IsoDate) => d.replaceAll('-', '');
 
+/** Ozet olay basina kalem (SNS 256 KB / DynamoDB 400 KB siniri icin genis pay). */
+export const BATCH_SUMMARY_CHUNK = 400;
+
 const receivableId = mainReceivableId;
 
 function parseInvoiceUpload(value: unknown): { uploadId: string; fileName: string } | undefined {
@@ -792,6 +795,37 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
         liableParty: r.liableParty,
         vacant: r.vacant,
       });
+    }
+
+    // Tek ozet olay (bildirim): tum kalemler yazildiktan SONRA. Istek yarida kesilirse ozet
+    // yazilmaz; ayni anahtarla tamamlama (replay dahil) TUM kalemlerle ozeti yazar. Kimlik
+    // deterministik oldugundan tekrar eden istek ikinci ozet uretmez.
+    if (results.length > 0) {
+      const parts = Math.ceil(results.length / BATCH_SUMMARY_CHUNK);
+      const events: DomainEvent[] = [];
+      for (let part = 1; part <= parts; part++) {
+        const chunk = results.slice((part - 1) * BATCH_SUMMARY_CHUNK, part * BATCH_SUMMARY_CHUNK);
+        events.push(
+          toEvent({
+            eventId: parts === 1 ? `DUES_BATCH_SUMMARY:${batchId}` : `DUES_BATCH_SUMMARY:${batchId}:${part}`,
+            type: 'DUES_BATCH_SUMMARY',
+            apartmentId: ctx.apartmentId,
+            actorId: ctx.userId,
+            payload: {
+              batchId,
+              part,
+              parts,
+              date,
+              dueDate,
+              description,
+              liableParty: party,
+              totalAmount: toKurus(chunk.reduce((sum, r) => sum + r.amount, 0)),
+              items: chunk.map(({ unitId, amount, transactionId, liableParty }) => ({ unitId, amount, transactionId, liableParty })),
+            },
+          }),
+        );
+      }
+      await repo.recordEvents(ctx.apartmentId, events);
     }
 
     return {

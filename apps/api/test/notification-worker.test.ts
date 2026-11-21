@@ -77,8 +77,7 @@ const dueEvent = () =>
       apartmentId: APT,
       actorId: 'mgr',
       payload: {
-        mode: 'bulk',
-        batchId: 'b1',
+        mode: 'single',
         date: '2026-11-01',
         dueDate: '2026-11-15',
         description: 'Kasim aidati',
@@ -89,6 +88,51 @@ const dueEvent = () =>
           { unitId: 'u2', amount: k(100000), transactionId: 't2' },
           { unitId: 'u3', amount: k(100000), transactionId: 't3' },
         ],
+      },
+    },
+    () => NOW,
+  );
+
+/** Toplu tahakkukun kalem olayi (yeni bicim: kalem basina, batchId dolu). */
+const bulkItemEvent = (unitId: string, transactionId: string) =>
+  buildEvent(
+    {
+      eventId: `DUE_GENERATED:${transactionId}`,
+      type: 'DUE_GENERATED',
+      apartmentId: APT,
+      actorId: 'mgr',
+      groupKey: unitId,
+      payload: {
+        mode: 'bulk',
+        batchId: 'b9',
+        date: '2026-11-01',
+        dueDate: '2026-11-15',
+        description: 'Kasim aidati',
+        liableParty: 'occupant',
+        totalAmount: k(100000),
+        items: [{ unitId, amount: k(100000), transactionId, liableParty: 'occupant' }],
+      },
+    },
+    () => NOW,
+  );
+
+const summaryEvent = (items: { unitId: string; amount: number; liableParty?: 'owner' | 'occupant' }[]) =>
+  buildEvent(
+    {
+      eventId: 'DUES_BATCH_SUMMARY:b9',
+      type: 'DUES_BATCH_SUMMARY',
+      apartmentId: APT,
+      actorId: 'mgr',
+      payload: {
+        batchId: 'b9',
+        part: 1,
+        parts: 1,
+        date: '2026-11-01',
+        dueDate: '2026-11-15',
+        description: 'Kasim aidati',
+        liableParty: 'occupant',
+        totalAmount: k(items.reduce((s, i) => s + i.amount, 0)),
+        items: items.map((i, n) => ({ unitId: i.unitId, amount: k(i.amount), transactionId: `t${n}`, liableParty: i.liableParty ?? 'occupant' })),
       },
     },
     () => NOW,
@@ -152,6 +196,33 @@ describe('parseDomainEvent', () => {
 });
 
 describe('buildNotifications - alici cozumleme', () => {
+  it('toplu tahakkuk kalemi tek basina bildirim uretmez (ozet olayina birakilir)', () => {
+    expect(buildNotifications(bulkItemEvent('u1', 't1'), memberships, new Map(), '2026-11-06')).toEqual([]);
+  });
+
+  it('DUES_BATCH_SUMMARY: kullanici basina TEK ozet; gordugu tum kalemler ve toplam', () => {
+    const extra = [...memberships, member('tenant-1', 'u3', 'tenant')]; // iki dairede kiraci
+    const ns = buildNotifications(summaryEvent([{ unitId: 'u1', amount: 100000 }, { unitId: 'u2', amount: 120000 }, { unitId: 'u3', amount: 90000 }]), extra, new Map(), '2026-11-06');
+    const byUser = new Map(ns.map((n) => [n.userId, n]));
+    expect([...byUser.keys()].sort()).toEqual(['owner-2', 'owner-3', 'tenant-1']);
+    expect(ns.every((n) => n.template === 'dues_batch_summary' && n.eventId === 'DUES_BATCH_SUMMARY:b9')).toBe(true);
+    expect(byUser.get('tenant-1')!.data).toEqual({
+      batchId: 'b9',
+      description: 'Kasim aidati',
+      dueDate: '2026-11-15',
+      total: 190000,
+      items: [{ unitId: 'u1', amount: 100000 }, { unitId: 'u3', amount: 90000 }],
+    });
+    // Oturmayan malik sakin gideri ozeti almaz; eski kiraci da almaz.
+    expect(byUser.has('owner-1')).toBe(false);
+    expect(byUser.has('old-tenant')).toBe(false);
+  });
+
+  it('DUES_BATCH_SUMMARY: bos daire kalemi (malike yazilmis) malike gider', () => {
+    const ns = buildNotifications(summaryEvent([{ unitId: 'u1', amount: 100000, liableParty: 'owner' }]), memberships, new Map(), '2026-11-06');
+    expect(ns.map((n) => n.userId)).toEqual(['owner-1']);
+  });
+
   const day = '2026-11-06';
 
   it('PAYMENT_RECEIVED (occupant): kiraci; oturmayan malik ve baska apartman almaz', () => {

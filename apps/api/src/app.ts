@@ -16,6 +16,7 @@ import { type FinanceService, createFinanceService } from './modules/finance/ser
 import { healthRoutes } from './modules/health/routes.js';
 import { meRoutes } from './modules/me/routes.js';
 import { type MeService, createMeService } from './modules/me/service.js';
+import { type PreferencesService, createPreferencesService } from './modules/notifications/preferences.js';
 import { membershipRepository } from './modules/memberships/repository.js';
 import { membershipRoutes } from './modules/memberships/routes.js';
 import { type MembershipService, createMembershipService } from './modules/memberships/service.js';
@@ -52,6 +53,8 @@ export type AppConfig = {
    */
   identify?: IdentityResolver;
   meService?: MeService;
+  /** Kullanici bildirim tercihleri (`/api/me/notification-preferences`). */
+  notificationPreferences?: PreferencesService;
   /** Testlerde sahte repository ile servis enjekte etmek icin. */
   coreService?: CoreService;
   financeService?: FinanceService;
@@ -88,7 +91,11 @@ export function createApp(config: AppConfig) {
   app.route('/api/health', healthRoutes(config));
   app.route(
     '/api/me',
-    meRoutes({ identify: config.identify ?? denyAllIdentity, service: config.meService ?? createMeService() }),
+    meRoutes({
+      identify: config.identify ?? denyAllIdentity,
+      service: config.meService ?? createMeService(),
+      preferences: config.notificationPreferences ?? createPreferencesService(),
+    }),
   );
   const coreService = config.coreService ?? createCoreService();
   app.route('/api/sites', coreRoutes({ authenticate, service: coreService }));

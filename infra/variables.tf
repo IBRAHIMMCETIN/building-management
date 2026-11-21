@@ -94,6 +94,42 @@ variable "ses_reply_to" {
   default = ""
 }
 
+# --- Bildirim e-postalari (notification worker) ---------------------------------
+# log: yapilandirilmis log (dis gonderim yok; dev/test varsayilani).
+# ses: SES ile e-posta. ses_identity_arn, gonderen adresin alan adini veya adresini kapsamali.
+variable "notification_channel" {
+  type        = string
+  default     = "log"
+  description = "Bildirim kanali: log | ses."
+
+  validation {
+    condition     = contains(["log", "ses"], var.notification_channel)
+    error_message = "notification_channel log veya ses olmalidir."
+  }
+}
+
+variable "notification_from_address" {
+  type        = string
+  default     = "YÖNESİST <bildirim@yonetimsistemim.com>"
+  description = "Bildirim e-postalarinin gondereni (SES_FROM_ADDRESS). Gorunen addaki ASCII disi karakterleri uygulama MIME ile kodlar."
+
+  validation {
+    condition     = can(regex("^([^<>]*<)?[^@<>\\s]+@[^@<>\\s]+\\.[^@<>\\s]+>?$", trimspace(var.notification_from_address)))
+    error_message = "notification_from_address \"Ad <adres@alan.com>\" veya \"adres@alan.com\" biciminde olmalidir."
+  }
+}
+
+variable "ses_configuration_set" {
+  type        = string
+  default     = ""
+  description = "Istege bagli SES yapilandirma seti (geri donus/sikayet olaylari icin). Bos ise kullanilmaz."
+
+  validation {
+    condition     = var.ses_configuration_set == "" || can(regex("^[A-Za-z0-9_-]{1,64}$", var.ses_configuration_set))
+    error_message = "ses_configuration_set yalnizca harf, rakam, - ve _ icerebilir (en fazla 64)."
+  }
+}
+
 variable "cognito_admin_create_user_only" {
   type        = bool
   default     = true

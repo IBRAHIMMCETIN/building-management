@@ -29,6 +29,7 @@ export const EVENT_TYPES = [
   'ANNOUNCEMENT_PUBLISHED',
   'LATE_FEE_POSTED',
   'DUES_REMINDER',
+  'DUES_BATCH_SUMMARY',
 ] as const;
 export type EventType = (typeof EVENT_TYPES)[number];
 
@@ -55,6 +56,24 @@ export type PaymentReceivedPayload = {
   paidAt: IsoDate;
   /** Ayrilan sakin/malik carisine tahsilat: dairenin bugunku sakinlerine bildirim gitmez. */
   receivableAccountId?: string;
+};
+
+/**
+ * Toplu tahakkukun tamamlandigini bildiren TEK ozet olay (batchId basina). Kalem olaylari
+ * (`DUE_GENERATED`, mode=bulk) kayipsizlik icin yine yazilir ama bildirim uretmez; sakine
+ * bu olaydan kullanici bazinda tek ozet gider. Cok buyuk sitelerde `part` ile bolunur.
+ */
+export type DuesBatchSummaryPayload = {
+  batchId: string;
+  /** 1'den baslar; `parts` toplam parca sayisi. */
+  part: number;
+  parts: number;
+  date: IsoDate;
+  dueDate: IsoDate;
+  description: string;
+  liableParty: LiableParty;
+  totalAmount: Kurus;
+  items: { unitId: string; amount: Kurus; transactionId: string; liableParty: LiableParty }[];
 };
 
 /** Bildirim worker'i sakinlere SMS/push gonderir; govde tasinmaz, worker kaydi okur. */
@@ -90,6 +109,7 @@ type PayloadByType = {
   ANNOUNCEMENT_PUBLISHED: AnnouncementPublishedPayload;
   LATE_FEE_POSTED: LateFeePostedPayload;
   DUES_REMINDER: DuesReminderPayload;
+  DUES_BATCH_SUMMARY: DuesBatchSummaryPayload;
 };
 
 export type DomainEvent<T extends EventType = EventType> = {

@@ -3,7 +3,12 @@ import { type DomainEvent, EVENT_TYPES, type EventType } from '../events/publish
 import { type CoreRepository, coreRepository } from '../modules/core/repository.js';
 import type { IsoDate, LiableParty } from '../modules/core/types.js';
 import { type MembershipRepository, membershipRepository } from '../modules/memberships/repository.js';
+import { createNotifierFromEnv } from '../modules/notifications/email.js';
+import type { DeliveryResult, Notification, NotificationLine, NotificationTemplate, Notifier } from '../modules/notifications/notifier.js';
 import { type UnitMembership, visibleParties } from '../modules/portal/types.js';
+
+export type { DeliveryResult, Notification, NotificationTemplate, Notifier } from '../modules/notifications/notifier.js';
+export { createLogNotifier } from '../modules/notifications/notifier.js';
 
 /**
  * Bildirim worker'i (SQS tuketicisi).
@@ -15,18 +20,20 @@ import { type UnitMembership, visibleParties } from '../modules/portal/types.js'
  *  3. Alicilar DynamoDB'den cozulur (yalnizca o an gecerli daire uyelikleri):
  *       PAYMENT_RECEIVED       -> odemenin yapildigi alt cariyi goren uyeler
  *       DUE_GENERATED          -> her kalemin dairesinde ilgili alt cariyi goren uyeler
+ *                                 (toplu tahakkuk kalemleri HARIC: onlar DUES_BATCH_SUMMARY ile)
+ *       DUES_BATCH_SUMMARY     -> kullanici basina TEK ozet: gordugu tum kalemler bir arada
  *       ANNOUNCEMENT_PUBLISHED -> apartmandaki (blok hedefliyse o bloklardaki) tum uyeler
  *       LATE_FEE_POSTED        -> tazminat yazilan alt cariyi goren uyeler
  *       DUES_REMINDER          -> hatirlatilan alt cariyi goren uyeler (ilk kalem)
- *  4. Her aliciya `Notifier` ile bildirim gonderilir. Su an kanal `log` (yapilandirilmis log);
- *     SMS / WhatsApp / e-posta saglayicilari ayni arayuzle eklenecek.
+ *  4. Her aliciya `Notifier` ile bildirim gonderilir: NOTIFICATION_CHANNEL=log (yapilandirilmis
+ *     log) veya ses (e-posta; tercih, adres ve alici bazli tekrar korumasi kanal icinde, bkz.
+ *     modules/notifications/email.ts). SMS / WhatsApp ayni arayuzle eklenecek.
  *  5. Basariyla islenen olay icin `NOTIF#` kaydi yazilir (30 gun TTL).
  * Hatali mesajlar `batchItemFailures` ile yalnizca kendileri yeniden denenir; 5 denemeden
  * sonra DLQ'ya duser (Terraform: maxReceiveCount = 5) ve alarm uretir.
  *
- * Bilinen sinir: bir alici icin gonderim basarisiz olursa olay yeniden denenir ve onceki
- * alicilara bildirim tekrar gidebilir. Gercek SMS saglayicisi eklenirken alici bazli
- * idempotency kaydi eklenmelidir.
+ * Bir alicinin gecici hatasinda olay yeniden denenir; e-posta kanali `NOTIFSENT#` kaydiyla
+ * onceki alicilara ikinci kez gondermez (log kanalinda dis etki yoktur).
  */
 
 // ---------------------------------------------------------------------------
@@ -36,38 +43,6 @@ import { type UnitMembership, visibleParties } from '../modules/portal/types.js'
 export type SqsRecord = { messageId: string; body: string; receiptHandle?: string };
 export type SqsEvent = { Records: SqsRecord[] };
 export type SqsBatchResponse = { batchItemFailures: { itemIdentifier: string }[] };
-
-// ---------------------------------------------------------------------------
-// Bildirim modeli ve kanallar
-// ---------------------------------------------------------------------------
-
-export type NotificationTemplate =
-  | 'due_generated'
-  | 'payment_received'
-  | 'announcement_published'
-  | 'late_fee_posted'
-  | `dues_reminder_${'upcoming' | 'overdue_1' | 'overdue_7'}`;
-
-export type Notification = {
-  eventId: string;
-  apartmentId: string;
-  userId: string;
-  template: NotificationTemplate;
-  /** Sablon degiskenleri; kisisel veri icermez (ad/telefon kanal adaptorunde cozulur). */
-  data: Record<string, string | number | undefined>;
-};
-
-export type Notifier = { readonly channel: string; send(n: Notification): Promise<void> };
-
-/** Varsayilan kanal: CloudWatch'a yapilandirilmis log (saglayici entegrasyonuna kadar). */
-export function createLogNotifier(log: Pick<Console, 'info'> = console): Notifier {
-  return {
-    channel: 'log',
-    async send(n) {
-      log.info(JSON.stringify({ msg: 'notification', channel: 'log', ...n }));
-    },
-  };
-}
 
 // ---------------------------------------------------------------------------
 // Ayristirma
@@ -151,6 +126,8 @@ export function buildNotifications(
     }
     case 'DUE_GENERATED': {
       const p = event.payload;
+      // Toplu tahakkuk kalemi: sakine kalem kalem degil, DUES_BATCH_SUMMARY ile tek ozet gider.
+      if (p.mode === 'bulk' && p.batchId) break;
       for (const item of p.items) {
         for (const m of current) {
           if (m.unitId === item.unitId && seesParty(m, item.liableParty ?? p.liableParty)) {
@@ -162,6 +139,30 @@ export function buildNotifications(
             });
           }
         }
+      }
+      break;
+    }
+    case 'DUES_BATCH_SUMMARY': {
+      const p = event.payload;
+      const perUser = new Map<string, NotificationLine[]>();
+      for (const item of p.items) {
+        for (const m of current) {
+          if (m.unitId === item.unitId && seesParty(m, item.liableParty)) {
+            const list = perUser.get(m.userId) ?? [];
+            // Ayni kullanici ayni daireyi iki uyelikle gorse de kalem bir kez.
+            if (!list.some((l) => l.unitId === item.unitId)) list.push({ unitId: item.unitId, amount: item.amount });
+            perUser.set(m.userId, list);
+          }
+        }
+      }
+      for (const [userId, items] of perUser) {
+        add(userId, 'dues_batch_summary', {
+          batchId: p.batchId,
+          description: p.description,
+          dueDate: p.dueDate,
+          total: items.reduce((sum, i) => sum + i.amount, 0),
+          items,
+        });
       }
       break;
     }
@@ -229,7 +230,7 @@ export function createNotificationWorker(overrides: Partial<WorkerDeps> = {}) {
   const deps: WorkerDeps = {
     memberships: membershipRepository,
     core: coreRepository,
-    notifier: createLogNotifier(),
+    notifier: overrides.notifier ?? createNotifierFromEnv(),
     isProcessed: async (apt, id) => Boolean(await getTenantItem(processedKey(apt, id))),
     markProcessed: async (apt, id, info) => {
       try {
@@ -256,7 +257,9 @@ export function createNotificationWorker(overrides: Partial<WorkerDeps> = {}) {
   const today = (): IsoDate =>
     new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Istanbul' }).format(deps.now());
 
-  async function processEvent(event: DomainEvent): Promise<{ skipped: boolean; recipients: number }> {
+  type Outcome = { skipped: boolean; recipients: number; sent?: number; skippedRecipients?: Record<string, number> };
+
+  async function processEvent(event: DomainEvent): Promise<Outcome> {
     if (await deps.isProcessed(event.apartmentId, event.eventId)) {
       return { skipped: true, recipients: 0 };
     }
@@ -267,9 +270,16 @@ export function createNotificationWorker(overrides: Partial<WorkerDeps> = {}) {
         : new Map<string, string>();
 
     const notifications = buildNotifications(event, memberships, unitBlocks, today());
-    for (const n of notifications) await deps.notifier.send(n);
+    let sent = 0;
+    const skippedRecipients: Record<string, number> = {};
+    for (const n of notifications) {
+      // Hata firlatirsa olay yeniden denenir (gonderilmis alicilar kanalda atlanir).
+      const result: DeliveryResult | void = await deps.notifier.send(n);
+      if (!result || result.status === 'sent') sent++;
+      else skippedRecipients[result.reason] = (skippedRecipients[result.reason] ?? 0) + 1;
+    }
     await deps.markProcessed(event.apartmentId, event.eventId, { type: event.type, recipients: notifications.length });
-    return { skipped: false, recipients: notifications.length };
+    return { skipped: false, recipients: notifications.length, sent, skippedRecipients };
   }
 
   return async (sqsEvent: SqsEvent): Promise<SqsBatchResponse> => {
