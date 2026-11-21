@@ -234,6 +234,16 @@ export function checkOnlinePayments(s: Pick<AuditSnapshot, 'intents' | 'payments
     if (total !== intent.amount && ids.every((id) => payments.has(id))) {
       fail('tutar uyusmuyor', { expected: intent.amount, actual: total });
     }
+    // Online Odeme v2 · P1: apartmanin komisyon gideri tahsilatla ayni yazimda olmali.
+    const commission = intent.settlement?.commission ?? 0;
+    if (commission > 0) {
+      const ref = `ONLINE-FEE:${intent.intentId}`;
+      const feeTx = (intent.transactionIds ?? []).map((id) => txs.get(id)).find((t) => t?.reference === ref);
+      if (!feeTx) fail('komisyon gideri defterde yok', { expected: commission });
+      else if (feeTx.totalAmount !== commission) {
+        fail('komisyon gideri tutari uyusmuyor', { transactionId: feeTx.transactionId, expected: commission, actual: feeTx.totalAmount });
+      }
+    }
   }
   return out;
 }

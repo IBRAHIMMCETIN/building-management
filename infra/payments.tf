@@ -10,6 +10,8 @@
 # - Kimliksiz rotalar YALNIZCA iki tam yol: saglayici callback'i (tarayici POST) ve webhook.
 #   Guven, sonucun saglayicidan token ile SORGULANMASINDAN gelir; rota bazli throttling uygulanir.
 # - "Incelemeye alinan" odemeler (PAYMENT_NEEDS_REVIEW logu) alarm uretir.
+# - Pazaryeri kalem onayi (iyzico approve) kalici basarisiz olursa (PAYMENT_APPROVAL_FAILED)
+#   para iyzico havuzunda bekler, apartmana aktarilmaz: alarm uretir.
 # ---------------------------------------------------------------------------
 
 locals {
@@ -31,6 +33,9 @@ locals {
       WEB_APP_URL           = var.web_app_url
       IYZICO_BASE_URL       = var.iyzico_base_url
       PAYMENTS_SECRET_ARN   = local.payments_secret_arn
+      # P1: POS sozlesme orani (komisyon tahmini; hesap bazinda gecersiz kilinabilir).
+      PAYMENTS_POS_RATE_BPS        = tostring(var.payments_pos_rate_bps)
+      PAYMENTS_POS_FIXED_FEE_KURUS = tostring(var.payments_pos_fixed_fee_kurus)
     } : k => v if local.payments_enabled
   }
 
@@ -145,4 +150,44 @@ resource "aws_cloudwatch_metric_alarm" "payment_refund_failed" {
   alarm_actions       = [aws_sns_topic.alerts.arn]
 
   depends_on = [aws_cloudwatch_log_metric_filter.payment_refund_failed]
+}
+
+# Pazaryeri kalem onayi (iyzico /payment/iyzipos/item/approve) 10 denemede de basarisiz oldu ya da
+# saglayici kalici olarak reddetti (PAYMENT_APPROVAL_FAILED): tahsilat defterde, ancak para alt uye
+# isyerine (apartmana) aktarilmiyor. Saglayici panelinden kalemi kontrol edip onaylayin.
+resource "aws_cloudwatch_log_metric_filter" "payment_approval_failed" {
+  for_each = {
+    for k, v in {
+      api       = aws_cloudwatch_log_group.api.name
+      scheduler = aws_cloudwatch_log_group.scheduler_worker.name
+    } : k => v if local.payments_enabled
+  }
+
+  name           = "${local.name}-payment-approval-failed-${each.key}"
+  log_group_name = each.value
+  pattern        = "\"PAYMENT_APPROVAL_FAILED\""
+
+  metric_transformation {
+    name      = "PaymentApprovalFailed"
+    namespace = "BuildingManagement/${local.name}"
+    value     = "1"
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "payment_approval_failed" {
+  count = local.payments_enabled ? 1 : 0
+
+  alarm_name          = "${local.name}-payment-approval-failed"
+  alarm_description   = "Bir online odemenin pazaryeri onayi kalici olarak basarisiz oldu: para saglayici havuzunda bekliyor, apartmana aktarilmiyor. Niyetin settlement kaydini ve saglayici panelini kontrol edin."
+  namespace           = "BuildingManagement/${local.name}"
+  metric_name         = "PaymentApprovalFailed"
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = 1
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+
+  depends_on = [aws_cloudwatch_log_metric_filter.payment_approval_failed]
 }

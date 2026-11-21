@@ -243,6 +243,28 @@ describe('defter denetimi - makbuz ve online odeme', () => {
     d.snap.payments = [];
     expect(checkOnlinePayments(d.snap)).toEqual([]);
   });
+
+  it('komisyon (P1): ONLINE-FEE gideri niyetin islemlerinde ve tutari esit olmali', async () => {
+    const withFee = async () => {
+      const o = await online();
+      const feeTx = { ...o.tx, transactionId: 'tx-fee', kind: 'expense', reference: 'ONLINE-FEE:pi1', totalAmount: toKurus(3_265) } as Transaction;
+      o.snap.transactions.push(feeTx);
+      Object.assign(o.intent, { transactionIds: [o.tx.transactionId, 'tx-fee'], settlement: { status: 'approved', commission: 3_265, subMerchantTotal: 0, approvals: [] } });
+      return { ...o, feeTx };
+    };
+    const ok = await withFee();
+    expect(checkOnlinePayments(ok.snap)).toEqual([]);
+
+    const missing = await withFee();
+    missing.intent.transactionIds = [missing.tx.transactionId];
+    expect(checkOnlinePayments(missing.snap)).toEqual([expect.objectContaining({ code: 'online_payment_unposted', detail: 'komisyon gideri defterde yok', expected: 3_265 })]);
+
+    const wrong = await withFee();
+    wrong.feeTx.totalAmount = toKurus(3_000);
+    expect(checkOnlinePayments(wrong.snap)).toEqual([
+      expect.objectContaining({ detail: 'komisyon gideri tutari uyusmuyor', transactionId: 'tx-fee', expected: 3_265, actual: 3_000 }),
+    ]);
+  });
 });
 
 describe('defter denetimi - DynamoDB kaynagi', () => {

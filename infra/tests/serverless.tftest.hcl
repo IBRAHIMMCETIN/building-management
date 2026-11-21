@@ -771,7 +771,7 @@ run "payments_disabled_by_default" {
     error_message = "Odeme kapaliyken odeme ciktilari bos olmali"
   }
   assert {
-    condition     = length(aws_cloudwatch_metric_alarm.payment_needs_review) == 0 && length(aws_cloudwatch_metric_alarm.payment_refund_failed) == 0
+    condition     = length(aws_cloudwatch_metric_alarm.payment_needs_review) == 0 && length(aws_cloudwatch_metric_alarm.payment_refund_failed) == 0 && length(aws_cloudwatch_metric_alarm.payment_approval_failed) == 0
     error_message = "Odeme kapaliyken odeme alarmlari olusmamali"
   }
 }
@@ -784,6 +784,8 @@ run "payments_iyzico" {
     dynamodb_deletion_protection = false
     payments_provider            = "iyzico"
     web_app_url                  = "https://building-management-apx.pages.dev"
+    payments_pos_rate_bps        = 249
+    payments_pos_fixed_fee_kurus = 25
   }
 
   override_resource {
@@ -832,7 +834,9 @@ run "payments_iyzico" {
       f.environment[0].variables.PAYMENTS_PROVIDER == "iyzico" &&
       f.environment[0].variables.IYZICO_BASE_URL == "https://sandbox-api.iyzipay.com" &&
       f.environment[0].variables.WEB_APP_URL == "https://building-management-apx.pages.dev" &&
-      f.environment[0].variables.PAYMENTS_SECRET_ARN == "arn:aws:secretsmanager:eu-central-1:123456789012:secret:building-management-dev/payments/iyzico-AbCdEf"
+      f.environment[0].variables.PAYMENTS_SECRET_ARN == "arn:aws:secretsmanager:eu-central-1:123456789012:secret:building-management-dev/payments/iyzico-AbCdEf" &&
+      f.environment[0].variables.PAYMENTS_POS_RATE_BPS == "249" &&
+      f.environment[0].variables.PAYMENTS_POS_FIXED_FEE_KURUS == "25"
     ])
     error_message = "API ve scheduler worker ayni odeme yapilandirmasini almali"
   }
@@ -883,6 +887,14 @@ run "payments_iyzico" {
     error_message = "Reddedilen ilk iadede alarm uretilmeli"
   }
   assert {
+    condition     = length(aws_cloudwatch_log_metric_filter.payment_approval_failed) == 2 && alltrue([for f in aws_cloudwatch_log_metric_filter.payment_approval_failed : f.pattern == "\"PAYMENT_APPROVAL_FAILED\""])
+    error_message = "Kalici basarisiz pazaryeri onaylari API ve scheduler loglarinda sayilmali"
+  }
+  assert {
+    condition     = length(aws_cloudwatch_metric_alarm.payment_approval_failed) == 1 && aws_cloudwatch_metric_alarm.payment_approval_failed[0].threshold == 1
+    error_message = "Kalici basarisiz ilk pazaryeri onayinda alarm uretilmeli"
+  }
+  assert {
     condition     = output.payments_secret_arn == "arn:aws:secretsmanager:eu-central-1:123456789012:secret:building-management-dev/payments/iyzico-AbCdEf"
     error_message = "Secret ARN ciktisi verilmeli (deger girmek icin)"
   }
@@ -925,6 +937,17 @@ run "rejects_fake_payment_provider" {
   }
 
   expect_failures = [var.payments_provider]
+}
+
+run "rejects_invalid_pos_fees" {
+  command = plan
+
+  variables {
+    payments_pos_rate_bps        = 2.5
+    payments_pos_fixed_fee_kurus = 6000
+  }
+
+  expect_failures = [var.payments_pos_rate_bps, var.payments_pos_fixed_fee_kurus]
 }
 
 run "rejects_invalid_payment_urls" {

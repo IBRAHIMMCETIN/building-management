@@ -102,6 +102,12 @@ export const SYSTEM_ACCOUNTS = {
    */
   onlineCollection: 'online-collection',
   /**
+   * Online tahsilat komisyon gideri (Online Odeme v2 · P1): platform payi + tahmini POS maliyeti.
+   * Komisyonu apartman yonetimi oder (sakine yansitilmaz); `online-collection` bakiyesi boylece
+   * apartmanin IBAN'ina aktarilacak tutara esit kalir.
+   */
+  onlineCollectionFee: 'exp-online-collection-fee',
+  /**
    * Cari devri ara hesabi (tasinmada kapama): kapama ve acilis islemleri bu hesap uzerinden
    * dengelenir; bakiyesi her zaman sifirdir. Ilk kapamada olusturulur.
    */
@@ -158,6 +164,12 @@ export type OnlinePaymentInput = {
   providerPaymentId: string;
   payerName?: string;
   allocations: OnlinePaymentAllocation[];
+  /**
+   * Apartmanin komisyon gideri (platform payi + tahmini POS maliyeti, kurus). 0/yok ise gider
+   * kaydi yazilmaz. Tahsilatla ayni atomik yazimda: borc `exp-online-collection-fee` / alacak
+   * `online-collection`.
+   */
+  commission?: Kurus;
   /**
    * Odeme niyetinin sonuclanmis hali (ayni atomik yazimda, surum kosuluyla). Makbuz ve islem
    * kimlikleri burada uretildigi icin fonksiyon olarak verilir.
@@ -1031,6 +1043,12 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
       }
     }
 
+    const commission = p.commission ?? 0;
+    const collected = p.allocations.reduce((s, a) => s + a.amount, 0);
+    if (!Number.isSafeInteger(commission) || commission < 0 || commission >= collected) {
+      throw new ValidationError('commission 0 ile tahsilat tutari arasinda olmali', 'commission');
+    }
+
     const idemId = `pay-${p.intentId}`;
     const fp = fingerprint({
       op: 'online_payment',
@@ -1040,6 +1058,8 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
       provider: p.provider,
       providerPaymentId: p.providerPaymentId,
       allocations: p.allocations,
+      // P1 oncesi niyetlerin parmak izi degismesin: yalnizca komisyon varsa eklenir.
+      ...(commission > 0 ? { commission } : {}),
     });
     const replay = async () => {
       const existing = await repo.getIdempotency(ctx.apartmentId, idemId);
@@ -1071,6 +1091,16 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
         name: 'Online Tahsilat (iyzico)',
         system: true,
       }),
+      ...(commission > 0
+        ? [
+            newAccount(ctx, {
+              accountId: SYSTEM_ACCOUNTS.onlineCollectionFee,
+              type: 'expense',
+              name: 'Online Tahsilat Komisyon Gideri',
+              system: true,
+            }),
+          ]
+        : []),
       ...p.allocations.map((a) => receivable(ctx, p.unitId, a.liableParty)),
     ]);
 
@@ -1130,6 +1160,22 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
           createdAt: tx.createdAt,
           createdBy: ctx.userId,
         });
+      }
+      if (commission > 0) {
+        // Komisyon apartmanin gideri: aktarilacak tutar = tahsilat - komisyon (Karar A).
+        const feeTx = buildTx(ctx, {
+          kind: 'expense',
+          date: p.paidAt,
+          description: `Online tahsilat komisyonu (${p.provider}) - Daire ${unit.number}`,
+          reference: `ONLINE-FEE:${p.intentId}`,
+          lines: [
+            { accountId: SYSTEM_ACCOUNTS.onlineCollectionFee, side: 'debit', amount: toKurus(commission) },
+            { accountId: SYSTEM_ACCOUNTS.onlineCollection, side: 'credit', amount: toKurus(commission) },
+          ],
+        });
+        // Ekstrede tahsilatlardan sonra gorunsun.
+        feeTx.createdAt = new Date(Date.parse(feeTx.createdAt) + 1).toISOString();
+        transactions.push(feeTx);
       }
 
       try {

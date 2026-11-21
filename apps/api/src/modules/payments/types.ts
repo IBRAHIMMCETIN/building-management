@@ -8,7 +8,9 @@
  *     edilir. Secili kalem odemesi yalnizca anapara oder; secim alt cari basina en eski vadeden
  *     baslayan kesintisiz dizi olmalidir (defterin FIFO mahsubu ile tutarli).
  *  4. Serbest tutar yok: toplam borc veya secili kalemlerin tam tutari.
- *  B. Komisyon apartmandan kesilir: `subMerchantPrice = tutar - platform payi` (varsayilan 0).
+ *  B. Komisyon apartmandan kesilir (Online Odeme v2 · P1, 21.11.2026): platform payi (%0,75) +
+ *     tahmini POS maliyeti `subMerchantPrice`'tan dusulur ve apartman defterine "Online Tahsilat
+ *     Komisyon Gideri" olarak yazilir; sakine ek ucret yansitilmaz (`fees.ts`).
  *  C. TCKN saklanmaz: istekte opsiyonel gelir, yalnizca saglayici istegine aktarilir.
  *
  * Tum tutarlar kurus (tam sayi).
@@ -51,6 +53,38 @@ export type ItemTransaction = {
   itemId: string;
   paymentTransactionId: string;
   paidAmount: Kurus;
+  /** Saglayicinin bu kalemden aldigi gercek komisyon (iyzico: oran tutari + sabit ucret). */
+  providerFee?: Kurus;
+};
+
+/**
+ * Pazaryeri dagitim onayi (iyzico `item/approve`): onaylanmayan kalemin tutari iyzico havuzunda
+ * bekler, alt uye isyerine aktarilmaz. Basarili finalize'dan sonra gonderilir; hata halinde
+ * mutabakat (`payment_reconcile`) yeniden dener.
+ */
+export type ItemApproval = {
+  itemId: string;
+  paymentTransactionId: string;
+  status: 'pending' | 'approved' | 'failed';
+  attempts: number;
+  lastAttemptAt?: IsoDateTime;
+  approvedAt?: IsoDateTime;
+  error?: { code: string; message: string; at: IsoDateTime };
+};
+
+/** Odeme sonrasi mutabakat kaydi (niyet uzerinde). */
+export type IntentSettlement = {
+  /** pending: onay bekleyen kalem var; approved: hepsi onayli; failed: deneme siniri asildi. */
+  status: 'pending' | 'approved' | 'failed';
+  /** Apartmanin komisyon gideri (platform payi + POS tahmini); deftere bu yazildi. */
+  commission: Kurus;
+  /** Apartmanin IBAN'ina aktarilacak toplam (`Σ subMerchantPrice`). */
+  subMerchantTotal: Kurus;
+  /** Saglayicinin gercek komisyonu (bilinmiyorsa yok). */
+  providerFee?: Kurus;
+  /** POS tahmini - gercek komisyon: pozitif = platform marji, negatif = platform kaybi. */
+  posFeeDrift?: Kurus;
+  approvals: ItemApproval[];
 };
 
 /** Sonuclandirma aninda saglayicidan sorgulanan sonucun ozeti (iz kaydi). */
@@ -96,8 +130,12 @@ export type IntentAllocation = {
   /** Odeme aninda kesinlesecek, henuz deftere yazilmamis gecikme tazminati (yalnizca total). */
   lateFee: Kurus;
   amount: Kurus;
-  /** Apartmanin IBAN'ina aktarilacak tutar (`amount - platform payi`). */
+  /** Apartmanin IBAN'ina aktarilacak tutar (`amount - platformFee - posEstimate`). */
   subMerchantPrice: Kurus;
+  /** Bu kalemden kesilen platform payi (P1 oncesi niyetlerde yok). */
+  platformFee?: Kurus;
+  /** Bu kalem icin tahmini POS maliyeti (P1 oncesi niyetlerde yok). */
+  posEstimate?: Kurus;
   /** Secili kalem odemesinde secilen tahakkuk islemleri (total modunda bos). */
   transactionIds: string[];
 };
@@ -119,6 +157,8 @@ export type PaymentIntent = TableKeys & {
   allocations: IntentAllocation[];
   amount: Kurus;
   platformFee: Kurus;
+  /** Tahmini POS maliyeti toplami (sozlesme orani); P1 oncesi niyetlerde yok (0 sayilir). */
+  posEstimate?: Kurus;
   currency: 'TRY';
   /** Tazminatin hesaplandigi gun (Istanbul). Kesinlestirmede ust sinir bu gun itibariyla. */
   lateFeeAsOf: IsoDate;
@@ -142,6 +182,8 @@ export type PaymentIntent = TableKeys & {
   resolution?: { action: ReviewAction; note: string; by: string; at: IsoDateTime; providerCheck: ProviderCheck };
   /** Tam iade (yalnizca `refund` kararinda). */
   refund?: { items: RefundItem[]; requestedAt: IsoDateTime; requestedBy: string; completedAt?: IsoDateTime };
+  /** Odeme sonrasi pazaryeri onayi ve komisyon mutabakati (SUCCEEDED niyetlerde). */
+  settlement?: IntentSettlement;
   /** Saglayici sayfasinin gecerlilik suresi; sonrasinda mutabakat sonuclandirir. */
   expiresAt: IsoDateTime;
   createdAt: IsoDateTime;
@@ -175,8 +217,12 @@ export type PaymentAccount = TableKeys & {
   /** Yalnizca son 4 hane gorunur (TR** **** **** **** **** **12 34). */
   ibanMasked?: string;
   status: 'active' | 'disabled';
-  /** Apartmandan kesilen platform payi, baz puan (0 = yok). */
+  /** Apartmandan kesilen platform payi, baz puan (varsayilan 75 = %0,75). */
   platformFeeBasisPoints: number;
+  /** Saglayici sozlesme orani (baz puan); yoksa ortam varsayilani `PAYMENTS_POS_RATE_BPS`. */
+  posRateBasisPoints?: number;
+  /** Islem basina sabit saglayici ucreti (kurus); yoksa `PAYMENTS_POS_FIXED_FEE_KURUS`. */
+  posFixedFeeKurus?: number;
   createdAt: IsoDateTime;
   createdBy: string;
   updatedAt: IsoDateTime;
