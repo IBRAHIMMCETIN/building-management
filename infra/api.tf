@@ -152,10 +152,10 @@ resource "aws_lambda_function" "api" {
 
   environment {
     variables = merge({
-      NODE_ENV             = "production"
-      APP_VERSION          = var.app_version
-      AUTH_MODE            = "apigw"
-      DYNAMODB_TABLE_NAME  = aws_dynamodb_table.main.name
+      NODE_ENV            = "production"
+      APP_VERSION         = var.app_version
+      AUTH_MODE           = "apigw"
+      DYNAMODB_TABLE_NAME = aws_dynamodb_table.main.name
       # Yalnizca davet icin (AUTH_MODE=apigw oldugundan kimlik dogrulamayi etkilemez).
       COGNITO_USER_POOL_ID = aws_cognito_user_pool.main.id
       DOCUMENTS_BUCKET     = aws_s3_bucket.documents.id
