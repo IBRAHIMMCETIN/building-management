@@ -82,6 +82,21 @@ data "aws_iam_policy_document" "deploy" {
     resources = ["*"]
   }
 
+  # API Gateway HTTP API erisim logu (api.tf: aws_apigatewayv2_stage.default.access_log_settings).
+  # Stage olusturma/guncellemede API Gateway CloudWatch Logs "log delivery" kaydini cagiranin
+  # yetkisiyle yonetir. Bu eylemler kaynak duzeyinde yetkilendirme desteklemez: yalnizca "*".
+  # (AWS: "Configure logging for HTTP APIs" izin listesi; CreateLogGroup yukaridaki "Logs"
+  # ifadesinde yigin log gruplariyla sinirli.)
+  statement {
+    sid = "ApiGatewayAccessLogDelivery"
+    actions = [
+      "logs:CreateLogDelivery", "logs:GetLogDelivery", "logs:UpdateLogDelivery",
+      "logs:DeleteLogDelivery", "logs:ListLogDeliveries",
+      "logs:PutResourcePolicy", "logs:DescribeResourcePolicies",
+    ]
+    resources = ["*"]
+  }
+
   # Online odeme anahtari secret'i (payments.tf): <proje>[-<ortam>]/payments/<saglayici>.
   # Dagitim yalnizca secret KAYNAGINI yonetir; degeri okuyamaz/yazamaz (GetSecretValue /
   # PutSecretValue YOK). Deger elle girilir.

@@ -243,6 +243,19 @@ Web (Cloudflare Pages, Git entegrasyonu): `main`'e her push'ta Cloudflare kendis
 
 AWS erişimi tercihen OIDC ile sağlanır (`infra/github-oidc`, repo variable `AWS_DEPLOY_ROLE_ARN`). Opsiyonel repo variable'ları: `AWS_REGION`, `ALERT_EMAIL`, `CORS_ALLOW_ORIGINS` (JSON liste), `COGNITO_USER_POOL_TIER`, `SES_IDENTITY_ARN`, `SES_FROM_ADDRESS`.
 
+**Dağıtım yetkisi (en az yetki).** Bugün CI `github-deploy` IAM kullanıcısıyla çalışır. Politikanın tek kaynağı `infra/modules/deploy-policy` modülüdür; `infra/github-deploy-user` ve `infra/github-oidc` aynı modülü kullanır. Yığına yeni bir AWS kaynak türü eklendiğinde yetki bu modüle eklenir ve modül yönetici kimlik bilgileriyle elle yeniden uygulanır:
+
+```bash
+terraform -chdir=infra/github-deploy-user init -backend-config=... # bkz. main.tf başlığı
+terraform -chdir=infra/github-deploy-user apply
+```
+
+| İfade | Neden |
+| --- | --- |
+| `ApiGatewayAccessLogDelivery` | HTTP API stage erişim logu (`access_log_settings`) oluşturulurken veya güncellenirken API Gateway, CloudWatch Logs "log delivery" kaydını çağıranın yetkisiyle yönetir: `logs:CreateLogDelivery`, `GetLogDelivery`, `UpdateLogDelivery`, `DeleteLogDelivery`, `ListLogDeliveries`, `PutResourcePolicy`, `DescribeResourcePolicies`. Bu eylemler kaynak düzeyinde kısıtlanamaz (`*`). |
+
+> AWS konsolunda geçici olarak elle eklenen inline politika varsa (ör. `logs:CreateLogDelivery` için), modül yeniden uygulandıktan ve bir dev dağıtımı geçtikten sonra kaldırılmalıdır; aksi halde yetkiler repoda görünmeyen bir kaynağa dağılır.
+
 ---
 
 ## İlk Kurulum (Bootstrap)
