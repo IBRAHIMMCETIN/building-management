@@ -4,6 +4,9 @@ import { serve } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { createApp } from './app.js';
 import { createAuthFromEnv } from './auth/authenticators.js';
+import { startLocalOutboxRelay } from './events/localRelay.js';
+import { createDynamoOutboxStore } from './events/outboxStore.js';
+import { createEventPublisherFromEnv } from './events/publisher.js';
 
 const port = Number(process.env.PORT ?? 3000);
 const version = process.env.APP_VERSION ?? 'dev';
@@ -24,6 +27,14 @@ const app = createApp({
 app.use('/*', serveStatic({ root: publicDir }));
 // SPA: bilinmeyen sayfa yollarinda React uygulamasi acilir.
 app.get('*', serveStatic({ root: publicDir, path: 'index.html' }));
+
+// Yerel outbox relay: AWS'de DynamoDB Streams + outbox-relay Lambda'si yapar; yerelde bekleyen
+// outbox kayitlari ayni cekirdekle yayinlanir. EVENTS_MODE=none veya OUTBOX_LOCAL_RELAY=off kapatir.
+const eventsMode = process.env.EVENTS_MODE ?? 'local';
+if (!isProduction && eventsMode !== 'none' && process.env.OUTBOX_LOCAL_RELAY !== 'off') {
+  startLocalOutboxRelay({ store: createDynamoOutboxStore(), publisher: createEventPublisherFromEnv() });
+  console.log(`outbox: yerel relay acik (EVENTS_MODE=${eventsMode})`);
+}
 
 const server = serve({ fetch: app.fetch, port }, (info) => {
   console.log(`building-management ${version} listening on :${info.port}`);

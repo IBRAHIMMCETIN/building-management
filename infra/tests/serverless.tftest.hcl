@@ -23,7 +23,10 @@ mock_provider "aws" {
     }
   }
   mock_resource "aws_dynamodb_table" {
-    defaults = { arn = "arn:aws:dynamodb:eu-central-1:123456789012:table/mock" }
+    defaults = {
+      arn        = "arn:aws:dynamodb:eu-central-1:123456789012:table/mock"
+      stream_arn = "arn:aws:dynamodb:eu-central-1:123456789012:table/mock/stream/2026-11-21T00:00:00.000"
+    }
   }
   mock_resource "aws_iam_role" {
     defaults = { arn = "arn:aws:iam::123456789012:role/mock" }
@@ -84,6 +87,15 @@ run "prod_plan" {
       arn = "arn:aws:sqs:eu-central-1:123456789012:building-management-prod-notifications"
       id  = "https://sqs.eu-central-1.amazonaws.com/123456789012/building-management-prod-notifications"
       url = "https://sqs.eu-central-1.amazonaws.com/123456789012/building-management-prod-notifications"
+    }
+  }
+  # Outbox relay baglantisi: tablo ve stream ARN'leri plan asamasinda sabitlenir.
+  override_resource {
+    target          = aws_dynamodb_table.main
+    override_during = plan
+    values = {
+      arn        = "arn:aws:dynamodb:eu-central-1:123456789012:table/building-management"
+      stream_arn = "arn:aws:dynamodb:eu-central-1:123456789012:table/building-management/stream/2026-11-21T00:00:00.000"
     }
   }
 
@@ -173,8 +185,17 @@ run "prod_plan" {
     error_message = "Handler adlari build:lambda ciktisiyla eslesmeli"
   }
   assert {
-    condition     = aws_lambda_function.api.environment[0].variables.AUTH_MODE == "apigw" && aws_lambda_function.api.environment[0].variables.EVENTS_MODE == "sns"
-    error_message = "Lambda AUTH_MODE=apigw ve EVENTS_MODE=sns ile calismali"
+    condition     = aws_lambda_function.api.environment[0].variables.AUTH_MODE == "apigw"
+    error_message = "Lambda AUTH_MODE=apigw ile calismali"
+  }
+  # Olaylar outbox'tan yayinlanir: API Lambda'si olay yayinlamaz.
+  assert {
+    condition     = !contains(keys(aws_lambda_function.api.environment[0].variables), "EVENTS_MODE") && !contains(keys(aws_lambda_function.api.environment[0].variables), "EVENTS_SNS_TOPIC_ARN")
+    error_message = "API Lambda'sinda EVENTS_* degiskenleri olmamali (olaylar outbox-relay'den yayinlanir)"
+  }
+  assert {
+    condition     = length([for a in flatten([for st in data.aws_iam_policy_document.api.statement : st.actions]) : a if startswith(a, "sns:")]) == 0
+    error_message = "API Lambda'sinin sns yetkisi olmamali"
   }
 
   assert {
@@ -263,6 +284,53 @@ run "prod_plan" {
   assert {
     condition     = toset(flatten([for st in data.aws_iam_policy_document.scheduler_send.statement : st.actions])) == toset(["sqs:SendMessage"])
     error_message = "Scheduler rolu yalnizca gorev kuyruguna mesaj birakabilmeli"
+  }
+
+  # --- Transactional outbox relay ---
+  assert {
+    condition     = aws_dynamodb_table.main.stream_enabled && aws_dynamodb_table.main.stream_view_type == "NEW_IMAGE"
+    error_message = "Tablo akisi NEW_IMAGE ile acik olmali"
+  }
+  assert {
+    condition     = aws_lambda_function.outbox_relay.handler == "outbox-relay.handler" && tolist(aws_lambda_function.outbox_relay.architectures) == tolist(["arm64"])
+    error_message = "Relay handler/mimari hatali"
+  }
+  assert {
+    condition     = aws_lambda_function.outbox_relay.environment[0].variables.EVENTS_MODE == "sns"
+    error_message = "Relay olaylari SNS'e yayinlamali"
+  }
+  assert {
+    condition     = aws_lambda_event_source_mapping.outbox.event_source_arn == aws_dynamodb_table.main.stream_arn && aws_dynamodb_table.main.stream_arn == "arn:aws:dynamodb:eu-central-1:123456789012:table/building-management/stream/2026-11-21T00:00:00.000"
+    error_message = "Relay tablo akisina bagli olmali"
+  }
+  assert {
+    condition = (
+      contains(aws_lambda_event_source_mapping.outbox.function_response_types, "ReportBatchItemFailures") &&
+      aws_lambda_event_source_mapping.outbox.bisect_batch_on_function_error &&
+      aws_lambda_event_source_mapping.outbox.starting_position == "LATEST" &&
+      aws_lambda_event_source_mapping.outbox.maximum_retry_attempts > 0 &&
+      length(aws_lambda_event_source_mapping.outbox.destination_config) == 1
+    )
+    error_message = "Relay kismi hata bildirimi, bisect, tekrar deneme ve DLQ hedefiyle calismali"
+  }
+  assert {
+    condition = (
+      jsondecode(one(aws_lambda_event_source_mapping.outbox.filter_criteria[0].filter).pattern).eventName == ["INSERT"] &&
+      jsondecode(one(aws_lambda_event_source_mapping.outbox.filter_criteria[0].filter).pattern).dynamodb.Keys.SK.S[0].prefix == "OUTBOX#"
+    )
+    error_message = "Akis filtresi yalnizca OUTBOX# INSERT kayitlarini gecirmeli"
+  }
+  assert {
+    condition = toset(flatten([for st in data.aws_iam_policy_document.outbox_relay.statement : st.actions])) == toset([
+      "logs:CreateLogStream", "logs:PutLogEvents",
+      "dynamodb:DescribeStream", "dynamodb:GetRecords", "dynamodb:GetShardIterator", "dynamodb:ListStreams",
+      "dynamodb:UpdateItem", "sns:Publish", "sqs:SendMessage",
+    ])
+    error_message = "Relay rolu en az yetkili olmali (Put/Delete/Query/Scan yok)"
+  }
+  assert {
+    condition     = one([for st in data.aws_iam_policy_document.outbox_relay.statement : st.resources if st.sid == "ReadTableStream"]) == toset(["arn:aws:dynamodb:eu-central-1:123456789012:table/building-management/stream/*"])
+    error_message = "Stream okuma yalnizca bu tablonun akislarina sinirli olmali"
   }
 }
 

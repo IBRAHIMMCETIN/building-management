@@ -53,6 +53,8 @@ React (Vite, PWA)  ──►  API Gateway (HTTP API, JWT authorizer, throttling)
 | CI/CD | GitHub Actions (OIDC ile AWS erişimi) |
 | Test | Vitest + `aws-sdk-client-mock`, `terraform test` (mock provider) |
 
+Domain olayları API'den doğrudan yayınlanmaz: defter yazımıyla aynı atomik işlemde `OUTBOX#` kaydı olarak yazılır; **DynamoDB Streams → outbox-relay Lambda → SNS** hattı yayınlar (transactional outbox).
+
 AWS SDK yalnızca **v3** (`@aws-sdk/client-*`) kullanılır.
 
 ---
@@ -78,7 +80,7 @@ building-management/
 │   │   └── test/                 # Vitest testleri
 │   └── web/                      # @bm/web — React + Vite
 ├── infra/                        # Serverless Terraform yığını
-│   ├── api.tf  cognito.tf  dynamodb.tf  sns_sqs.tf  worker.tf
+│   ├── api.tf  cognito.tf  dynamodb.tf  sns_sqs.tf  worker.tf  outbox.tf
 │   ├── tests/serverless.tftest.hcl
 │   ├── github-oidc/              # GitHub Actions için OIDC rolü
 │   ├── budget/                   # AWS bütçe alarmı
@@ -168,6 +170,8 @@ npm run dev:api
 | `AWS_REGION` | AWS bölgesi. |
 | `APP_VERSION` | Sağlık kontrolünde dönen sürüm (CI'da commit SHA). |
 | `PORT` | Yerel sunucu portu (varsayılan `3000`). |
+| `EVENTS_MODE` | Yalnızca yayın yapan süreçler: outbox relay ve zamanlayıcı Lambda'ları (`sns`), yerel sunucunun outbox relay'i (`local`, varsayılan; `none` kapatır). API Lambda'sı olay yayınlamaz. |
+| `OUTBOX_LOCAL_RELAY` | Yerel sunucuda `off` ise bekleyen outbox kayıtlarını yoklayan bellek içi relay çalışmaz. |
 
 Gizli bilgiler koda gömülmez; AWS kimlik bilgileri SDK'nın varsayılan credential zincirinden gelir.
 
@@ -199,6 +203,7 @@ Serverless yığın `infra/` kök modülündedir:
 | `dynamodb.tf` | Tek tablo, GSI'lar, PITR, silme koruması |
 | `sns_sqs.tf` | Olay topic'i, bildirim kuyruğu + DLQ, alarm topic'i |
 | `worker.tf` | Bildirim worker Lambda ve SQS event source mapping |
+| `outbox.tf` | Transactional outbox relay: tablo akışı (`NEW_IMAGE`) → yalnızca `OUTBOX#` INSERT filtresi → relay Lambda → SNS; DLQ, hata/gecikme alarmları, en az yetkili rol |
 
 Önemli değişkenler: `environment` (`prod` / `staging`), `alert_email`, `cors_allow_origins`, `cognito_user_pool_tier` (`LITE` / `ESSENTIALS`), `ses_identity_arn`, `ses_from_address`, `api_throttle_rate_limit`, `api_throttle_burst_limit`.
 
@@ -368,7 +373,7 @@ Yedi rol: `platform_admin`, `management_company`, `apartment_manager`, `resident
 **Platform ve operasyon**
 
 - [ ] Eski soneksiz `building-management` (prod) yığını hakkında karar ve ilk `prod` sürümü
-- [ ] Güvenilir olay ve bildirim hattı (`feature/outbox-bildirim`): ~~1. outbox'a atomik yazım~~ ✓ · 2. Streams relay · 3. `outbox_sweep` + `ledger_audit` · 4. SES e-posta kanalı
+- [ ] Güvenilir olay ve bildirim hattı (`feature/outbox-bildirim`): ~~1. outbox'a atomik yazım~~ ✓ · ~~2. Streams relay~~ ✓ · 3. `outbox_sweep` + `ledger_audit` · 4. SES e-posta kanalı
 - [ ] Arıza/görev, ziyaretçi QR, anket/oylama, rezervasyon, ihale
 - [ ] Yönetim firması portföyü, abonelik/lisans
 - [ ] Özel alan adı + Cloudflare WAF (HTTP API'ye AWS WAF bağlanamaz), Cloudflare Pages Terraform modülü, audit log

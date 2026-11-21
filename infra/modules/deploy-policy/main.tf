@@ -153,11 +153,13 @@ data "aws_iam_policy_document" "deploy" {
       "arn:${local.partition}:iam::${local.account}:role/${var.project}-pre-token",
       "arn:${local.partition}:iam::${local.account}:role/${var.project}-notification-worker",
       "arn:${local.partition}:iam::${local.account}:role/${var.project}-scheduler-worker",
+      "arn:${local.partition}:iam::${local.account}:role/${var.project}-outbox-relay",
       "arn:${local.partition}:iam::${local.account}:role/${var.project}-scheduler",
       "arn:${local.partition}:iam::${local.account}:role/${var.project}-*-api",
       "arn:${local.partition}:iam::${local.account}:role/${var.project}-*-pre-token",
       "arn:${local.partition}:iam::${local.account}:role/${var.project}-*-notification-worker",
       "arn:${local.partition}:iam::${local.account}:role/${var.project}-*-scheduler-worker",
+      "arn:${local.partition}:iam::${local.account}:role/${var.project}-*-outbox-relay",
       "arn:${local.partition}:iam::${local.account}:role/${var.project}-*-scheduler",
     ]
   }
