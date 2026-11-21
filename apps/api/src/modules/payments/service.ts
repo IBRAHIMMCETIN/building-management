@@ -10,6 +10,7 @@ import type { PortalRepository } from '../portal/repository.js';
 import type { PortalService } from '../portal/service.js';
 import { type PersonRepository, personRepository } from '../residents/repository.js';
 import {
+  type CallbackInput,
   type CheckoutBuyer,
   type CheckoutOutcome,
   type CheckoutRequest,
@@ -19,7 +20,9 @@ import {
   SANDBOX_IDENTITY_NUMBER,
   type SubMerchantRequest,
   type WebhookInput,
+  type WebhookReply,
 } from './provider.js';
+import { type ProviderRegistry, type ProviderResolution, createProviderRegistry, resolveProvider } from './registry.js';
 import {
   DEFAULT_PLATFORM_FEE_BASIS_POINTS,
   type FeePolicy,
@@ -54,6 +57,8 @@ import {
   type PaymentAccount,
   type PaymentIntent,
   type PaymentMode,
+  type PaymentProviderName,
+  type PaymentSettings,
   type ProviderCheck,
   REVIEW_ACTIONS,
   type RefundItem,
@@ -131,7 +136,12 @@ export type PaymentsServiceDeps = {
   /** Alici adi/e-postasi (sakin dizini, `PERSON#`) ve apartman adresi. */
   people: Pick<PersonRepository, 'get'>;
   core: Pick<CoreRepository, 'getSite' | 'listSiteIds'>;
-  /** Verilmezse online odeme kapali (quote calisir, odeme baslatilamaz). */
+  /**
+   * Acik saglayicilar + ortam varsayilani (`DEFAULT_PAYMENT_PROVIDER`). Hicbiri verilmezse
+   * online odeme kapali (quote calisir, odeme baslatilamaz).
+   */
+  providers?: ProviderRegistry;
+  /** Kisayol (yerel/test): tek saglayici, varsayilan olarak kaydedilir. `providers` onceliklidir. */
   provider?: PaymentProvider;
   /** API'nin disaridan erisilen adresi (saglayici callback'i buraya POST eder). */
   apiBaseUrl: string;
@@ -233,6 +243,8 @@ export type IntentView = {
   allocations: { liableParty: LiableParty; principal: Kurus; lateFee: Kurus; amount: Kurus; transactionIds: string[] }[];
   /** Yalnizca PENDING iken: saglayicinin odeme sayfasi. */
   paymentPageUrl?: string;
+  /** Yalnizca PENDING iken: sayfa tam yonlendirme mi, iframe mi (P3 PayTR iframe). */
+  checkoutKind?: 'redirect' | 'iframe';
   paidAt?: IsoDate;
   paymentIds?: string[];
   receiptNumbers?: string[];
@@ -240,6 +252,17 @@ export type IntentView = {
   expiresAt: IsoDateTime;
   createdAt: IsoDateTime;
 };
+
+/** Saglayici pazaryeri payini kalem bazinda serbest birakiyor mu (onay / transfer)? */
+function releasesItems(p: PaymentProvider | undefined): p is PaymentProvider & Required<Pick<PaymentProvider, 'releaseItem'>> {
+  return Boolean(p?.releaseItem) && p?.capabilities.settlement !== 'automatic';
+}
+
+/** Sepet kalemi (`<intentId>-<taraf>`) icin alt uye isyerine gececek tutar. */
+function subMerchantPriceOf(intent: PaymentIntent, itemId: string): Kurus {
+  const a = intent.allocations.find((x) => `${intent.intentId}-${x.liableParty}` === itemId);
+  return toKurus(a?.subMerchantPrice ?? 0);
+}
 
 function toView(i: PaymentIntent): IntentView {
   return {
@@ -257,7 +280,9 @@ function toView(i: PaymentIntent): IntentView {
       amount: a.amount,
       transactionIds: a.transactionIds,
     })),
-    ...(i.status === 'PENDING' && i.checkout ? { paymentPageUrl: i.checkout.paymentPageUrl } : {}),
+    ...(i.status === 'PENDING' && i.checkout
+      ? { paymentPageUrl: i.checkout.paymentPageUrl, checkoutKind: i.checkout.kind ?? 'redirect' }
+      : {}),
     paidAt: i.paidAt,
     paymentIds: i.paymentIds,
     receiptNumbers: i.receiptNumbers,
@@ -351,22 +376,37 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
     ...overrides,
   };
   const repo = deps.repository;
-  const provider = deps.provider;
+  const registry: ProviderRegistry = deps.providers ?? createProviderRegistry(deps.provider ? [deps.provider] : []);
   const apiBase = deps.apiBaseUrl.replace(/\/+$/, '');
   const webBase = deps.webAppUrl.replace(/\/+$/, '');
 
   const stamp = () => deps.now().toISOString();
   const today = (): IsoDate => new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Istanbul' }).format(deps.now());
 
-  /** Apartmanin aktif alt uye isyeri hesabi; sahte saglayicida varsayilan hesap. */
-  async function activeAccount(
-    apartmentId: string,
-  ): Promise<Pick<PaymentAccount, 'subMerchantKey' | 'platformFeeBasisPoints' | 'posRateBasisPoints' | 'posFixedFeeKurus'> | undefined> {
+  /**
+   * Apartmanin saglayicisi: tercih (`PAYSETTINGS`) yoksa ortam varsayilani. Tercih edilen
+   * saglayici bu ortamda kapaliysa `provider` yoktur (online odeme o apartman icin kapali).
+   */
+  async function resolveFor(apartmentId: string): Promise<ProviderResolution> {
+    if (registry.list().length === 0) return { source: 'none' };
+    const settings = await repo.getSettings(apartmentId);
+    const r = resolveProvider(registry, settings?.paymentProvider);
+    if (r.name && !r.provider) {
+      deps.log('warn', 'apartmanin tercih ettigi odeme saglayicisi bu ortamda acik degil', { apartmentId, paymentProvider: r.name });
+    }
+    return r;
+  }
+
+  type ActiveAccount = Pick<PaymentAccount, 'subMerchantKey' | 'platformFeeBasisPoints' | 'posRateBasisPoints' | 'posFixedFeeKurus'>;
+
+  /** Apartmanin cozumlenen saglayicisi ve oradaki aktif alt uye isyeri hesabi; sahte saglayicida varsayilan hesap. */
+  async function activeAccount(apartmentId: string): Promise<{ provider: PaymentProvider; account?: ActiveAccount } | undefined> {
+    const { provider } = await resolveFor(apartmentId);
     if (!provider) return undefined;
     const account = await repo.getAccount(apartmentId, provider.name);
-    if (account?.status === 'active') return account;
-    if (!account && provider.name === 'fake') return { subMerchantKey: 'fake-submerchant', platformFeeBasisPoints: 0 };
-    return undefined;
+    if (account?.status === 'active') return { provider, account };
+    if (!account && provider.name === 'fake') return { provider, account: { subMerchantKey: 'fake-submerchant', platformFeeBasisPoints: 0 } };
+    return { provider };
   }
 
   /**
@@ -374,7 +414,8 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
    * adresinden; TCKN ve telefon istekten (saklanmaz). Sandbox'ta eksikler test degerleriyle
    * doldurulur; canlida eksik bilgi 422/400 ile reddedilir (yarim niyet olusmaz).
    */
-  async function resolveBuyer(ctx: PaymentsContext, input: IntentInput, ip: string, sandbox: boolean): Promise<CheckoutBuyer> {
+  async function resolveBuyer(ctx: PaymentsContext, input: IntentInput, ip: string, provider: PaymentProvider): Promise<CheckoutBuyer> {
+    const sandbox = provider.sandbox;
     const [person, site] = await Promise.all([
       deps.people.get(ctx.apartmentId, ctx.userId),
       deps.core.getSite(ctx.apartmentId),
@@ -384,7 +425,9 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
       throw new PaymentsError('profile_incomplete', 'Ödeme için ad ve e-posta bilginiz eksik; lütfen yönetiminizle iletişime geçin');
     }
     const gsmNumber = input.gsmNumber ?? (sandbox ? SANDBOX_GSM_NUMBER : undefined);
-    if (!gsmNumber) throw new ValidationError('Ödeme için cep telefonu numarası gereklidir', 'gsmNumber');
+    if (!gsmNumber && provider.capabilities.requiresBuyerGsm) {
+      throw new ValidationError('Ödeme için cep telefonu numarası gereklidir', 'gsmNumber');
+    }
     const { name, surname } = splitFullName(valid?.fullName ?? 'Test Sakin');
     const address = site ? [site.address.line1, site.address.line2, site.address.district].filter(Boolean).join(', ') : '';
     return {
@@ -411,13 +454,14 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
       today: data.today,
       lateFeeMonthlyBasisPoints: data.lateFeeMonthlyBasisPoints,
     });
-    const account = await activeAccount(ctx.apartmentId);
+    const active = await activeAccount(ctx.apartmentId);
+    const provider = active?.provider;
     return {
       unitId: data.unit.unitId,
       currency: 'TRY' as const,
-      onlinePaymentEnabled: Boolean(account),
-      // Canli saglayicida telefon zorunlu; sandbox'ta test degeri kullanilir (alan gizlenir).
-      requiresGsmNumber: Boolean(provider && !provider.sandbox),
+      onlinePaymentEnabled: Boolean(active?.account),
+      // Canli saglayicida (gerektiriyorsa) telefon zorunlu; sandbox'ta test degeri kullanilir (alan gizlenir).
+      requiresGsmNumber: Boolean(provider && !provider.sandbox && provider.capabilities.requiresBuyerGsm),
       ...q,
     };
   }
@@ -426,7 +470,7 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
 
   async function createIntent(ctx: PaymentsContext, body: unknown, meta: { ip: string }) {
     const input = parseIntentInput(body);
-    if (!provider) throw new PaymentsError('payments_disabled', 'Online ödeme şu an kullanılamıyor');
+    if (registry.list().length === 0) throw new PaymentsError('payments_disabled', 'Online ödeme şu an kullanılamıyor');
 
     const fp = fingerprint({
       unitId: input.unitId ?? null,
@@ -456,8 +500,9 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
 
     // Erisim (rol, aktif uyelik, daire secimi) portal kurallariyla dogrulanir.
     const data = await deps.portal.getPayableLedgers(ctx, input.unitId);
-    const account = await activeAccount(ctx.apartmentId);
-    if (!account) throw new PaymentsError('payments_disabled', 'Bu apartman için online ödeme henüz aktif değil');
+    const active = await activeAccount(ctx.apartmentId);
+    if (!active?.account) throw new PaymentsError('payments_disabled', 'Bu apartman için online ödeme henüz aktif değil');
+    const { provider, account } = active;
 
     const q = buildQuote({
       ledgers: data.ledgers,
@@ -469,7 +514,7 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
     const plan = allocateSelection(q, input.selection, feePolicyOf(account, deps.posDefaults));
     if (plan.amount < 1) throw new PaymentsError('no_debt', 'Ödenecek borcunuz bulunmuyor');
     // Alici bilgisi niyet yazilmadan once: eksikse yarim kalmis niyet olusmaz.
-    const buyer = await resolveBuyer(ctx, input, meta.ip, provider.sandbox);
+    const buyer = await resolveBuyer(ctx, input, meta.ip, provider);
 
     const now = deps.now();
     const ts = now.toISOString();
@@ -548,7 +593,7 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
     }
 
     const started = await transition(intent, {
-      checkout: { token: session.token, paymentPageUrl: session.paymentPageUrl, createdAt: stamp() },
+      checkout: { token: session.token, paymentPageUrl: session.paymentPageUrl, kind: provider.capabilities.checkout, createdAt: stamp() },
     });
     return toView(started);
   }
@@ -663,7 +708,8 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
   function initialSettlement(intent: PaymentIntent, o: CheckoutOutcome): IntentSettlement {
     const posEstimate = intent.posEstimate ?? 0;
     const commission = toKurus(intent.platformFee + posEstimate);
-    const approvals: ItemApproval[] = provider?.approveItem
+    const releases = releasesItems(registry.get(intent.provider));
+    const approvals: ItemApproval[] = releases
       ? (o.itemTransactions ?? intent.itemTransactions ?? []).map((t) => ({
           itemId: t.itemId,
           paymentTransactionId: t.paymentTransactionId,
@@ -671,7 +717,7 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
           attempts: 0,
         }))
       : [];
-    if (provider?.approveItem && approvals.length === 0) {
+    if (releases && approvals.length === 0) {
       // Kalem kimlikleri olmadan onay gonderilemez: tutar havuzda kalir, elle incelenmeli.
       deps.log('error', 'ALARM pazaryeri onayi gonderilemiyor (kalem kimligi yok)', {
         alert: 'PAYMENT_APPROVAL_FAILED',
@@ -681,7 +727,7 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
     }
     const providerFee = o.providerFee;
     return {
-      status: provider?.approveItem ? (approvals.length > 0 ? 'pending' : 'failed') : 'approved',
+      status: releases ? (approvals.length > 0 ? 'pending' : 'failed') : 'approved',
       commission,
       subMerchantTotal: toKurus(intent.amount - commission),
       ...(providerFee !== undefined ? { providerFee, posFeeDrift: toKurus(posEstimate - providerFee) } : {}),
@@ -695,7 +741,8 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
    */
   async function approvePending(intent: PaymentIntent): Promise<PaymentIntent> {
     const s = intent.settlement;
-    if (intent.status !== 'SUCCEEDED' || !s || s.status !== 'pending' || !provider?.approveItem || provider.name !== intent.provider) {
+    const provider = registry.get(intent.provider);
+    if (intent.status !== 'SUCCEEDED' || !s || s.status !== 'pending' || !provider?.releaseItem || !releasesItems(provider)) {
       return intent;
     }
     const approvals: ItemApproval[] = [];
@@ -706,8 +753,12 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
       }
       const at = stamp();
       try {
-        await provider.approveItem({
-          paymentTransactionId: a.paymentTransactionId,
+        await provider.releaseItem({
+          itemId: a.itemId,
+          providerItemId: a.paymentTransactionId,
+          providerPaymentId: intent.providerPaymentId,
+          subMerchantKey: intent.subMerchantKey,
+          amount: subMerchantPriceOf(intent, a.itemId),
           conversationId: `approve:${intent.intentId}:${a.itemId}`,
         });
         approvals.push({ ...a, status: 'approved', attempts: a.attempts + 1, lastAttemptAt: at, approvedAt: at });
@@ -802,7 +853,8 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
 
   /** PENDING niyetin sonucunu saglayicidan sorgular ve uygular. */
   async function settle(intent: PaymentIntent): Promise<PaymentIntent> {
-    if (intent.status !== 'PENDING' || !intent.checkout || !provider || provider.name !== intent.provider) return intent;
+    const provider = registry.get(intent.provider);
+    if (intent.status !== 'PENDING' || !intent.checkout || !provider) return intent;
     let outcome: CheckoutOutcome;
     try {
       outcome = await provider.retrieveCheckout({ token: intent.checkout.token, conversationId: intent.conversationId });
@@ -837,16 +889,25 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
    * Kimlik dogrulamasi yoktur; guven, sonucun saglayicidan token ile SORGULANMASINDAN ve
    * niyetle birebir eslesmesinden gelir. Yanit her durumda web uygulamasina yonlendirmedir.
    */
-  async function handleCallback(providerName: string, input: { ref?: string; token?: string }): Promise<{ redirectUrl: string; intent?: PaymentIntent }> {
-    const m = REF.exec(input.ref ?? '');
-    if (!provider || provider.name !== providerName || !m || !input.token || input.token.length > 512) {
-      deps.log('warn', 'gecersiz callback', { providerName, hasRef: Boolean(input.ref), hasToken: Boolean(input.token) });
+  async function handleCallback(providerName: string, input: CallbackInput): Promise<{ redirectUrl: string; intent?: PaymentIntent }> {
+    const ref = input.query.ref;
+    const m = REF.exec(ref ?? '');
+    const provider = registry.get(providerName);
+    // Saglayici kendi donus bicimini ayristirir; null = gecersiz (ornegin token yok).
+    const parsed = provider && m ? provider.parseCallback(input) : null;
+    if (!provider || !m || !parsed) {
+      deps.log('warn', 'gecersiz callback', { providerName, hasRef: Boolean(ref) });
       return { redirectUrl: resultUrl({ error: 'invalid' }) };
     }
     const [, apartmentId, intentId] = m as unknown as [string, string, string];
     const intent = await repo.getIntent(apartmentId, intentId);
     if (!intent) return { redirectUrl: resultUrl({ error: 'not_found' }) };
-    if (!intent.checkout || intent.checkout.token !== input.token) {
+    if (intent.provider !== provider.name) {
+      deps.log('warn', 'callback baska saglayicinin niyetine geldi', { intentId, apartmentId, providerName });
+      return { redirectUrl: resultUrl({ intent: intentId }), intent };
+    }
+    // Token tasiyan saglayicida token niyetle birebir eslesmeli; tasimayanda (PayTR) sonuc yine sorgulanir.
+    if (!intent.checkout || (parsed.token !== undefined && intent.checkout.token !== parsed.token)) {
       deps.log('warn', 'callback token niyetle eslesmiyor', { intentId, apartmentId });
       return { redirectUrl: resultUrl({ intent: intentId }), intent };
     }
@@ -909,8 +970,13 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
    * govdesindeki durum kullanilmaz). Bilinmeyen niyet icin de 200 doner: saglayici tekrar
    * denemeyi birakir. Gecersiz imza 401.
    */
-  async function handleWebhook(providerName: string, input: WebhookInput): Promise<{ status: 200 | 401 | 404 | 503 }> {
-    if (!provider || provider.name !== providerName || !provider.verifyWebhook) return { status: 404 };
+  async function handleWebhook(
+    providerName: string,
+    input: WebhookInput,
+  ): Promise<{ status: 200 | 401 | 404 | 503; reply?: WebhookReply }> {
+    const provider = registry.get(providerName);
+    if (!provider?.verifyWebhook) return { status: 404 };
+    const ok = { status: 200 as const, reply: provider.webhookReply?.() };
     let verified: { conversationId: string } | null;
     try {
       verified = await provider.verifyWebhook(input);
@@ -925,19 +991,21 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
     const m = REF.exec(verified.conversationId);
     if (!m) {
       deps.log('warn', 'webhook bilinmeyen conversationId', { providerName });
-      return { status: 200 };
+      return ok;
     }
     const [, apartmentId, intentId] = m as unknown as [string, string, string];
     const intent = await repo.getIntent(apartmentId, intentId);
-    if (intent) await settle(intent);
-    return { status: 200 };
+    // Imza bu saglayicinin anahtariyla dogrulandi: yalnizca onun niyeti sonuclandirilir.
+    if (intent && intent.provider === provider.name) await settle(intent);
+    return ok;
   }
 
   // ----- Platform: NEEDS_REVIEW elle sonuclandirma (deftere yaz / tam iade / kapat) -----
 
   /** Saglayicidan guncel sonucu sorgular; sonuclandirma kararlari yalnizca buna dayanir. */
   async function providerCheck(intent: PaymentIntent): Promise<{ check: ProviderCheck; outcome?: CheckoutOutcome }> {
-    if (!provider || provider.name !== intent.provider || !intent.checkout) {
+    const provider = registry.get(intent.provider);
+    if (!provider || !intent.checkout) {
       throw new PaymentsError('payments_disabled', 'Bu ödemenin sağlayıcısı şu an yapılandırılmamış');
     }
     let o: CheckoutOutcome;
@@ -1174,7 +1242,8 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
    */
   async function processRefund(start: PaymentIntent, opts: { ip: string; retryFailed: boolean }): Promise<PaymentIntent> {
     let intent = start;
-    if (!provider || provider.name !== intent.provider || !intent.refund) return intent;
+    const provider = registry.get(intent.provider);
+    if (!provider || !intent.refund) return intent;
     const nowMs = () => deps.now().getTime();
 
     for (let idx = 0; idx < intent.refund!.items.length; idx++) {
@@ -1299,9 +1368,30 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
     return site;
   }
 
-  async function getAccount(apartmentId: string) {
+  /**
+   * Platform islemlerinde hedef saglayici: acikca istenen (`provider`; bu ortamda acik olmali)
+   * veya apartmanin cozumlenen saglayicisi.
+   */
+  async function adminProvider(apartmentId: string, requested: unknown): Promise<PaymentProvider> {
+    if (registry.list().length === 0) throw new PaymentsError('payments_disabled', 'Online ödeme yapılandırılmamış');
+    if (requested !== undefined && requested !== null && requested !== '') {
+      const p = registry.get(String(requested));
+      if (!p) {
+        const names = registry.list().map((x) => x.name).join(', ');
+        throw new ValidationError(`provider bu ortamda açık sağlayıcılardan biri olmalıdır: ${names}`, 'provider');
+      }
+      return p;
+    }
+    const r = await resolveFor(apartmentId);
+    if (!r.provider) {
+      throw new PaymentsError('payments_disabled', `Apartmanın tercih ettiği sağlayıcı (${r.name ?? '-'}) bu ortamda açık değil`);
+    }
+    return r.provider;
+  }
+
+  async function getAccount(apartmentId: string, query: { provider?: string } = {}) {
     await requireSite(apartmentId);
-    if (!provider) throw new PaymentsError('payments_disabled', 'Online ödeme yapılandırılmamış');
+    const provider = await adminProvider(apartmentId, query.provider);
     const account = await repo.getAccount(apartmentId, provider.name);
     if (!account) throw new PaymentsError('not_found', 'Bu apartman için alt üye işyeri kaydı yok');
     return accountView(account);
@@ -1402,7 +1492,7 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
    */
   async function onboardSubMerchant(ctx: { userId: string }, apartmentId: string, body: unknown) {
     await requireSite(apartmentId);
-    if (!provider) throw new PaymentsError('payments_disabled', 'Online ödeme yapılandırılmamış');
+    const provider = await adminProvider(apartmentId, asObject(body).provider);
     const { request, feeBps } = parseSubMerchant(apartmentId, body);
     const pos = parsePosOverrides(asObject(body));
     if (await repo.getAccount(apartmentId, provider.name)) {
@@ -1444,6 +1534,7 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
     deps.log('info', 'AUDIT alt uye isyeri kaydedildi', {
       audit: 'PAYMENT_ACCOUNT_ONBOARDED',
       apartmentId,
+      provider: provider.name,
       by: ctx.userId,
       subMerchantType: account.subMerchantType,
       ibanMasked: account.ibanMasked,
@@ -1454,10 +1545,10 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
   /** Durum (aktif/pasif) ve platform payi; surum kosullu. */
   async function updateAccount(ctx: { userId: string }, apartmentId: string, body: unknown) {
     await requireSite(apartmentId);
-    if (!provider) throw new PaymentsError('payments_disabled', 'Online ödeme yapılandırılmamış');
+    const o = asObject(body);
+    const provider = await adminProvider(apartmentId, o.provider);
     const current = await repo.getAccount(apartmentId, provider.name);
     if (!current) throw new PaymentsError('not_found', 'Bu apartman için alt üye işyeri kaydı yok');
-    const o = asObject(body);
     let status = current.status;
     if (o.status !== undefined) {
       if (o.status !== 'active' && o.status !== 'disabled') throw new ValidationError('status active veya disabled olmalıdır', 'status');
@@ -1491,6 +1582,7 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
     deps.log('info', 'AUDIT alt uye isyeri guncellendi', {
       audit: 'PAYMENT_ACCOUNT_UPDATED',
       apartmentId,
+      provider: provider.name,
       by: ctx.userId,
       status,
       platformFeeBasisPoints: fee,
@@ -1565,6 +1657,7 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
 
   /** Yonetici icin online odeme durumu: anahtar (subMerchantKey) gosterilmez. */
   async function accountSummary(apartmentId: string) {
+    const { provider } = await resolveFor(apartmentId);
     if (!provider) return { configured: false as const, status: 'not_registered' as const };
     const account = await repo.getAccount(apartmentId, provider.name);
     if (!account) return { configured: true as const, provider: provider.name, sandbox: provider.sandbox, status: 'not_registered' as const };
@@ -1586,17 +1679,19 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
     const ids = await deps.core.listSiteIds();
     const rows = await Promise.all(
       ids.map(async (apartmentId) => {
-        const [site, account] = await Promise.all([
-          deps.core.getSite(apartmentId),
-          provider ? repo.getAccount(apartmentId, provider.name) : Promise.resolve(undefined),
-        ]);
+        const [site, settings] = await Promise.all([deps.core.getSite(apartmentId), repo.getSettings(apartmentId)]);
         if (!site) return undefined;
+        const r = resolveProvider(registry, settings?.paymentProvider);
+        const account = r.provider ? await repo.getAccount(apartmentId, r.provider.name) : undefined;
         return {
           apartmentId,
           name: site.name,
           city: site.address.city,
           district: site.address.district,
           siteStatus: site.status,
+          // Apartman tercihi (yoksa null = ortam varsayilani) ve fiilen kullanilan saglayici.
+          paymentProvider: settings?.paymentProvider ?? null,
+          effectiveProvider: r.provider?.name ?? null,
           account: account ? accountView(account) : null,
         };
       }),
@@ -1604,11 +1699,90 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
     const items = rows
       .filter((r): r is NonNullable<typeof r> => Boolean(r))
       .sort((a, b) => a.name.localeCompare(b.name, 'tr'));
-    return { provider: provider?.name ?? null, sandbox: provider?.sandbox ?? null, items };
+    const def = registry.get(registry.defaultName);
+    return { provider: def?.name ?? null, sandbox: def?.sandbox ?? null, providers: providerList(), items };
+  }
+
+  // ----- Platform: apartman bazinda saglayici tercihi -----
+
+  const providerList = () => registry.list().map((p) => ({ name: p.name, sandbox: p.sandbox, capabilities: p.capabilities }));
+
+  async function settingsView(apartmentId: string) {
+    const settings = await repo.getSettings(apartmentId);
+    const r = resolveProvider(registry, settings?.paymentProvider);
+    return {
+      apartmentId,
+      paymentProvider: settings?.paymentProvider ?? null,
+      defaultProvider: registry.defaultName ?? null,
+      effectiveProvider: r.provider?.name ?? null,
+      source: r.source,
+      available: providerList(),
+      version: settings?.version ?? 0,
+      updatedAt: settings?.updatedAt,
+      updatedBy: settings?.updatedBy,
+    };
+  }
+
+  async function getSettings(apartmentId: string) {
+    await requireSite(apartmentId);
+    return settingsView(apartmentId);
+  }
+
+  /**
+   * `{ paymentProvider: <ad> | null, expectedVersion }`: null ortam varsayilanina dondurur. Yalnizca
+   * bu ortamda acik saglayici secilebilir. Devam eden niyetler kendi saglayicisinda tamamlanir.
+   */
+  async function updateSettings(ctx: { userId: string }, apartmentId: string, body: unknown) {
+    await requireSite(apartmentId);
+    const o = asObject(body);
+    if (!('paymentProvider' in o)) throw new ValidationError('paymentProvider zorunludur (ad veya null)', 'paymentProvider');
+    let paymentProvider: PaymentProviderName | undefined;
+    if (o.paymentProvider !== null) {
+      const p = registry.get(typeof o.paymentProvider === 'string' ? o.paymentProvider : undefined);
+      if (!p) {
+        const names = registry.list().map((x) => x.name).join(', ') || '-';
+        throw new ValidationError(`paymentProvider bu ortamda açık sağlayıcılardan biri veya null olmalıdır: ${names}`, 'paymentProvider');
+      }
+      paymentProvider = p.name;
+    }
+    const expectedVersion = o.expectedVersion;
+    if (typeof expectedVersion !== 'number' || !Number.isInteger(expectedVersion) || expectedVersion < 0) {
+      throw new ValidationError('expectedVersion zorunludur (ilk kayit icin 0)', 'expectedVersion');
+    }
+    const current = await repo.getSettings(apartmentId);
+    if ((current?.version ?? 0) !== expectedVersion) throw new PaymentsError('conflict', 'Kayıt başka biri tarafından değiştirildi');
+    const ts = stamp();
+    const next: PaymentSettings = {
+      ...paymentKeys.settings(apartmentId),
+      entityType: 'PAYMENT_SETTINGS',
+      apartmentId,
+      ...(paymentProvider ? { paymentProvider } : {}),
+      createdAt: current?.createdAt ?? ts,
+      createdBy: current?.createdBy ?? ctx.userId,
+      updatedAt: ts,
+      updatedBy: ctx.userId,
+      version: expectedVersion + 1,
+    };
+    try {
+      await repo.putSettings(next, current ? current.version : undefined);
+    } catch (err) {
+      if (err instanceof PaymentsConflictError) throw new PaymentsError('conflict', 'Kayıt başka biri tarafından değiştirildi');
+      throw err;
+    }
+    deps.log('info', 'AUDIT odeme saglayici tercihi guncellendi', {
+      audit: 'PAYMENT_SETTINGS_UPDATED',
+      apartmentId,
+      by: ctx.userId,
+      from: current?.paymentProvider ?? null,
+      to: paymentProvider ?? null,
+    });
+    return settingsView(apartmentId);
   }
 
   return {
-    provider,
+    providers: registry,
+    getSettings,
+    updateSettings,
     quote,
     listIntentsForManager,
     accountSummary,

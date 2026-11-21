@@ -16,6 +16,7 @@ import {
   type PaymentProvider,
   PaymentProviderError,
   type RefundRequest,
+  tokenFromBody,
   type SubMerchantRequest,
 } from './provider.js';
 import type { ItemTransaction } from './types.js';
@@ -47,7 +48,7 @@ export type FakePaymentProvider = PaymentProvider & {
   refunds: Map<string, RefundRequest[]>;
   /** Onaylanan kalemler (`paymentTransactionId` -> onay sayisi). */
   approvals: Map<string, number>;
-  /** Sonraki `approveItem` cagrisi hata verir. */
+  /** Sonraki `releaseItem` (pazaryeri onayi) cagrisi hata verir. */
   failNextApprove(error?: Error): void;
   /** Kalem basina sahte saglayici komisyonu (kurus; varsayilan yok). */
   setProviderFeePerItem(fee: Kurus | undefined): void;
@@ -74,12 +75,15 @@ export function createFakePaymentProvider(options: { apiBaseUrl: string }): Fake
   return {
     name: 'fake',
     sandbox: true,
+    // iyzico gibi davranir: yonlendirme + kalem onayi.
+    capabilities: { checkout: 'redirect', settlement: 'item_approval', requiresBuyerGsm: true },
+    parseCallback: tokenFromBody,
     sessions,
     subMerchants,
     refunds,
     approvals,
 
-    async approveItem({ paymentTransactionId }) {
+    async releaseItem({ providerItemId: paymentTransactionId }) {
       if (approveError) {
         const e = approveError;
         approveError = undefined;

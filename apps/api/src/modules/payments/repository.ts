@@ -18,6 +18,7 @@ import {
   type PaymentAccount,
   type PaymentIntent,
   type PaymentProviderName,
+  type PaymentSettings,
   REVIEW_QUEUE_STATUSES,
 } from './types.js';
 
@@ -58,6 +59,11 @@ export const paymentKeys = {
     PK: tenantPk(apartmentId),
     SK: skKey('PAYACCT', provider),
   }),
+  /** Apartmanin online odeme tercihi (saglayici secimi). */
+  settings: (apartmentId: string): TableKeys => ({
+    PK: tenantPk(apartmentId),
+    SK: skKey('PAYSETTINGS'),
+  }),
 };
 
 /** Kosullu yazim tutmadi: kayit zaten var veya surum degismis. */
@@ -93,6 +99,9 @@ export type PaymentsRepository = {
   getAccount(apartmentId: string, provider: PaymentProviderName): Promise<PaymentAccount | undefined>;
   /** Yeni hesap (`expectedVersion` yok) veya surum kosullu guncelleme. */
   putAccount(account: PaymentAccount, expectedVersion?: number): Promise<void>;
+  getSettings(apartmentId: string): Promise<PaymentSettings | undefined>;
+  /** Yeni kayit (`expectedVersion` yok) veya surum kosullu guncelleme; denetim kaydiyla. */
+  putSettings(settings: PaymentSettings, expectedVersion?: number): Promise<void>;
 };
 
 /**
@@ -278,6 +287,25 @@ export function createPaymentsRepository(): PaymentsRepository {
         };
         if (expectedVersion === undefined) await auditedPutNew(account, audit);
         else await auditedPutVersioned(account, expectedVersion, audit);
+      } catch (err) {
+        if (err instanceof DataAccessError && err.code !== 'conflict') throw err;
+        conflictOr(err);
+      }
+    },
+
+    getSettings: (apartmentId) => getTenantItem<PaymentSettings>(paymentKeys.settings(apartmentId)),
+
+    async putSettings(settings, expectedVersion) {
+      try {
+        const audit = {
+          apartmentId: settings.apartmentId,
+          action: 'payment.settings.update',
+          target: { type: 'payment_settings', id: settings.apartmentId },
+          actorId: settings.updatedBy,
+          details: { paymentProvider: settings.paymentProvider ?? null, version: settings.version },
+        };
+        if (expectedVersion === undefined) await auditedPutNew(settings, audit);
+        else await auditedPutVersioned(settings, expectedVersion, audit);
       } catch (err) {
         if (err instanceof DataAccessError && err.code !== 'conflict') throw err;
         conflictOr(err);

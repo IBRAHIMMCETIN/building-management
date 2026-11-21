@@ -17,8 +17,11 @@
  */
 import type { IsoDate, IsoDateTime, Kurus, LiableParty, TableKeys } from '../core/types.js';
 
-export const PAYMENT_PROVIDERS = ['iyzico', 'fake'] as const;
+/** `fake` yalnizca yerel gelistirme/test; `paytr` adaptoru P3'te eklenir. */
+export const PAYMENT_PROVIDERS = ['iyzico', 'paytr', 'fake'] as const;
 export type PaymentProviderName = (typeof PAYMENT_PROVIDERS)[number];
+/** Canli ortamda secilebilen saglayicilar (`DEFAULT_PAYMENT_PROVIDER`, apartman tercihi). */
+export const LIVE_PAYMENT_PROVIDERS = ['iyzico', 'paytr'] as const;
 
 export const PAYMENT_MODES = ['total', 'items'] as const;
 export type PaymentMode = (typeof PAYMENT_MODES)[number];
@@ -168,7 +171,8 @@ export type PaymentIntent = TableKeys & {
   /** Saglayiciya giden `conversationId` (`<apartmentId>:<intentId>`). */
   conversationId: string;
   status: IntentStatus;
-  checkout?: { token: string; paymentPageUrl: string; createdAt: IsoDateTime };
+  /** `kind` yoksa `redirect` (P2 oncesi niyetler). */
+  checkout?: { token: string; paymentPageUrl: string; kind?: 'redirect' | 'iframe'; createdAt: IsoDateTime };
   providerPaymentId?: string;
   paidAt?: IsoDate;
   paymentIds?: string[];
@@ -223,6 +227,23 @@ export type PaymentAccount = TableKeys & {
   posRateBasisPoints?: number;
   /** Islem basina sabit saglayici ucreti (kurus); yoksa `PAYMENTS_POS_FIXED_FEE_KURUS`. */
   posFixedFeeKurus?: number;
+  createdAt: IsoDateTime;
+  createdBy: string;
+  updatedAt: IsoDateTime;
+  updatedBy: string;
+  version: number;
+};
+
+/**
+ * Apartmanin online odeme tercihi (Online Odeme v2 · P2). Yalnizca `platform_admin` yazar.
+ *   PK = `APT#<apartmentId>`, SK = `PAYSETTINGS`
+ * `paymentProvider` yoksa ortam varsayilani (`DEFAULT_PAYMENT_PROVIDER`) kullanilir. Tercih yeni
+ * niyetleri etkiler; devam eden niyetler kendi saglayicisiyla tamamlanir.
+ */
+export type PaymentSettings = TableKeys & {
+  entityType: 'PAYMENT_SETTINGS';
+  apartmentId: string;
+  paymentProvider?: PaymentProviderName;
   createdAt: IsoDateTime;
   createdBy: string;
   updatedAt: IsoDateTime;

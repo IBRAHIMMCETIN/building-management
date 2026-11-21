@@ -179,6 +179,9 @@ npm run dev:api
 | `OUTBOX_LOCAL_RELAY` | Yerel sunucuda `off` ise bekleyen outbox kayıtlarını yoklayan bellek içi relay çalışmaz. |
 | `MFA_ENFORCEMENT_MODE` | Yönetici/denetçi rolleri için zorunlu TOTP: `off` (varsayılan, yerel) \| `warn` (kullanıcı bazlı geçiş süresi, sonra zorunlu) \| `enforce`. API ve Pre Token Lambda'sında aynı değer (Terraform `mfa_enforcement_mode`, varsayılan `warn`). Geçersiz değer başlangıçta hata verir. |
 | `MFA_GRACE_PERIOD_DAYS` | `warn` modunda TOTP kurmamış kullanıcıya tanınan gün (varsayılan `7`, 0-90; Terraform `mfa_grace_period_days`). |
+| `PAYMENTS_PROVIDERS` | Açık online ödeme sağlayıcıları, virgülle: `iyzico`, `paytr` (P3), `fake` (yalnızca yerel). Boş veya `disabled`: online ödeme kapalı. Eski tekil `PAYMENTS_PROVIDER` da okunur. Terraform `payments_provider`'dan üretir. |
+| `DEFAULT_PAYMENT_PROVIDER` | Apartman tercihi yoksa kullanılan sağlayıcı; açık sağlayıcılardan biri olmalı. Birden fazla sağlayıcı açıkken zorunlu. Apartman bazında tercih: `PUT /api/admin/payments/apartments/{id}/settings`. |
+| `IYZICO_BASE_URL` / `IYZICO_SECRET_ARN` | iyzico API adresi (sandbox/canlı) ve anahtarların Secrets Manager ARN'i (eski ad `PAYMENTS_SECRET_ARN` da okunur). Yerelde `IYZICO_API_KEY` / `IYZICO_SECRET_KEY`. |
 | `PAYMENTS_POS_RATE_BPS` / `PAYMENTS_POS_FIXED_FEE_KURUS` | Online ödeme sağlayıcısının sözleşme komisyonu: oran baz puan (`249` = %2,49; 0-1000) ve işlem başı sabit ücret kuruş (`25` = 0,25 TL; 0-5000). Varsayılan `0`; geçersiz değer başlangıçta hata verir. Komisyon tahmininde kullanılır, ödeme hesabı bazında geçersiz kılınabilir (Terraform `payments_pos_rate_bps`, `payments_pos_fixed_fee_kurus`). |
 | `AUDIT_TABLE_NAME` | Denetim günlüğü tablosu (Terraform: `<proje>-<ortam>-audit`). Lambda'da tanımsızsa hassas yazımlar reddedilir (fail closed); yerel geliştirme ve testlerde tanımsızsa denetim atlanır. |
 
@@ -427,6 +430,14 @@ API Gateway sınırı istemci başına değil, rota başınadır: arka ucu ve ma
 - [x] Komisyon gideri tahsilatla aynı atomik yazımda; gecelik defter denetimi `ONLINE-FEE` kaydını ve tutarını kontrol eder
 - [x] iyzico pazaryeri kalem onayı (`/payment/iyzipos/item/approve`): başarılı ödemeden hemen sonra; geçici hatada `payment_reconcile` 10 denemeye kadar yeniden dener, kalıcı hatada `PAYMENT_APPROVAL_FAILED` alarmı. Gerçek iyzico komisyonu (`iyziCommissionRateAmount + iyziCommissionFee`) mutabakat kaydına yazılır
 - [x] Yönetici "Online ödemeler" listesinde komisyon, aktarılacak tutar ve onay durumu
+
+**Online Ödeme v2 — P2: çoklu sağlayıcı soyutlaması**
+
+- [x] Ortak `PaymentProvider` arayüzü: yetenekler (`checkout: redirect | iframe`, `settlement: item_approval | payout_transfer | automatic`), sağlayıcıya özgü tarayıcı dönüşü (`parseCallback`) ve webhook yanıtı (`webhookReply`), pazaryeri payının serbest bırakılması `releaseItem` (iyzico'da kalem onayı, PayTR'de P4 transferi)
+- [x] Sağlayıcı kaydı ve çözümleyici (`payments/registry.ts`): `PAYMENTS_PROVIDERS` + `DEFAULT_PAYMENT_PROVIDER`; apartman tercihi (`PAYSETTINGS`) > ortam varsayılanı. Kapalı bir sağlayıcı tercih edilmişse online ödeme o apartman için kapalı; başka sağlayıcıya sessizce düşülmez
+- [x] Devam eden niyetin tüm adımları (sorgu, callback, webhook, onay, iade, mutabakat) niyete yazılan sağlayıcıyla yürür; tercih değişse de ödeme kendi sağlayıcısında tamamlanır
+- [x] Platform API'si: `GET/PUT /api/admin/payments/apartments/{id}/settings` (sürüm koşullu, denetim kaydı `payment.settings.update`); hesap uçlarında opsiyonel `provider`; apartman listesinde tercih ve etkin sağlayıcı
+- [x] Altyapı ortam değişkenleri yeni adlara geçti (`PAYMENTS_PROVIDERS`, `DEFAULT_PAYMENT_PROVIDER`, `IYZICO_SECRET_ARN`); Terraform hâlâ tek sağlayıcı açar, PayTR secret'ı ve rotaları P3'te
 
 **Finans — taşınmada cari kapama ve borç devri (`main`'e alındı: `b162339`)**
 

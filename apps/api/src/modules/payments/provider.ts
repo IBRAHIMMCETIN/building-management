@@ -1,7 +1,13 @@
 /**
- * Odeme saglayicisi soyutlamasi. Servis yalnizca bu arayuzu bilir; iyzico (Adim 8b-2) ve
- * yerel/test icin sahte saglayici bunu uygular. Kart verisi bu sisteme hic gelmez: saglayicinin
- * barindirdigi odeme sayfasi kullanilir.
+ * Odeme saglayicisi soyutlamasi (Online Odeme v2 · P2). Servis yalnizca bu arayuzu bilir;
+ * iyzico, yerel/test icin sahte saglayici ve (P3) PayTR bunu uygular. Kart verisi bu sisteme hic
+ * gelmez: saglayicinin barindirdigi odeme sayfasi (yonlendirme veya iframe) kullanilir.
+ *
+ * Saglayiciya ozgu her sey burada kalir: istek bicimi/imza, tarayici donusunun ayristirilmasi,
+ * webhook imzasi ve yaniti, pazaryeri payinin serbest birakilma bicimi (onay / transfer). Servis
+ * saglayiciyi `registry.ts` uzerinden ADIYLA bulur: yeni niyet apartmanin cozumlenen
+ * saglayicisini, mevcut niyetin tum adimlari (sorgu, onay, iade, webhook) niyete yazilan
+ * saglayiciyi kullanir.
  */
 import type { IsoDate, Kurus } from '../core/types.js';
 import type { ItemTransaction, PaymentProviderName, SubMerchantType } from './types.js';
@@ -42,8 +48,44 @@ export type CheckoutRequest = {
 };
 
 export type CheckoutSession = {
+  /** Saglayici oturum kimligi; sonuc bununla sorgulanir. */
   token: string;
+  /** Sakinin acacagi odeme sayfasi (yonlendirme) veya iframe adresi. */
   paymentPageUrl: string;
+};
+
+/**
+ * Pazaryeri payinin alt uye isyerine gecis bicimi:
+ *  - `item_approval`  : kalem bazli onay (iyzico `item/approve`); onaylanmayan tutar havuzda bekler.
+ *  - `payout_transfer`: platform transferi (PayTR Platform Transfer, P4); bekleme suresi sonrasi.
+ *  - `automatic`      : saglayici kendisi aktarir; servis islem yapmaz.
+ */
+export type SettlementMode = 'item_approval' | 'payout_transfer' | 'automatic';
+
+export type ProviderCapabilities = {
+  /** Odeme sayfasi: tam sayfa yonlendirme veya sayfaya gomulu iframe. */
+  checkout: 'redirect' | 'iframe';
+  settlement: SettlementMode;
+  /** Canli ortamda alicinin cep telefonu zorunlu mu (sandbox'ta test degeri kullanilir). */
+  requiresBuyerGsm: boolean;
+};
+
+/** Tarayicinin saglayicidan donusu (callback): sorgu parametreleri + form/JSON govde alanlari. */
+export type CallbackInput = { query: Record<string, string | undefined>; body: Record<string, unknown> };
+
+/**
+ * Pazaryeri payini serbest birakma istegi (onay veya transfer). `providerItemId` saglayicinin
+ * kalem islem kimligidir (iyzico `paymentTransactionId`).
+ */
+export type ReleaseRequest = {
+  itemId: string;
+  providerItemId: string;
+  providerPaymentId?: string;
+  subMerchantKey: string;
+  /** Alt uye isyerine gececek tutar (kalemin `subMerchantPrice`'i). */
+  amount: Kurus;
+  /** Izleme / idempotency kimligi. */
+  conversationId: string;
 };
 
 /**
@@ -103,11 +145,21 @@ export type RefundResult = { providerRefundId?: string };
 
 export type WebhookInput = { headers: Record<string, string | undefined>; body: unknown };
 
+/** Webhook'a saglayicinin bekledigi yanit (iyzico JSON, PayTR duz metin `OK`). */
+export type WebhookReply = { contentType: 'application/json' | 'text/plain'; body: string };
+
 export interface PaymentProvider {
   readonly name: PaymentProviderName;
   /** Sandbox/test ortami: TCKN yerine saglayicinin test numarasi kullanilir. */
   readonly sandbox: boolean;
+  readonly capabilities: ProviderCapabilities;
   createCheckout(request: CheckoutRequest): Promise<CheckoutSession>;
+  /**
+   * Tarayici donusunden oturum kimligini (token) cikarir. Govdeye guvenilmez: servis token'i
+   * niyetle eslestirir ve sonucu yine saglayicidan sorgular. Token tasimayan saglayicida
+   * (PayTR) yalnizca `ref` ile niyet bulunur; o zaman `{}` doner. Gecersiz donus: `null`.
+   */
+  parseCallback(input: CallbackInput): { token?: string } | null;
   retrieveCheckout(query: { token: string; conversationId: string }): Promise<CheckoutOutcome>;
   registerSubMerchant(request: SubMerchantRequest): Promise<{ subMerchantKey: string }>;
   /**
@@ -122,16 +174,25 @@ export interface PaymentProvider {
    */
   refundedAmounts(query: { providerPaymentId: string; conversationId: string }): Promise<Map<string, Kurus>>;
   /**
-   * Pazaryeri dagitim onayi (iyzico `POST /payment/iyzipos/item/approve`): onaylanmayan kalemin
-   * tutari saglayici havuzunda bekler ve alt uye isyerine aktarilmaz. Saglayicida onay kavrami
-   * yoksa tanimlanmaz (servis onayi "gerekmiyor" sayar). Hata: `PaymentProviderError`.
+   * Pazaryeri payini alt uye isyerine serbest birakir (`capabilities.settlement`): iyzico'da
+   * kalem onayi (`POST /payment/iyzipos/item/approve`), PayTR'de platform transferi (P4).
+   * `automatic` saglayicida tanimlanmaz. Idempotent olmali (ayni kalem tekrar gonderilebilir).
+   * Hata: `PaymentProviderError` (`retryable` ile).
    */
-  approveItem?(request: { paymentTransactionId: string; conversationId: string }): Promise<void>;
+  releaseItem?(request: ReleaseRequest): Promise<void>;
   /**
    * Webhook imzasini dogrular; gecerliyse niyeti bulmak icin `conversationId` doner, degilse
    * null. Govdedeki odeme durumuna guvenilmez: servis sonucu yine saglayicidan sorgular.
    */
   verifyWebhook?(input: WebhookInput): Promise<{ conversationId: string } | null>;
+  /** Islenen (veya bilinmeyen niyetli) gecerli webhook'a verilecek yanit; yoksa `{"ok":true}`. */
+  webhookReply?(): WebhookReply;
+}
+
+/** Govdedeki zorunlu `token` alani (iyzico ve sahte saglayicinin tarayici POST'u). */
+export function tokenFromBody(input: CallbackInput): { token: string } | null {
+  const t = input.body.token;
+  return typeof t === 'string' && t.length > 0 && t.length <= 512 ? { token: t } : null;
 }
 
 /** Saglayiciya ulasilamadi veya istek reddedildi. */

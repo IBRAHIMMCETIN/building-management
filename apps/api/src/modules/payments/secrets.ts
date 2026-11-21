@@ -1,6 +1,6 @@
 /**
  * Odeme saglayicisi anahtarlarinin okunmasi. Anahtarlar koda gomulmez:
- *   - Lambda: PAYMENTS_SECRET_ARN -> AWS Secrets Manager, JSON `{ "apiKey": "...", "secretKey": "..." }`
+ *   - Lambda: IYZICO_SECRET_ARN (eski ad PAYMENTS_SECRET_ARN) -> AWS Secrets Manager, JSON `{ "apiKey": "...", "secretKey": "..." }`
  *   - Yerel : IYZICO_API_KEY / IYZICO_SECRET_KEY ortam degiskenleri
  * Secrets Manager degeri 5 dakika bellekte tutulur (sicak Lambda'da her istekte cagri yapilmaz);
  * anahtar dondurulunce en gec 5 dakikada yenisi kullanilir.
@@ -70,6 +70,6 @@ export function secretsManagerCredentials(
 export function envCredentials(env: NodeJS.ProcessEnv): () => Promise<IyzicoCredentials> {
   const apiKey = env.IYZICO_API_KEY?.trim();
   const secretKey = env.IYZICO_SECRET_KEY?.trim();
-  if (!apiKey || !secretKey) throw new Error('IYZICO_API_KEY ve IYZICO_SECRET_KEY tanimli olmali (veya PAYMENTS_SECRET_ARN)');
+  if (!apiKey || !secretKey) throw new Error('IYZICO_API_KEY ve IYZICO_SECRET_KEY tanimli olmali (veya IYZICO_SECRET_ARN)');
   return async () => ({ apiKey, secretKey });
 }

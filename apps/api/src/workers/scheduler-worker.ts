@@ -32,7 +32,7 @@ import type { SqsBatchResponse, SqsEvent } from './notification-worker.js';
  *   dues_reminders her gun 10:00   vadeden 3 gun once, 1 ve 7 gun sonra hatirlatir (+DUES_REMINDER)
  *   payment_reconcile 15 dakikada bir (Adim 8b): 30 dk'dan eski PENDING online odeme niyetlerini
  *                  saglayicidan sorgulayip sonuclandirir (kaybolan callback/webhook). Online odeme
- *                  kapaliysa (PAYMENTS_PROVIDER tanimsiz) apartmanlar `payments_disabled` ile atlanir.
+ *                  kapaliysa (PAYMENTS_PROVIDERS bos) apartmanlar `payments_disabled` ile atlanir.
  *                  Ayrica (tum apartmanlar icin calistiginda) iadesi suren niyetlerin bekleyen
  *                  kalemlerini tekrar dener (`_refunds` satiri).
  *   outbox_sweep   5 dakikada bir: esikten (varsayilan 2 dk) eski, hala bekleyen outbox
@@ -121,12 +121,13 @@ export function createSchedulerWorker(overrides: Partial<SchedulerDeps> = {}) {
     if (lazy.payments !== undefined) return lazy.payments;
     if (overrides.payments !== undefined) return (lazy.payments = overrides.payments);
     const config = loadPaymentsConfig();
-    if (!config.provider) return (lazy.payments = null);
+    if (config.providers.list().length === 0) return (lazy.payments = null);
     return (lazy.payments = createPaymentsService({
       portal: createPortalService({ now }),
       ledger: portalRepository,
       finance: createFinanceService({ now, memberships: membershipRepository }),
-      provider: config.provider,
+      // Mutabakat her niyeti kendi saglayicisiyla sorgular (acik tum saglayicilar).
+      providers: config.providers,
       apiBaseUrl: config.apiBaseUrl,
       webAppUrl: config.webAppUrl,
       intentTtlMinutes: config.intentTtlMinutes,

@@ -1,5 +1,5 @@
 import { PaymentsConflictError, type PaymentsRepository, REVIEW_QUEUE_PK, toStoredIntent } from '../../src/modules/payments/repository.js';
-import type { IntentKeyRecord, PaymentAccount, PaymentIntent } from '../../src/modules/payments/types.js';
+import type { IntentKeyRecord, PaymentAccount, PaymentIntent, PaymentSettings } from '../../src/modules/payments/types.js';
 
 type Doc = Record<string, unknown> & { PK: string; SK: string; version?: number };
 
@@ -52,6 +52,12 @@ export function createFakePaymentsRepo(docs: Map<string, Doc>) {
       const cur = docs.get(key(account));
       if (expectedVersion === undefined ? cur : cur?.version !== expectedVersion) throw new PaymentsConflictError();
       docs.set(key(account), { ...account } as unknown as Doc);
+    },
+    getSettings: async (apt) => docs.get(`APT#${apt}|PAYSETTINGS`) as PaymentSettings | undefined,
+    putSettings: async (settings, expectedVersion) => {
+      const cur = docs.get(key(settings));
+      if (expectedVersion === undefined ? cur : cur?.version !== expectedVersion) throw new PaymentsConflictError();
+      docs.set(key(settings), { ...settings } as unknown as Doc);
     },
   };
 
