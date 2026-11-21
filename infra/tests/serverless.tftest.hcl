@@ -981,13 +981,18 @@ run "payments_paytr_and_iyzico" {
     error_message = "Scheduler worker odeme secret'lerini tek ifadeyle okuyabilmeli"
   }
   assert {
+    # Ciktilar (payments_callback_urls, payments_secret_arns) API adresi ve secret ARN'lerine
+    # bagli oldugu icin plan asamasinda bilinmez: yapilari, plan-zamani bilinen kaynak
+    # anahtarlarindan (rota anahtarlari ve secret'lar saglayici basina) dogrulanir.
     condition = (
-      toset(keys(output.payments_callback_urls)) == toset(["iyzico", "paytr"]) &&
-      endswith(output.payments_callback_urls["paytr"].webhook, "/api/payments/paytr/webhook") &&
-      # Secret ARN'leri plan asamasinda bilinmez: anahtarlar kaynaktan dogrulanir.
+      contains(keys(aws_apigatewayv2_route.payments_public), "POST /api/payments/paytr/webhook") &&
+      contains(keys(aws_apigatewayv2_route.payments_public), "GET /api/payments/paytr/callback") &&
+      contains(keys(aws_apigatewayv2_route.payments_public), "POST /api/payments/paytr/callback") &&
+      contains(keys(aws_apigatewayv2_route.payments_public), "POST /api/payments/iyzico/webhook") &&
+      aws_apigatewayv2_route.payments_public["POST /api/payments/paytr/webhook"].route_key == "POST /api/payments/paytr/webhook" &&
       toset(keys(aws_secretsmanager_secret.payments)) == toset(["iyzico", "paytr"])
     )
-    error_message = "Saglayici basina callback/webhook adresleri ve secret'lar olusturulmali"
+    error_message = "Saglayici basina callback/webhook rotalari ve secret'lar olusturulmali"
   }
   assert {
     condition     = contains(keys(aws_scheduler_schedule.jobs), "payment_reconcile") && length(aws_cloudwatch_metric_alarm.payment_needs_review) == 1
