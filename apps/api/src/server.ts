@@ -4,7 +4,6 @@ import { serve } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { createApp } from './app.js';
 import { createAuthFromEnv } from './auth/authenticators.js';
-import { createEventPublisherFromEnv } from './events/publisher.js';
 
 const port = Number(process.env.PORT ?? 3000);
 const version = process.env.APP_VERSION ?? 'dev';
@@ -20,7 +19,6 @@ const app = createApp({
   ...(isProduction ? {} : { authMode: auth.mode }),
   authenticate: auth.authenticate,
   identify: auth.identify,
-  events: createEventPublisherFromEnv(),
 });
 
 app.use('/*', serveStatic({ root: publicDir }));

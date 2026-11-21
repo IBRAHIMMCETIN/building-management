@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { type EventPublisher, buildEvent, noopEventPublisher, publishSafely } from '../../events/publisher.js';
+import { type DomainEvent, type NewEvent, buildEvent } from '../../events/publisher.js';
 import { type CoreRepository, coreRepository } from '../core/repository.js';
 import {
   type IsoDate,
@@ -171,8 +171,6 @@ export type FinanceServiceDeps = {
   core: Pick<CoreRepository, 'getUnit' | 'listUnits'> & Partial<Pick<CoreRepository, 'getSite'>>;
   now: () => Date;
   newId: () => string;
-  /** Defter yazimindan sonra DUE_GENERATED / PAYMENT_RECEIVED yayini (varsayilan: kapali). */
-  events: EventPublisher;
   /**
    * Gider faturasi: gecici yuklemeyi dogrulayip kalici yere tasir (documents modulu).
    * Verilmezse fatura ekli gider reddedilir.
@@ -308,11 +306,15 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
     core: coreRepository,
     now: () => new Date(),
     newId: () => randomUUID(),
-    events: noopEventPublisher,
     ...overrides,
   };
   const repo = deps.repository;
-  const publish = (event: Parameters<typeof buildEvent>[0]) => publishSafely(deps.events, buildEvent(event, deps.now));
+  /**
+   * Domain olaylari (DUE_GENERATED, PAYMENT_RECEIVED, LATE_FEE_POSTED) dogrudan yayinlanmaz:
+   * defter yazimiyla AYNI atomik islemde outbox'a yazilir (`postBatch({ outbox })`), yayini
+   * relay yapar. Tekrar (replay) isteklerinde yazim olmadigi icin yeni olay da olusmaz.
+   */
+  const toEvent = (e: NewEvent): DomainEvent => buildEvent(e, deps.now) as DomainEvent;
   const ensuredSystem = new Set<string>();
 
   const stamp = () => deps.now().toISOString();
@@ -533,6 +535,8 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
       batchId?: string;
       /** Bos daire kurali: `party` malik, istenen taraf sakin idi. */
       vacant?: boolean;
+      /** Yazimla ayni atomik islemde outbox'a yazilacak olay (islem kimligi belli olunca uretilir). */
+      event?: (tx: Transaction) => NewEvent;
     },
   ): Promise<DuesResult> {
     const replayed = async (transactionId: string): Promise<DuesResult> => {
@@ -557,7 +561,11 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
       ],
     });
     try {
-      await repo.postTransaction({ transaction: tx, idempotency: { id: p.idemId, fingerprint: p.fp } });
+      await repo.postTransaction({
+        transaction: tx,
+        idempotency: { id: p.idemId, fingerprint: p.fp },
+        ...(p.event ? { outbox: [toEvent(p.event(tx))] } : {}),
+      });
       return { transaction: tx, replayed: false, liableParty: p.party, vacant: p.vacant === true };
     } catch (err) {
       if (err instanceof LedgerConflictError && err.reason === 'duplicate') {
@@ -601,12 +609,9 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
       date,
       dueDate,
       description,
-    });
-    // Tekrar (replay) isteklerinde olay yeniden yayinlanmaz.
-    if (!result.replayed) {
-      const transactionId = result.transaction.transactionId;
-      await publish({
-        eventId: `DUE_GENERATED:${transactionId}`,
+      // Olay defter kaydiyla ayni atomik yazimda outbox'a girer; replay'de yazim (ve olay) yok.
+      event: (tx) => ({
+        eventId: `DUE_GENERATED:${tx.transactionId}`,
         type: 'DUE_GENERATED',
         apartmentId: ctx.apartmentId,
         actorId: ctx.userId,
@@ -616,12 +621,12 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
           date,
           dueDate,
           description,
-          liableParty: result.liableParty,
+          liableParty: target.party,
           totalAmount: amount,
-          items: [{ unitId, amount, transactionId, liableParty: result.liableParty }],
+          items: [{ unitId, amount, transactionId: tx.transactionId, liableParty: target.party }],
         },
-      });
-    }
+      }),
+    });
     return result;
   }
 
@@ -746,17 +751,38 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
     for (const [i, unit] of units.entries()) {
       const amount = shares[i] ?? 0;
       if (amount < 1) continue; // cok kucuk pay: 0 kurus borc yazilmaz
+      const liable = plan.targets[i]?.party ?? party;
       const r = await postDues(ctx, {
         idemId: `${key}_${unit.unitId}`,
         fp: fingerprint({ op: 'bulk', unitId: unit.unitId, party, amount, date, dueDate, description, distributionKey, totalAmount, ...plan.scopeFp }),
         unitId: unit.unitId,
-        party: plan.targets[i]?.party ?? party,
+        party: liable,
         vacant: plan.targets[i]?.vacant ?? false,
         amount: toKurus(amount),
         date,
         dueDate,
         description,
         batchId,
+        // Kalem basina olay, kalemin defter kaydiyla ayni atomik yazimda: istek yarida kesilse
+        // de yazilan her kalemin olayi vardir. Bildirim tarafi `batchId` ile kullanici bazinda
+        // tek ozet halinde birlestirir.
+        event: (tx) => ({
+          eventId: `DUE_GENERATED:${tx.transactionId}`,
+          type: 'DUE_GENERATED',
+          apartmentId: ctx.apartmentId,
+          actorId: ctx.userId,
+          groupKey: unit.unitId,
+          payload: {
+            mode: 'bulk',
+            batchId,
+            date,
+            dueDate,
+            description,
+            liableParty: party,
+            totalAmount: toKurus(amount),
+            items: [{ unitId: unit.unitId, amount: toKurus(amount), transactionId: tx.transactionId, liableParty: liable }],
+          },
+        }),
       });
       results.push({
         unitId: unit.unitId,
@@ -765,28 +791,6 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
         replayed: r.replayed,
         liableParty: r.liableParty,
         vacant: r.vacant,
-      });
-    }
-    // Yalnizca bu istekte YENI yazilan kalemler icin tek bir toplu olay (yarim kalan toplu
-    // islem ayni anahtarla tamamlandiginda yalnizca kalan kalemler yayinlanir).
-    const fresh = results.filter((r) => !r.replayed);
-    const firstFresh = fresh[0];
-    if (firstFresh) {
-      await publish({
-        eventId: `DUE_GENERATED:${batchId}:${firstFresh.transactionId}`,
-        type: 'DUE_GENERATED',
-        apartmentId: ctx.apartmentId,
-        actorId: ctx.userId,
-        payload: {
-          mode: 'bulk',
-          batchId,
-          date,
-          dueDate,
-          description,
-          liableParty: party,
-          totalAmount: toKurus(fresh.reduce((s, r) => s + r.amount, 0)),
-          items: fresh.map(({ unitId, amount, transactionId, liableParty }) => ({ unitId, amount, transactionId, liableParty })),
-        },
       });
     }
 
@@ -914,24 +918,26 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
           idempotency: { id: key, fingerprint: fp, recordId: paymentId },
           counter: { name: 'receipt', expected: counterValue },
           record: payment,
-        });
-        await publish({
-          eventId: `PAYMENT_RECEIVED:${paymentId}`,
-          type: 'PAYMENT_RECEIVED',
-          apartmentId: ctx.apartmentId,
-          actorId: ctx.userId,
-          groupKey: unitId,
-          payload: {
-            paymentId,
-            transactionId: tx.transactionId,
-            receiptNumber: payment.receiptNumber,
-            unitId,
-            liableParty: party,
-            amount,
-            method,
-            paidAt,
-            ...(former ? { receivableAccountId: former.accountId } : {}),
-          },
+          outbox: [
+            toEvent({
+              eventId: `PAYMENT_RECEIVED:${paymentId}`,
+              type: 'PAYMENT_RECEIVED',
+              apartmentId: ctx.apartmentId,
+              actorId: ctx.userId,
+              groupKey: unitId,
+              payload: {
+                paymentId,
+                transactionId: tx.transactionId,
+                receiptNumber: payment.receiptNumber,
+                unitId,
+                liableParty: party,
+                amount,
+                method,
+                paidAt,
+                ...(former ? { receivableAccountId: former.accountId } : {}),
+              },
+            }),
+          ],
         });
         return { payment, transaction: tx, replayed: false };
       } catch (err) {
@@ -1104,6 +1110,25 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
           counter: { name: 'receipt', expected: counterValue, increment: payments.length },
           records: payments,
           replaceRecords: [p.intentUpdate({ payments, transactions })],
+          outbox: payments.map((payment) =>
+            toEvent({
+              eventId: `PAYMENT_RECEIVED:${payment.paymentId}`,
+              type: 'PAYMENT_RECEIVED',
+              apartmentId: ctx.apartmentId,
+              actorId: ctx.userId,
+              groupKey: p.unitId,
+              payload: {
+                paymentId: payment.paymentId,
+                transactionId: payment.transactionId,
+                receiptNumber: payment.receiptNumber,
+                unitId: p.unitId,
+                liableParty: payment.liableParty,
+                amount: payment.amount,
+                method: payment.method,
+                paidAt: payment.paidAt,
+              },
+            }),
+          ),
         });
       } catch (err) {
         if (err instanceof LedgerConflictError) {
@@ -1118,25 +1143,6 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
         throw mapConflict(err);
       }
 
-      for (const payment of payments) {
-        await publish({
-          eventId: `PAYMENT_RECEIVED:${payment.paymentId}`,
-          type: 'PAYMENT_RECEIVED',
-          apartmentId: ctx.apartmentId,
-          actorId: ctx.userId,
-          groupKey: p.unitId,
-          payload: {
-            paymentId: payment.paymentId,
-            transactionId: payment.transactionId,
-            receiptNumber: payment.receiptNumber,
-            unitId: p.unitId,
-            liableParty: payment.liableParty,
-            amount: payment.amount,
-            method: payment.method,
-            paidAt: payment.paidAt,
-          },
-        });
-      }
       return { payments, transactions, replayed: false };
     }
   }
@@ -1498,7 +1504,24 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
         ],
       });
       try {
-        await repo.postTransaction({ transaction: tx, idempotency: { id: idemId, fingerprint: fp } });
+        await repo.postTransaction({
+          transaction: tx,
+          idempotency: { id: idemId, fingerprint: fp },
+          // Alt cari basina olay, tazminat kaydiyla ayni atomik yazimda (kimlik deterministik).
+          outbox: [
+            toEvent({
+              eventId: `LATE_FEE_POSTED:${p.period}:${tx.transactionId}`,
+              type: 'LATE_FEE_POSTED',
+              apartmentId,
+              actorId: SYSTEM_ACTOR,
+              groupKey: unitId,
+              payload: {
+                period: p.period,
+                items: [{ unitId, liableParty: party, amount: toKurus(amount), transactionId: tx.transactionId }],
+              },
+            }),
+          ],
+        });
         items.push({ accountId: account.accountId, unitId, liableParty: party, amount: toKurus(amount), transactionId: tx.transactionId, replayed: false });
       } catch (err) {
         // Es zamanli ayni gorev: diger calisma yazdi; bu hesap tamam sayilir.

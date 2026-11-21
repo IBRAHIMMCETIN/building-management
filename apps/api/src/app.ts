@@ -1,6 +1,5 @@
 import { Hono } from 'hono';
 import { type Authenticator, type IdentityResolver, denyAll, denyAllIdentity } from './auth/claims.js';
-import { type EventPublisher, createInMemoryEventPublisher } from './events/publisher.js';
 import { announcementRoutes } from './modules/announcements/routes.js';
 import { apartmentRoleRoutes } from './modules/apartment-roles/routes.js';
 import { type ApartmentRoleService, createApartmentRoleService } from './modules/apartment-roles/service.js';
@@ -72,13 +71,6 @@ export type AppConfig = {
    */
   paymentsService?: PaymentsService;
   fakePaymentProvider?: FakePaymentProvider;
-  /**
-   * Domain olay yayincisi (DUE_GENERATED, PAYMENT_RECEIVED). server.ts/Lambda ortam
-   * degiskenlerinden `createEventPublisherFromEnv()` ile verir; verilmezse bellek ici
-   * yayinci kullanilir (yerel gelistirme/test). Servisler disaridan verilirse olay
-   * yayinciyi o servislerin kendi bagimliliklari belirler.
-   */
-  events?: EventPublisher;
 };
 
 // Runtime'dan bagimsiz API: bugun EC2'da Node sunucusu, ileride Lambda
@@ -87,7 +79,6 @@ export type AppConfig = {
 export function createApp(config: AppConfig) {
   const app = new Hono();
   const authenticate = config.authenticate ?? denyAll;
-  const events = config.events ?? createInMemoryEventPublisher();
 
   // CORS preflight: API Gateway'deki kimliksiz `OPTIONS /api/{proxy+}` rotasi buraya duser.
   // CORS basliklarini API Gateway ekler (cors_configuration); burada yalnizca 2xx donulur.
@@ -111,7 +102,6 @@ export function createApp(config: AppConfig) {
   const financeService =
     config.financeService ??
     createFinanceService({
-      events,
       attachments: { promote: documentsService.promoteInvoice },
       // Bos daire kurali: tahakkuk tarihinde oturan yoksa sakin gideri malike.
       memberships: membershipRepository,
@@ -174,7 +164,7 @@ export function createApp(config: AppConfig) {
     '/api/announcements',
     announcementRoutes({
       authenticate,
-      service: config.announcementService ?? createAnnouncementService({ events }),
+      service: config.announcementService ?? createAnnouncementService(),
     }),
   );
 

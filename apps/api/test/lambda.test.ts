@@ -268,9 +268,10 @@ describe('lambda giris noktasi', () => {
     expect(wrongRole.statusCode).toBe(403);
   });
 
-  it('production da EVENTS_MODE yoksa soguk baslangicta hata verir', async () => {
+  it('API Lambda olay yayincisi gerektirmez: olaylar outbox\'a yazilir (EVENTS_MODE olmadan acilir)', async () => {
     Object.assign(process.env, { AUTH_MODE: 'apigw', NODE_ENV: 'production' });
     delete process.env.EVENTS_MODE;
-    await expect(import('../src/lambda.js')).rejects.toThrow(/EVENTS_MODE/);
+    const mod = await import('../src/lambda.js');
+    expect(typeof mod.handler).toBe('function');
   });
 });

@@ -18,6 +18,8 @@ import {
   tenantPk,
   toDataAccessError,
 } from '../../config/dynamodb.js';
+import { toOutboxItems } from '../../events/outbox.js';
+import type { DomainEvent } from '../../events/publisher.js';
 import type { IsoDate, TableKeys } from '../core/types.js';
 import type {
   Account,
@@ -106,6 +108,8 @@ export type PostInput = {
   counter?: { name: string; expected: number };
   /** Islemle ayni atomik yazimda saklanacak belge (Payment / Expense). */
   record?: Payment | Expense;
+  /** Transactional outbox: islemle ayni atomik yazimda saklanacak domain olaylari. */
+  outbox?: DomainEvent[];
 };
 
 /** Surumlu belge (ornegin odeme niyeti): yalnizca mevcut surum `expectedVersion` ise yazilir. */
@@ -141,6 +145,11 @@ export type PostBatchInput = {
    * bu yazimda o hesabin kilit kosulu uygulanmaz (yalnizca kapamanin geri alinmasi).
    */
   accountPatches?: Record<string, { closedThrough: IsoDate | null; bypassLock?: boolean }>;
+  /**
+   * Transactional outbox: bu yazimla AYNI atomik islemde `OUTBOX#<eventId>` kaydi olarak
+   * saklanacak domain olaylari (bkz. `events/outbox.ts`). Yazim basarisizsa olay da yoktur.
+   */
+  outbox?: DomainEvent[];
 };
 
 /** DynamoDB TransactWriteItems ust siniri. */
@@ -191,7 +200,8 @@ function assertBalanced(tx: Transaction): void {
 type Label =
   | { kind: 'idem' | 'tx' | 'entry' | 'counter' | 'record' }
   | { kind: 'account'; accountId: string }
-  | { kind: 'replace'; label: string };
+  | { kind: 'replace'; label: string }
+  | { kind: 'outbox'; eventId: string };
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -202,13 +212,14 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
  * optimistic locking uygulanir.
  */
 export async function postTransaction(input: PostInput): Promise<void> {
-  const { transaction, idempotency, expectedVersions, counter, record } = input;
+  const { transaction, idempotency, expectedVersions, counter, record, outbox } = input;
   await postBatch({
     transactions: [transaction],
     idempotency,
     expectedVersions,
     counter,
     records: record ? [record] : undefined,
+    outbox,
   });
 }
 
@@ -218,10 +229,10 @@ export async function postTransaction(input: PostInput): Promise<void> {
  * yapilmasina izin vermez.
  *
  * Oge sirasi: idempotency, (islem basligi + satirlar) x N, hesaplar, sayac, belgeler,
- * surumlu belgeler. Tek islemde `postTransaction` ile birebir aynidir.
+ * surumlu belgeler, outbox olaylari. Tek islemde `postTransaction` ile birebir aynidir.
  */
 export async function postBatch(input: PostBatchInput): Promise<void> {
-  const { transactions, idempotency, expectedVersions = {}, counter, records = [], replaceRecords = [], newDocs = [], accountPatches = {} } = input;
+  const { transactions, idempotency, expectedVersions = {}, counter, records = [], replaceRecords = [], newDocs = [], accountPatches = {}, outbox = [] } = input;
   const anchor = transactions[0] ?? newDocs[0] ?? replaceRecords[0]?.item;
   if (!anchor) throw new Error('En az bir islem veya belge gerekli');
   const apartmentId = transactions[0]?.siteId ?? anchor.PK.slice(anchor.PK.indexOf('#') + 1);
@@ -256,6 +267,8 @@ export async function postBatch(input: PostBatchInput): Promise<void> {
 
   const createdAt =
     transactions[0]?.createdAt ?? ((anchor as unknown as { updatedAt?: string; createdAt?: string }).updatedAt ?? new Date().toISOString());
+  // Olay dogrulamasi (tenant, kimlik, tekillik) DynamoDB'ye gitmeden.
+  const outboxItems = toOutboxItems(outbox, createdAt, apartmentId);
   const { client, tableName } = getDynamo();
   const items: NonNullable<TransactWriteCommandInput['TransactItems']> = [];
   const labels: Label[] = [];
@@ -377,6 +390,13 @@ export async function postBatch(input: PostBatchInput): Promise<void> {
     );
   }
 
+  for (const item of outboxItems) {
+    add(
+      { kind: 'outbox', eventId: item.eventId },
+      { Put: { TableName: tableName, Item: item, ConditionExpression: 'attribute_not_exists(PK)' } },
+    );
+  }
+
   if (items.length > MAX_TRANSACT_ITEMS) {
     throw new Error(`Atomik yazim ${MAX_TRANSACT_ITEMS} ogeyi asamaz (${items.length})`);
   }
@@ -393,6 +413,10 @@ export async function postBatch(input: PostBatchInput): Promise<void> {
 
         if (label?.kind === 'idem') throw new LedgerConflictError('duplicate');
         if (label?.kind === 'counter') throw new LedgerConflictError('counter');
+        // Ayni olay zaten yazilmis: ayni islem daha once kaydedilmis demektir (deterministik kimlik).
+        if (label?.kind === 'outbox') {
+          throw new LedgerConflictError('duplicate', `Olay zaten kayitli: ${label.eventId}`, `outbox:${label.eventId}`);
+        }
         if (label?.kind === 'replace') {
           throw new LedgerConflictError('precondition', `Belge degismis: ${label.label}`, label.label);
         }

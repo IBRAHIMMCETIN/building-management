@@ -7,6 +7,7 @@ import {
   type PostInput,
 } from '../../src/modules/finance/repository.js';
 import type { Account, Expense, IdempotencyRecord, Payment, Transaction } from '../../src/modules/finance/types.js';
+import type { DomainEvent } from '../../src/events/publisher.js';
 
 /** DynamoDB semantigini taklit eden bellek ici defter: atomik, kosullu, surumlu. */
 export function createFakeFinanceRepo(defaultApartmentId = 'apt-1') {
@@ -23,6 +24,8 @@ export function createFakeFinanceRepo(defaultApartmentId = 'apt-1') {
   /** Surumlu belgeler (replaceRecords): PK|SK -> belge. Odeme niyetleri burada tutulur. */
   const docs = new Map<string, Record<string, unknown> & { PK: string; SK: string; version: number }>();
   const batches: PostBatchInput[] = [];
+  /** Transactional outbox: `apt|eventId` -> olay (yazim sirasiyla). */
+  const outbox = new Map<string, DomainEvent>();
 
   async function postBatch(input: PostBatchInput): Promise<void> {
     if (failNextPost) {
@@ -75,6 +78,10 @@ export function createFakeFinanceRepo(defaultApartmentId = 'apt-1') {
         throw new LedgerConflictError('precondition', `Belge degismis: ${r.label}`, r.label);
       }
     }
+    for (const e of input.outbox ?? []) {
+      if (e.apartmentId !== apt) throw new Error('olay tenant');
+      if (outbox.has(k(apt, e.eventId))) throw new LedgerConflictError('duplicate', 'olay', `outbox:${e.eventId}`);
+    }
     // 2) Yazim
     idem.set(k(apt, input.idempotency.id), {
       transactionId: input.transactions[0]?.transactionId as string,
@@ -116,6 +123,7 @@ export function createFakeFinanceRepo(defaultApartmentId = 'apt-1') {
     for (const r of input.replaceRecords ?? []) {
       docs.set(`${r.item.PK}|${r.item.SK}`, r.item as Record<string, unknown> & { PK: string; SK: string; version: number });
     }
+    for (const e of input.outbox ?? []) outbox.set(k(apt, e.eventId), structuredClone(e));
   }
 
   const repo: FinanceRepository = {
@@ -156,6 +164,7 @@ export function createFakeFinanceRepo(defaultApartmentId = 'apt-1') {
         expectedVersions: input.expectedVersions,
         counter: input.counter,
         records: input.record ? [input.record] : undefined,
+        outbox: input.outbox,
       });
       posted.push(input);
     },
@@ -180,6 +189,10 @@ export function createFakeFinanceRepo(defaultApartmentId = 'apt-1') {
     posted,
     batches,
     docs,
+    outbox,
+    /** Outbox'a yazilan olaylar (yazim sirasiyla); istege bagli tur filtresi. */
+    events: <T extends DomainEvent['type']>(type?: T) =>
+      [...outbox.values()].filter((e): e is Extract<DomainEvent, { type: T }> => !type || e.type === type),
     balanceOf,
     trialBalance,
     failNext: (e: Error) => {

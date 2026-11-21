@@ -21,8 +21,8 @@ import type { SqsBatchResponse, SqsEvent } from './notification-worker.js';
  *   - `apartmentId` verilirse yalnizca o apartman islenir (elle yeniden calistirma).
  *
  * Isler (karar 1a / 3a):
- *   late_fees      ayin 1'i 02:30  onceki ayin gecikme tazminatini kesinlestirir (+LATE_FEE_POSTED)
- *   monthly_dues   ayin 1'i 03:00  aylik aidat planini tahakkuk eder (+DUE_GENERATED)
+ *   late_fees      ayin 1'i 02:30  onceki ayin gecikme tazminatini kesinlestirir (+LATE_FEE_POSTED, outbox)
+ *   monthly_dues   ayin 1'i 03:00  aylik aidat planini tahakkuk eder (+DUE_GENERATED, outbox)
  *   dues_reminders her gun 10:00   vadeden 3 gun once, 1 ve 7 gun sonra hatirlatir (+DUES_REMINDER)
  *   payment_reconcile 15 dakikada bir (Adim 8b): 30 dk'dan eski PENDING online odeme niyetlerini
  *                  saglayicidan sorgulayip sonuclandirir (kaybolan callback/webhook). Online odeme
@@ -96,7 +96,7 @@ export function createSchedulerWorker(overrides: Partial<SchedulerDeps> = {}) {
   const lazy: { events?: EventPublisher; finance?: SchedulerDeps['finance']; payments?: SchedulerDeps['payments'] } = {};
   const now = overrides.now ?? (() => new Date());
   const events = () => (lazy.events ??= overrides.events ?? createEventPublisherFromEnv());
-  const finance = () => (lazy.finance ??= overrides.finance ?? createFinanceService({ events: events(), now, memberships: membershipRepository }));
+  const finance = () => (lazy.finance ??= overrides.finance ?? createFinanceService({ now, memberships: membershipRepository }));
   const payments = (): SchedulerDeps['payments'] => {
     if (lazy.payments !== undefined) return lazy.payments;
     if (overrides.payments !== undefined) return (lazy.payments = overrides.payments);
@@ -105,7 +105,7 @@ export function createSchedulerWorker(overrides: Partial<SchedulerDeps> = {}) {
     return (lazy.payments = createPaymentsService({
       portal: createPortalService({ now }),
       ledger: portalRepository,
-      finance: createFinanceService({ events: events(), now, memberships: membershipRepository }),
+      finance: createFinanceService({ now, memberships: membershipRepository }),
       provider: config.provider,
       apiBaseUrl: config.apiBaseUrl,
       webAppUrl: config.webAppUrl,
@@ -139,27 +139,8 @@ export function createSchedulerWorker(overrides: Partial<SchedulerDeps> = {}) {
           monthlyBasisPoints: settings.lateFeeMonthlyBasisPoints ?? DEFAULT_LATE_FEE_BASIS_POINTS,
           dueDayOfMonth: settings.dueDayOfMonth,
         });
-        const fresh = r.items.filter((i) => !i.replayed);
-        const first = fresh[0];
-        if (first) {
-          // Yarim kalan calisma tekrarlandiginda yalnizca yeni yazilanlar bildirilir (olay kimligi
-          // yeni ilk kayda gore degisir; ayni kalem iki kez bildirilmez).
-          await events().publish(
-            buildEvent(
-              {
-                eventId: `LATE_FEE_POSTED:${period}:${first.transactionId}`,
-                type: 'LATE_FEE_POSTED',
-                apartmentId,
-                actorId: SYSTEM_ACTOR,
-                payload: {
-                  period,
-                  items: fresh.map(({ unitId, liableParty, amount, transactionId }) => ({ unitId, liableParty, amount, transactionId })),
-                },
-              },
-              now,
-            ),
-          );
-        }
+        // LATE_FEE_POSTED olaylari her tazminat kaydiyla ayni atomik yazimda outbox'a girer
+        // (finance.postLateFees); burada ayrica yayin yapilmaz.
         return { apartmentId, status: 'done', detail: { period, count: r.count, totalAmount: r.totalAmount } };
       }
 

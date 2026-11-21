@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { DataAccessError } from '../../config/dynamodb.js';
-import { type EventPublisher, buildEvent, noopEventPublisher, publishSafely } from '../../events/publisher.js';
+import { type DomainEvent, buildEvent } from '../../events/publisher.js';
 import { type CoreRepository, coreRepository } from '../core/repository.js';
 import { CoreError } from '../core/service.js';
 import type { IsoDateTime } from '../core/types.js';
@@ -30,7 +30,6 @@ export type AnnouncementServiceDeps = {
   core: Pick<CoreRepository, 'getBlock'>;
   now: () => Date;
   newId: () => string;
-  events: EventPublisher;
 };
 
 /** Saat dilimi icermeyen tarih-saat belirsizdir; `Z` veya `+03:00` zorunlu. */
@@ -50,7 +49,6 @@ export function createAnnouncementService(overrides: Partial<AnnouncementService
     core: coreRepository,
     now: () => new Date(),
     newId: () => randomUUID(),
-    events: noopEventPublisher,
     ...overrides,
   };
   const repo = deps.repository;
@@ -87,9 +85,9 @@ export function createAnnouncementService(overrides: Partial<AnnouncementService
     }
   }
 
-  async function save(next: Announcement, expectedVersion: number): Promise<Announcement> {
+  async function save(next: Announcement, expectedVersion: number, outbox?: DomainEvent[]): Promise<Announcement> {
     try {
-      await repo.update(next, expectedVersion);
+      await repo.update(next, expectedVersion, outbox);
     } catch (err) {
       if (err instanceof DataAccessError && err.code === 'conflict') {
         throw new CoreError('conflict', 'Kayit baska bir islemle degistirildi (surum uyusmazligi)');
@@ -196,38 +194,32 @@ export function createAnnouncementService(overrides: Partial<AnnouncementService
       throw new ValidationError('Duyurunun suresi dolmus; expiresAt guncellenmeli', 'expiresAt');
     }
 
-    const next = await save(
+    const next: Announcement = {
+      ...current,
+      status: 'published',
+      publishAt,
+      approvedBy: ctx.userId,
+      approvedAt: now,
+      ...touch(ctx, current),
+    };
+    // Onay ve ANNOUNCEMENT_PUBLISHED olayi tek atomik yazim (transactional outbox).
+    const event = buildEvent(
       {
-        ...current,
-        status: 'published',
-        publishAt,
-        approvedBy: ctx.userId,
-        approvedAt: now,
-        ...touch(ctx, current),
-      },
-      current.version,
-    );
-
-    await publishSafely(
-      deps.events,
-      buildEvent(
-        {
-          eventId: `ANNOUNCEMENT_PUBLISHED:${next.announcementId}`,
-          type: 'ANNOUNCEMENT_PUBLISHED',
-          apartmentId: ctx.apartmentId,
-          actorId: ctx.userId,
-          payload: {
-            announcementId: next.announcementId,
-            title: next.title,
-            blockIds: next.blockIds ?? [],
-            publishAt: next.publishAt,
-            expiresAt: next.expiresAt,
-          },
+        eventId: `ANNOUNCEMENT_PUBLISHED:${next.announcementId}`,
+        type: 'ANNOUNCEMENT_PUBLISHED',
+        apartmentId: ctx.apartmentId,
+        actorId: ctx.userId,
+        payload: {
+          announcementId: next.announcementId,
+          title: next.title,
+          blockIds: next.blockIds ?? [],
+          publishAt: next.publishAt,
+          expiresAt: next.expiresAt,
         },
-        deps.now,
-      ),
+      },
+      deps.now,
     );
-    return next;
+    return save(next, current.version, [event]);
   }
 
   // ----- Arsivle (silme yok) -----

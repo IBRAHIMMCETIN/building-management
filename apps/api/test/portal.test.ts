@@ -131,6 +131,9 @@ function createWorld() {
   const idem = new Map<string, IdempotencyRecord>();
   const counters = new Map<string, number>();
   const entries: LedgerEntry[] = [];
+  /** Transactional outbox: defter yazimiyla ayni atomik islemde saklanan olaylar. */
+  const outbox: DomainEvent[] = [];
+  let failNextPost: Error | undefined;
 
   const financeRepo: FinanceRepository = {
     listTransactions: async (apt) => ({ items: [...transactions.values()].filter((t) => t.siteId === apt) }),
@@ -147,9 +150,15 @@ function createWorld() {
     getIdempotency: async (apt, id) => idem.get(k(apt, id)),
     getCounter: async (apt, name) => counters.get(k(apt, name)) ?? 0,
     postTransaction: async (input) => {
+      if (failNextPost) {
+        const e = failNextPost;
+        failNextPost = undefined;
+        throw e;
+      }
       const tx = input.transaction;
       const apt = tx.siteId;
       if (idem.has(k(apt, input.idempotency.id))) throw new LedgerConflictError('duplicate');
+      for (const e of input.outbox ?? []) if (outbox.some((o) => o.eventId === e.eventId)) throw new LedgerConflictError('duplicate');
       for (const l of tx.lines) if (!accounts.has(k(apt, l.accountId))) throw new LedgerConflictError('account_missing');
       idem.set(k(apt, input.idempotency.id), {
         transactionId: tx.transactionId,
@@ -167,6 +176,7 @@ function createWorld() {
       }
       if (input.counter) counters.set(k(apt, input.counter.name), input.counter.expected + 1);
       if (input.record?.entityType === 'PAYMENT') payments.set(k(apt, input.record.paymentId), input.record);
+      outbox.push(...structuredClone(input.outbox ?? []));
     },
     postBatch: async () => {
       throw new Error('portal testlerinde kullanilmaz');
@@ -189,19 +199,20 @@ function createWorld() {
     getSite: async (apt) => sites.find((s) => s.siteId === apt),
   };
 
-  return { memberships, announcements, entries, accounts, payments, financeRepo, portalRepo, core };
+  return {
+    memberships, announcements, entries, accounts, payments, financeRepo, portalRepo, core, outbox,
+    failNext: (e: Error) => void (failNextPost = e),
+  };
 }
 
-function setup(options: { events?: EventPublisher } = {}) {
+function setup() {
   const world = createWorld();
-  const events = options.events ?? createInMemoryEventPublisher();
   let n = 0;
   const financeService = createFinanceService({
     repository: world.financeRepo,
     core: world.core,
     now: () => NOW,
     newId: () => `id${String(++n).padStart(4, '0')}`,
-    events,
   });
   const portalService = createPortalService({ repository: world.portalRepo, core: world.core, now: () => NOW });
   const app = createApp({
@@ -232,7 +243,7 @@ function setup(options: { events?: EventPublisher } = {}) {
   const pay = (unitId: string, liableParty: 'owner' | 'occupant', amount: number, key: string, over: object = {}) =>
     post('/payments', { idempotencyKey: key, unitId, liableParty, amount, method: 'cash', paidAt: '2026-11-05', payerName: 'Ayse Yilmaz', note: 'ic not', ...over });
 
-  return { app, world, events, token, get, post, charge, pay };
+  return { app, world, events: world.outbox, token, get, post, charge, pay };
 }
 
 // ---------------------------------------------------------------------------
@@ -551,18 +562,15 @@ describe('portal - duyurular', () => {
 // Olay yayini (finans -> publisher)
 // ---------------------------------------------------------------------------
 
-describe('olaylar - finans islemlerinde yayin', () => {
-  it('odeme alindiginda PAYMENT_RECEIVED yayinlanir ve aboneye ulasir', async () => {
-    const events = createInMemoryEventPublisher();
-    const received: DomainEvent[] = [];
-    events.subscribe('PAYMENT_RECEIVED', (e) => void received.push(e));
-    const { pay, charge } = setup({ events });
+describe('olaylar - finans islemlerinde outbox', () => {
+  it('odeme alindiginda PAYMENT_RECEIVED tahsilatla ayni atomik yazimda outbox\'a girer', async () => {
+    const { pay, charge, events } = setup();
     await charge('u1', 'occupant', 150050, 'k1');
 
     const res = await pay('u1', 'occupant', 100000, 'p1');
     expect(res.status).toBe(201);
 
-    const paymentEvents = events.published.filter((e) => e.type === 'PAYMENT_RECEIVED');
+    const paymentEvents = events.filter((e) => e.type === 'PAYMENT_RECEIVED');
     expect(paymentEvents).toHaveLength(1);
     expect(paymentEvents[0]).toMatchObject({
       eventId: `PAYMENT_RECEIVED:${res.body.payment.paymentId}`,
@@ -585,23 +593,20 @@ describe('olaylar - finans islemlerinde yayin', () => {
     });
     // Kisisel veri tasinmaz.
     expect(JSON.stringify(paymentEvents[0])).not.toContain('Ayse');
-    expect(received).toHaveLength(1);
   });
 
-  it('ayni idempotencyKey ile tekrar gelen odeme olayi yeniden yayinlamaz', async () => {
-    const events = createInMemoryEventPublisher();
-    const { pay } = setup({ events });
+  it('ayni idempotencyKey ile tekrar gelen odeme yeni olay uretmez', async () => {
+    const { pay, events } = setup();
     expect((await pay('u1', 'occupant', 1000, 'p1')).status).toBe(201);
     expect((await pay('u1', 'occupant', 1000, 'p1')).status).toBe(200);
-    expect(events.published.filter((e) => e.type === 'PAYMENT_RECEIVED')).toHaveLength(1);
+    expect(events.filter((e) => e.type === 'PAYMENT_RECEIVED')).toHaveLength(1);
   });
 
-  it('tekil aidat tahakkukunda DUE_GENERATED yayinlanir', async () => {
-    const events = createInMemoryEventPublisher();
-    const { charge } = setup({ events });
+  it('tekil aidat tahakkukunda DUE_GENERATED outbox\'a yazilir', async () => {
+    const { charge, events } = setup();
     const res = await charge('u1', 'occupant', 150050, 'k1');
-    expect(events.published).toHaveLength(1);
-    expect(events.published[0]).toMatchObject({
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
       type: 'DUE_GENERATED',
       eventId: `DUE_GENERATED:${res.body.transaction.transactionId}`,
       groupKey: 'u1',
@@ -609,9 +614,8 @@ describe('olaylar - finans islemlerinde yayin', () => {
     });
   });
 
-  it('toplu tahakkukta tek DUE_GENERATED olayi; tekrar isteginde yeni olay yok', async () => {
-    const events = createInMemoryEventPublisher();
-    const { post } = setup({ events });
+  it('toplu tahakkukta kalem basina DUE_GENERATED (ayni batchId); tekrar isteginde yeni olay yok', async () => {
+    const { post, events } = setup();
     const body = {
       idempotencyKey: 'bulk-nov',
       liableParty: 'occupant',
@@ -623,28 +627,66 @@ describe('olaylar - finans islemlerinde yayin', () => {
     };
     const first = await post('/dues', body);
     expect(first.status).toBe(201);
-    const due = events.published.filter((e): e is DomainEvent<'DUE_GENERATED'> => e.type === 'DUE_GENERATED');
-    expect(due).toHaveLength(1);
-    expect(due[0]!.payload.mode).toBe('bulk');
-    expect(due[0]!.payload.batchId).toBe(first.body.batchId);
-    expect(due[0]!.payload.items).toHaveLength(3);
-    expect(due[0]!.payload.totalAmount).toBe(300001);
-    expect(due[0]!.groupKey).toBe(APT);
+    const due = events.filter((e): e is DomainEvent<'DUE_GENERATED'> => e.type === 'DUE_GENERATED');
+    expect(due).toHaveLength(3);
+    for (const [i, e] of due.entries()) {
+      const item = first.body.items[i];
+      expect(e).toMatchObject({
+        eventId: `DUE_GENERATED:${item.transactionId}`,
+        groupKey: item.unitId,
+        payload: {
+          mode: 'bulk',
+          batchId: first.body.batchId,
+          totalAmount: item.amount,
+          items: [{ unitId: item.unitId, amount: item.amount, transactionId: item.transactionId }],
+        },
+      });
+    }
+    expect(due.reduce((sum, e) => sum + e.payload.totalAmount, 0)).toBe(300001);
 
     expect((await post('/dues', body)).status).toBe(200);
-    expect(events.published).toHaveLength(1);
+    expect(events).toHaveLength(3);
   });
 
-  it('olay yayini basarisiz olsa da odeme kaydedilir (201) ve hata loglanir', async () => {
-    const failing: EventPublisher = { publish: vi.fn(async () => { throw new EventPublishError('down', { retryable: true }); }) };
-    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
-    const { pay, world } = setup({ events: failing });
+  it('toplu tahakkuk yarida kesilirse yazilan kalemlerin olayi kaybolmaz; tamamlama yalnizca kalanlari ekler', async () => {
+    const { post, events, world } = setup();
+    const body = {
+      idempotencyKey: 'bulk-cut',
+      liableParty: 'occupant',
+      totalAmount: 300000,
+      distributionKey: 'equal',
+      date: '2026-11-01',
+      dueDate: '2026-11-15',
+      description: 'Kasim aidati',
+    };
+    // Ilk kalem yazildiktan sonra ikinci kalemde altyapi hatasi (Lambda/istek kesintisi benzeri).
+    const real = world.financeRepo.postTransaction;
+    let calls = 0;
+    world.financeRepo.postTransaction = async (input) => {
+      if (++calls === 2) throw new Error('baglanti koptu');
+      return real(input);
+    };
+    expect((await post('/dues', body)).status).toBe(500);
+    expect(events.filter((e) => e.type === 'DUE_GENERATED')).toHaveLength(1);
+
+    world.financeRepo.postTransaction = real;
+    const done = await post('/dues', body);
+    expect(done.status).toBe(201);
+    const due = events.filter((e): e is DomainEvent<'DUE_GENERATED'> => e.type === 'DUE_GENERATED');
+    // Her kalem icin TAM BIR olay: kesintiden once yazilan da dahil, tekrar yok.
+    expect(due).toHaveLength(3);
+    expect(new Set(due.map((e) => e.payload.items[0]!.transactionId))).toEqual(
+      new Set(done.body.items.map((i: { transactionId: string }) => i.transactionId)),
+    );
+  });
+
+  it('defter yazimi basarisizsa ne odeme ne olay vardir (atomik)', async () => {
+    const { pay, world, events } = setup();
+    world.failNext(new Error('TransactWriteItems iptal'));
     const res = await pay('u1', 'occupant', 1000, 'p1');
-    expect(res.status).toBe(201);
-    expect(world.payments.size).toBe(1);
-    expect(failing.publish).toHaveBeenCalledOnce();
-    expect(spy.mock.calls.flat().join(' ')).toContain('event_publish_failed');
-    spy.mockRestore();
+    expect(res.status).toBe(500);
+    expect(world.payments.size).toBe(0);
+    expect(events).toHaveLength(0);
   });
 
   it('abone hatasi yayinciya sizmaz', async () => {
