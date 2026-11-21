@@ -16,7 +16,8 @@ cors_allow_origins = [
 ]
 
 # Online odeme (Adim 8b): iyzico sandbox. Anahtar Terraform disinda Secrets Manager'a girilir
-# (bkz. payments.tf ve `terraform output payments_secret_arn`).
+# (bkz. payments.tf ve `terraform output payments_secret_arns`). PayTR eklemek icin:
+#   payments_providers = ["iyzico", "paytr"]  (+ default_payment_provider, paytr_test_mode)
 payments_provider = "iyzico"
 iyzico_base_url   = "https://sandbox-api.iyzipay.com"
 web_app_url       = "https://building-management-apx.pages.dev"

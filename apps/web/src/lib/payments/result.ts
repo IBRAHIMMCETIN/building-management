@@ -41,7 +41,16 @@ export function callbackErrorView(code: string): ResultView {
   };
 }
 
-export function intentResultView(intent: Pick<PaymentIntent, 'status' | 'failureMessage'>, timedOut = false): ResultView {
+/**
+ * `returned`: saglayicinin donus sonucu (`?result=ok|fail`, yalnizca bilgi). Basarisiz donuste
+ * veya saglayicinin basarisizlik bildiriminde (PENDING + `failureMessage`) niyet sayfa suresi
+ * dolana kadar PENDING kalir; sakine sonuc hemen gosterilir ve tekrar denemesine izin verilir.
+ */
+export function intentResultView(
+  intent: Pick<PaymentIntent, 'status' | 'failureMessage'>,
+  timedOut = false,
+  returned?: 'ok' | 'fail',
+): ResultView {
   switch (intent.status) {
     case 'SUCCEEDED':
       return {
@@ -88,6 +97,15 @@ export function intentResultView(intent: Pick<PaymentIntent, 'status' | 'failure
         canRetry: true,
       };
     case 'PENDING':
+      if (returned === 'fail' || intent.failureMessage) {
+        return {
+          tone: 'danger',
+          title: 'Ödeme tamamlanamadı',
+          body: `${intent.failureMessage ?? 'Ödeme sağlayıcısı işlemi tamamlamadı.'} Kartınızdan çekim yapılmadıysa tekrar deneyebilirsiniz.`,
+          terminal: true,
+          canRetry: true,
+        };
+      }
       return timedOut
         ? {
             tone: 'info',

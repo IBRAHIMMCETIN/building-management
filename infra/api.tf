@@ -145,11 +145,11 @@ data "aws_iam_policy_document" "api" {
   # Online odeme: yalnizca saglayici anahtari secret'ini okuma (yazma/listeleme YOK).
   # AWS yonetimli anahtarla (aws/secretsmanager) sifreli oldugu icin ayrica KMS yetkisi gerekmez.
   dynamic "statement" {
-    for_each = aws_secretsmanager_secret.payments[*].arn
+    for_each = local.payments_enabled ? [values(local.payments_secret_arns)] : []
     content {
       sid       = "ReadPaymentProviderSecret"
       actions   = ["secretsmanager:GetSecretValue"]
-      resources = [statement.value]
+      resources = statement.value
     }
   }
 }

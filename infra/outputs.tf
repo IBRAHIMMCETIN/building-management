@@ -101,15 +101,22 @@ output "documents_bucket" {
   value       = aws_s3_bucket.documents.id
 }
 
+output "payments_secret_arns" {
+  description = "Saglayici basina odeme anahtari secret'i (deger elle girilir: aws secretsmanager put-secret-value). Odeme kapaliysa null."
+  value       = local.payments_enabled ? local.payments_secret_arns : null
+}
+
 output "payments_secret_arn" {
-  description = "Online odeme anahtari secret'i (deger elle girilir: aws secretsmanager put-secret-value). Odeme kapaliysa null."
-  value       = local.payments_secret_arn
+  description = "Eski cikti: varsayilan saglayicinin secret'i. Yeni kurulumlarda payments_secret_arns kullanin."
+  value       = local.payments_enabled ? lookup(local.payments_secret_arns, local.default_payment_provider, null) : null
 }
 
 output "payments_callback_urls" {
-  description = "Saglayici paneline girilecek adresler (webhook / bildirim URL'si). Odeme kapaliysa null."
+  description = "Saglayici basina adresler; webhook saglayici paneline (iyzico webhook, PayTR Bildirim URL) girilir. Odeme kapaliysa null."
   value = local.payments_enabled ? {
-    callback = "${aws_apigatewayv2_api.http.api_endpoint}/api/payments/${var.payments_provider}/callback"
-    webhook  = "${aws_apigatewayv2_api.http.api_endpoint}/api/payments/${var.payments_provider}/webhook"
+    for p in local.payment_providers : p => {
+      callback = "${aws_apigatewayv2_api.http.api_endpoint}/api/payments/${p}/callback"
+      webhook  = "${aws_apigatewayv2_api.http.api_endpoint}/api/payments/${p}/webhook"
+    }
   } : null
 }

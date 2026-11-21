@@ -14,6 +14,7 @@ import {
 import type { TableKeys } from '../core/types.js';
 import {
   type IntentKeyRecord,
+  type IntentRefRecord,
   type IntentStatus,
   type PaymentAccount,
   type PaymentIntent,
@@ -59,6 +60,11 @@ export const paymentKeys = {
     PK: tenantPk(apartmentId),
     SK: skKey('PAYACCT', provider),
   }),
+  /** Saglayici siparis kimligi -> niyet (tenant disi; yalnizca esleme). */
+  ref: (provider: PaymentProviderName, reference: string): TableKeys => ({
+    PK: ['PAYREF', provider, reference].join('#'),
+    SK: 'PAYREF',
+  }),
   /** Apartmanin online odeme tercihi (saglayici secimi). */
   settings: (apartmentId: string): TableKeys => ({
     PK: tenantPk(apartmentId),
@@ -85,8 +91,12 @@ export type IntentListQuery = { status?: IntentStatus; limit: number; cursor?: s
 
 export type PaymentsRepository = {
   getIntent(apartmentId: string, intentId: string): Promise<PaymentIntent | undefined>;
-  /** Niyet + idempotency anahtari tek atomik yazimla; biri varsa `PaymentsConflictError`. */
-  createIntent(intent: PaymentIntent, key: IntentKeyRecord): Promise<void>;
+  /**
+   * Niyet + idempotency anahtari (+ varsa saglayici esleme kaydi) tek atomik yazimla; biri varsa
+   * `PaymentsConflictError`.
+   */
+  createIntent(intent: PaymentIntent, key: IntentKeyRecord, ref?: IntentRefRecord): Promise<void>;
+  getIntentRef(provider: PaymentProviderName, reference: string): Promise<IntentRefRecord | undefined>;
   getIntentKey(apartmentId: string, userId: string, idempotencyKey: string): Promise<IntentKeyRecord | undefined>;
   /** `intent.version === expectedVersion + 1` olmali; surum degismisse `PaymentsConflictError`. */
   updateIntent(intent: PaymentIntent, expectedVersion: number): Promise<void>;
@@ -143,9 +153,12 @@ export function createPaymentsRepository(): PaymentsRepository {
   return {
     getIntent: async (apartmentId, intentId) => fromStored(await getTenantItem<PaymentIntent>(paymentKeys.intent(apartmentId, intentId))),
 
-    async createIntent(intent, key) {
+    async createIntent(intent, key, ref) {
       if (intent.PK !== key.PK || intent.PK !== tenantPk(intent.apartmentId)) {
         throw new Error('Niyet ve anahtar ayni tenant olmali');
+      }
+      if (ref && (ref.apartmentId !== intent.apartmentId || ref.intentId !== intent.intentId)) {
+        throw new Error('Esleme kaydi niyetle eslesmeli');
       }
       const { client, tableName } = getDynamo();
       try {
@@ -154,6 +167,7 @@ export function createPaymentsRepository(): PaymentsRepository {
           [
             { Put: { TableName: tableName, Item: key, ConditionExpression: 'attribute_not_exists(PK)' } },
             { Put: { TableName: tableName, Item: intent, ConditionExpression: 'attribute_not_exists(PK)' } },
+            ...(ref ? [{ Put: { TableName: tableName, Item: ref, ConditionExpression: 'attribute_not_exists(PK)' } }] : []),
           ],
           intentAudit(intent, 'payment.intent.create'),
         );
@@ -165,6 +179,8 @@ export function createPaymentsRepository(): PaymentsRepository {
         throw toDataAccessError(err);
       }
     },
+
+    getIntentRef: (provider, reference) => getTenantItem<IntentRefRecord>(paymentKeys.ref(provider, reference)),
 
     getIntentKey: (apartmentId, userId, idempotencyKey) =>
       getTenantItem<IntentKeyRecord>(paymentKeys.intentKey(apartmentId, userId, idempotencyKey)),

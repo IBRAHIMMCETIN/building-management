@@ -1,9 +1,11 @@
 import { type FakePaymentProvider, createFakePaymentProvider } from './fakeProvider.js';
 import { IYZICO_BASE_URLS, createIyzicoClient } from './iyzico/client.js';
 import { createIyzicoProvider } from './iyzico/provider.js';
+import { PAYTR_BASE_URL, createPaytrClient } from './paytr/client.js';
+import { createPaytrProvider } from './paytr/provider.js';
 import type { PaymentProvider } from './provider.js';
 import { EMPTY_REGISTRY, type ProviderRegistry, createProviderRegistry, isProviderName } from './registry.js';
-import { envCredentials, secretsManagerCredentials } from './secrets.js';
+import { envCredentials, envPaytrCredentials, secretsManagerCredentials, secretsManagerPaytrCredentials } from './secrets.js';
 import type { PaymentProviderName } from './types.js';
 
 /**
@@ -20,6 +22,11 @@ import type { PaymentProviderName } from './types.js';
  *   IYZICO_BASE_URL           https://sandbox-api.iyzipay.com | https://api.iyzipay.com
  *   IYZICO_SECRET_ARN         Secrets Manager (Lambda); eski ad PAYMENTS_SECRET_ARN da okunur -- veya --
  *   IYZICO_API_KEY / IYZICO_SECRET_KEY (yalnizca yerel gelistirme)
+ * PayTR icin ek olarak (P3):
+ *   PAYTR_SECRET_ARN          Secrets Manager: {"merchantId","merchantKey","merchantSalt"} -- veya --
+ *   PAYTR_MERCHANT_ID / PAYTR_MERCHANT_KEY / PAYTR_MERCHANT_SALT (yalnizca yerel gelistirme)
+ *   PAYTR_TEST_MODE           `1` (varsayilan; test islemi) | `0` (canli). Canli magaza panelde
+ *                             test modundan cikarilmis olmalidir.
  * Yanlis yapilandirma soguk baslangicta hata verir; sessizce calismaz. Anahtarin kendisi ilk
  * istekte okunur (soguk baslangicta Secrets Manager cagrisi yapilmaz).
  */
@@ -84,8 +91,12 @@ const FACTORIES: Record<PaymentProviderName, (ctx: FactoryContext) => PaymentPro
       sandbox: baseUrl === IYZICO_BASE_URLS.sandbox,
     });
   },
-  paytr: () => {
-    throw new Error('PayTR adaptoru henuz yok (Online Odeme v2 · P3); PAYMENTS_PROVIDERS icinden cikarin');
+  paytr: ({ env }) => {
+    const mode = (env.PAYTR_TEST_MODE ?? '1').trim();
+    if (mode !== '0' && mode !== '1') throw new Error('PAYTR_TEST_MODE 0 veya 1 olmali');
+    const secretArn = env.PAYTR_SECRET_ARN?.trim();
+    const credentials = secretArn ? secretsManagerPaytrCredentials(secretArn) : envPaytrCredentials(env);
+    return createPaytrProvider({ client: createPaytrClient({ baseUrl: PAYTR_BASE_URL, credentials }), testMode: mode === '1' });
   },
 };
 

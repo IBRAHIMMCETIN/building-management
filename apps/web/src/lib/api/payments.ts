@@ -75,6 +75,8 @@ export const intentSchema = z.object({
     z.object({ liableParty: party, principal: kurus, lateFee: kurus, amount: kurus, transactionIds: z.array(z.string()) }),
   ),
   paymentPageUrl: z.string().url().optional(),
+  /** Yalnizca PENDING iken: tam sayfa yonlendirme (iyzico) veya gomulu iframe (PayTR). */
+  checkoutKind: z.enum(['redirect', 'iframe']).optional(),
   paidAt: z.string().optional(),
   paymentIds: z.array(z.string()).optional(),
   receiptNumbers: z.array(z.string()).optional(),

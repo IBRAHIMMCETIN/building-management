@@ -19,6 +19,7 @@ import {
   SANDBOX_GSM_NUMBER,
   SANDBOX_IDENTITY_NUMBER,
   type SubMerchantRequest,
+  type WebhookEvent,
   type WebhookInput,
   type WebhookReply,
 } from './provider.js';
@@ -253,9 +254,34 @@ export type IntentView = {
   createdAt: IsoDateTime;
 };
 
-/** Saglayici pazaryeri payini kalem bazinda serbest birakiyor mu (onay / transfer)? */
-function releasesItems(p: PaymentProvider | undefined): p is PaymentProvider & Required<Pick<PaymentProvider, 'releaseItem'>> {
-  return Boolean(p?.releaseItem) && p?.capabilities.settlement !== 'automatic';
+/**
+ * Saglayici pazaryeri payini kalem bazinda serbest birakmayi gerektiriyor mu (onay / transfer)?
+ * `releaseItem` henuz uygulanmamissa (PayTR Platform Transfer, P4) kalemler `pending` bekler.
+ */
+function releasesItems(p: PaymentProvider | undefined): p is PaymentProvider {
+  return Boolean(p) && p?.capabilities.settlement !== 'automatic';
+}
+
+/**
+ * Kalem islem kimligi dondurmeyen saglayicida (PayTR: siparis bazli) basarili sonucun kalemleri
+ * niyetten turetilir: `<providerPaymentId>-<taraf>` (iade ve aktarim kalem kaydi icin).
+ */
+function withItemTransactions(intent: PaymentIntent, o: CheckoutOutcome): CheckoutOutcome {
+  if (o.status !== 'success' || (o.itemTransactions && o.itemTransactions.length > 0) || !o.providerPaymentId) return o;
+  return {
+    ...o,
+    itemTransactions: intent.allocations.map((a) => ({
+      itemId: `${intent.intentId}-${a.liableParty}`,
+      paymentTransactionId: `${o.providerPaymentId}-${a.liableParty}`,
+      paidAmount: a.amount,
+    })),
+  };
+}
+
+/** Sepet kalemi icin sakinden tahsil edilen brut tutar. */
+function grossAmountOf(intent: PaymentIntent, itemId: string): Kurus {
+  const a = intent.allocations.find((x) => `${intent.intentId}-${x.liableParty}` === itemId);
+  return toKurus(a?.amount ?? 0);
 }
 
 /** Sepet kalemi (`<intentId>-<taraf>`) icin alt uye isyerine gececek tutar. */
@@ -287,6 +313,10 @@ function toView(i: PaymentIntent): IntentView {
     paymentIds: i.paymentIds,
     receiptNumbers: i.receiptNumbers,
     ...(i.status === 'FAILED' && i.failure ? { failureMessage: i.failure.message } : {}),
+    // Saglayici basarisizlik bildirdi; niyet sayfa suresi dolunca FAILED olur (gec basari korunur).
+    ...(i.status === 'PENDING' && i.providerNotice
+      ? { failureMessage: i.providerNotice.message ? `Ödeme tamamlanamadı: ${i.providerNotice.message}` : 'Ödeme tamamlanamadı.' }
+      : {}),
     ...(i.status === 'NEEDS_REVIEW'
       ? { failureMessage: 'Ödemeniz alındı ancak kontrol edilmesi gerekiyor; yönetim sizinle iletişime geçecek.' }
       : {}),
@@ -519,6 +549,9 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
     const now = deps.now();
     const ts = now.toISOString();
     const intentId = `${utcStamp(now)}-${deps.newId()}`;
+    const conversationId = `${ctx.apartmentId}:${intentId}`;
+    // Bildirimlerde yalnizca kendi siparis kimligini tasiyan saglayici (PayTR) icin esleme kaydi.
+    const providerReference = provider.checkoutReference?.({ intentId, conversationId });
     const intent: PaymentIntent = {
       ...paymentKeys.intent(ctx.apartmentId, intentId),
       entityType: 'PAYMENT_INTENT',
@@ -536,7 +569,8 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
       lateFeeMonthlyBasisPoints: q.lateFeeMonthlyBasisPoints,
       provider: provider.name,
       subMerchantKey: account.subMerchantKey,
-      conversationId: `${ctx.apartmentId}:${intentId}`,
+      conversationId,
+      ...(providerReference ? { providerReference } : {}),
       status: 'PENDING',
       expiresAt: new Date(now.getTime() + deps.intentTtlMinutes * 60_000).toISOString(),
       createdAt: ts,
@@ -552,7 +586,21 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
       createdAt: ts,
     };
     try {
-      await repo.createIntent(intent, keyRecord);
+      await repo.createIntent(
+        intent,
+        keyRecord,
+        providerReference
+          ? {
+              ...paymentKeys.ref(provider.name, providerReference),
+              entityType: 'PAYMENT_INTENT_REF',
+              provider: provider.name,
+              reference: providerReference,
+              apartmentId: ctx.apartmentId,
+              intentId,
+              createdAt: ts,
+            }
+          : undefined,
+      );
     } catch (err) {
       if (err instanceof PaymentsConflictError) {
         // Ayni anahtarla es zamanli istek: digerinin sonucu doner.
@@ -566,6 +614,8 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
     const request: CheckoutRequest = {
       intentId,
       conversationId: intent.conversationId,
+      ...(providerReference ? { reference: providerReference } : {}),
+      expiresInMinutes: deps.intentTtlMinutes,
       amount: intent.amount,
       currency: 'TRY',
       callbackUrl: `${apiBase}/api/payments/${provider.name}/callback?ref=${encodeURIComponent(intent.conversationId)}`,
@@ -742,6 +792,7 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
   async function approvePending(intent: PaymentIntent): Promise<PaymentIntent> {
     const s = intent.settlement;
     const provider = registry.get(intent.provider);
+    // P4 kancasi: saglayici serbest birakmayi henuz uygulamiyorsa (PayTR transferi) kalemler bekler.
     if (intent.status !== 'SUCCEEDED' || !s || s.status !== 'pending' || !provider?.releaseItem || !releasesItems(provider)) {
       return intent;
     }
@@ -759,6 +810,7 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
           providerPaymentId: intent.providerPaymentId,
           subMerchantKey: intent.subMerchantKey,
           amount: subMerchantPriceOf(intent, a.itemId),
+          grossAmount: grossAmountOf(intent, a.itemId),
           conversationId: `approve:${intent.intentId}:${a.itemId}`,
         });
         approvals.push({ ...a, status: 'approved', attempts: a.attempts + 1, lastAttemptAt: at, approvedAt: at });
@@ -851,13 +903,24 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
     return approvePending(written);
   }
 
+  /** Niyetin sonucunu kendi saglayicisindan sorgular (kalemsiz sonuca kalemler eklenir). */
+  async function queryProvider(provider: PaymentProvider, intent: PaymentIntent): Promise<CheckoutOutcome> {
+    const o = await provider.retrieveCheckout({
+      token: intent.checkout?.token ?? '',
+      conversationId: intent.conversationId,
+      intentId: intent.intentId,
+      reference: intent.providerReference,
+    });
+    return withItemTransactions(intent, o);
+  }
+
   /** PENDING niyetin sonucunu saglayicidan sorgular ve uygular. */
   async function settle(intent: PaymentIntent): Promise<PaymentIntent> {
     const provider = registry.get(intent.provider);
     if (intent.status !== 'PENDING' || !intent.checkout || !provider) return intent;
     let outcome: CheckoutOutcome;
     try {
-      outcome = await provider.retrieveCheckout({ token: intent.checkout.token, conversationId: intent.conversationId });
+      outcome = await queryProvider(provider, intent);
     } catch (err) {
       deps.log('warn', 'saglayici sorgusu basarisiz', {
         intentId: intent.intentId,
@@ -900,19 +963,22 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
       return { redirectUrl: resultUrl({ error: 'invalid' }) };
     }
     const [, apartmentId, intentId] = m as unknown as [string, string, string];
+    // iFrame saglayicisinin (PayTR) ok/fail donusu web sonuc sayfasina tasinir (yalnizca bilgi).
+    const result = input.query.result === 'ok' || input.query.result === 'fail' ? input.query.result : undefined;
+    const back = { intent: intentId, ...(result ? { result } : {}) };
     const intent = await repo.getIntent(apartmentId, intentId);
     if (!intent) return { redirectUrl: resultUrl({ error: 'not_found' }) };
     if (intent.provider !== provider.name) {
       deps.log('warn', 'callback baska saglayicinin niyetine geldi', { intentId, apartmentId, providerName });
-      return { redirectUrl: resultUrl({ intent: intentId }), intent };
+      return { redirectUrl: resultUrl(back), intent };
     }
     // Token tasiyan saglayicida token niyetle birebir eslesmeli; tasimayanda (PayTR) sonuc yine sorgulanir.
     if (!intent.checkout || (parsed.token !== undefined && intent.checkout.token !== parsed.token)) {
       deps.log('warn', 'callback token niyetle eslesmiyor', { intentId, apartmentId });
-      return { redirectUrl: resultUrl({ intent: intentId }), intent };
+      return { redirectUrl: resultUrl(back), intent };
     }
     const settled = await settle(intent);
-    return { redirectUrl: resultUrl({ intent: intentId }), intent: settled };
+    return { redirectUrl: resultUrl(back), intent: settled };
   }
 
   // ----- Mutabakat (zamanlanmis gorev) -----
@@ -933,8 +999,17 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
       let current = intent;
       if (intent.checkout) current = await settle(intent);
       const giveUpAt = Date.parse(intent.createdAt) + PENDING_GIVE_UP_HOURS * 3_600_000;
-      const neverStarted = !intent.checkout && now.getTime() > Date.parse(intent.expiresAt);
-      if (current.status === 'PENDING' && (neverStarted || now.getTime() > giveUpAt)) {
+      const expired = now.getTime() > Date.parse(intent.expiresAt);
+      const neverStarted = !intent.checkout && expired;
+      // Imzali bildirim basarisiz dedi ve odeme sayfasinin suresi doldu: artik basari gelemez.
+      const noticedFailure = current.providerNotice && expired;
+      if (current.status === 'PENDING' && noticedFailure) {
+        const n = current.providerNotice!;
+        current = await transition(current, {
+          status: 'FAILED',
+          failure: { code: n.code ? `provider_${n.code}` : 'provider_failed', message: n.message ?? 'Ödeme tamamlanamadı', at: stamp() },
+        });
+      } else if (current.status === 'PENDING' && (neverStarted || now.getTime() > giveUpAt)) {
         current = await transition(current, {
           status: 'FAILED',
           failure: { code: 'expired', message: 'Ödeme süresi doldu', at: stamp() },
@@ -977,7 +1052,7 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
     const provider = registry.get(providerName);
     if (!provider?.verifyWebhook) return { status: 404 };
     const ok = { status: 200 as const, reply: provider.webhookReply?.() };
-    let verified: { conversationId: string } | null;
+    let verified: WebhookEvent | null;
     try {
       verified = await provider.verifyWebhook(input);
     } catch (err) {
@@ -988,16 +1063,74 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
       deps.log('warn', 'webhook imzasi gecersiz', { providerName });
       return { status: 401 };
     }
-    const m = REF.exec(verified.conversationId);
-    if (!m) {
-      deps.log('warn', 'webhook bilinmeyen conversationId', { providerName });
+    const intent = await intentOfWebhook(provider, verified);
+    if (!intent) {
+      deps.log('warn', 'webhook bilinmeyen niyet', { providerName, reference: verified.reference });
       return ok;
     }
-    const [, apartmentId, intentId] = m as unknown as [string, string, string];
-    const intent = await repo.getIntent(apartmentId, intentId);
     // Imza bu saglayicinin anahtariyla dogrulandi: yalnizca onun niyeti sonuclandirilir.
-    if (intent && intent.provider === provider.name) await settle(intent);
+    if (intent.provider !== provider.name) return ok;
+    const notice = verified.notice;
+    if (intent.status === 'PENDING' && notice?.status === 'failure') {
+      // Durum sorgusu basarisizligi raporlamaz (PayTR); gec gelen basari kaybolmasin diye niyet
+      // hemen FAILED olmaz: not dusulur, sayfa suresi dolunca mutabakat sonuclandirir.
+      if (!intent.providerNotice) {
+        await transition(intent, {
+          providerNotice: { status: 'failure', code: notice.code, message: notice.message, at: stamp() },
+        });
+      }
+      return ok;
+    }
+    if (intent.status === 'PENDING') {
+      await settle(intent);
+      return ok;
+    }
+    if (intent.status === 'FAILED' && notice?.status === 'success') await lateSuccess(provider, intent);
     return ok;
+  }
+
+  /** Webhook'un niyeti: `conversationId` (`<apartmentId>:<intentId>`) veya saglayici esleme kaydi. */
+  async function intentOfWebhook(provider: PaymentProvider, event: WebhookEvent): Promise<PaymentIntent | undefined> {
+    if (event.conversationId) {
+      const m = REF.exec(event.conversationId);
+      if (!m) return undefined;
+      const [, apartmentId, intentId] = m as unknown as [string, string, string];
+      return repo.getIntent(apartmentId, intentId);
+    }
+    if (event.reference) {
+      const ref = await repo.getIntentRef(provider.name, event.reference);
+      if (!ref) return undefined;
+      const intent = await repo.getIntent(ref.apartmentId, ref.intentId);
+      return intent?.providerReference === event.reference ? intent : undefined;
+    }
+    return undefined;
+  }
+
+  /**
+   * FAILED sayilan niyet icin saglayici sonradan basari bildirdi: sorgu dogrularsa para tahsil
+   * edilmistir, defter yazilmaz; niyet NEEDS_REVIEW olur (platform deftere isler veya iade eder).
+   */
+  async function lateSuccess(provider: PaymentProvider, intent: PaymentIntent): Promise<void> {
+    let o: CheckoutOutcome;
+    try {
+      o = await queryProvider(provider, intent);
+    } catch (err) {
+      deps.log('warn', 'gec basari bildirimi sorgulanamadi', { intentId: intent.intentId, code: err instanceof PaymentProviderError ? err.code : 'unknown' });
+      throw err;
+    }
+    if (o.status !== 'success') return;
+    deps.log('error', 'ALARM sonuclanmis (FAILED) odeme icin saglayici basari bildirdi', {
+      alert: 'PAYMENT_NEEDS_REVIEW',
+      intentId: intent.intentId,
+      apartmentId: intent.apartmentId,
+      providerPaymentId: o.providerPaymentId,
+    });
+    await transition(intent, {
+      status: 'NEEDS_REVIEW',
+      providerPaymentId: o.providerPaymentId,
+      itemTransactions: o.itemTransactions,
+      review: { reason: 'FAILED sayilan odeme icin saglayici basari bildirdi', at: stamp(), providerPaymentId: o.providerPaymentId },
+    });
   }
 
   // ----- Platform: NEEDS_REVIEW elle sonuclandirma (deftere yaz / tam iade / kapat) -----
@@ -1010,7 +1143,7 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
     }
     let o: CheckoutOutcome;
     try {
-      o = await provider.retrieveCheckout({ token: intent.checkout.token, conversationId: intent.conversationId });
+      o = await queryProvider(provider, intent);
     } catch (err) {
       deps.log('warn', 'inceleme: saglayici sorgusu basarisiz', { intentId: intent.intentId, code: err instanceof PaymentProviderError ? err.code : 'unknown' });
       throw new PaymentsError('provider_unavailable', 'Ödeme sağlayıcısına şu an ulaşılamıyor, lütfen tekrar deneyin');
@@ -1262,7 +1395,11 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
       // 2) Sonucu belirsiz onceki deneme: saglayicida zaten iade edilmis mi?
       if (uncertain) {
         try {
-          const refunded = await provider.refundedAmounts({ providerPaymentId: intent.providerPaymentId as string, conversationId: intent.conversationId });
+          const refunded = await provider.refundedAmounts({
+            providerPaymentId: intent.providerPaymentId as string,
+            conversationId: intent.conversationId,
+            items: intent.refund!.items.map((x) => ({ paymentTransactionId: x.paymentTransactionId, amount: x.amount })),
+          });
           if ((refunded.get(item.paymentTransactionId) ?? 0) >= item.amount) {
             const done = await withItem(intent, idx, { status: 'succeeded', completedAt: stamp() });
             if (!done) return (await repo.getIntent(intent.apartmentId, intent.intentId)) ?? intent;
@@ -1280,6 +1417,7 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
       let patch: Partial<RefundItem>;
       try {
         const r = await provider.refundItem({
+          providerPaymentId: intent.providerPaymentId as string,
           paymentTransactionId: item.paymentTransactionId,
           amount: item.amount,
           conversationId: item.conversationId,

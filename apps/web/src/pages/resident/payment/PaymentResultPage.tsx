@@ -1,4 +1,5 @@
 import { CircleAlert, CircleCheck, Clock, Info, LoaderCircle, ReceiptText } from 'lucide-react';
+import { useEffect, useState } from 'react';
 import { Link, useSearchParams } from 'react-router';
 import { PortalQueryState } from '@/components/portal/PortalQueryState';
 import { Alert, Button, Card, Skeleton } from '@/components/ui';
@@ -9,6 +10,7 @@ import type { PaymentIntent } from '@/lib/api/payments';
 import { cn } from '@/lib/cn';
 import { formatDateTime } from '@/lib/dates';
 import { formatTRY } from '@/lib/money';
+import { escapeFrame, returnResult } from '@/lib/payments/checkout';
 import { type ResultTone, type ResultView, callbackErrorView, intentResultView, partyLabel } from '@/lib/payments/result';
 
 const toneStyles: Record<ResultTone, { icon: typeof Info; className: string }> = {
@@ -101,7 +103,7 @@ function Actions({ canRetry }: { canRetry: boolean }) {
   );
 }
 
-function IntentResult({ intentId }: { intentId: string }) {
+function IntentResult({ intentId, returned }: { intentId: string; returned?: 'ok' | 'fail' }) {
   const intent = usePaymentIntent(intentId);
 
   if (intent.isPending) {
@@ -114,7 +116,7 @@ function IntentResult({ intentId }: { intentId: string }) {
   }
   if (intent.isError) return <PortalQueryState error={intent.error} onRetry={() => void intent.refetch()} />;
 
-  const view = intentResultView(intent.data, intent.timedOut);
+  const view = intentResultView(intent.data, intent.timedOut, returned);
   return (
     <Card className="flex flex-col gap-4">
       <ResultHeader view={view} pending={!view.terminal} />
@@ -125,17 +127,34 @@ function IntentResult({ intentId }: { intentId: string }) {
   );
 }
 
-/** Saglayici donus sayfasi: `?intent=<id>` veya `?error=invalid|not_found`. */
+/**
+ * Saglayici donus sayfasi: `?intent=<id>[&result=ok|fail]` veya `?error=invalid|not_found`.
+ * PayTR donusu odeme iframe'inin icinde acilir: sayfa kendini ust pencereye tasir.
+ */
 export function PaymentResultPage() {
   const [params] = useSearchParams();
   const intentId = params.get('intent');
   const error = params.get('error');
+  const returned = returnResult(params.get('result'));
+  const [escaping, setEscaping] = useState(false);
+  useEffect(() => {
+    if (escapeFrame(window)) setEscaping(true);
+  }, []);
+
+  if (escaping) {
+    return (
+      <p role="status" className="flex items-center gap-2 text-small text-muted">
+        <LoaderCircle className="size-4 animate-spin" aria-hidden="true" />
+        Ödeme sonucuna yönlendiriliyorsunuz…
+      </p>
+    );
+  }
 
   return (
     <div className="flex flex-col gap-6">
       <h1 className="text-title font-bold">Ödeme sonucu</h1>
       {intentId ? (
-        <IntentResult intentId={intentId} />
+        <IntentResult intentId={intentId} returned={returned} />
       ) : (
         <Card className="flex flex-col gap-4">
           <ResultHeader view={callbackErrorView(error ?? 'invalid')} />

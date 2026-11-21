@@ -61,11 +61,15 @@ export function paymentCallbackRoutes({ service, fake }: { service: PaymentsServ
   r.onError(handleError);
 
   // Saglayici donus bicimini kendisi ayristirir (`parseCallback`): rota yalnizca alanlari toplar.
-  r.post('/:provider/callback', async (c) => {
-    const result = await service.handleCallback(c.req.param('provider'), { query: c.req.query(), body: await readBody(c) });
+  // iyzico POST eder; PayTR ok/fail donusu GET veya POST olabilir (API Gateway'de yalnizca acilan yollar).
+  const callback = async (c: Context) => {
+    const body = c.req.method === 'POST' ? await readBody(c) : {};
+    const result = await service.handleCallback(c.req.param('provider') ?? '', { query: c.req.query(), body });
     c.header('Cache-Control', 'no-store');
     return c.redirect(result.redirectUrl, 303);
-  });
+  };
+  r.post('/:provider/callback', callback);
+  r.get('/:provider/callback', callback);
 
   // Govde JSON (iyzico) veya form (PayTR bildirimi); yanit bicimi saglayicinin (`webhookReply`).
   r.post('/:provider/webhook', async (c) => {

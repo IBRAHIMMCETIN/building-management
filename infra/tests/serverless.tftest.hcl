@@ -767,7 +767,7 @@ run "payments_disabled_by_default" {
     error_message = "Odeme kapaliyken API Lambda secret okuyamamali"
   }
   assert {
-    condition     = output.payments_secret_arn == null && output.payments_callback_urls == null
+    condition     = output.payments_secret_arn == null && output.payments_secret_arns == null && output.payments_callback_urls == null
     error_message = "Odeme kapaliyken odeme ciktilari bos olmali"
   }
   assert {
@@ -798,11 +798,11 @@ run "payments_iyzico" {
 
   # --- Secret: yalnizca kaynak; deger Terraform disinda ---
   assert {
-    condition     = length(aws_secretsmanager_secret.payments) == 1 && aws_secretsmanager_secret.payments[0].name == "building-management-dev/payments/iyzico"
+    condition     = length(aws_secretsmanager_secret.payments) == 1 && aws_secretsmanager_secret.payments["iyzico"].name == "building-management-dev/payments/iyzico"
     error_message = "Secret adi <proje>-<ortam>/payments/<saglayici> olmali"
   }
   assert {
-    condition     = aws_secretsmanager_secret.payments[0].recovery_window_in_days == 0
+    condition     = aws_secretsmanager_secret.payments["iyzico"].recovery_window_in_days == 0
     error_message = "prod disinda secret aninda silinebilmeli"
   }
 
@@ -897,9 +897,148 @@ run "payments_iyzico" {
     error_message = "Kalici basarisiz ilk pazaryeri onayinda alarm uretilmeli"
   }
   assert {
-    condition     = output.payments_secret_arn == "arn:aws:secretsmanager:eu-central-1:123456789012:secret:building-management-dev/payments/iyzico-AbCdEf"
+    condition     = output.payments_secret_arn == "arn:aws:secretsmanager:eu-central-1:123456789012:secret:building-management-dev/payments/iyzico-AbCdEf" && keys(output.payments_secret_arns) == ["iyzico"]
     error_message = "Secret ARN ciktisi verilmeli (deger girmek icin)"
   }
+  assert {
+    condition     = !contains(keys(aws_lambda_function.api.environment[0].variables), "PAYTR_SECRET_ARN") && !contains(keys(aws_lambda_function.api.environment[0].variables), "PAYTR_TEST_MODE")
+    error_message = "PayTR kapaliyken PayTR yapilandirmasi verilmemeli"
+  }
+}
+
+# --- Online Odeme v2 · P3: PayTR (iyzico ile birlikte) ---
+run "payments_paytr_and_iyzico" {
+  command = plan
+
+  variables {
+    environment                  = "dev"
+    dynamodb_deletion_protection = false
+    payments_providers           = ["iyzico", "paytr"]
+    default_payment_provider     = "paytr"
+    paytr_test_mode              = false
+    web_app_url                  = "https://building-management-apx.pages.dev"
+  }
+
+  override_resource {
+    target          = aws_secretsmanager_secret.payments
+    override_during = plan
+    values = {
+      arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:building-management-dev/payments/provider-AbCdEf"
+    }
+  }
+
+  assert {
+    condition     = toset([for s in aws_secretsmanager_secret.payments : s.name]) == toset(["building-management-dev/payments/iyzico", "building-management-dev/payments/paytr"])
+    error_message = "Saglayici basina ayri secret olmali (<proje>-<ortam>/payments/<saglayici>)"
+  }
+  assert {
+    condition     = strcontains(aws_secretsmanager_secret.payments["paytr"].description, "merchantSalt")
+    error_message = "PayTR secret aciklamasi beklenen JSON alanlarini gostermeli"
+  }
+  assert {
+    condition = toset([for r in aws_apigatewayv2_route.payments_public : r.route_key]) == toset([
+      "POST /api/payments/iyzico/callback",
+      "POST /api/payments/iyzico/webhook",
+      "POST /api/payments/paytr/callback",
+      "GET /api/payments/paytr/callback",
+      "POST /api/payments/paytr/webhook",
+    ])
+    error_message = "Kimliksiz rotalar yalnizca saglayici callback/webhook yollari olmali (PayTR donusu GET de olabilir)"
+  }
+  assert {
+    condition     = alltrue([for r in aws_apigatewayv2_route.payments_public : r.authorization_type == "NONE"])
+    error_message = "Saglayici JWT tasimaz; callback/webhook rotalari kimliksiz olmali"
+  }
+  assert {
+    condition = (
+      length([for r in aws_apigatewayv2_stage.default.route_settings : r if strcontains(r.route_key, "/api/payments/")]) == 5 &&
+      alltrue([for r in aws_apigatewayv2_stage.default.route_settings : r.throttling_rate_limit == 5 && r.throttling_burst_limit == 10 if strcontains(r.route_key, "/api/payments/")])
+    )
+    error_message = "PayTR rotalari dahil tum kimliksiz odeme rotalari siki throttling ile sinirlanmali"
+  }
+  assert {
+    condition = alltrue([
+      for f in [aws_lambda_function.api, aws_lambda_function.scheduler_worker] :
+      f.environment[0].variables.PAYMENTS_PROVIDERS == "iyzico,paytr" &&
+      f.environment[0].variables.DEFAULT_PAYMENT_PROVIDER == "paytr" &&
+      f.environment[0].variables.PAYTR_TEST_MODE == "0" &&
+      f.environment[0].variables.PAYTR_SECRET_ARN == "arn:aws:secretsmanager:eu-central-1:123456789012:secret:building-management-dev/payments/provider-AbCdEf" &&
+      f.environment[0].variables.IYZICO_SECRET_ARN == "arn:aws:secretsmanager:eu-central-1:123456789012:secret:building-management-dev/payments/provider-AbCdEf" &&
+      f.environment[0].variables.IYZICO_BASE_URL == "https://sandbox-api.iyzipay.com"
+    ])
+    error_message = "API ve scheduler worker iki saglayicinin yapilandirmasini almali"
+  }
+  assert {
+    condition     = length(setintersection(toset(keys(aws_lambda_function.api.environment[0].variables)), toset(["PAYTR_MERCHANT_ID", "PAYTR_MERCHANT_KEY", "PAYTR_MERCHANT_SALT"]))) == 0
+    error_message = "PayTR anahtarlari ortam degiskeninde olmamali (Secrets Manager)"
+  }
+  assert {
+    condition     = length([for st in data.aws_iam_policy_document.api.statement : st if anytrue([for a in st.actions : startswith(a, "secretsmanager:")])]) == 1 && alltrue([for st in data.aws_iam_policy_document.api.statement : toset(st.actions) == toset(["secretsmanager:GetSecretValue"]) if anytrue([for a in st.actions : startswith(a, "secretsmanager:")])])
+    error_message = "API Lambda odeme secret'lerini yalnizca okuyabilmeli (tek ifade, GetSecretValue)"
+  }
+  assert {
+    condition     = length([for st in data.aws_iam_policy_document.scheduler_worker.statement : st if anytrue([for a in st.actions : startswith(a, "secretsmanager:")])]) == 1
+    error_message = "Scheduler worker odeme secret'lerini tek ifadeyle okuyabilmeli"
+  }
+  assert {
+    condition = (
+      toset(keys(output.payments_callback_urls)) == toset(["iyzico", "paytr"]) &&
+      endswith(output.payments_callback_urls["paytr"].webhook, "/api/payments/paytr/webhook") &&
+      toset(keys(output.payments_secret_arns)) == toset(["iyzico", "paytr"])
+    )
+    error_message = "Saglayici basina callback/webhook adresleri ve secret ARN'leri cikti olarak verilmeli"
+  }
+  assert {
+    condition     = contains(keys(aws_scheduler_schedule.jobs), "payment_reconcile") && length(aws_cloudwatch_metric_alarm.payment_needs_review) == 1
+    error_message = "Mutabakat ve odeme alarmlari saglayici sayisindan bagimsiz tek olmali"
+  }
+}
+
+run "payments_paytr_only" {
+  command = plan
+
+  variables {
+    payments_providers = ["paytr"]
+    web_app_url        = "https://app.ornek.com"
+  }
+
+  assert {
+    condition = (
+      aws_lambda_function.api.environment[0].variables.PAYMENTS_PROVIDERS == "paytr" &&
+      aws_lambda_function.api.environment[0].variables.DEFAULT_PAYMENT_PROVIDER == "paytr" &&
+      aws_lambda_function.api.environment[0].variables.PAYTR_TEST_MODE == "1" &&
+      !contains(keys(aws_lambda_function.api.environment[0].variables), "IYZICO_BASE_URL") &&
+      !contains(keys(aws_lambda_function.api.environment[0].variables), "IYZICO_SECRET_ARN")
+    )
+    error_message = "Yalnizca PayTR: varsayilan paytr, test modu acik, iyzico yapilandirmasi yok"
+  }
+  assert {
+    condition     = keys(aws_secretsmanager_secret.payments) == ["paytr"] && aws_secretsmanager_secret.payments["paytr"].recovery_window_in_days == 30
+    error_message = "Yalnizca PayTR secret'i olusmali (prod: 30 gun geri alinabilir)"
+  }
+}
+
+run "rejects_invalid_payment_providers" {
+  command = plan
+
+  variables {
+    payments_providers       = ["paytr", "stripe", "paytr"]
+    default_payment_provider = "stripe"
+  }
+
+  expect_failures = [var.payments_providers, var.default_payment_provider]
+}
+
+run "default_payment_provider_must_be_enabled" {
+  command = plan
+
+  variables {
+    payments_providers       = ["iyzico"]
+    default_payment_provider = "paytr"
+    web_app_url              = "https://app.ornek.com"
+  }
+
+  expect_failures = [aws_secretsmanager_secret.payments]
 }
 
 run "prod_payment_secret_recoverable" {
@@ -912,7 +1051,7 @@ run "prod_payment_secret_recoverable" {
   }
 
   assert {
-    condition     = aws_secretsmanager_secret.payments[0].name == "building-management/payments/iyzico" && aws_secretsmanager_secret.payments[0].recovery_window_in_days == 30
+    condition     = aws_secretsmanager_secret.payments["iyzico"].name == "building-management/payments/iyzico" && aws_secretsmanager_secret.payments["iyzico"].recovery_window_in_days == 30
     error_message = "prod secret'i yanlislikla silinirse 30 gun geri alinabilmeli"
   }
   assert {

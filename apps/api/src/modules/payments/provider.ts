@@ -40,6 +40,13 @@ export type CheckoutRequest = {
   intentId: string;
   /** `<apartmentId>:<intentId>`; saglayici sonucunda aynen geri doner (dogrulama). */
   conversationId: string;
+  /**
+   * Saglayicinin siparis kimligi (`checkoutReference`; PayTR `merchant_oid`). Saglayici
+   * `checkoutReference` tanimlamiyorsa yoktur.
+   */
+  reference?: string;
+  /** Odeme sayfasinin gecerlilik suresi (dakika; PayTR `timeout_limit`). */
+  expiresInMinutes: number;
   amount: Kurus;
   currency: 'TRY';
   callbackUrl: string;
@@ -84,6 +91,8 @@ export type ReleaseRequest = {
   subMerchantKey: string;
   /** Alt uye isyerine gececek tutar (kalemin `subMerchantPrice`'i). */
   amount: Kurus;
+  /** Kalemin sakinden tahsil edilen brut tutari (PayTR transferinde `total_amount`). */
+  grossAmount: Kurus;
   /** Izleme / idempotency kimligi. */
   conversationId: string;
 };
@@ -134,6 +143,8 @@ export type SubMerchantRequest = {
 
 /** Kalem bazli iade istegi (iyzico `/payment/refund`, `paymentTransactionId`). */
 export type RefundRequest = {
+  /** Odemenin saglayici kimligi (iyzico `paymentId`, PayTR `merchant_oid`): siparis bazli iade icin. */
+  providerPaymentId: string;
   paymentTransactionId: string;
   amount: Kurus;
   /** Izleme kimligi; saglayici yanitinda aynen donmeli. */
@@ -145,6 +156,18 @@ export type RefundResult = { providerRefundId?: string };
 
 export type WebhookInput = { headers: Record<string, string | undefined>; body: unknown };
 
+/**
+ * Imzasi dogrulanmis webhook. Niyet `conversationId` (`<apartmentId>:<intentId>`) veya saglayici
+ * siparis kimligi (`reference`, PayTR `merchant_oid`; servis esleme kaydindan bulur) ile bulunur.
+ * `notice`: imzali bildirimdeki durum. Basari yine saglayicidan SORGULANARAK uygulanir; basarisizlik
+ * sorgulanamayan saglayicida (PayTR yalnizca basarili odemeyi raporlar) niyete not dusulur.
+ */
+export type WebhookEvent = {
+  conversationId?: string;
+  reference?: string;
+  notice?: { status: 'success' | 'failure'; code?: string; message?: string };
+};
+
 /** Webhook'a saglayicinin bekledigi yanit (iyzico JSON, PayTR duz metin `OK`). */
 export type WebhookReply = { contentType: 'application/json' | 'text/plain'; body: string };
 
@@ -155,12 +178,22 @@ export interface PaymentProvider {
   readonly capabilities: ProviderCapabilities;
   createCheckout(request: CheckoutRequest): Promise<CheckoutSession>;
   /**
+   * Saglayicinin bildirimlerde tasidigi siparis kimligi (PayTR `merchant_oid`, alfanumerik).
+   * Tanimliysa servis niyetle birlikte bir esleme kaydi yazar (`PAYREF#`); webhook `reference`
+   * ile niyeti bulur. Tanimli degilse niyet `conversationId` ile bulunur (iyzico).
+   */
+  checkoutReference?(intent: { intentId: string; conversationId: string }): string;
+  /**
    * Tarayici donusunden oturum kimligini (token) cikarir. Govdeye guvenilmez: servis token'i
    * niyetle eslestirir ve sonucu yine saglayicidan sorgular. Token tasimayan saglayicida
    * (PayTR) yalnizca `ref` ile niyet bulunur; o zaman `{}` doner. Gecersiz donus: `null`.
    */
   parseCallback(input: CallbackInput): { token?: string } | null;
-  retrieveCheckout(query: { token: string; conversationId: string }): Promise<CheckoutOutcome>;
+  /**
+   * Sonucu saglayicidan sorgular. `reference`: niyetin saglayici siparis kimligi (varsa).
+   * Kalem islem kimligi donmeyen saglayicida (PayTR) servis kalemleri niyetten turetir.
+   */
+  retrieveCheckout(query: { token: string; conversationId: string; intentId: string; reference?: string }): Promise<CheckoutOutcome>;
   registerSubMerchant(request: SubMerchantRequest): Promise<{ subMerchantKey: string }>;
   /**
    * Bir sepet kalemini (kismi veya tam) iade eder. Reddedilirse `PaymentProviderError`
@@ -172,7 +205,12 @@ export interface PaymentProvider {
    * (`paymentTransactionId` -> kurus). Sonucu belirsiz bir iade tekrar denenmeden once
    * cagrilir: boylece ayni kalem iki kez iade edilmez.
    */
-  refundedAmounts(query: { providerPaymentId: string; conversationId: string }): Promise<Map<string, Kurus>>;
+  refundedAmounts(query: {
+    providerPaymentId: string;
+    conversationId: string;
+    /** Iade sirasina gore kalemler: siparis bazli iade raporlayan saglayicida (PayTR) dagitim icin. */
+    items: { paymentTransactionId: string; amount: Kurus }[];
+  }): Promise<Map<string, Kurus>>;
   /**
    * Pazaryeri payini alt uye isyerine serbest birakir (`capabilities.settlement`): iyzico'da
    * kalem onayi (`POST /payment/iyzipos/item/approve`), PayTR'de platform transferi (P4).
@@ -181,10 +219,10 @@ export interface PaymentProvider {
    */
   releaseItem?(request: ReleaseRequest): Promise<void>;
   /**
-   * Webhook imzasini dogrular; gecerliyse niyeti bulmak icin `conversationId` doner, degilse
-   * null. Govdedeki odeme durumuna guvenilmez: servis sonucu yine saglayicidan sorgular.
+   * Webhook imzasini dogrular; gecerliyse niyeti bulmak icin `conversationId` veya `reference`
+   * doner, degilse null. Govdedeki basari durumuna guvenilmez: servis sonucu saglayicidan sorgular.
    */
-  verifyWebhook?(input: WebhookInput): Promise<{ conversationId: string } | null>;
+  verifyWebhook?(input: WebhookInput): Promise<WebhookEvent | null>;
   /** Islenen (veya bilinmeyen niyetli) gecerli webhook'a verilecek yanit; yoksa `{"ok":true}`. */
   webhookReply?(): WebhookReply;
 }
