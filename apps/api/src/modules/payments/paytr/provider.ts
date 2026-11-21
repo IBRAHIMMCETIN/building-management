@@ -10,7 +10,16 @@
  *   Sorgu    : POST /odeme/durum-sorgu (hash_str = merchant_id + merchant_oid); YALNIZCA basarili odemeyi
  *              raporlar (`err_no 004`: basarili odeme yok -> sonuc henuz belli degil)
  *   Iade     : POST /odeme/iade (siparis bazli; hash_str = merchant_id + merchant_oid + return_amount)
- *   Aktarim  : Platform Transfer (P4) -> `releaseItem` henuz yok; kalemler `pending` kalir.
+ *   Aktarim  : POST /odeme/platform/transfer (P4; hash_str = merchant_id + merchant_oid + trans_id +
+ *              submerchant_amount + total_amount + transfer_name + transfer_iban; tutarlar kurus).
+ *              Talimat odemenin ayni gunu verilmez (servis en erken ertesi gun gonderir).
+ *   Sonuc    : PayTR panelindeki "Platform Transfer Sonucu Bildirim URL" -> POST
+ *              /api/payments/paytr/transfer-webhook: (a) `trans_ids` (JSON) + hash =
+ *              base64(HMAC(merchant_key, trans_ids(ters bolu cizgisiz) + merchant_salt)); (b) geri
+ *              donen odemenin yeniden gonderim sonucu `mode=cashout` + hash = HMAC(merchant_id +
+ *              trans_id + merchant_salt), `processed_result` (JSON). Yanit duz metin `OK`.
+ *   Geri donen: POST /odeme/geri-donen-transfer (hash_str = merchant_id + start_date + end_date) ve
+ *              POST /odeme/hesaptan-gonder (hash_str = merchant_id + trans_id; `trans_info` JSON).
  *
  * Kararlar:
  *  - Tek cekim (`no_installment=1`): sakinin odedigi tutar = borc (vade farki yok).
@@ -23,6 +32,7 @@
  *    durum sorgusu basarisizligi raporlamadigi icin gec gelen bir basari kaybolmasin diye.
  */
 import { type IsoDate, type Kurus, toKurus } from '../../core/types.js';
+import { ibanLast4, isValidTrIban, normalizeIban } from '../payee.js';
 import {
   type CallbackInput,
   type CheckoutOutcome,
@@ -32,7 +42,11 @@ import {
   PaymentProviderError,
   type RefundRequest,
   type RefundResult,
+  type ReleaseRequest,
+  type ReleaseResult,
+  type ReturnedTransfer,
   type SubMerchantRequest,
+  type TransferEvent,
   type WebhookEvent,
   type WebhookInput,
 } from '../provider.js';
@@ -43,6 +57,7 @@ import {
   clip,
   kurusToTl,
   notificationHash,
+  paytrHash,
   paytrIframeUrl,
   paytrToken,
   safeEqualBase64,
@@ -104,7 +119,43 @@ function returnUrl(callbackUrl: string, result: 'ok' | 'fail'): string {
   return s;
 }
 
-export function createPaytrProvider(options: { client: PaytrClient; testMode: boolean }): PaymentProvider {
+/** PayTR tarih alani: Istanbul saatiyle "YYYY-MM-DD hh:mm:ss". */
+export function paytrDateTime(d: Date): string {
+  const p = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Europe/Istanbul',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(d);
+  const g = (t: string) => p.find((x) => x.type === t)?.value ?? '00';
+  return `${g('year')}-${g('month')}-${g('day')} ${g('hour')}:${g('minute')}:${g('second')}`;
+}
+
+/** Geri donen aktarim listesi: yanit bicimi belgelenmemis (liste veya tekil nesne); `ref_no` tasiyan kayitlar toplanir. */
+function returnedRecords(res: Record<string, unknown>): Record<string, unknown>[] {
+  const out: Record<string, unknown>[] = [];
+  const visit = (v: unknown, depth: number) => {
+    if (depth > 3 || v === null || typeof v !== 'object') return;
+    if (Array.isArray(v)) {
+      for (const x of v) visit(x, depth + 1);
+      return;
+    }
+    const o = v as Record<string, unknown>;
+    if (o.ref_no !== undefined && o.transfer_iban !== undefined) {
+      out.push(o);
+      return;
+    }
+    for (const [k, x] of Object.entries(o)) if (k !== 'status') visit(x, depth + 1);
+  };
+  visit(res, 0);
+  return out;
+}
+
+export function createPaytrProvider(options: { client: PaytrClient; testMode: boolean; transferDelayHours?: number }): PaymentProvider {
   const { client, testMode } = options;
   const testFlag = testMode ? '1' : '0';
 
@@ -112,7 +163,12 @@ export function createPaytrProvider(options: { client: PaytrClient; testMode: bo
     name: 'paytr',
     sandbox: testMode,
     // iFrame (sakin uygulamasinda gomulu); pazaryeri payi Platform Transfer ile (P4).
-    capabilities: { checkout: 'iframe', settlement: 'payout_transfer', requiresBuyerGsm: true },
+    capabilities: {
+      checkout: 'iframe',
+      settlement: 'payout_transfer',
+      requiresBuyerGsm: true,
+      releaseDelayHours: options.transferDelayHours ?? 24,
+    },
 
     checkoutReference: ({ intentId }) => paytrMerchantOid(intentId),
 
@@ -255,8 +311,132 @@ export function createPaytrProvider(options: { client: PaytrClient; testMode: bo
       return out;
     },
 
-    // P4: Platform Transfer talimati (`/odeme/platform/transfer`, KMS ile cozulen IBAN) burada
-    // `releaseItem` olarak eklenecek. Tanimli olmadigi surece kalemler `pending` bekler.
+    /**
+     * Platform Transfer talimati: alt uye isyeri payi (`submerchant_amount`) apartmanin IBAN'ina.
+     * `trans_id` deterministik (ayni kalem tekrar gonderilirse PayTR kimligi tekrar gorur).
+     * `error` (ornegin 010: kalan tutari asiyor) kesin red; ag hatasi belirsiz (`retryable`).
+     */
+    async releaseItem(req: ReleaseRequest): Promise<ReleaseResult> {
+      const payee = req.payee;
+      if (!payee || !isValidTrIban(payee.iban) || !payee.name.trim()) {
+        throw new PaymentProviderError('payee_missing', 'Aktarim alicisi (IBAN/ad) yok veya gecersiz');
+      }
+      if (!req.providerPaymentId) throw new PaymentProviderError('no_reference', 'PayTR siparis kimligi yok');
+      const transId = alnum(req.transferId, 60);
+      if (transId !== req.transferId) throw new Error('trans_id alfanumerik ve en fazla 60 karakter olmali');
+      const c = await client.credentials();
+      const submerchantAmount = String(req.amount);
+      const totalAmount = String(req.grossAmount);
+      const transferName = clip(payee.name, 140);
+      const transferIban = normalizeIban(payee.iban);
+      const res = await client.post<PaytrEnvelope & { trans_id?: string; submerchant_amount?: string | number; reference?: string | number }>(PAYTR_PATHS.transfer, {
+        merchant_id: c.merchantId,
+        merchant_oid: req.providerPaymentId,
+        trans_id: transId,
+        submerchant_amount: submerchantAmount,
+        total_amount: totalAmount,
+        transfer_name: transferName,
+        transfer_iban: transferIban,
+        paytr_token: paytrToken(c, c.merchantId + req.providerPaymentId + transId + submerchantAmount + totalAmount + transferName + transferIban),
+      });
+      if (res.status !== 'success') {
+        throw new PaymentProviderError(`paytr_${String(res.err_no ?? 'transfer_error')}`, clip(String(res.err_msg ?? 'PayTR transfer talimatini reddetti'), 300));
+      }
+      if (res.trans_id !== undefined && String(res.trans_id) !== transId) {
+        throw new PaymentProviderError('invalid_response', 'PayTR transfer yaniti talimatla eslesmiyor', true);
+      }
+      return res.reference !== undefined && res.reference !== null ? { providerReference: String(res.reference) } : {};
+    },
+
+    async verifyTransferWebhook({ body }: WebhookInput): Promise<TransferEvent | null> {
+      if (typeof body !== 'object' || body === null) return null;
+      const b = body as Record<string, unknown>;
+      const field = (k: string) => (typeof b[k] === 'string' ? (b[k] as string) : typeof b[k] === 'number' ? String(b[k]) : '');
+      const hash = field('hash');
+      if (!hash) return null;
+      const c = await client.credentials();
+      if (field('mode') === 'cashout') {
+        const transId = field('trans_id');
+        if (!transId || field('merchant_id') !== c.merchantId) return null;
+        if (!safeEqualBase64(paytrHash(c.merchantKey, c.merchantId + transId + c.merchantSalt), hash)) return null;
+        let items: unknown;
+        try {
+          items = JSON.parse(field('processed_result').replace(/\\/g, ''));
+        } catch {
+          items = [];
+        }
+        const results = (Array.isArray(items) ? items : []).map((x) => {
+          const o = (x ?? {}) as Record<string, unknown>;
+          return {
+            amount: tlToKurus(o.amount),
+            ibanLast4: ibanLast4(String(o.iban ?? '')),
+            result: o.result === 'success' ? ('success' as const) : ('failed' as const),
+          };
+        });
+        return { kind: 'resend_result', resendId: transId, results };
+      }
+      const raw = field('trans_ids');
+      if (!raw) return null;
+      const cleaned = raw.replace(/\\/g, '');
+      if (!safeEqualBase64(paytrHash(c.merchantKey, cleaned + c.merchantSalt), hash)) return null;
+      let ids: unknown;
+      try {
+        ids = JSON.parse(cleaned);
+      } catch {
+        return null;
+      }
+      if (!Array.isArray(ids)) return null;
+      return { kind: 'settled', transferIds: ids.filter((x): x is string => typeof x === 'string' && x === alnum(x, 64) && x.length > 0) };
+    },
+
+    async listReturnedTransfers({ from, to }): Promise<ReturnedTransfer[]> {
+      const c = await client.credentials();
+      const start = paytrDateTime(from);
+      const end = paytrDateTime(to);
+      const res = await client.post<PaytrEnvelope>(PAYTR_PATHS.returned, {
+        merchant_id: c.merchantId,
+        start_date: start,
+        end_date: end,
+        paytr_token: paytrToken(c, c.merchantId + start + end),
+      });
+      if (res.status === 'failed') return []; // aralikta geri donen yok
+      if (res.status !== 'success') {
+        throw new PaymentProviderError(`paytr_${String(res.err_no ?? 'returned_error')}`, clip(String(res.err_msg ?? 'PayTR geri donen aktarimlari listeleyemedi'), 300), true);
+      }
+      const out: ReturnedTransfer[] = [];
+      for (const r of returnedRecords(res)) {
+        const amount = tlToKurus(r.transfer_amount);
+        const refNo = String(r.ref_no ?? '').trim();
+        if (!refNo || amount === undefined) throw new PaymentProviderError('invalid_response', 'PayTR geri donen aktarim kaydi okunamadi', true);
+        out.push({
+          refNo,
+          ibanLast4: ibanLast4(String(r.transfer_iban ?? '')),
+          amount,
+          transferDate: paidDate(r.transfer_date),
+          ...(typeof r.date_detected === 'string' ? { detectedAt: r.date_detected } : {}),
+          ...(typeof r.date_reimbursed === 'string' ? { returnedOn: r.date_reimbursed } : {}),
+        });
+      }
+      return out;
+    },
+
+    /** Geri donen tutari magazanin alt hesap bakiyesinden (duzeltilmis) aliciya gonderir. */
+    async resendReturned({ resendId, amount, payee }) {
+      if (!isValidTrIban(payee.iban) || !payee.name.trim()) throw new PaymentProviderError('payee_missing', 'Alici (IBAN/ad) gecersiz');
+      const transId = alnum(resendId, 64);
+      if (transId !== resendId) throw new Error('trans_id alfanumerik ve en fazla 64 karakter olmali');
+      const c = await client.credentials();
+      const res = await client.post<PaytrEnvelope & { trans_id?: string }>(PAYTR_PATHS.resend, {
+        merchant_id: c.merchantId,
+        trans_id: transId,
+        // Tutar kurus (PayTR ornekleri: "1283"; .NET ornegi TL x 100) - sandbox'ta dogrulanacak.
+        trans_info: JSON.stringify([{ amount: String(amount), receiver: clip(payee.name, 140), iban: normalizeIban(payee.iban) }]),
+        paytr_token: paytrToken(c, c.merchantId + transId),
+      });
+      if (res.status !== 'success') {
+        throw new PaymentProviderError(`paytr_${String(res.err_no ?? 'resend_error')}`, clip(String(res.err_msg ?? 'PayTR yeniden gonderimi reddetti'), 300));
+      }
+    },
 
     async verifyWebhook({ body }: WebhookInput): Promise<WebhookEvent | null> {
       if (typeof body !== 'object' || body === null) return null;

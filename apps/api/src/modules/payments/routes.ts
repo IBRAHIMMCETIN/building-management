@@ -2,6 +2,8 @@ import { type Context, Hono } from 'hono';
 import type { Authenticator } from '../../auth/claims.js';
 import { type Env, authenticateWith, handleError, readJson, requireRole } from '../../http/helpers.js';
 import type { FakePaymentProvider } from './fakeProvider.js';
+import type { InvoiceService } from './invoices.js';
+import type { PayoutService } from './payouts.js';
 import { PAYMENT_ADMIN_ROLES, PAYMENT_MANAGER_ROLES, PAYMENT_ROLES, type PaymentsContext, type PaymentsService } from './service.js';
 
 /**
@@ -56,7 +58,7 @@ function clientIp(c: Context): string {
  *   GET  /fake/checkout?token=     (yalnizca sahte saglayici) test odeme sayfasi
  *   POST /fake/complete            (yalnizca sahte saglayici) sayfadaki secim
  */
-export function paymentCallbackRoutes({ service, fake }: { service: PaymentsService; fake?: FakePaymentProvider }) {
+export function paymentCallbackRoutes({ service, payouts, fake }: { service: PaymentsService; payouts?: PayoutService; fake?: FakePaymentProvider }) {
   const r = new Hono();
   r.onError(handleError);
 
@@ -70,6 +72,16 @@ export function paymentCallbackRoutes({ service, fake }: { service: PaymentsServ
   };
   r.post('/:provider/callback', callback);
   r.get('/:provider/callback', callback);
+
+  // P4: platform transferi sonuc bildirimi (PayTR "Platform Transfer Sonucu Bildirim URL"; form).
+  r.post('/:provider/transfer-webhook', async (c) => {
+    if (!payouts) return c.json({ error: 'not_found' }, 404);
+    const input = await webhookInput(c);
+    if (!input) return c.json({ error: 'invalid_body' }, 400);
+    const { status, reply } = await payouts.handleTransferWebhook(c.req.param('provider'), input);
+    if (status === 200 && reply) return c.body(reply.body, 200, { 'content-type': `${reply.contentType}; charset=utf-8` });
+    return c.json(status === 200 ? { ok: true } : { error: status === 401 ? 'invalid_signature' : status === 404 ? 'not_found' : 'unavailable' }, status);
+  });
 
   // Govde JSON (iyzico) veya form (PayTR bildirimi); yanit bicimi saglayicinin (`webhookReply`).
   r.post('/:provider/webhook', async (c) => {
@@ -131,6 +143,22 @@ export function paymentCallbackRoutes({ service, fake }: { service: PaymentsServ
   return r;
 }
 
+/** Webhook govdesi (JSON veya form) + kucuk harfli basliklar; okunamazsa null. */
+async function webhookInput(c: Context): Promise<{ headers: Record<string, string | undefined>; body: unknown } | null> {
+  const type = c.req.header('content-type') ?? '';
+  let body: unknown;
+  try {
+    body = type.includes('application/json') ? await c.req.json() : await c.req.parseBody();
+  } catch {
+    return null;
+  }
+  const headers: Record<string, string | undefined> = {};
+  c.req.raw.headers.forEach((value, key) => {
+    headers[key.toLowerCase()] = value;
+  });
+  return { headers, body };
+}
+
 /** Tarayici donusunun govdesi (form veya JSON); okunamazsa bos. Dosya alanlari alinmaz. */
 async function readBody(c: Context): Promise<Record<string, unknown>> {
   const type = c.req.header('content-type') ?? '';
@@ -167,8 +195,26 @@ function page(title: string, body: string): string {
  *   GET   /review                            inceleme bekleyen / iadesi suren odemeler (tum apartmanlar)
  *   GET   /apartments/:apartmentId/intents/:intentId/check     saglayicidan guncel sonuc + yapilabilecek islemler
  *   POST  /apartments/:apartmentId/intents/:intentId/resolve   { action: approve|refund|close, note, expectedVersion }
+ *   POST  /apartments/:apartmentId/intents/:intentId/release   { note, expectedVersion } bekleyen aktarimi one cek (P4)
+ *   GET   /payouts?status=&days=             aktarimlar (varsayilan: ilgilenilmesi gerekenler; IBAN maskeli)
+ *   POST  /apartments/:apartmentId/payouts/:transferId/resend  { note, expectedVersion, iban?, accountHolderName? }
+ *   GET   /invoices?period=YYYY-MM           donemin platform komisyon faturalari (tum apartmanlar)
+ *   GET   /apartments/:apartmentId/invoices  apartmanin faturalari
+ *   POST  /apartments/:apartmentId/invoices/draft               { period } taslagi (yeniden) uret
+ *   POST  /apartments/:apartmentId/invoices/:invoiceId/issue    { expectedVersion, invoiceNumber? }
+ *   POST  /apartments/:apartmentId/invoices/:invoiceId/cancel   { expectedVersion, reason }
  */
-export function paymentAdminRoutes({ authenticate, service }: { authenticate: Authenticator; service: PaymentsService }) {
+export function paymentAdminRoutes({
+  authenticate,
+  service,
+  payouts,
+  invoices,
+}: {
+  authenticate: Authenticator;
+  service: PaymentsService;
+  payouts?: PayoutService;
+  invoices?: InvoiceService;
+}) {
   const r = new Hono<Env>();
   r.onError(handleError);
   r.use('*', authenticateWith(authenticate));
@@ -193,6 +239,26 @@ export function paymentAdminRoutes({ authenticate, service }: { authenticate: Au
     c.json(await service.updateAccount({ userId: c.get('claims').userId }, c.req.param('apartmentId'), await readJson(c))),
   );
   r.get('/review', async (c) => c.json(await service.listReviewQueue()));
+  r.post('/apartments/:apartmentId/intents/:intentId/release', async (c) =>
+    c.json(await service.releaseNow({ userId: c.get('claims').userId }, c.req.param('apartmentId'), c.req.param('intentId'), await readJson(c))),
+  );
+  if (payouts) {
+    r.get('/payouts', async (c) => c.json(await payouts.listPayouts({ status: c.req.query('status'), days: c.req.query('days') })));
+    r.post('/apartments/:apartmentId/payouts/:transferId/resend', async (c) =>
+      c.json(await payouts.requestResend({ userId: c.get('claims').userId }, c.req.param('apartmentId'), c.req.param('transferId'), await readJson(c))),
+    );
+  }
+  if (invoices) {
+    r.get('/invoices', async (c) => c.json(await invoices.listForPeriod(c.req.query('period') ?? '')));
+    r.get('/apartments/:apartmentId/invoices', async (c) => c.json(await invoices.listForApartment(c.req.param('apartmentId'))));
+    r.post('/apartments/:apartmentId/invoices/draft', async (c) => c.json(await invoices.draftForApartment(c.req.param('apartmentId'), await readJson(c))));
+    r.post('/apartments/:apartmentId/invoices/:invoiceId/issue', async (c) =>
+      c.json(await invoices.issue({ userId: c.get('claims').userId }, c.req.param('apartmentId'), c.req.param('invoiceId'), await readJson(c))),
+    );
+    r.post('/apartments/:apartmentId/invoices/:invoiceId/cancel', async (c) =>
+      c.json(await invoices.cancel({ userId: c.get('claims').userId }, c.req.param('apartmentId'), c.req.param('invoiceId'), await readJson(c))),
+    );
+  }
   r.get('/apartments/:apartmentId/intents/:intentId/check', async (c) =>
     c.json(await service.checkReview(c.req.param('apartmentId'), c.req.param('intentId'))),
   );

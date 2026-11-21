@@ -179,6 +179,58 @@ data "aws_iam_policy_document" "deploy" {
     ]
   }
 
+  # P4 (payments.tf): aktarim alicisi sifreleme anahtari. Anahtar olusturma kaynak duzeyinde
+  # kisitlanamaz; Project etiketi zorunlu. Yonetim islemleri yalnizca bu projenin etiketli
+  # anahtarlarinda; alias yalnizca <proje>* adinda. Dagitim anahtarla SIFRELEME/COZME yapamaz.
+  statement {
+    sid       = "KmsCreatePayeeKey"
+    actions   = ["kms:CreateKey", "kms:TagResource"]
+    resources = ["*"]
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:RequestTag/Project"
+      values   = [var.project]
+    }
+  }
+
+  statement {
+    sid = "KmsManagePayeeKey"
+    actions = [
+      "kms:DescribeKey",
+      "kms:GetKeyPolicy",
+      "kms:GetKeyRotationStatus",
+      "kms:EnableKeyRotation",
+      "kms:ListResourceTags",
+      "kms:TagResource",
+      "kms:UntagResource",
+      "kms:UpdateKeyDescription",
+      "kms:ScheduleKeyDeletion",
+      "kms:CreateAlias",
+      "kms:DeleteAlias",
+      "kms:UpdateAlias",
+    ]
+    resources = ["arn:${local.partition}:kms:*:${local.account}:key/*"]
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:ResourceTag/Project"
+      values   = [var.project]
+    }
+  }
+
+  statement {
+    sid       = "KmsPayeeAlias"
+    actions   = ["kms:CreateAlias", "kms:DeleteAlias", "kms:UpdateAlias"]
+    resources = ["arn:${local.partition}:kms:*:${local.account}:alias/${var.project}*"]
+  }
+
+  statement {
+    sid       = "KmsList"
+    actions   = ["kms:ListAliases"]
+    resources = ["*"]
+  }
+
   # Tablo sifrelemesi AWS yonetimli anahtarla (aws/dynamodb): yalnizca DynamoDB uzerinden.
   statement {
     sid       = "KmsViaDynamoDb"

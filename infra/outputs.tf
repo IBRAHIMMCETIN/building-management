@@ -114,9 +114,18 @@ output "payments_secret_arn" {
 output "payments_callback_urls" {
   description = "Saglayici basina adresler; webhook saglayici paneline (iyzico webhook, PayTR Bildirim URL) girilir. Odeme kapaliysa null."
   value = local.payments_enabled ? {
-    for p in local.payment_providers : p => {
-      callback = "${aws_apigatewayv2_api.http.api_endpoint}/api/payments/${p}/callback"
-      webhook  = "${aws_apigatewayv2_api.http.api_endpoint}/api/payments/${p}/webhook"
-    }
+    for p in local.payment_providers : p => merge(
+      {
+        callback = "${aws_apigatewayv2_api.http.api_endpoint}/api/payments/${p}/callback"
+        webhook  = "${aws_apigatewayv2_api.http.api_endpoint}/api/payments/${p}/webhook"
+      },
+      # P4: PayTR "Platform Transfer Sonucu Bildirim URL".
+      { for k, v in { transfer_webhook = "${aws_apigatewayv2_api.http.api_endpoint}/api/payments/paytr/transfer-webhook" } : k => v if p == "paytr" },
+    )
   } : null
+}
+
+output "payee_kms_key_arn" {
+  description = "P4: aktarim alicisi (IBAN) sifreleme anahtari. Odeme kapaliysa null."
+  value       = local.payee_kms_key_arn
 }

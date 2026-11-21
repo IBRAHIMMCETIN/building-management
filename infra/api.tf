@@ -152,6 +152,20 @@ data "aws_iam_policy_document" "api" {
       resources = statement.value
     }
   }
+  # P4: aktarim alicisini SIFRELEME (Decrypt yok); yalnizca payment-payee baglamiyla.
+  dynamic "statement" {
+    for_each = local.payments_enabled ? [local.payee_kms_key_arn] : []
+    content {
+      sid       = "EncryptPaymentPayee"
+      actions   = ["kms:Encrypt"]
+      resources = [statement.value]
+      condition {
+        test     = "StringEquals"
+        variable = "kms:EncryptionContext:purpose"
+        values   = ["payment-payee"]
+      }
+    }
+  }
 }
 
 resource "aws_iam_role_policy" "api" {

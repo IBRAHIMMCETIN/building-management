@@ -96,7 +96,7 @@ describe('PayTR imza ve tutar yardimcilari', () => {
 describe('PayTR saglayicisi', () => {
   it('iFrame token: alanlar, hash_str sirasi, sepet, donus adresleri; anahtarlar istekte gonderilmez', async () => {
     const { p, calls } = provider(() => ({ status: 'success', token: 'tok-1' }));
-    expect(p.capabilities).toEqual({ checkout: 'iframe', settlement: 'payout_transfer', requiresBuyerGsm: true });
+    expect(p.capabilities).toEqual({ checkout: 'iframe', settlement: 'payout_transfer', requiresBuyerGsm: true, releaseDelayHours: 24 });
     expect(p.checkoutReference!({ intentId: checkout.intentId, conversationId: checkout.conversationId })).toBe(checkout.reference);
     expect(await p.createCheckout(checkout)).toEqual({ token: 'tok-1', paymentPageUrl: 'https://www.paytr.com/odeme/guvenli/tok-1' });
     const f = calls[0]!.form;
@@ -230,8 +230,8 @@ describe('PayTR saglayicisi', () => {
     expect(p.webhookReply!()).toEqual({ contentType: 'text/plain', body: 'OK' });
     expect(p.parseCallback({ query: { result: 'ok' }, body: {} })).toEqual({});
     expect(await p.registerSubMerchant({ subMerchantType: 'PRIVATE_COMPANY', externalId: 'apt-1', email: 'a@b.c', gsmNumber: '+90', address: 'x', iban: 'TR' })).toEqual({ subMerchantKey: 'paytr-apt1' });
-    // P4: Platform Transfer henuz yok.
-    expect(p.releaseItem).toBeUndefined();
+    // P4: Platform Transfer.
+    expect(typeof p.releaseItem).toBe('function');
   });
 });
 

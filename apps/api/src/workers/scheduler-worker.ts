@@ -11,6 +11,8 @@ import { previousPeriod } from '../modules/finance/lateFee.js';
 import { type FinanceService, DEFAULT_LATE_FEE_BASIS_POINTS, SYSTEM_ACTOR, createFinanceService } from '../modules/finance/service.js';
 import { membershipRepository } from '../modules/memberships/repository.js';
 import { loadPaymentsConfig } from '../modules/payments/config.js';
+import { type InvoiceService, createInvoiceService, previousPeriod as previousInvoicePeriod } from '../modules/payments/invoices.js';
+import { type PayoutService, createPayoutService } from '../modules/payments/payouts.js';
 import { type PaymentsService, createPaymentsService } from '../modules/payments/service.js';
 import { portalRepository } from '../modules/portal/repository.js';
 import { createPortalService } from '../modules/portal/service.js';
@@ -35,6 +37,13 @@ import type { SqsBatchResponse, SqsEvent } from './notification-worker.js';
  *                  kapaliysa (PAYMENTS_PROVIDERS bos) apartmanlar `payments_disabled` ile atlanir.
  *                  Ayrica (tum apartmanlar icin calistiginda) iadesi suren niyetlerin bekleyen
  *                  kalemlerini tekrar dener (`_refunds` satiri).
+ *                  P4: ayrica bekleme suresi dolan platform transferlerini (PayTR) gonderir
+ *                  (`payoutMode: send`; IBAN yalnizca burada KMS ile cozulur) ve yeniden gonderime
+ *                  alinmis geri donen aktarimlari isler (`_payouts` satiri).
+ *   payout_returns her gun 11:30 (P4): saglayicinin geri donen aktarim listesini aktarim kayitlariyla
+ *                  esler -> RETURNED + kritik alarm (apartman dongusu yok; tek tur).
+ *   platform_invoices ayin 1'i 04:10 (P4): onceki donemin platform komisyon faturasi taslaklarini
+ *                  (aylik veya odeme bazli) uretir; kesilmis taslaklara dokunmaz.
  *   outbox_sweep   5 dakikada bir: esikten (varsayilan 2 dk) eski, hala bekleyen outbox
  *                  kayitlarini relay cekirdegiyle yeniden yayinlar (apartman dongusu yok; tek tur).
  *   ledger_audit   her gece 03:40: apartman basina SALT OKUNUR defter denetimi; sapma ->
@@ -49,7 +58,16 @@ import type { SqsBatchResponse, SqsEvent } from './notification-worker.js';
  * 5 denemeden sonra DLQ + alarm. Olcek buyudugunde apartman basina mesaja (fan-out) gecilir.
  */
 
-export const JOBS = ['late_fees', 'monthly_dues', 'dues_reminders', 'payment_reconcile', 'outbox_sweep', 'ledger_audit'] as const;
+export const JOBS = [
+  'late_fees',
+  'monthly_dues',
+  'dues_reminders',
+  'payment_reconcile',
+  'outbox_sweep',
+  'ledger_audit',
+  'payout_returns',
+  'platform_invoices',
+] as const;
 export type Job = (typeof JOBS)[number];
 
 export type JobMessage = { job: Job; scheduledTime: string; apartmentId?: string };
@@ -97,6 +115,10 @@ export type SchedulerDeps = {
   finance: Pick<FinanceService, 'autoChargeDues' | 'postLateFees' | 'dueReminders'>;
   /** null: online odeme kapali. Verilmezse ortam degiskenlerinden kurulur (ilk kullanimda). */
   payments: Pick<PaymentsService, 'reconcile' | 'reconcileRefunds'> | null;
+  /** P4: platform transferi izleme (null: online odeme kapali). */
+  payouts: Pick<PayoutService, 'detectReturned' | 'processResends'> | null;
+  /** P4: platform komisyon faturasi taslaklari (null: online odeme kapali). */
+  invoices: Pick<InvoiceService, 'draftPeriod'> | null;
   events: EventPublisher;
   /** Outbox suprucusunun deposu (varsayilan DynamoDB). */
   outbox: Pick<OutboxStore, 'listPendingPage' | 'markPublished'>;
@@ -112,27 +134,62 @@ export type SchedulerDeps = {
 const errorText = (err: unknown) => (err instanceof Error ? `${err.name}: ${err.message}` : 'unknown');
 
 export function createSchedulerWorker(overrides: Partial<SchedulerDeps> = {}) {
-  const lazy: { events?: EventPublisher; finance?: SchedulerDeps['finance']; payments?: SchedulerDeps['payments'] } = {};
+  const lazy: {
+    events?: EventPublisher;
+    finance?: SchedulerDeps['finance'];
+    payments?: SchedulerDeps['payments'];
+    payouts?: SchedulerDeps['payouts'];
+    invoices?: SchedulerDeps['invoices'];
+  } = {};
   const lazyOps: { outbox?: SchedulerDeps['outbox']; auditor?: SchedulerDeps['auditor']; auditChain?: SchedulerDeps['auditChain']; metrics?: MetricsEmitter } = {};
   const now = overrides.now ?? (() => new Date());
   const events = () => (lazy.events ??= overrides.events ?? createEventPublisherFromEnv());
   const finance = () => (lazy.finance ??= overrides.finance ?? createFinanceService({ now, memberships: membershipRepository }));
+  /** Odeme servisleri tek yapilandirmadan, ilk kullanimda kurulur. */
+  function paymentServices() {
+    if (lazy.payments !== undefined && lazy.payouts !== undefined && lazy.invoices !== undefined) return;
+    const needConfig = overrides.payments === undefined || overrides.payouts === undefined || overrides.invoices === undefined;
+    const config = needConfig ? loadPaymentsConfig() : undefined;
+    const enabled = Boolean(config && config.providers.list().length > 0);
+    lazy.payments =
+      overrides.payments !== undefined
+        ? overrides.payments
+        : enabled && config
+          ? createPaymentsService({
+              portal: createPortalService({ now }),
+              ledger: portalRepository,
+              finance: createFinanceService({ now, memberships: membershipRepository }),
+              // Mutabakat her niyeti kendi saglayicisiyla sorgular (acik tum saglayicilar).
+              providers: config.providers,
+              // P4: vadesi gelen platform transferleri burada gonderilir (IBAN yalnizca burada cozulur).
+              ...(config.vault ? { vault: config.vault } : {}),
+              payoutMode: 'send',
+              apiBaseUrl: config.apiBaseUrl,
+              webAppUrl: config.webAppUrl,
+              intentTtlMinutes: config.intentTtlMinutes,
+              now,
+            })
+          : null;
+    lazy.payouts =
+      overrides.payouts !== undefined
+        ? overrides.payouts
+        : enabled && config
+          ? createPayoutService({ providers: config.providers, ...(config.vault ? { vault: config.vault } : {}), now })
+          : null;
+    lazy.invoices =
+      overrides.invoices !== undefined ? overrides.invoices : enabled && config ? createInvoiceService({ settings: config.invoices, now }) : null;
+  }
   const payments = (): SchedulerDeps['payments'] => {
-    if (lazy.payments !== undefined) return lazy.payments;
-    if (overrides.payments !== undefined) return (lazy.payments = overrides.payments);
-    const config = loadPaymentsConfig();
-    if (config.providers.list().length === 0) return (lazy.payments = null);
-    return (lazy.payments = createPaymentsService({
-      portal: createPortalService({ now }),
-      ledger: portalRepository,
-      finance: createFinanceService({ now, memberships: membershipRepository }),
-      // Mutabakat her niyeti kendi saglayicisiyla sorgular (acik tum saglayicilar).
-      providers: config.providers,
-      apiBaseUrl: config.apiBaseUrl,
-      webAppUrl: config.webAppUrl,
-      intentTtlMinutes: config.intentTtlMinutes,
-      now,
-    }));
+    paymentServices();
+    return lazy.payments ?? null;
+  };
+  const payouts = (): SchedulerDeps['payouts'] => {
+    paymentServices();
+    return lazy.payouts ?? null;
+  };
+  const invoices = (): SchedulerDeps['invoices'] => {
+    paymentServices();
+    return lazy.invoices ?? null;
   };
   const core = overrides.core ?? coreRepository;
   const log = overrides.log ?? console;
@@ -164,6 +221,17 @@ export function createSchedulerWorker(overrides: Partial<SchedulerDeps> = {}) {
       return { apartmentId: '_outbox', status: 'done', detail: { ...r } };
     } catch (err) {
       return { apartmentId: '_outbox', status: 'failed', error: errorText(err) };
+    }
+  }
+
+  /** P4: geri donen aktarimlar (saglayici listesi; tum apartmanlar icin tek tur). */
+  async function runPayoutReturns(): Promise<SiteOutcome> {
+    const service = payouts();
+    if (!service) return { apartmentId: '_payouts', status: 'skipped', reason: 'payments_disabled' };
+    try {
+      return { apartmentId: '_payouts', status: 'done', detail: await service.detectReturned() };
+    } catch (err) {
+      return { apartmentId: '_payouts', status: 'failed', error: errorText(err) };
     }
   }
 
@@ -263,14 +331,23 @@ export function createSchedulerWorker(overrides: Partial<SchedulerDeps> = {}) {
         return { apartmentId, status: 'done', detail: r };
       }
 
+      case 'platform_invoices': {
+        const service = invoices();
+        if (!service) return { apartmentId, status: 'skipped', reason: 'payments_disabled' };
+        const r = await service.draftPeriod(apartmentId, previousInvoicePeriod(day));
+        return { apartmentId, status: 'done', detail: r };
+      }
+
       // Apartman dongusu disinda islenir (runJob); ledger_audit yukarida ayrilir.
       case 'outbox_sweep':
+      case 'payout_returns':
         return { apartmentId, status: 'skipped', reason: 'not_site_job' };
     }
   }
 
   async function runJob(message: JobMessage): Promise<SiteOutcome[]> {
     if (message.job === 'outbox_sweep') return [await runSweep()];
+    if (message.job === 'payout_returns') return [await runPayoutReturns()];
     const day = istanbulDate(message.scheduledTime);
     const ids = message.apartmentId ? [message.apartmentId] : await core.listSiteIds();
     const outcomes: SiteOutcome[] = [];
@@ -290,6 +367,15 @@ export function createSchedulerWorker(overrides: Partial<SchedulerDeps> = {}) {
           outcomes.push({ apartmentId: '_refunds', status: 'done', detail: await service.reconcileRefunds() });
         } catch (err) {
           outcomes.push({ apartmentId: '_refunds', status: 'failed', error: err instanceof Error ? `${err.name}: ${err.message}` : 'unknown' });
+        }
+      }
+      // P4: yeniden gonderime alinmis geri donen aktarimlar (tum apartmanlar; tek tur).
+      const p = payouts();
+      if (p) {
+        try {
+          outcomes.push({ apartmentId: '_payouts', status: 'done', detail: await p.processResends() });
+        } catch (err) {
+          outcomes.push({ apartmentId: '_payouts', status: 'failed', error: errorText(err) });
         }
       }
     }

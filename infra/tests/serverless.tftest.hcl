@@ -56,6 +56,12 @@ mock_provider "aws" {
   mock_resource "aws_secretsmanager_secret" {
     defaults = { arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:mock-AbCdEf" }
   }
+  mock_resource "aws_kms_key" {
+    defaults = {
+      arn    = "arn:aws:kms:eu-central-1:123456789012:key/0f8fad5b-d9cb-469f-a165-70867728950e"
+      key_id = "0f8fad5b-d9cb-469f-a165-70867728950e"
+    }
+  }
   # Gecerli JSON uretmesi gereken politika belgeleri.
   mock_data "aws_iam_policy_document" {
     defaults = { json = "{\"Version\":\"2012-10-17\",\"Statement\":[]}" }
@@ -774,6 +780,16 @@ run "payments_disabled_by_default" {
     condition     = length(aws_cloudwatch_metric_alarm.payment_needs_review) == 0 && length(aws_cloudwatch_metric_alarm.payment_refund_failed) == 0 && length(aws_cloudwatch_metric_alarm.payment_approval_failed) == 0
     error_message = "Odeme kapaliyken odeme alarmlari olusmamali"
   }
+  # P4
+  assert {
+    condition = (
+      length(aws_kms_key.payee) == 0 && length(aws_kms_alias.payee) == 0 && output.payee_kms_key_arn == null &&
+      !contains(keys(aws_scheduler_schedule.jobs), "payout_returns") && !contains(keys(aws_scheduler_schedule.jobs), "platform_invoices") &&
+      length(aws_cloudwatch_metric_alarm.payout_returned) == 0 && length(aws_cloudwatch_metric_alarm.payout_failed) == 0 &&
+      length([for a in flatten([for st in data.aws_iam_policy_document.api.statement : st.actions]) : a if startswith(a, "kms:")]) == 0
+    )
+    error_message = "Odeme kapaliyken alici anahtari, aktarim/fatura isleri ve alarmlari olusmamali"
+  }
 }
 
 run "payments_iyzico" {
@@ -904,6 +920,56 @@ run "payments_iyzico" {
     condition     = !contains(keys(aws_lambda_function.api.environment[0].variables), "PAYTR_SECRET_ARN") && !contains(keys(aws_lambda_function.api.environment[0].variables), "PAYTR_TEST_MODE")
     error_message = "PayTR kapaliyken PayTR yapilandirmasi verilmemeli"
   }
+
+  # --- P4: alici sifreleme anahtari (yalnizca iyzico acikken de olusur; hesaplar sifreli saklanir) ---
+  assert {
+    condition = (
+      length(aws_kms_key.payee) == 1 && aws_kms_key.payee[0].enable_key_rotation && aws_kms_key.payee[0].deletion_window_in_days == 7 &&
+      aws_kms_alias.payee[0].name == "alias/building-management-dev-payment-payee"
+    )
+    error_message = "Alici anahtari: musteri yonetimli, dondurme acik, alias <proje>-<ortam>-payment-payee"
+  }
+  assert {
+    condition = alltrue([
+      for f in [aws_lambda_function.api, aws_lambda_function.scheduler_worker] :
+      # Anahtar ARN'si plan asamasinda bilinmez: yalnizca degiskenin verildigi dogrulanir;
+      # anahtarin kendisi (dondurme, alias) ayri assert'te plan degerlerinden kontrol edilir.
+      contains(keys(f.environment[0].variables), "PAYEE_KMS_KEY_ID") &&
+      f.environment[0].variables.PLATFORM_INVOICE_MODE == "monthly" &&
+      f.environment[0].variables.PLATFORM_INVOICE_VAT_BPS == "2000" &&
+      f.environment[0].variables.PLATFORM_INVOICE_VAT_MODE == "exclusive" &&
+      !contains(keys(f.environment[0].variables), "PAYTR_TRANSFER_DELAY_HOURS")
+    ])
+    error_message = "API ve scheduler worker alici anahtarini ve fatura ayarlarini almali"
+  }
+  # Yetki ayrimi: API yalnizca sifreler, worker yalnizca cozer; ikisi de payment-payee baglamina kosullu.
+  assert {
+    condition = (
+      [for st in data.aws_iam_policy_document.api.statement : { sid = st.sid, actions = toset(st.actions), ctx = [for c in st.condition : "${c.test}|${c.variable}|${join(",", c.values)}"] } if anytrue([for a in st.actions : startswith(a, "kms:")])] ==
+      [{ sid = "EncryptPaymentPayee", actions = toset(["kms:Encrypt"]), ctx = ["StringEquals|kms:EncryptionContext:purpose|payment-payee"] }]
+    )
+    error_message = "API Lambda alici anahtariyla yalnizca kms:Encrypt (payment-payee baglami) yapabilmeli"
+  }
+  assert {
+    condition = (
+      [for st in data.aws_iam_policy_document.scheduler_worker.statement : { sid = st.sid, actions = toset(st.actions), ctx = [for c in st.condition : "${c.test}|${c.variable}|${join(",", c.values)}"] } if anytrue([for a in st.actions : startswith(a, "kms:")])] ==
+      [{ sid = "DecryptPaymentPayee", actions = toset(["kms:Decrypt"]), ctx = ["StringEquals|kms:EncryptionContext:purpose|payment-payee"] }]
+    )
+    error_message = "Scheduler worker alici anahtariyla yalnizca kms:Decrypt (payment-payee baglami) yapabilmeli"
+  }
+  assert {
+    condition = (
+      contains(keys(aws_scheduler_schedule.jobs), "platform_invoices") &&
+      aws_scheduler_schedule.jobs["platform_invoices"].schedule_expression == "cron(10 4 1 * ? *)" &&
+      aws_scheduler_schedule.jobs["platform_invoices"].schedule_expression_timezone == "Europe/Istanbul" &&
+      !contains(keys(aws_scheduler_schedule.jobs), "payout_returns")
+    )
+    error_message = "Platform faturasi isi aylik (Istanbul); geri donen aktarim isi yalnizca PayTR acikken"
+  }
+  assert {
+    condition     = length(aws_cloudwatch_metric_alarm.payout_returned) == 1 && length(aws_cloudwatch_log_metric_filter.payout_failed) == 2 && alltrue([for f in aws_cloudwatch_log_metric_filter.payout_failed : f.pattern == "?\"PAYOUT_FAILED\" ?\"PAYOUT_RETURN_UNMATCHED\""])
+    error_message = "Geri donen ve basarisiz aktarim alarmlari olusmali"
+  }
 }
 
 # --- Online Odeme v2 · P3: PayTR (iyzico ile birlikte) ---
@@ -942,6 +1008,7 @@ run "payments_paytr_and_iyzico" {
       "POST /api/payments/paytr/callback",
       "GET /api/payments/paytr/callback",
       "POST /api/payments/paytr/webhook",
+      "POST /api/payments/paytr/transfer-webhook",
     ])
     error_message = "Kimliksiz rotalar yalnizca saglayici callback/webhook yollari olmali (PayTR donusu GET de olabilir)"
   }
@@ -951,7 +1018,7 @@ run "payments_paytr_and_iyzico" {
   }
   assert {
     condition = (
-      length([for r in aws_apigatewayv2_stage.default.route_settings : r if strcontains(r.route_key, "/api/payments/")]) == 5 &&
+      length([for r in aws_apigatewayv2_stage.default.route_settings : r if strcontains(r.route_key, "/api/payments/")]) == 6 &&
       alltrue([for r in aws_apigatewayv2_stage.default.route_settings : r.throttling_rate_limit == 5 && r.throttling_burst_limit == 10 if strcontains(r.route_key, "/api/payments/")])
     )
     error_message = "PayTR rotalari dahil tum kimliksiz odeme rotalari siki throttling ile sinirlanmali"
@@ -967,6 +1034,17 @@ run "payments_paytr_and_iyzico" {
       f.environment[0].variables.IYZICO_BASE_URL == "https://sandbox-api.iyzipay.com"
     ])
     error_message = "API ve scheduler worker iki saglayicinin yapilandirmasini almali"
+  }
+  assert {
+    condition = (
+      aws_lambda_function.scheduler_worker.environment[0].variables.PAYTR_TRANSFER_DELAY_HOURS == "24" &&
+      contains(keys(aws_scheduler_schedule.jobs), "payout_returns") &&
+      aws_scheduler_schedule.jobs["payout_returns"].schedule_expression == "cron(30 11 * * ? *)" &&
+      aws_scheduler_schedule.jobs["payout_returns"].schedule_expression_timezone == "Europe/Istanbul" &&
+      jsondecode(aws_scheduler_schedule.jobs["payout_returns"].target[0].input).job == "payout_returns" &&
+      aws_apigatewayv2_route.payments_public["POST /api/payments/paytr/transfer-webhook"].authorization_type == "NONE"
+    )
+    error_message = "PayTR acikken transfer beklemesi, gunluk geri donen aktarim isi ve kimliksiz transfer sonuc rotasi olmali"
   }
   assert {
     condition     = length(setintersection(toset(keys(aws_lambda_function.api.environment[0].variables)), toset(["PAYTR_MERCHANT_ID", "PAYTR_MERCHANT_KEY", "PAYTR_MERCHANT_SALT"]))) == 0
@@ -1064,6 +1142,23 @@ run "prod_payment_secret_recoverable" {
     condition     = aws_lambda_function.api.environment[0].variables.IYZICO_BASE_URL == "https://api.iyzipay.com"
     error_message = "Canli iyzico adresi Lambda'ya gecmeli"
   }
+  assert {
+    condition     = aws_kms_key.payee[0].deletion_window_in_days == 30 && aws_kms_alias.payee[0].name == "alias/building-management-payment-payee"
+    error_message = "prod alici anahtari yanlislikla silinirse 30 gun geri alinabilmeli"
+  }
+}
+
+run "rejects_invalid_payout_and_invoice_settings" {
+  command = plan
+
+  variables {
+    paytr_transfer_delay_hours = 1000
+    platform_invoice_mode      = "yearly"
+    platform_invoice_vat_bps   = 20.5
+    platform_invoice_vat_mode  = "dahil"
+  }
+
+  expect_failures = [var.paytr_transfer_delay_hours, var.platform_invoice_mode, var.platform_invoice_vat_bps, var.platform_invoice_vat_mode]
 }
 
 run "payments_requires_web_app_url" {
