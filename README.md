@@ -2,7 +2,7 @@
 
 Türkiye'deki apartman, site ve profesyonel yönetim firmaları için çok kiracılı (multi-tenant), sunucusuz bir site ve aidat yönetim platformu. Kat Mülkiyeti Kanunu'na uygun alt cari (malik / kiracı) ayrımı, dağıtım anahtarlarıyla toplu tahakkuk ve değişmez (append-only) finansal defter üzerine kuruludur.
 
-> **Durum (20.11.2026):** Aktif geliştirme. Backend çekirdeği, yönetici ve sakin web ekranları, kıstelyevm, belge deposu ve toplu aktarım `main` dalında; `dev` ortamı AWS `eu-north-1` bölgesinde, web Cloudflare Pages üzerinde canlı. Online ödeme (Adım 8b: iyzico Pazaryeri altyapısı, ekranlar, inceleme/iade aracı) `main`'e alındı ve `dev`'de çalışıyor; iyzico sandbox uçtan uca doğrulaması bilerek proje sonuna bırakıldı ([Canlıya Geçiş Kontrol Listesi](#canlıya-geçiş-kontrol-listesi)). Ayrıntılar için [Yol Haritası](#yol-haritası).
+> **Durum (21.11.2026):** Aktif geliştirme. Backend çekirdeği, yönetici ve sakin web ekranları, kıstelyevm, belge deposu ve toplu aktarım `main` dalında; `dev` ortamı AWS `eu-north-1` bölgesinde, web Cloudflare Pages üzerinde canlı. Online ödeme (Adım 8b: iyzico Pazaryeri altyapısı, ekranlar, inceleme/iade aracı), taşınmada cari kapama / borç devri ve güvenilir olay ve bildirim hattı (transactional outbox, Streams relay, süpürücü, gecelik defter denetimi, SES e-posta kanalı) `main`'e alındı. Bildirimler alan adı alınana kadar `log` modunda; iyzico sandbox uçtan uca doğrulaması ve SES aktivasyonu bilerek canlıya geçişe bırakıldı ([Canlıya Geçiş Kontrol Listesi](#canlıya-geçiş-kontrol-listesi)). Sıradaki iş: güvenlik sertleştirmesi. Ayrıntılar için [Yol Haritası](#yol-haritası).
 
 ---
 
@@ -351,13 +351,23 @@ Yedi rol: `platform_admin`, `management_company`, `apartment_manager`, `resident
 - [x] `github-deploy` kullanıcısından `AdministratorAccess` kaldırıldı; yalnızca en az yetkili `building-management-serverless-deploy` politikası, CI (PR planı + dev apply) ile doğrulandı
 - [x] Dal `main`'e alındı (`2c89911`)
 
-**Finans — taşınmada cari kapama ve borç devri (`feature/finans-cari-devri`)**
+**Finans — taşınmada cari kapama ve borç devri (`main`'e alındı: `b162339`)**
 
 - [x] Alt cari yorumlayıcısı: kesim tarihli cari, devir kalemleri vade ve tazminat başlangıcıyla taşınır; FIFO mahsup ve kıstelyevm tek kaynaktan (`subledger.ts`)
 - [x] Kapama servisi ve API: önizleme, tek atomik yazım (tazminat kesinleştirme + devir/iade + kapama kaydı + üyelik bitişi), `closedThrough` kilidi, idempotency, güvenli geri alma
 - [x] Ayrılan sakin carisinden tahsilat (`accountId`), ayrılan cariler raporu ve özet; ayrılan carinin tazminatı işlemeye devam eder; yeni sakinin portalı, makbuzları, online ödemesi ve bildirimleri eskisinden ayrı
 - [x] Web: Daireler → "Taşınma" sihirbazı (kim/tarih → önizleme → borç & avans kararı → gerekçe/onay → yeni sakin daveti), kapama geçmişi ve "Geri al"; Finans → "Ayrılan cariler" sekmesi, tahsilatta cari seçimi ve "Tahsilat al" kısayolu
 - [x] Boş daire kuralı: oturan yoksa sakin gideri kat malikine (tekil, toplu ve otomatik tahakkuk; önizleme ve bildirim dahil)
+- [x] Kapamada ayrılan üyelik hemen pasifleşir, geri almada üyelikler geri yüklenir (`f793a55`)
+
+**Güvenilir olay ve bildirim hattı (`main`'e alındı: `207b953`)**
+
+- [x] Transactional outbox: domain olayları defter/belge yazımıyla aynı `TransactWriteItems`'ta `OUTBOX#` kaydı olarak yazılır; toplu tahakkukta kalem başına olay (yarıda kesilen istekte kayıp yok)
+- [x] DynamoDB Streams → `outbox-relay` Lambda → SNS (yalnızca `OUTBOX#` INSERT filtresi, kısmi hata bildirimi, DLQ ve alarmlar); yerelde aynı çekirdekle bellek içi relay; API Lambda'sından `sns:Publish` kaldırıldı
+- [x] `outbox_sweep` (5 dk): eşikten eski bekleyen olayları yeniden yayınlar (stream'in 24 saatini aşan kesintiler dahil)
+- [x] `ledger_audit` (her gece 03:40, salt okunur): bakiye = Σ `LE#`, işlem dengesi, kapama kilidi, makbuz sayacı, online ödeme kayıtları; sapma → `LedgerDrift` metriği + platform alarmı, otomatik düzeltme yok
+- [x] SES e-posta kanalı (`NOTIFICATION_CHANNEL=log|ses`), Türkçe HTML + düz metin şablonları (tek noktada escape), alıcı bazlı tekrar koruması, kalıcı/geçici SES hata ayrımı
+- [x] Toplu tahakkukta kullanıcı başına tek özet e-posta (`DUES_BATCH_SUMMARY`), kullanıcı bildirim tercihleri (`/api/me/notification-preferences`, varsayılan açık)
 
 ### Sırada
 
@@ -371,7 +381,6 @@ Yedi rol: `platform_admin`, `management_company`, `apartment_manager`, `resident
 
 **Finans**
 
-- [x] Taşınmada cari kapama ve eski/yeni kiracı borç devri (bkz. Tamamlanan → Finans — taşınmada cari kapama)
 - [ ] Sayaç/endeks dağıtımı ve sayaç görselleri
 - [ ] Avans mahsubu, borç yapılandırma, mülk devri, hisseli mülkiyet
 - [ ] Dönem kapama, bütçe / yıllık işletme projesi
@@ -379,11 +388,17 @@ Yedi rol: `platform_admin`, `management_company`, `apartment_manager`, `resident
 **Platform ve operasyon**
 
 - [ ] Eski soneksiz `building-management` (prod) yığını hakkında karar ve ilk `prod` sürümü
-- [ ] Güvenilir olay ve bildirim hattı (`feature/outbox-bildirim`): ~~1. outbox'a atomik yazım~~ ✓ · ~~2. Streams relay~~ ✓ · ~~3. `outbox_sweep` (5 dk) + `ledger_audit` (03:40, salt okunur)~~ ✓ · ~~4. SES e-posta kanalı, Türkçe şablonlar, toplu tahakkuk özeti, bildirim tercihleri~~ ✓
 - [ ] Arıza/görev, ziyaretçi QR, anket/oylama, rezervasyon, ihale
 - [ ] Yönetim firması portföyü, abonelik/lisans
-- [ ] Özel alan adı + Cloudflare WAF (HTTP API'ye AWS WAF bağlanamaz), Cloudflare Pages Terraform modülü, audit log
+- [ ] Cloudflare Pages Terraform modülü
 - [ ] Rapor/PDF, banka ve OCR worker'ları
+- [ ] Bildirim devamı: web'de tercih ekranı, yöneticiye toplu işlem özeti, SES geri dönüş/şikâyet olaylarının işlenmesi, SMS/WhatsApp kanalı
+
+**Güvenlik sertleştirmesi (sıradaki iş)**
+
+- [ ] G1 — Değiştirilemez denetim günlüğü: ayrı tablo (yalnızca ekleme), apartman bazlı hash zinciri, hassas işlemle aynı atomik yazım, yönetici/denetçi için salt okunur görüntüleme, gerekçeli ve süreli `platform_admin` destek erişimi
+- [ ] G2 — Yönetici rollerinde (`platform_admin`, `management_company`, `apartment_manager`) zorunlu TOTP MFA: Pre Token kontrolü, API ara katmanı, web kurulum ekranı, kademeli geçiş
+- [ ] G3 — Uç koruma (alan adı alındığında): API özel alan adı Cloudflare arkasında, WAF ve oran sınırlama, `disable_execute_api_endpoint`, kaynak doğrulama (HTTP API'ye AWS WAF bağlanamaz; CloudFront WAF'ı hesap SCP'si nedeniyle kullanılamaz)
 
 ### Canlıya Geçiş Kontrol Listesi
 
