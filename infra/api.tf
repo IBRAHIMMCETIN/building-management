@@ -265,8 +265,9 @@ data "aws_iam_policy_document" "pre_token_mfa" {
 }
 
 resource "aws_iam_role_policy" "pre_token_mfa" {
-  name   = "pre-token-mfa"
-  role   = aws_iam_role.pre_token.id
+  name = "pre-token-mfa"
+  # Rol adi (aws_iam_role.id ile ayni deger) plan asamasinda bilinir.
+  role   = aws_iam_role.pre_token.name
   policy = data.aws_iam_policy_document.pre_token_mfa.json
 }
 

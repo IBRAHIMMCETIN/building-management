@@ -106,6 +106,15 @@ run "prod_plan" {
       arn = "arn:aws:dynamodb:eu-central-1:123456789012:table/building-management-audit"
     }
   }
+  # Pre Token MFA politikasi havuz ARN'ine baglidir: plan asamasinda sabitlenir.
+  override_resource {
+    target          = aws_cognito_user_pool.main
+    override_during = plan
+    values = {
+      arn = "arn:aws:cognito-idp:eu-central-1:123456789012:userpool/eu-central-1_mock"
+      id  = "eu-central-1_mock"
+    }
+  }
 
   # --- DynamoDB ---
   assert {
@@ -481,12 +490,12 @@ run "prod_plan" {
   assert {
     condition = [for st in data.aws_iam_policy_document.pre_token_mfa.statement : { actions = toset(st.actions), resources = toset(st.resources) }] == [{
       actions   = toset(["cognito-idp:AdminGetUser"])
-      resources = toset(["arn:aws:cognito-idp:eu-central-1:123456789012:userpool/eu-central-1_mock"])
+      resources = toset([aws_cognito_user_pool.main.arn])
     }]
     error_message = "Pre Token Lambda yalnizca bu havuzda AdminGetUser (TOTP durumu) yetkisine sahip olmali"
   }
   assert {
-    condition     = aws_iam_role_policy.pre_token_mfa.role == aws_iam_role.pre_token.id
+    condition     = aws_iam_role_policy.pre_token_mfa.role == aws_iam_role.pre_token.name
     error_message = "MFA okuma yetkisi Pre Token rolune ayri politikayla baglanmali (havuz <-> Lambda dongusu olmadan)"
   }
   assert {
