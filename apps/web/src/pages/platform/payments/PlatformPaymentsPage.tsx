@@ -1,27 +1,32 @@
 import { CreditCard, Search } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
-import { Alert, Badge, Button, Card, Dialog, FilterChips, FormField, Input, Skeleton } from '@/components/ui';
+import { useMemo, useState } from 'react';
+import { Alert, Badge, Button, Card, FilterChips, Input, Skeleton } from '@/components/ui';
 import { usePlatformPaymentApartments, useUpdatePaymentAccount } from '@/hooks/usePayments';
 import { errorMessage } from '@/lib/api/errors';
 import type { PlatformApartment } from '@/lib/api/payments';
 import { formatDateTime } from '@/lib/dates';
-import { MAX_PLATFORM_FEE_BASIS_POINTS, formatBasisPoints, parsePercentToBasisPoints } from '@/lib/payments/manager';
+import { accountWarnings, feeSummary, providerLabel } from '@/lib/payments/platform';
 import { SUB_MERCHANT_TYPE_LABELS } from '@/lib/payments/subMerchant';
+import { AccountSettingsDialog } from './AccountSettingsDialog';
+import { ProviderDialog } from './ProviderDialog';
 import { ReviewQueue } from './ReviewQueue';
 import { SubMerchantDialog } from './SubMerchantDialog';
 
-type Filter = 'all' | 'active' | 'disabled' | 'none';
+type Filter = 'all' | 'active' | 'disabled' | 'none' | 'attention';
 
 const FILTERS: readonly { value: Filter; label: string }[] = [
   { value: 'all', label: 'Tümü' },
   { value: 'active', label: 'Aktif' },
   { value: 'disabled', label: 'Durdurulmuş' },
   { value: 'none', label: 'Kayıtsız' },
+  { value: 'attention', label: 'Eksik bilgi' },
 ];
 
 const matches = (a: PlatformApartment, filter: Filter, q: string) => {
   const state = a.account?.status ?? 'none';
-  if (filter !== 'all' && state !== filter) return false;
+  if (filter === 'attention') {
+    if (accountWarnings(a).length === 0) return false;
+  } else if (filter !== 'all' && state !== filter) return false;
   if (!q) return true;
   const hay = `${a.name} ${a.city} ${a.district}`.toLocaleLowerCase('tr');
   return hay.includes(q.toLocaleLowerCase('tr'));
@@ -30,65 +35,6 @@ const matches = (a: PlatformApartment, filter: Filter, q: string) => {
 function AccountBadge({ a }: { a: PlatformApartment }) {
   if (!a.account) return <Badge>Kayıtsız</Badge>;
   return a.account.status === 'active' ? <Badge tone="success">Aktif</Badge> : <Badge tone="warning">Durduruldu</Badge>;
-}
-
-function FeeDialog({ apartment, onClose }: { apartment: PlatformApartment | null; onClose: () => void }) {
-  const update = useUpdatePaymentAccount();
-  const [value, setValue] = useState('');
-  const [error, setError] = useState<string | null>(null);
-  const open = apartment !== null;
-
-  useEffect(() => {
-    if (!apartment) return;
-    setValue(String((apartment.account?.platformFeeBasisPoints ?? 0) / 100).replace('.', ','));
-    setError(null);
-    update.reset();
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- yalnizca acilista
-  }, [apartment?.apartmentId]);
-
-  const save = async () => {
-    if (!apartment) return;
-    const bp = parsePercentToBasisPoints(value);
-    if (bp === null) {
-      setError(`Pay %0 ile ${formatBasisPoints(MAX_PLATFORM_FEE_BASIS_POINTS)} arasında olmalı (örn. 1,5).`);
-      return;
-    }
-    try {
-      await update.mutateAsync({ apartmentId: apartment.apartmentId, patch: { platformFeeBasisPoints: bp } });
-      onClose();
-    } catch {
-      // hata asagida gosterilir
-    }
-  };
-
-  return (
-    <Dialog open={open} onClose={onClose} title="Platform payını değiştir">
-      <div className="flex flex-col gap-4">
-        <p className="text-small text-muted">
-          <strong className="text-text">{apartment?.name}</strong> için yeni pay, bundan sonra başlatılan ödemelere uygulanır.
-        </p>
-        <FormField label="Platform payı (%)" error={error ?? undefined}>
-          <Input
-            inputMode="decimal"
-            value={value}
-            onChange={(e) => {
-              setValue(e.target.value);
-              setError(null);
-            }}
-          />
-        </FormField>
-        {update.isError && <Alert tone="danger">{errorMessage(update.error)}</Alert>}
-        <div className="flex justify-end gap-2">
-          <Button variant="ghost" onClick={onClose}>
-            Vazgeç
-          </Button>
-          <Button loading={update.isPending} onClick={() => void save()}>
-            Kaydet
-          </Button>
-        </div>
-      </div>
-    </Dialog>
-  );
 }
 
 function StatusToggle({ a, onError }: { a: PlatformApartment; onError: (msg: string) => void }) {
@@ -110,15 +56,20 @@ function StatusToggle({ a, onError }: { a: PlatformApartment; onError: (msg: str
 function Row({
   a,
   onOnboard,
-  onFee,
+  onSettings,
+  onProvider,
+  multiProvider,
   onError,
 }: {
   a: PlatformApartment;
   onOnboard: () => void;
-  onFee: () => void;
+  onSettings: () => void;
+  onProvider: () => void;
+  multiProvider: boolean;
   onError: (msg: string) => void;
 }) {
   const acc = a.account;
+  const warnings = accountWarnings(a);
   return (
     <li className="flex flex-col gap-3 rounded-xl border border-border bg-surface/60 p-4 shadow-sm sm:flex-row sm:items-center sm:justify-between">
       <div className="min-w-0">
@@ -126,22 +77,38 @@ function Row({
           <p className="font-medium">{a.name}</p>
           <AccountBadge a={a} />
           {a.siteStatus !== 'active' && <Badge>Site: {a.siteStatus}</Badge>}
+          {a.effectiveProvider && (
+            <Badge tone={a.paymentProvider ? 'accent' : 'neutral'} title={a.paymentProvider ? 'Apartmana özel seçim' : 'Ortam varsayılanı'}>
+              {providerLabel(a.effectiveProvider)}
+              {a.paymentProvider ? '' : ' (varsayılan)'}
+            </Badge>
+          )}
+          {warnings.map((w) => (
+            <Badge key={w} tone="warning">
+              {w}
+            </Badge>
+          ))}
         </div>
         <p className="text-small text-muted">
           {a.district} / {a.city}
         </p>
         {acc && (
           <p className="text-small text-muted">
-            {SUB_MERCHANT_TYPE_LABELS[acc.subMerchantType]} · {acc.ibanMasked ?? 'IBAN —'} · pay {formatBasisPoints(acc.platformFeeBasisPoints)} ·
+            {SUB_MERCHANT_TYPE_LABELS[acc.subMerchantType]} · <span className="font-mono">{acc.ibanMasked ?? 'IBAN —'}</span> · {feeSummary(acc)} ·
             güncelleme {formatDateTime(acc.updatedAt)}
           </p>
         )}
       </div>
       <div className="flex shrink-0 flex-wrap gap-2">
+        {multiProvider && (
+          <Button variant="subtle" size="xs" onClick={onProvider}>
+            Sağlayıcı
+          </Button>
+        )}
         {acc ? (
           <>
-            <Button variant="secondary" size="xs" onClick={onFee}>
-              Payı değiştir
+            <Button variant="secondary" size="xs" onClick={onSettings}>
+              Ayarlar
             </Button>
             <StatusToggle a={a} onError={onError} />
           </>
@@ -162,7 +129,9 @@ export function PlatformPaymentsPage() {
   const [filter, setFilter] = useState<Filter>('all');
   const [q, setQ] = useState('');
   const [onboarding, setOnboarding] = useState<PlatformApartment | null>(null);
-  const [feeFor, setFeeFor] = useState<PlatformApartment | null>(null);
+  const [settingsFor, setSettingsFor] = useState<PlatformApartment | null>(null);
+  const [providerFor, setProviderFor] = useState<PlatformApartment | null>(null);
+  const multiProvider = (list.data?.providers.length ?? 0) > 1;
   const [actionError, setActionError] = useState<string | null>(null);
 
   const items = useMemo(() => (list.data?.items ?? []).filter((a) => matches(a, filter, q.trim())), [list.data, filter, q]);
@@ -190,7 +159,12 @@ export function PlatformPaymentsPage() {
       </Card>
     );
   } else if (!list.data.provider) {
-    content = <Alert>Online ödeme sağlayıcısı yapılandırılmamış (Terraform: payments_provider). Hesap açmak için önce sağlayıcıyı etkinleştirin.</Alert>;
+    content = (
+      <Alert>
+        Online ödeme sağlayıcısı yapılandırılmamış (Terraform: payments_providers / default_payment_provider). Hesap açmak için önce sağlayıcıyı
+        etkinleştirin.
+      </Alert>
+    );
   } else {
     content = (
       <div className="flex flex-col gap-4">
@@ -212,7 +186,9 @@ export function PlatformPaymentsPage() {
                 key={a.apartmentId}
                 a={a}
                 onOnboard={() => setOnboarding(a)}
-                onFee={() => setFeeFor(a)}
+                onSettings={() => setSettingsFor(a)}
+                onProvider={() => setProviderFor(a)}
+                multiProvider={multiProvider}
                 onError={setActionError}
               />
             ))}
@@ -233,16 +209,31 @@ export function PlatformPaymentsPage() {
           </p>
         </div>
         {list.data?.provider && (
-          <div className="flex gap-1.5">
-            <Badge tone="accent">{list.data.provider}</Badge>
-            {list.data.sandbox && <Badge tone="warning">Test ortamı</Badge>}
+          <div className="flex flex-wrap gap-1.5">
+            {(list.data.providers.length > 0 ? list.data.providers : [{ name: list.data.provider, sandbox: !!list.data.sandbox }]).map((p) => (
+              <Badge key={p.name} tone={p.name === list.data?.provider ? 'accent' : 'neutral'}>
+                {providerLabel(p.name)}
+                {p.name === list.data?.provider ? ' · varsayılan' : ''}
+                {p.sandbox ? ' · test' : ''}
+              </Badge>
+            ))}
           </div>
         )}
       </div>
       {list.data?.provider && <ReviewQueue />}
       {content}
-      <SubMerchantDialog apartment={onboarding} sandbox={!!list.data?.sandbox} onClose={() => setOnboarding(null)} />
-      <FeeDialog apartment={feeFor} onClose={() => setFeeFor(null)} />
+      <SubMerchantDialog
+        apartment={onboarding}
+        sandbox={
+          onboarding?.effectiveProvider
+            ? !!list.data?.providers.find((p) => p.name === onboarding.effectiveProvider)?.sandbox
+            : !!list.data?.sandbox
+        }
+        providers={list.data?.providers}
+        onClose={() => setOnboarding(null)}
+      />
+      <AccountSettingsDialog apartment={settingsFor} onClose={() => setSettingsFor(null)} />
+      <ProviderDialog apartment={providerFor} onClose={() => setProviderFor(null)} />
     </div>
   );
 }

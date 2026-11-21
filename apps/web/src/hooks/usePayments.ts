@@ -7,6 +7,8 @@ import {
   type CreatePaymentInput,
   type IntentStatus,
   type PaymentIntent,
+  type PayoutStatus,
+  type ResendInput,
   type ResolveInput,
   type SubMerchantInput,
   paymentsApi,
@@ -146,6 +148,10 @@ export const platformPaymentKeys = {
   apartments: () => ['platform', 'payments', 'apartments'] as const,
   reviewQueue: () => ['platform', 'payments', 'review'] as const,
   reviewCheck: (apartmentId: string, intentId: string) => ['platform', 'payments', 'review', 'check', apartmentId, intentId] as const,
+  settings: (apartmentId: string) => ['platform', 'payments', 'settings', apartmentId] as const,
+  payouts: (status: string, days: number) => ['platform', 'payments', 'payouts', status, days] as const,
+  settlements: (days: number) => ['platform', 'payments', 'settlements', days] as const,
+  invoices: (period: string) => ['platform', 'payments', 'invoices', period] as const,
 };
 
 export function usePlatformPaymentApartments() {
@@ -214,5 +220,101 @@ export function useResolveReview() {
       paymentsApi.resolveReview(apartmentId, intentId, input),
     // Basarili ya da 409 (kayit degisti): kuyruk ve kontrol yeniden okunur.
     onSettled: () => queryClient.invalidateQueries({ queryKey: platformPaymentKeys.all() }),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Platform yoneticisi (P5): saglayici secimi, aktarimlar, komisyon faturalari
+// ---------------------------------------------------------------------------
+
+function usePlatformEnabled() {
+  const { user } = useAuth();
+  return user?.role === 'platform_admin';
+}
+
+/** Apartmanin saglayici tercihi; diyalog her acildiginda guncel surum okunur. */
+export function usePaymentSettings(apartmentId: string | null) {
+  return useQuery({
+    queryKey: platformPaymentKeys.settings(apartmentId ?? ''),
+    queryFn: ({ signal }) => paymentsApi.settings(apartmentId as string, signal),
+    enabled: usePlatformEnabled() && apartmentId !== null,
+    retry,
+    staleTime: 0,
+  });
+}
+
+export function useUpdatePaymentSettings() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ apartmentId, paymentProvider, expectedVersion }: { apartmentId: string; paymentProvider: string | null; expectedVersion: number }) =>
+      paymentsApi.updateSettings(apartmentId, { paymentProvider, expectedVersion }),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: platformPaymentKeys.all() }),
+  });
+}
+
+export function usePlatformPayouts(status: PayoutStatus | 'all' | undefined, days: number) {
+  return useQuery({
+    queryKey: platformPaymentKeys.payouts(status ?? 'attention', days),
+    queryFn: ({ signal }) => paymentsApi.payouts({ status, days }, signal),
+    enabled: usePlatformEnabled(),
+    retry,
+    // Geri donus ve yeniden gonderim zamanlanmis gorevle ilerler: ekran acikken tazelenir.
+    refetchInterval: 60_000,
+  });
+}
+
+export function useResendPayout() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ apartmentId, transferId, input }: { apartmentId: string; transferId: string; input: ResendInput }) =>
+      paymentsApi.resendPayout(apartmentId, transferId, input),
+    // Basarili ya da 409: aktarimlar ve (IBAN duzeltildiyse) hesaplar yeniden okunur.
+    onSettled: () => queryClient.invalidateQueries({ queryKey: platformPaymentKeys.all() }),
+  });
+}
+
+export function usePlatformSettlements(days = 30) {
+  return useQuery({
+    queryKey: platformPaymentKeys.settlements(days),
+    queryFn: ({ signal }) => paymentsApi.settlements({ days }, signal),
+    enabled: usePlatformEnabled(),
+    retry,
+    refetchInterval: 60_000,
+  });
+}
+
+export function useReleaseSettlement() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ apartmentId, intentId, input }: { apartmentId: string; intentId: string; input: { note: string; expectedVersion: number } }) =>
+      paymentsApi.releaseSettlement(apartmentId, intentId, input),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: platformPaymentKeys.all() }),
+  });
+}
+
+export function usePlatformInvoices(period: string) {
+  return useQuery({
+    queryKey: platformPaymentKeys.invoices(period),
+    queryFn: ({ signal }) => paymentsApi.invoices(period, signal),
+    enabled: usePlatformEnabled() && /^\d{4}-\d{2}$/.test(period),
+    retry,
+  });
+}
+
+/** Fatura islemleri (taslak yenile / kesildi / iptal): sonrasinda donem listesi yeniden okunur. */
+export function useInvoiceAction() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (
+      a:
+        | { kind: 'draft'; apartmentId: string; period: string }
+        | { kind: 'issue'; apartmentId: string; invoiceId: string; expectedVersion: number; invoiceNumber: string }
+        | { kind: 'cancel'; apartmentId: string; invoiceId: string; expectedVersion: number; reason: string },
+    ) => {
+      if (a.kind === 'draft') return paymentsApi.draftInvoices(a.apartmentId, a.period);
+      if (a.kind === 'issue') return paymentsApi.issueInvoice(a.apartmentId, a.invoiceId, { expectedVersion: a.expectedVersion, invoiceNumber: a.invoiceNumber });
+      return paymentsApi.cancelInvoice(a.apartmentId, a.invoiceId, { expectedVersion: a.expectedVersion, reason: a.reason });
+    },
+    onSettled: () => queryClient.invalidateQueries({ queryKey: [...platformPaymentKeys.all(), 'invoices'] }),
   });
 }

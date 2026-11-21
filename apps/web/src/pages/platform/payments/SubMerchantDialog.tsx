@@ -6,7 +6,8 @@ import { Alert, Button, Dialog, FormField, Input, Select } from '@/components/ui
 import { useOnboardSubMerchant } from '@/hooks/usePayments';
 import { ApiError, errorMessage } from '@/lib/api/errors';
 import { applyApiFieldError } from '@/lib/api/formErrors';
-import { SUB_MERCHANT_TYPES, type PlatformApartment } from '@/lib/api/payments';
+import { SUB_MERCHANT_TYPES, type PlatformApartment, type ProviderInfo } from '@/lib/api/payments';
+import { providerLabel } from '@/lib/payments/platform';
 import {
   SUB_MERCHANT_FIELD_MAP,
   SUB_MERCHANT_TYPE_LABELS,
@@ -16,7 +17,13 @@ import {
   toSubMerchantInput,
 } from '@/lib/payments/subMerchant';
 
-type Props = { apartment: PlatformApartment | null; sandbox: boolean; onClose: () => void };
+type Props = {
+  apartment: PlatformApartment | null;
+  sandbox: boolean;
+  /** Bu ortamda acik saglayicilar (P5); birden fazlaysa secim gosterilir. */
+  providers?: readonly ProviderInfo[];
+  onClose: () => void;
+};
 
 const FIELDS = [
   'subMerchantType',
@@ -32,10 +39,12 @@ const FIELDS = [
   'contactSurname',
   'identityNumber',
   'platformFee',
+  'accountHolderName',
+  'provider',
 ] as const;
 
 /** Apartmani odeme saglayicisinda alt uye isyeri olarak kaydeder (tek seferlik). */
-export function SubMerchantDialog({ apartment, sandbox, onClose }: Props) {
+export function SubMerchantDialog({ apartment, sandbox, providers = [], onClose }: Props) {
   const onboard = useOnboardSubMerchant();
   const form = useForm<SubMerchantForm>({ resolver: zodResolver(subMerchantFormSchema), defaultValues: emptySubMerchantForm() });
   const { errors } = form.formState;
@@ -46,7 +55,7 @@ export function SubMerchantDialog({ apartment, sandbox, onClose }: Props) {
   useEffect(() => {
     if (!open) return;
     onboard.reset();
-    form.reset({ ...emptySubMerchantForm(), name: apartment?.name ?? '' });
+    form.reset({ ...emptySubMerchantForm(), name: apartment?.name ?? '', provider: apartment?.effectiveProvider ?? '' });
     // eslint-disable-next-line react-hooks/exhaustive-deps -- yalnizca acilista
   }, [open]);
 
@@ -70,6 +79,24 @@ export function SubMerchantDialog({ apartment, sandbox, onClose }: Props) {
           işyeri olarak kaydedilir. Tahsilatlar aşağıdaki IBAN’a aktarılır.
         </p>
         {sandbox && <Alert>Test ortamı: kayıt sandbox hesabına yapılır, gerçek para aktarımı olmaz.</Alert>}
+
+        {providers.length > 1 && (
+          <FormField
+            label="Ödeme sağlayıcısı"
+            error={errors.provider?.message}
+            hint="Kayıt seçilen sağlayıcıda açılır. Apartmanın kullandığı sağlayıcı “Sağlayıcı” düğmesiyle değiştirilir."
+          >
+            <Select {...form.register('provider')}>
+              {providers.map((p) => (
+                <option key={p.name} value={p.name}>
+                  {providerLabel(p.name)}
+                  {p.sandbox ? ' (test)' : ''}
+                  {p.name === apartment?.effectiveProvider ? ' · kullanılan' : ''}
+                </option>
+              ))}
+            </Select>
+          </FormField>
+        )}
 
         <FormField label="İşyeri türü" error={errors.subMerchantType?.message}>
           <Select {...form.register('subMerchantType')}>
@@ -126,18 +153,26 @@ export function SubMerchantDialog({ apartment, sandbox, onClose }: Props) {
         <FormField label="Adres" error={errors.address?.message}>
           <Input autoComplete="off" {...form.register('address')} />
         </FormField>
-        <div className="grid gap-4 sm:grid-cols-[2fr_1fr]">
-          <FormField label="IBAN" error={errors.iban?.message}>
-            <Input autoComplete="off" placeholder="TR00 0000 0000 0000 0000 0000 00" {...form.register('iban')} />
+        <div className="grid gap-4 sm:grid-cols-2">
+          <FormField label="IBAN (tam)" error={errors.iban?.message}>
+            <Input autoComplete="off" spellCheck={false} placeholder="TR00 0000 0000 0000 0000 0000 00" {...form.register('iban')} />
           </FormField>
-          <FormField label="Platform payı (%)" error={errors.platformFee?.message} hint="Her tahsilattan apartman payından kesilir.">
-            <Input inputMode="decimal" autoComplete="off" {...form.register('platformFee')} />
+          <FormField
+            label="Hesap sahibi adı"
+            error={errors.accountHolderName?.message}
+            hint="Bankadaki ad/unvan. Boşsa ticari unvan veya ad soyad kullanılır."
+          >
+            <Input autoComplete="off" {...form.register('accountHolderName')} />
           </FormField>
         </div>
+        <FormField label="Platform payı (%)" error={errors.platformFee?.message} hint="Her tahsilattan apartman payından kesilir (KDV dahil).">
+          <Input inputMode="decimal" autoComplete="off" className="sm:w-40" {...form.register('platformFee')} />
+        </FormField>
 
         <p className="flex items-start gap-2 text-small text-muted">
           <Lock className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
-          Vergi, kimlik ve IBAN bilgileri yalnızca ödeme sağlayıcısına iletilir; sistemde maskeli IBAN, işyeri türü ve platform payı saklanır.
+          Vergi ve kimlik bilgileri yalnızca ödeme sağlayıcısına iletilir. Tam IBAN ve hesap sahibi adı aktarım için KMS ile şifrelenerek saklanır;
+          kaydettikten sonra yalnızca maskeli IBAN görünür. Şirket türlerinde vergi bilgileri komisyon faturası muhatabı olarak kaydedilir.
         </p>
 
         {onboard.isError && !fieldErr && <Alert tone="danger">{errorMessage(onboard.error)}</Alert>}

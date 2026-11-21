@@ -4,7 +4,8 @@
  *   - Sahis/sirket (PRIVATE_COMPANY), Ltd./A.S. (LIMITED_OR_JOINT_STOCK_COMPANY): vergi dairesi ve
  *     unvan zorunlu; vergi no Ltd./A.S. icin zorunlu, sahis sirketinde istege bagli.
  *   - Bireysel (PERSONAL): ad, soyad ve T.C. kimlik no zorunlu.
- * KYC verisi saglayiciya iletilir; bizde yalnizca maskeli IBAN, tip ve platform payi kalir.
+ * KYC verisi saglayiciya iletilir. P4/P5: aktarim alicisi (tam IBAN + hesap sahibi adi) API'de KMS
+ * ile sifrelenip saklanir (PayTR transferi); hicbir yanitta donmez, ekranda yalnizca maskeli IBAN.
  */
 import { z } from 'zod';
 import { SUB_MERCHANT_TYPES, type SubMerchantInput, type SubMerchantType } from '@/lib/api/payments';
@@ -34,6 +35,10 @@ export const subMerchantFormSchema = z
     contactSurname: z.string().trim(),
     identityNumber: z.string().trim(),
     platformFee: z.string().trim(),
+    /** Banka hesabindaki ad/unvan; bos ise unvan / ad soyad kullanilir. */
+    accountHolderName: z.string().trim(),
+    /** '' = apartmanin cozumlenen saglayicisi (tercih, yoksa ortam varsayilani). */
+    provider: z.string().trim(),
   })
   .superRefine((v, ctx) => {
     const issue = (path: string, message: string) => ctx.addIssue({ code: 'custom', path: [path], message });
@@ -46,6 +51,9 @@ export const subMerchantFormSchema = z
     between('address', 'Adres', 5, 500);
     if (!normalizeIban(v.iban)) issue('iban', 'Geçerli bir TR IBAN girin.');
     if (parsePercentToBasisPoints(v.platformFee || '0') === null) issue('platformFee', 'Pay %0 ile %20 arasında olmalı (örn. 1,5).');
+    if (v.accountHolderName && (v.accountHolderName.length < 2 || v.accountHolderName.length > 140)) {
+      issue('accountHolderName', 'Hesap sahibi adı 2-140 karakter olmalı.');
+    }
 
     if (v.subMerchantType === 'PERSONAL') {
       between('contactName', 'Ad', 2, 100);
@@ -75,6 +83,8 @@ export const emptySubMerchantForm = (): SubMerchantForm => ({
   contactSurname: '',
   identityNumber: '',
   platformFee: '0',
+  accountHolderName: '',
+  provider: '',
 });
 
 /** Dogrulanmis formu API istegine cevirir: tipe ait olmayan alanlar gonderilmez. */
@@ -89,6 +99,8 @@ export function toSubMerchantInput(v: SubMerchantForm): SubMerchantInput {
     address: v.address.trim(),
     iban: normalizeIban(v.iban) ?? v.iban.trim(),
     platformFeeBasisPoints: parsePercentToBasisPoints(v.platformFee || '0') ?? 0,
+    ...(opt(v.accountHolderName) ? { accountHolderName: opt(v.accountHolderName) } : {}),
+    ...(opt(v.provider) ? { provider: opt(v.provider) } : {}),
     ...(personal
       ? { contactName: opt(v.contactName), contactSurname: opt(v.contactSurname), identityNumber: opt(v.identityNumber) }
       : { taxOffice: opt(v.taxOffice), taxNumber: opt(v.taxNumber), legalCompanyTitle: opt(v.legalCompanyTitle) }),

@@ -209,7 +209,9 @@ describe('platform komisyon faturasi hesabi', () => {
   it('manual saglayici numara ister; ayarlar dogrulanir', async () => {
     await expect(manualInvoiceProvider.issue({} as never, {})).rejects.toThrow(/invoiceNumber/);
     expect(await manualInvoiceProvider.issue({} as never, { invoiceNumber: ' ABC2026000000001 ' })).toEqual({ invoiceNumber: 'ABC2026000000001' });
-    expect(loadInvoiceSettings({})).toEqual({ mode: 'monthly', vatRateBasisPoints: 2000, vatMode: 'exclusive' });
+    // Karar (21.11.2026): kesilen platform payi KDV dahil.
+    expect(loadInvoiceSettings({})).toEqual({ mode: 'monthly', vatRateBasisPoints: 2000, vatMode: 'inclusive' });
+    expect(loadInvoiceSettings({ PLATFORM_INVOICE_VAT_MODE: 'exclusive' }).vatMode).toBe('exclusive');
     expect(() => loadInvoiceSettings({ PLATFORM_INVOICE_MODE: 'yearly' })).toThrow(/PLATFORM_INVOICE_MODE/);
     expect(() => loadInvoiceSettings({ PLATFORM_INVOICE_VAT_BPS: '20.5' })).toThrow(/VAT_BPS/);
     expect(() => loadInvoiceSettings({ PLATFORM_INVOICE_VAT_MODE: 'x' })).toThrow(/VAT_MODE/);

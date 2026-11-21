@@ -8,10 +8,15 @@ import { apiClient } from './client';
  *   Yonetici  : GET  /api/finance/online-payments?status&limit&cursor   GET .../account
  *   Platform  : GET  /api/admin/payments/apartments
  *               GET|POST|PATCH /api/admin/payments/apartments/:apartmentId/account
+ *               GET|PUT /api/admin/payments/apartments/:apartmentId/settings      (P5: saglayici secimi)
  *               GET  /api/admin/payments/review
  *               GET  /api/admin/payments/apartments/:apartmentId/intents/:intentId/check
  *               POST /api/admin/payments/apartments/:apartmentId/intents/:intentId/resolve
- * Kart verisi bu uygulamaya hic gelmez: odeme saglayicinin (iyzico) sayfasinda yapilir.
+ *               GET  /api/admin/payments/settlements | POST .../intents/:intentId/release     (P5)
+ *               GET  /api/admin/payments/payouts     | POST .../payouts/:transferId/resend    (P5)
+ *               GET  /api/admin/payments/invoices    | POST .../invoices/draft|:id/issue|:id/cancel (P5)
+ * Kart verisi bu uygulamaya hic gelmez: odeme saglayicinin (iyzico / PayTR) sayfasinda yapilir.
+ * Tam IBAN yalnizca platform formundan API'ye gider (KMS ile sifrelenir); hicbir yanitta donmez.
  */
 
 const kurus = z.number().int();
@@ -143,14 +148,27 @@ export type AccountSummary = z.infer<typeof accountSummarySchema>;
 
 // ----- Platform -----
 
+const invoiceRecipientSchema = z.object({ title: z.string(), taxNumber: z.string(), taxOffice: z.string() });
+export type InvoiceRecipient = z.infer<typeof invoiceRecipientSchema>;
+
 export const paymentAccountSchema = z.object({
   apartmentId: z.string(),
   provider: z.string(),
   subMerchantKey: z.string(),
   subMerchantType: z.enum(SUB_MERCHANT_TYPES),
   ibanMasked: z.string().optional(),
+  /** P4: aktarim alicisi (IBAN + ad) KMS ile sifreli kayitli mi (PayTR transferi icin zorunlu). */
+  payeeOnFile: z.boolean().optional(),
   status: z.enum(['active', 'disabled']),
   platformFeeBasisPoints: z.number().int(),
+  /** Hesaba ozel POS orani / sabit ucret; yoksa ortam varsayilani. */
+  posRateBasisPoints: z.number().int().optional(),
+  posFixedFeeKurus: kurus.optional(),
+  effectiveFees: z
+    .object({ platformBasisPoints: z.number().int(), posRateBasisPoints: z.number().int(), posFixedFeeKurus: kurus })
+    .optional(),
+  /** Platform komisyon faturasinin muhatabi (VKN). Yoksa fatura taslagi NEEDS_RECIPIENT olur. */
+  invoiceRecipient: invoiceRecipientSchema.optional(),
   createdAt: z.string(),
   createdBy: z.string(),
   updatedAt: z.string(),
@@ -159,9 +177,15 @@ export const paymentAccountSchema = z.object({
 });
 export type PaymentAccount = z.infer<typeof paymentAccountSchema>;
 
+const providerInfoSchema = z.object({ name: z.string(), sandbox: z.boolean(), capabilities: z.record(z.string(), z.unknown()).optional() });
+export type ProviderInfo = z.infer<typeof providerInfoSchema>;
+
 export const platformApartmentsSchema = z.object({
+  /** Ortam varsayilan saglayicisi (yoksa null: online odeme kapali). */
   provider: z.string().nullable(),
   sandbox: z.boolean().nullable(),
+  /** Bu ortamda acik saglayicilar. */
+  providers: z.array(providerInfoSchema).default([]),
   items: z.array(
     z.object({
       apartmentId: z.string(),
@@ -169,6 +193,9 @@ export const platformApartmentsSchema = z.object({
       city: z.string(),
       district: z.string(),
       siteStatus: z.string(),
+      /** Apartman tercihi; null = ortam varsayilani. */
+      paymentProvider: z.string().nullable().default(null),
+      effectiveProvider: z.string().nullable().default(null),
       account: paymentAccountSchema.nullable(),
     }),
   ),
@@ -189,9 +216,152 @@ export type SubMerchantInput = {
   contactSurname?: string;
   identityNumber?: string;
   platformFeeBasisPoints: number;
+  /** Banka hesabindaki ad/unvan (PayTR aktarim alicisi); verilmezse unvan / ad soyad. */
+  accountHolderName?: string;
+  /** Saglayici (verilmezse apartmanin cozumlenen saglayicisi). */
+  provider?: string;
+  posRateBasisPoints?: number;
+  posFixedFeeKurus?: number;
+  invoiceRecipient?: InvoiceRecipient | null;
 };
 
-export type AccountPatch = { status?: 'active' | 'disabled'; platformFeeBasisPoints?: number };
+export type AccountPatch = {
+  provider?: string;
+  status?: 'active' | 'disabled';
+  platformFeeBasisPoints?: number;
+  /** null: ortam varsayilanina don. */
+  posRateBasisPoints?: number | null;
+  posFixedFeeKurus?: number | null;
+  /** IBAN ve hesap sahibi adi birlikte gonderilir (sifreli alici yeniden olusturulur). */
+  iban?: string;
+  accountHolderName?: string;
+  invoiceRecipient?: InvoiceRecipient | null;
+};
+
+// ----- Platform: saglayici secimi (P5) -----
+
+export const paymentSettingsSchema = z.object({
+  apartmentId: z.string(),
+  paymentProvider: z.string().nullable(),
+  defaultProvider: z.string().nullable(),
+  effectiveProvider: z.string().nullable(),
+  source: z.string().optional(),
+  available: z.array(providerInfoSchema),
+  version: z.number().int(),
+  updatedAt: z.string().optional(),
+  updatedBy: z.string().optional(),
+});
+export type PaymentSettings = z.infer<typeof paymentSettingsSchema>;
+
+// ----- Platform: aktarimlar (P5) -----
+
+export const PAYOUT_STATUSES = ['SENT', 'SETTLED', 'RETURNED', 'RESEND_PENDING', 'RESEND_SENT', 'RESENT', 'RESEND_FAILED'] as const;
+export type PayoutStatus = (typeof PAYOUT_STATUSES)[number];
+
+const errorInfo = z.object({ code: z.string(), message: z.string(), at: z.string() });
+
+export const payoutSchema = z.object({
+  apartmentId: z.string(),
+  apartmentName: z.string().nullable().optional(),
+  provider: z.string(),
+  intentId: z.string(),
+  itemId: z.string(),
+  transferId: z.string(),
+  providerPaymentId: z.string(),
+  amount: kurus,
+  grossAmount: kurus,
+  ibanMasked: z.string(),
+  status: z.enum(PAYOUT_STATUSES),
+  sentAt: z.string(),
+  providerReference: z.string().optional(),
+  settledAt: z.string().optional(),
+  returned: z.object({ refNo: z.string(), detectedAt: z.string(), returnedOn: z.string().optional(), amount: kurus }).optional(),
+  resendCount: z.number().int().optional(),
+  resend: z
+    .object({
+      resendId: z.string(),
+      requestedAt: z.string(),
+      requestedBy: z.string(),
+      note: z.string(),
+      ibanMasked: z.string(),
+      attempts: z.number().int(),
+      sentAt: z.string().optional(),
+      completedAt: z.string().optional(),
+      error: errorInfo.optional(),
+    })
+    .optional(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+  version: z.number().int(),
+});
+export type Payout = z.infer<typeof payoutSchema>;
+const payoutListSchema = z.object({ items: z.array(payoutSchema) });
+
+export type ResendInput = { note: string; expectedVersion: number; iban?: string; accountHolderName?: string };
+
+export const settlementSchema = z.object({
+  apartmentId: z.string(),
+  apartmentName: z.string().nullable(),
+  intentId: z.string(),
+  unitId: z.string(),
+  provider: z.string(),
+  amount: kurus,
+  transferAmount: kurus,
+  paidAt: z.string().optional(),
+  settlementStatus: z.enum(['pending', 'approved', 'failed']),
+  approvals: z.array(
+    z.object({
+      itemId: z.string(),
+      status: z.string(),
+      attempts: z.number().int(),
+      releaseAfter: z.string().optional(),
+      transferId: z.string().optional(),
+      error: errorInfo.optional(),
+    }),
+  ),
+  version: z.number().int(),
+});
+export type Settlement = z.infer<typeof settlementSchema>;
+const settlementListSchema = z.object({ items: z.array(settlementSchema) });
+
+// ----- Platform: komisyon faturalari (P5) -----
+
+export const INVOICE_STATUSES = ['DRAFT', 'NEEDS_RECIPIENT', 'ISSUED', 'CANCELLED'] as const;
+export type InvoiceStatus = (typeof INVOICE_STATUSES)[number];
+
+export const platformInvoiceSchema = z.object({
+  invoiceId: z.string(),
+  apartmentId: z.string(),
+  apartmentName: z.string().nullable().optional(),
+  mode: z.enum(['monthly', 'per_payment']),
+  period: z.string(),
+  status: z.enum(INVOICE_STATUSES),
+  recipient: invoiceRecipientSchema.optional(),
+  lines: z.array(z.object({ intentId: z.string(), paidAt: z.string().optional(), amount: kurus, platformFee: kurus })),
+  netAmount: kurus,
+  vatRateBasisPoints: z.number().int(),
+  vatMode: z.enum(['exclusive', 'inclusive']),
+  vatAmount: kurus,
+  totalAmount: kurus,
+  invoiceProvider: z.string(),
+  invoiceNumber: z.string().optional(),
+  issuedAt: z.string().optional(),
+  issuedBy: z.string().optional(),
+  cancelledAt: z.string().optional(),
+  cancelReason: z.string().optional(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+  version: z.number().int(),
+});
+export type PlatformInvoice = z.infer<typeof platformInvoiceSchema>;
+
+const invoicePeriodSchema = z.object({
+  period: z.string(),
+  items: z.array(platformInvoiceSchema),
+  totals: z.object({ net: kurus, vat: kurus, total: kurus }),
+});
+export type InvoicePeriod = z.infer<typeof invoicePeriodSchema>;
+const draftResultSchema = z.object({}).passthrough();
 
 // ----- Platform: inceleme sonuclandirma -----
 
@@ -285,5 +455,36 @@ export const paymentsApi = {
   updateAccount: (apartmentId: string, patch: AccountPatch) =>
     apiClient.patch(`/api/admin/payments/apartments/${encodeURIComponent(apartmentId)}/account`, patch, {
       schema: paymentAccountSchema,
+    }),
+
+  settings: (apartmentId: string, signal?: AbortSignal) =>
+    apiClient.get(`/api/admin/payments/apartments/${encodeURIComponent(apartmentId)}/settings`, { signal, schema: paymentSettingsSchema }),
+  updateSettings: (apartmentId: string, input: { paymentProvider: string | null; expectedVersion: number }) =>
+    apiClient.put(`/api/admin/payments/apartments/${encodeURIComponent(apartmentId)}/settings`, input, { schema: paymentSettingsSchema }),
+
+  payouts: (params: { status?: PayoutStatus | 'all'; days?: number }, signal?: AbortSignal) =>
+    apiClient.get('/api/admin/payments/payouts', { signal, query: params, schema: payoutListSchema }),
+  resendPayout: (apartmentId: string, transferId: string, input: ResendInput) =>
+    apiClient.post(`/api/admin/payments/apartments/${encodeURIComponent(apartmentId)}/payouts/${encodeURIComponent(transferId)}/resend`, input, {
+      schema: draftResultSchema,
+    }),
+  settlements: (params: { status?: 'pending' | 'failed'; days?: number }, signal?: AbortSignal) =>
+    apiClient.get('/api/admin/payments/settlements', { signal, query: params, schema: settlementListSchema }),
+  releaseSettlement: (apartmentId: string, intentId: string, input: { note: string; expectedVersion: number }) =>
+    apiClient.post(`/api/admin/payments/apartments/${encodeURIComponent(apartmentId)}/intents/${encodeURIComponent(intentId)}/release`, input, {
+      schema: draftResultSchema,
+    }),
+
+  invoices: (period: string, signal?: AbortSignal) =>
+    apiClient.get('/api/admin/payments/invoices', { signal, query: { period }, schema: invoicePeriodSchema }),
+  draftInvoices: (apartmentId: string, period: string) =>
+    apiClient.post(`/api/admin/payments/apartments/${encodeURIComponent(apartmentId)}/invoices/draft`, { period }, { schema: draftResultSchema }),
+  issueInvoice: (apartmentId: string, invoiceId: string, input: { expectedVersion: number; invoiceNumber: string }) =>
+    apiClient.post(`/api/admin/payments/apartments/${encodeURIComponent(apartmentId)}/invoices/${encodeURIComponent(invoiceId)}/issue`, input, {
+      schema: draftResultSchema,
+    }),
+  cancelInvoice: (apartmentId: string, invoiceId: string, input: { expectedVersion: number; reason: string }) =>
+    apiClient.post(`/api/admin/payments/apartments/${encodeURIComponent(apartmentId)}/invoices/${encodeURIComponent(invoiceId)}/cancel`, input, {
+      schema: draftResultSchema,
     }),
 };

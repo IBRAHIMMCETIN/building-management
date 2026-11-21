@@ -35,7 +35,8 @@ import type { PaymentProviderName } from './types.js';
  *                             gelistirmede bellek ici anahtar; production'da alici saklanamaz.
  *   PLATFORM_INVOICE_MODE     `monthly` (varsayilan) | `per_payment`
  *   PLATFORM_INVOICE_VAT_BPS  KDV orani, baz puan (varsayilan 2000 = %20)
- *   PLATFORM_INVOICE_VAT_MODE `exclusive` (varsayilan; platform payi + KDV) | `inclusive`
+ *   PLATFORM_INVOICE_VAT_MODE `inclusive` (varsayilan; kesilen platform payi KDV dahil, karar
+ *                             21.11.2026: apartmandan ayrica KDV alinmaz) | `exclusive`
  * Yanlis yapilandirma soguk baslangicta hata verir; sessizce calismaz. Anahtarin kendisi ilk
  * istekte okunur (soguk baslangicta Secrets Manager cagrisi yapilmaz).
  */
@@ -176,7 +177,8 @@ export function loadVault(env: NodeJS.ProcessEnv): PayeeVault | undefined {
 export function loadInvoiceSettings(env: NodeJS.ProcessEnv): InvoiceSettings {
   const mode = (env.PLATFORM_INVOICE_MODE ?? 'monthly').trim();
   if (mode !== 'monthly' && mode !== 'per_payment') throw new Error('PLATFORM_INVOICE_MODE monthly veya per_payment olmali');
-  const vatMode = (env.PLATFORM_INVOICE_VAT_MODE ?? 'exclusive').trim();
+  // Karar (21.11.2026): odeme aninda kesilen %0,75 KDV dahildir; fatura toplami = kesilen pay.
+  const vatMode = (env.PLATFORM_INVOICE_VAT_MODE ?? 'inclusive').trim();
   if (vatMode !== 'exclusive' && vatMode !== 'inclusive') throw new Error('PLATFORM_INVOICE_VAT_MODE exclusive veya inclusive olmali');
   const vat = Number(env.PLATFORM_INVOICE_VAT_BPS ?? 2000);
   if (!Number.isInteger(vat) || vat < 0 || vat > 5000) throw new Error('PLATFORM_INVOICE_VAT_BPS 0-5000 tam sayi olmali');

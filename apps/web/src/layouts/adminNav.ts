@@ -1,4 +1,4 @@
-import { Building, CreditCard, FileUp, LayoutDashboard, Megaphone, ScrollText, Settings, ShieldCheck, UserCog, Users, Wallet } from 'lucide-react';
+import { ArrowLeftRight, Building, CreditCard, FileText, FileUp, LayoutDashboard, Megaphone, ScrollText, Settings, ShieldCheck, UserCog, Users, Wallet } from 'lucide-react';
 import type { ComponentType } from 'react';
 import { AUDIT_ROLES, type Role, SECURITY_ROLES, isPlatformRole } from '@/types/roles';
 
@@ -26,7 +26,9 @@ export const APARTMENT_NAV: readonly NavItem[] = [
 /** Platform geneli menu: apartman ici ekran yoktur (API de platform rolune apartman verisi acmaz). */
 export const PLATFORM_NAV: readonly NavItem[] = [
   { to: '/admin/apartments', label: 'Apartmanlar', icon: Building },
-  { to: '/admin/payments', label: 'Ödeme Hesapları', icon: CreditCard },
+  { to: '/admin/payments', label: 'Ödeme Hesapları', icon: CreditCard, end: true },
+  { to: '/admin/payments/transfers', label: 'Aktarımlar', icon: ArrowLeftRight },
+  { to: '/admin/payments/invoices', label: 'Komisyon Faturaları', icon: FileText },
   { to: '/admin/users', label: 'Kullanıcılar', icon: UserCog },
   { to: '/admin/audit', label: 'Denetim Günlüğü', icon: ScrollText },
 ];
