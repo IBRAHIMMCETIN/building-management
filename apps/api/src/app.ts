@@ -48,6 +48,9 @@ import { portalRoutes } from './modules/portal/routes.js';
 import { residentRoutes } from './modules/residents/routes.js';
 import { type ResidentsService, createResidentsService } from './modules/residents/service.js';
 import { type PortalService, createPortalService } from './modules/portal/service.js';
+import { createOwnershipReader } from './modules/ownership/reader.js';
+import { ownershipRoutes } from './modules/ownership/routes.js';
+import { type OwnershipService, createOwnershipService } from './modules/ownership/service.js';
 
 export type AppConfig = {
   version: string;
@@ -86,6 +89,8 @@ export type AppConfig = {
   financeService?: FinanceService;
   /** Tasinmada cari kapama (testlerde sahte depolarla). */
   closureService?: ClosureService;
+  /** Finans 2.1: hisseli mulkiyet ve mulk/hisse devri (testlerde sahte depolarla). */
+  ownershipService?: OwnershipService;
   portalService?: PortalService;
   documentsService?: DocumentsService;
   importsService?: ImportsService;
@@ -160,7 +165,9 @@ export function createApp(config: AppConfig) {
   app.route('/api/sites', coreRoutes({ authenticate, service: coreService }));
   app.route('/api/admin/apartments', coreAdminRoutes({ authenticate, service: coreService }));
 
-  const portalService = config.portalService ?? createPortalService();
+  // Finans 2.1: mulkiyet sicili okuyucusu (split faturalama, portal paydas carisi, uyelik pay kurali).
+  const ownershipReader = createOwnershipReader();
+  const portalService = config.portalService ?? createPortalService({ ownership: ownershipReader });
   // Belgeler: makbuz yetkisi portal listesinden, fatura tasima finans gider kaydindan.
   const documentsService = config.documentsService ?? createDocumentsService({ portal: portalService });
   app.route('/api/documents', documentRoutes({ authenticate, service: documentsService }));
@@ -171,6 +178,7 @@ export function createApp(config: AppConfig) {
       attachments: { promote: documentsService.promoteInvoice },
       // Bos daire kurali: tahakkuk tarihinde oturan yoksa sakin gideri malike.
       memberships: membershipRepository,
+      ownership: ownershipReader,
     });
   // Online odeme (Adim 8b). Yonetici uclari finans rotalarindan, sakin uclari portal
   // rotalarindan ONCE baglanir (daha ozel yol); callback/webhook kimliksizdir.
@@ -206,12 +214,15 @@ export function createApp(config: AppConfig) {
   );
   // Faz B1: banka ekstresi aktarimi (ekstre yukleme, onizleme, satir aktarimi, sutun eslemesi).
   // Faz B2: eslestirme finans cekirdegini (postBatch) ve portal uyelik kurallarini kullanir.
-  const bankMatchService = config.bankMatchService ?? createBankMatchService({ finance: financeService, portal: portalService });
+  const bankMatchService = config.bankMatchService ?? createBankMatchService({ finance: financeService, portal: portalService, ownership: ownershipReader });
   app.route('/api/bank', bankRoutes({ authenticate, service: config.bankService ?? createBankService(), match: bankMatchService }));
   app.route('/api/payments', paymentCallbackRoutes({ service: paymentsService, payouts: payoutService, fake: fakePaymentProvider }));
   app.route('/api/admin/payments', paymentAdminRoutes({ authenticate, service: paymentsService, payouts: payoutService, invoices: invoiceService }));
 
-  const membershipService = config.membershipService ?? createMembershipService();
+  const membershipService = config.membershipService ?? createMembershipService({ ownership: ownershipReader });
+  // Finans 2.1: sahte finans servisiyle kurulan testlerde (ownershipService verilmemisse) baglanmaz.
+  const ownershipService = config.ownershipService ?? (config.financeService ? undefined : createOwnershipService({ finance: financeService }));
+  if (ownershipService) app.route('/api/ownership', ownershipRoutes({ authenticate, service: ownershipService }));
   app.route('/api/memberships', membershipRoutes({ authenticate, service: membershipService }));
   // Davet, uyelik kurallarini memberships servisinden alir (tek kaynak).
   const residentsService = config.residentsService ?? createResidentsService({ memberships: membershipService });

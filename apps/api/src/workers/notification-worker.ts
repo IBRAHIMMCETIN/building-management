@@ -91,6 +91,10 @@ function isCurrent(m: UnitMembership, day: IsoDate): boolean {
 
 const seesParty = (m: UnitMembership, party: LiableParty) => visibleParties(m).includes(party);
 
+/** Kalem bu uyeye mi? Paydasa ozel kalemde (`userId`, Finans 2.1) yalnizca o paydas. */
+const receives = (m: UnitMembership, item: { unitId: string; userId?: string }, party: LiableParty) =>
+  m.unitId === item.unitId && seesParty(m, party) && (!item.userId || m.userId === item.userId);
+
 /** Olaydan alici bazli bildirimleri uretir (ayni kullaniciya ayni olay icin tek bildirim). */
 export function buildNotifications(
   event: DomainEvent,
@@ -130,7 +134,7 @@ export function buildNotifications(
       if (p.mode === 'bulk' && p.batchId) break;
       for (const item of p.items) {
         for (const m of current) {
-          if (m.unitId === item.unitId && seesParty(m, item.liableParty ?? p.liableParty)) {
+          if (receives(m, item, item.liableParty ?? p.liableParty)) {
             add(m.userId, 'due_generated', {
               unitId: item.unitId,
               amount: item.amount,
@@ -147,7 +151,7 @@ export function buildNotifications(
       const perUser = new Map<string, NotificationLine[]>();
       for (const item of p.items) {
         for (const m of current) {
-          if (m.unitId === item.unitId && seesParty(m, item.liableParty)) {
+          if (receives(m, item, item.liableParty)) {
             const list = perUser.get(m.userId) ?? [];
             // Ayni kullanici ayni daireyi iki uyelikle gorse de kalem bir kez.
             if (!list.some((l) => l.unitId === item.unitId)) list.push({ unitId: item.unitId, amount: item.amount });
@@ -170,7 +174,7 @@ export function buildNotifications(
       const p = event.payload;
       for (const item of p.items) {
         for (const m of current) {
-          if (m.unitId === item.unitId && seesParty(m, item.liableParty)) {
+          if (receives(m, item, item.liableParty)) {
             add(m.userId, 'late_fee_posted', { unitId: item.unitId, amount: item.amount, period: p.period });
           }
         }
@@ -181,7 +185,7 @@ export function buildNotifications(
       const p = event.payload;
       for (const item of p.items) {
         for (const m of current) {
-          if (m.unitId === item.unitId && seesParty(m, item.liableParty)) {
+          if (receives(m, item, item.liableParty)) {
             add(m.userId, `dues_reminder_${item.kind}`, { unitId: item.unitId, amount: item.amount, dueDate: item.dueDate });
           }
         }

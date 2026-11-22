@@ -50,9 +50,14 @@ import {
   type PaymentMethod,
   type Transaction,
   type TransactionLine,
+  coOwnerReceivableId,
+  isCoOwnerReceivableId,
+  isPrimaryReceivableId,
   mainReceivableId,
 } from './types.js';
 import type { MembershipRepository } from '../memberships/repository.js';
+import type { OwnershipReader } from '../ownership/reader.js';
+import { splitAmountByShares } from '../ownership/shares.js';
 import { type PortalRepository, portalRepository } from '../portal/repository.js';
 import { type PayableSummary, payableSummary } from './payables.js';
 import { type Occupancy, VACANT_SUFFIX, liablePartyFor, occupancyOn } from './occupancy.js';
@@ -155,6 +160,11 @@ export type FinanceContext = { apartmentId: string; userId: string };
 /** Online odemede alt cari basina tahsilat. `amount` alt cariye alacak yazilan toplamdir. */
 export type OnlinePaymentAllocation = {
   liableParty: LiableParty;
+  /**
+   * Finans 2.1: tahsilatin yazilacagi alt cari (ornegin `split` dairede paydasin alt carisi).
+   * Verilmezse tarafin ana carisi. Ayni taraf bir niyette bir kez gecer.
+   */
+  accountId?: string;
   amount: Kurus;
   /** `amount`'un icindeki, odeme aninda kesinlestirilen gecikme tazminati (0 olabilir). */
   lateFee: Kurus;
@@ -278,6 +288,12 @@ export type FinanceServiceDeps = {
    * uygulanmaz (testler / eski cagiranlar); uygulama (app.ts) uyelik deposunu verir.
    */
   memberships?: Pick<MembershipRepository, 'list'>;
+  /**
+   * Finans 2.1: hisseli mulkiyet. `split` faturalamali dairede malik tarafina yazilan tahakkuk
+   * tahakkuk tarihindeki sicil paylariyla paydas alt carilerine bolunur. Verilmezse (testler /
+   * eski cagiranlar) malik tahakkuku daima ortak malik carisine yazilir.
+   */
+  ownership?: Pick<OwnershipReader, 'ownerSplitOn'>;
   /** Faz B3.5: tedarikci acik kalemleri icin hesap hareketleri (varsayilan portal deposu). */
   ledger: Pick<PortalRepository, 'listLedgerEntries' | 'getTransactions'>;
   attachments?: {
@@ -490,6 +506,18 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
     });
   }
 
+  /** Finans 2.1: `split` dairede paydasin malik alt carisi. */
+  function coOwnerReceivable(ctx: FinanceContext, unitId: string, userId: string): Account {
+    return newAccount(ctx, {
+      accountId: coOwnerReceivableId(unitId, userId),
+      type: 'receivable',
+      name: `Daire ${unitId} - Kat Maliki (paydaş)`,
+      unitId,
+      liableParty: 'owner',
+      coOwner: { userId },
+    });
+  }
+
   async function requireUnit(ctx: FinanceContext, unitId: string): Promise<Unit> {
     const unit = await deps.core.getUnit(ctx.apartmentId, unitId);
     if (!unit) throw new FinanceError('not_found', 'Bagimsiz bolum bulunamadi');
@@ -608,7 +636,40 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
   // -------------------------------------------------------------------------
 
   /** liableParty: gercekte borclanan taraf; vacant: bos daire kuraliyla malike yazildi. */
-  type DuesResult = { transaction: Transaction; replayed: boolean; liableParty: LiableParty; vacant: boolean };
+  /** coOwnerParts: `split` bolumde paydas basina tutar (Finans 2.1; bildirim kalemleri). */
+  type DuesResult = {
+    transaction: Transaction;
+    replayed: boolean;
+    liableParty: LiableParty;
+    vacant: boolean;
+    coOwnerParts?: { userId: string; amount: Kurus }[];
+  };
+
+  /** Bolunmus tahakkukun paydas kalemleri (islem satirlarindan; replay'de de ayni sonuc). */
+  async function coOwnerPartsOf(ctx: FinanceContext, tx: Transaction): Promise<{ userId: string; amount: Kurus }[] | undefined> {
+    const lines = tx.lines.filter((l) => l.side === 'debit' && l.unitId && isCoOwnerReceivableId(l.accountId, l.unitId));
+    if (lines.length === 0) return undefined;
+    const parts: { userId: string; amount: Kurus }[] = [];
+    for (const l of lines) {
+      const acc = await repo.getAccount(ctx.apartmentId, l.accountId);
+      if (acc?.coOwner) parts.push({ userId: acc.coOwner.userId, amount: l.amount });
+    }
+    return parts.length ? parts : undefined;
+  }
+
+  /** DUE_GENERATED olayinda bolunmus kalemi paydas kalemlerine acar (her paydas kendi payini gorur). */
+  function withCoOwnerItems(ev: NewEvent, unitId: string, parts: { userId: string; amount: Kurus }[] | undefined): NewEvent {
+    if (!parts || ev.type !== 'DUE_GENERATED') return ev;
+    return {
+      ...ev,
+      payload: {
+        ...ev.payload,
+        items: ev.payload.items.flatMap((it) =>
+          it.unitId === unitId ? parts.map((x) => ({ ...it, amount: x.amount, userId: x.userId })) : [it],
+        ),
+      },
+    };
+  }
 
   /**
    * Bos daire kurali: `date` gununde dairelerin doluluk durumu. Uyelik deposu verilmemisse
@@ -645,13 +706,33 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
   ): Promise<DuesResult> {
     const replayed = async (transactionId: string): Promise<DuesResult> => {
       const t = await loadTx(ctx, transactionId);
-      return { transaction: t, replayed: true, liableParty: chargedParty(t, p.party), vacant: t.vacant === true };
+      const parts = await coOwnerPartsOf(ctx, t);
+      return { transaction: t, replayed: true, liableParty: chargedParty(t, p.party), vacant: t.vacant === true, ...(parts ? { coOwnerParts: parts } : {}) };
     };
     const replay = await replayOf(ctx, p.idemId, p.fp);
     if (replay) return replayed(replay.transactionId);
 
-    const recv = receivable(ctx, p.unitId, p.party);
-    await repo.ensureAccounts([recv]);
+    // Finans 2.1: `split` dairede malik tahakkuku sicil paylariyla paydas alt carilerine bolunur
+    // (en buyuk kalan; kurus kaybi yok). Tek islem, paydas basina bir borc satiri.
+    const owners = p.party === 'owner' && deps.ownership ? await deps.ownership.ownerSplitOn(ctx.apartmentId, p.unitId, p.date) : undefined;
+    let debitLines: TransactionLine[];
+    let coOwnerParts: { userId: string; amount: Kurus }[] | undefined;
+    if (owners && owners.length > 0) {
+      const parts = splitAmountByShares(p.amount, owners).filter((x) => x.amount > 0);
+      coOwnerParts = parts.map((x) => ({ userId: x.userId, amount: toKurus(x.amount) }));
+      await repo.ensureAccounts(parts.map((x) => coOwnerReceivable(ctx, p.unitId, x.userId)));
+      debitLines = parts.map((x) => ({
+        accountId: coOwnerReceivableId(p.unitId, x.userId),
+        side: 'debit' as const,
+        amount: toKurus(x.amount),
+        unitId: p.unitId,
+        liableParty: 'owner' as const,
+      }));
+    } else {
+      const recv = receivable(ctx, p.unitId, p.party);
+      await repo.ensureAccounts([recv]);
+      debitLines = [{ accountId: recv.accountId, side: 'debit', amount: p.amount, unitId: p.unitId, liableParty: p.party }];
+    }
     const tx = buildTx(ctx, {
       kind: 'dues_charge',
       date: p.date,
@@ -659,18 +740,15 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
       description: p.vacant ? `${p.description}${VACANT_SUFFIX}` : p.description,
       batchId: p.batchId,
       ...(p.vacant ? { vacant: true as const } : {}),
-      lines: [
-        { accountId: recv.accountId, side: 'debit', amount: p.amount, unitId: p.unitId, liableParty: p.party },
-        { accountId: SYSTEM_ACCOUNTS.incomeDues, side: 'credit', amount: p.amount },
-      ],
+      lines: [...debitLines, { accountId: SYSTEM_ACCOUNTS.incomeDues, side: 'credit', amount: p.amount }],
     });
     try {
       await repo.postTransaction({
         transaction: tx,
         idempotency: { id: p.idemId, fingerprint: p.fp },
-        ...(p.event ? { outbox: [toEvent(p.event(tx))] } : {}),
+        ...(p.event ? { outbox: [toEvent(withCoOwnerItems(p.event(tx), p.unitId, coOwnerParts))] } : {}),
       });
-      return { transaction: tx, replayed: false, liableParty: p.party, vacant: p.vacant === true };
+      return { transaction: tx, replayed: false, liableParty: p.party, vacant: p.vacant === true, ...(coOwnerParts ? { coOwnerParts } : {}) };
     } catch (err) {
       if (err instanceof LedgerConflictError && err.reason === 'duplicate') {
         const again = await replayOf(ctx, p.idemId, p.fp);
@@ -851,7 +929,15 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
     await ensureSystemAccounts(ctx);
 
     const batchId = `${compact(date)}-${key}`;
-    const results: { unitId: string; amount: Kurus; transactionId: string; replayed: boolean; liableParty: LiableParty; vacant: boolean }[] = [];
+    const results: {
+      unitId: string;
+      amount: Kurus;
+      transactionId: string;
+      replayed: boolean;
+      liableParty: LiableParty;
+      vacant: boolean;
+      coOwnerParts?: { userId: string; amount: Kurus }[];
+    }[] = [];
     for (const [i, unit] of units.entries()) {
       const amount = shares[i] ?? 0;
       if (amount < 1) continue; // cok kucuk pay: 0 kurus borc yazilmaz
@@ -895,6 +981,7 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
         replayed: r.replayed,
         liableParty: r.liableParty,
         vacant: r.vacant,
+        ...(r.coOwnerParts ? { coOwnerParts: r.coOwnerParts } : {}),
       });
     }
 
@@ -921,7 +1008,12 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
               description,
               liableParty: party,
               totalAmount: toKurus(chunk.reduce((sum, r) => sum + r.amount, 0)),
-              items: chunk.map(({ unitId, amount, transactionId, liableParty }) => ({ unitId, amount, transactionId, liableParty })),
+              // Finans 2.1: bolunmus kalem paydas basina (her paydas ozetinde kendi payini gorur).
+              items: chunk.flatMap(({ unitId, amount, transactionId, liableParty, coOwnerParts }) =>
+                coOwnerParts?.length
+                  ? coOwnerParts.map((x) => ({ unitId, amount: x.amount, transactionId, liableParty, userId: x.userId }))
+                  : [{ unitId, amount, transactionId, liableParty }],
+              ),
             },
           }),
         );
@@ -1022,7 +1114,11 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
       const tx = buildTx(ctx, {
         kind: 'payment',
         date: paidAt,
-        description: former ? `Tahsilat - Daire ${unit.number} (ayrılan ${party === 'owner' ? 'malik' : 'sakin'})` : `Tahsilat - Daire ${unit.number}`,
+        description: former
+          ? former.coOwner
+            ? `Tahsilat - Daire ${unit.number} (paydaş)`
+            : `Tahsilat - Daire ${unit.number} (ayrılan ${party === 'owner' ? 'malik' : 'sakin'})`
+          : `Tahsilat - Daire ${unit.number}`,
         lines: [
           { accountId: depositAccountId, side: 'debit', amount },
           { accountId: recv.accountId, side: 'credit', amount, unitId, liableParty: party },
@@ -1130,6 +1226,13 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
       if (!Number.isSafeInteger(a.lateFee) || a.lateFee < 0 || a.lateFee > a.amount) {
         throw new ValidationError('allocations.lateFee 0 ile amount arasinda olmali', 'allocations');
       }
+      // Finans 2.1: hedef alt cari yalnizca dairenin guncel (ana veya paydas) carisi olabilir.
+      if (a.accountId !== undefined) {
+        assertId(a.accountId, 'allocations.accountId');
+        if (!isPrimaryReceivableId(a.accountId, p.unitId, a.liableParty)) {
+          throw new ValidationError('allocations.accountId bu dairenin guncel alt carisi olmali', 'allocations');
+        }
+      }
     }
 
     const commission = p.commission ?? 0;
@@ -1190,7 +1293,8 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
             }),
           ]
         : []),
-      ...p.allocations.map((a) => receivable(ctx, p.unitId, a.liableParty)),
+      // Paydas alt carisi tahakkukla acilmistir; yalnizca ana cariler burada garanti edilir.
+      ...p.allocations.filter((a) => !a.accountId || a.accountId === receivableId(p.unitId, a.liableParty)).map((a) => receivable(ctx, p.unitId, a.liableParty)),
     ]);
 
     const ordered = [...p.allocations].sort((a, b) => a.liableParty.localeCompare(b.liableParty));
@@ -1199,7 +1303,7 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
       const transactions: Transaction[] = [];
       const payments: Payment[] = [];
       for (const [i, a] of ordered.entries()) {
-        const recvId = receivableId(p.unitId, a.liableParty);
+        const recvId = a.accountId ?? receivableId(p.unitId, a.liableParty);
         if (a.lateFee > 0) {
           const fee = buildTx(ctx, {
             kind: 'late_fee',
@@ -1246,6 +1350,7 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
           intentId: p.intentId,
           provider: p.provider,
           providerPaymentId: p.providerPaymentId,
+          ...(recvId !== receivableId(p.unitId, a.liableParty) ? { receivableAccountId: recvId } : {}),
           createdAt: tx.createdAt,
           createdBy: ctx.userId,
         });
@@ -1505,14 +1610,16 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
     const accounts = (await repo.listAccounts(ctx.apartmentId)).filter(
       (a) => a.type === 'receivable' && a.unitId === unitId,
     );
-    // Daire bakiyesi ana carilerden olusur; ayrilan sakin/malik carileri ayri gosterilir.
-    const main = (a: Account) => a.liableParty !== undefined && a.accountId === mainReceivableId(unitId, a.liableParty);
+    // Daire bakiyesi guncel carilerden (ana + `split` dairede paydas alt carileri) olusur; ayrilan
+    // sakin/malik carileri ayri gosterilir.
+    const main = (a: Account) => a.liableParty !== undefined && isPrimaryReceivableId(a.accountId, unitId, a.liableParty);
     const of = (party: LiableParty) =>
       accounts.filter((a) => main(a) && a.liableParty === party).reduce((s, a) => s + a.balance, 0);
     const owner = of('owner');
     const occupant = of('occupant');
     const net = owner + occupant;
     const formerAccounts = accounts.filter((a) => !main(a));
+    const coOwnerAccounts = accounts.filter((a) => main(a) && a.coOwner);
     const split = (n: number) => ({
       balance: toKurus(n),
       debt: toKurus(Math.max(n, 0)),
@@ -1524,6 +1631,13 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
       owner: split(owner),
       occupant: split(occupant),
       ...split(net),
+      ...(coOwnerAccounts.length
+        ? {
+            coOwners: coOwnerAccounts
+              .map((a) => ({ accountId: a.accountId, userId: a.coOwner?.userId as string, name: a.name, ...split(a.balance) }))
+              .sort((a, b) => a.userId.localeCompare(b.userId)),
+          }
+        : {}),
       ...(formerAccounts.length
         ? {
             former: formerAccounts
@@ -1686,7 +1800,15 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
               groupKey: unitId,
               payload: {
                 period: p.period,
-                items: [{ unitId, liableParty: party, amount: toKurus(amount), transactionId: tx.transactionId }],
+                items: [
+                  {
+                    unitId,
+                    liableParty: party,
+                    amount: toKurus(amount),
+                    transactionId: tx.transactionId,
+                    ...(account.coOwner ? { userId: account.coOwner.userId } : {}),
+                  },
+                ],
               },
             }),
           ],
@@ -1821,14 +1943,15 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
   async function dueReminders(apartmentId: string, date: IsoDate) {
     if (!isIsoDate(date)) throw new ValidationError('date YYYY-MM-DD olmali', 'date');
     const [accounts, txPage] = await Promise.all([repo.listAccounts(apartmentId), repo.listTransactions(apartmentId)]);
-    // Yalnizca daire ana carileri: ayrilan sakin carilerinin sahibine portal/bildirim erisimi yok
-    // (ilk surum); hatirlatma dairedeki bugunku sakine gitmemeli.
-    const receivables = new Set(
-      accounts
-        .filter((a) => a.type === 'receivable' && a.unitId && a.liableParty && a.accountId === mainReceivableId(a.unitId, a.liableParty))
-        .map((a) => a.accountId),
+    // Daire guncel carileri: ana cariler ve (Finans 2.1) paydas alt carileri. Ayrilan sakin
+    // carilerinin sahibine portal/bildirim erisimi yok; hatirlatma bugunku sakine gitmemeli.
+    const current = accounts.filter(
+      (a) => a.type === 'receivable' && a.unitId && a.liableParty && isPrimaryReceivableId(a.accountId, a.unitId, a.liableParty),
     );
-    return buildDueReminders(txPage.items, receivables, date);
+    const receivables = new Set(current.map((a) => a.accountId));
+    // Paydas alt carisinin hatirlatmasi yalnizca o paydasa.
+    const holders = new Map(current.filter((a) => a.coOwner).map((a) => [a.accountId, (a.coOwner as { userId: string }).userId]));
+    return buildDueReminders(txPage.items, receivables, date, holders);
   }
 
   // -------------------------------------------------------------------------
@@ -1918,7 +2041,9 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
           kind: 'payment',
           date: p.paidAt,
           description: a.former
-            ? `Banka tahsilatı - Daire ${a.unitNumber} (ayrılan ${a.liableParty === 'owner' ? 'malik' : 'sakin'})`
+            ? isCoOwnerReceivableId(a.accountId, a.unitId)
+              ? `Banka tahsilatı - Daire ${a.unitNumber} (paydaş)`
+              : `Banka tahsilatı - Daire ${a.unitNumber} (ayrılan ${a.liableParty === 'owner' ? 'malik' : 'sakin'})`
             : `Banka tahsilatı - Daire ${a.unitNumber}`,
           reference: p.reference,
           lines: [

@@ -4,7 +4,8 @@ import { useEffect } from 'react';
 import { useForm } from 'react-hook-form';
 import { Alert, Button, Dialog, FormField, Input, Select } from '@/components/ui';
 import { useFormerAccounts } from '@/hooks/useClosures';
-import { useDuesStatus, useRecordPayment } from '@/hooks/useFinance';
+import { useDuesStatus, useFinanceAccounts, useRecordPayment } from '@/hooks/useFinance';
+import { usePeople } from '@/hooks/useUnits';
 import { useIdempotencyKey } from '@/hooks/useIdempotencyKey';
 import { ApiError, errorMessage } from '@/lib/api/errors';
 import { type LiableParty, PARTY_LABELS } from '@/lib/api/finance';
@@ -14,7 +15,7 @@ import { formatTRY, kurusToInput } from '@/lib/money';
 import { type PaymentForm, type PaymentValues, paymentSchema, todayIstanbul } from './schemas';
 import { useUnitOptions } from './useUnitOptions';
 
-/** accountId: ayrilan sakin/malik carisinden tahsilat (Ayrılan cariler ekranindan). */
+/** accountId: ayrilan sakin/malik carisinden veya (Finans 2.1) paydas carisinden tahsilat. */
 export type PaymentPreset = { unitId: string; liableParty?: LiableParty; accountId?: string; amount?: number };
 
 type Props = { open: boolean; onClose: () => void; preset?: PaymentPreset | null };
@@ -30,6 +31,9 @@ export function PaymentDialog({ open, onClose, preset }: Props) {
   const { options, isPending: unitsPending } = useUnitOptions();
   const dues = useDuesStatus();
   const former = useFormerAccounts(false, open);
+  // Finans 2.1: `split` dairelerde malik tahsilati paydasin kendi carisine.
+  const receivables = useFinanceAccounts('receivable');
+  const people = usePeople();
   const pay = useRecordPayment();
   const [idempotencyKey, renewKey] = useIdempotencyKey();
 
@@ -43,7 +47,10 @@ export function PaymentDialog({ open, onClose, preset }: Props) {
   // Ayrilan cariler: secili dairenin bakiyesi olanlari (+ on secilmis olan, bakiyesi sifirlansa da).
   const formerOptions = (former.data?.items ?? []).filter((a) => a.unitId === unitId);
   const selectedFormer = formerOptions.find((a) => a.accountId === accountId);
-  const partyBalance = accountId ? selectedFormer?.balance : unitDues ? unitDues[party].balance : undefined;
+  const coOwnerOptions = (receivables.data ?? []).filter((a) => a.coOwner && a.unitId === unitId);
+  const selectedCoOwner = coOwnerOptions.find((a) => a.accountId === accountId);
+  const personName = (userId: string) => people.data?.find((p) => p.userId === userId)?.fullName ?? 'Paydaş';
+  const partyBalance = accountId ? (selectedFormer?.balance ?? selectedCoOwner?.balance) : unitDues ? unitDues[party].balance : undefined;
 
   useEffect(() => {
     if (!open) return;
@@ -66,7 +73,8 @@ export function PaymentDialog({ open, onClose, preset }: Props) {
     try {
       // Ayrilan cari secildiyse borclu taraf o carinin tarafidir (API uyumsuzlugu 400 ile reddeder).
       const acc = v.accountId ? former.data?.items.find((a) => a.accountId === v.accountId) : undefined;
-      await pay.mutateAsync({ idempotencyKey, ...v, ...(acc ? { liableParty: acc.liableParty } : {}) });
+      const coOwner = v.accountId ? receivables.data?.find((a) => a.accountId === v.accountId && a.coOwner) : undefined;
+      await pay.mutateAsync({ idempotencyKey, ...v, ...(acc ? { liableParty: acc.liableParty } : coOwner ? { liableParty: 'owner' as const } : {}) });
     } catch (err) {
       if (applyApiFieldError(err, form.setError, FIELDS)) return;
       if (err instanceof ApiError && err.code === 'idempotency_conflict') renewKey();
@@ -81,10 +89,11 @@ export function PaymentDialog({ open, onClose, preset }: Props) {
       if (name === 'accountId' && v.accountId) {
         const acc = former.data?.items.find((a) => a.accountId === v.accountId);
         if (acc) form.setValue('liableParty', acc.liableParty);
+        if (receivables.data?.some((a) => a.accountId === v.accountId && a.coOwner)) form.setValue('liableParty', 'owner');
       }
     });
     return () => sub.unsubscribe();
-  }, [form, former.data]);
+  }, [form, former.data, receivables.data]);
 
   // Form degisirse (farkli tutar/daire) yeni bir islemdir: ayni anahtarla farkli icerik 409 olurdu.
   useEffect(() => {
@@ -148,21 +157,37 @@ export function PaymentDialog({ open, onClose, preset }: Props) {
             </FormField>
           </div>
 
-          {(formerOptions.length > 0 || accountId) && (
+          {(formerOptions.length > 0 || coOwnerOptions.length > 0 || accountId) && (
             <FormField
               label="Cari"
               error={errors.accountId?.message}
-              hint={accountId ? 'Tahsilat ayrılan kişinin carisine yazılır; yeni sakinin bakiyesini etkilemez.' : undefined}
+              hint={
+                selectedCoOwner
+                  ? 'Tahsilat paydaşın kendi carisine yazılır; diğer paydaşların bakiyesini etkilemez.'
+                  : accountId
+                    ? 'Tahsilat ayrılan kişinin carisine yazılır; yeni sakinin bakiyesini etkilemez.'
+                    : undefined
+              }
             >
               <Select {...form.register('accountId')}>
                 <option value="">Ana cari (güncel sakin / malik)</option>
+                {coOwnerOptions.length > 0 && (
+                  <optgroup label="Paydaş carileri">
+                    {coOwnerOptions.map((a) => (
+                      <option key={a.accountId} value={a.accountId}>
+                        {personName(a.coOwner?.userId ?? '')}
+                        {a.balance > 0 ? ` · ${formatTRY(a.balance)} borç` : ''}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
                 {formerOptions.map((a) => (
                   <option key={a.accountId} value={a.accountId}>
                     {a.name}
                     {a.balance > 0 ? ` · ${formatTRY(a.balance)} borç` : ''}
                   </option>
                 ))}
-                {accountId && !selectedFormer && <option value={accountId}>Ayrılan cari</option>}
+                {accountId && !selectedFormer && !selectedCoOwner && <option value={accountId}>Seçili cari</option>}
               </Select>
             </FormField>
           )}

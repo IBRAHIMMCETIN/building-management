@@ -9,6 +9,7 @@
  *    turune gore degisir (bkz. NORMAL_SIDE). Sakin carisinde pozitif = borc, negatif = avans.
  *  - Tek bir Transaction'in borc ve alacak toplami her zaman esittir.
  */
+import { createHash } from 'node:crypto';
 import type {
   AuditFields,
   EntityStatus,
@@ -63,10 +64,32 @@ export type Account = TableKeys &
     /** Ayrilan sakin/malik carisi: hangi kapamayla acildi ve kime ait. */
     closureId?: string;
     holder?: { userIds: string[]; periodStart?: IsoDate; periodEnd: IsoDate };
+    /**
+     * Finans 2.1: hisseli mulkiyette `split` faturalamada paydasin kendi malik alt carisi
+     * (`recv-<unit>-owner-h<etiket>`). Tahakkuk sicil paylariyla bolunur.
+     */
+    coOwner?: { userId: string };
   };
 
 /** Daire + taraf ana alt carisi (tahakkuklarin hedefi). Ayrilan carileri `-c<kapamaId>` ekini tasir. */
 export const mainReceivableId = (unitId: string, party: LiableParty) => `recv-${unitId}-${party}`;
+
+/** Paydas etiketi: kullanici kimliginin kisa ozeti (hesap kimligi 64 karakteri asmasin; deterministik). */
+export const coOwnerTag = (userId: string) => createHash('sha256').update(userId).digest('hex').slice(0, 10);
+
+/** Finans 2.1: `split` faturalamada paydasin malik alt carisi. */
+export const coOwnerReceivableId = (unitId: string, userId: string) => `recv-${unitId}-owner-h${coOwnerTag(userId)}`;
+
+/** Paydas alt carisi mi? (ayrilan carileri `-c<kapama>` ekini tasir; paydas alt carisi `-h<etiket>`.) */
+export const isCoOwnerReceivableId = (accountId: string, unitId: string) =>
+  accountId.startsWith(`recv-${unitId}-owner-h`) && !accountId.includes('-c', `recv-${unitId}-owner-h`.length);
+
+/**
+ * Dairenin "guncel" alt carisi mi: ana cari (`recv-<unit>-<taraf>`) veya paydas alt carisi.
+ * Ayrilan sakin/malik carileri (kapama ile acilan) haric.
+ */
+export const isPrimaryReceivableId = (accountId: string, unitId: string, party: LiableParty) =>
+  accountId === mainReceivableId(unitId, party) || (party === 'owner' && isCoOwnerReceivableId(accountId, unitId));
 
 /**
  * late_fee: kistelyevm gecikme tazminati kesinlestirmesi (ayin 1'inde, alt cari basina tek

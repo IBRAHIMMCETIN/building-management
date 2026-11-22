@@ -6,7 +6,7 @@
 import type { IsoDate, LiableParty, Unit } from '../core/types.js';
 import { cancelledTransactions, unpostedLateFee } from './lateFee.js';
 import { type AccountLine, allocate, feeInputsOf, linesOfAccount, readSubledger } from './subledger.js';
-import { type Account, type Transaction, mainReceivableId } from './types.js';
+import { type Account, type Transaction, isPrimaryReceivableId } from './types.js';
 
 // ---------------------------------------------------------------------------
 // Islem siniflandirma (hareket tablosu)
@@ -198,7 +198,8 @@ export function buildDuesStatus(
         meta.set(line.accountId, {
           unitId: line.unitId,
           party: line.liableParty,
-          main: line.accountId === mainReceivableId(line.unitId, line.liableParty),
+          // Guncel cari: ana cari veya (`split` dairede) paydas alt carisi.
+          main: isPrimaryReceivableId(line.accountId, line.unitId, line.liableParty),
         });
       }
       const list = linesByAccount.get(line.accountId) ?? [];
@@ -245,7 +246,8 @@ export function buildDuesStatus(
     };
     const s = slot(m.unitId);
     if (m.main) {
-      s[m.party] = dues;
+      // Paydas alt carileri (Finans 2.1) dairenin malik tarafinda toplanir.
+      s[m.party] = add(s[m.party], dues);
       for (const c of sub.credits) {
         if (c.txKind === 'payment' && (!s.lastPaymentDate || c.date > s.lastPaymentDate)) s.lastPaymentDate = c.date;
       }
@@ -333,7 +335,7 @@ export function buildFormerAccounts(
   const unitById = new Map(units.map((u) => [u.unitId, u]));
   const cancelled = cancelledTransactions(transactions);
   const former = accounts.filter(
-    (a) => a.type === 'receivable' && a.unitId && a.liableParty && a.accountId !== mainReceivableId(a.unitId, a.liableParty),
+    (a) => a.type === 'receivable' && a.unitId && a.liableParty && !isPrimaryReceivableId(a.accountId, a.unitId, a.liableParty),
   );
   return former
     .filter((a) => includeSettled || a.balance !== 0)
@@ -397,7 +399,7 @@ export function buildSummary(accounts: Account[], dues: UnitDuesView[]): Finance
   const active = accounts.filter((a) => a.status === 'active' || a.balance !== 0);
   const sum = (type: Account['type']) => active.filter((a) => a.type === type).reduce((s, a) => s + a.balance, 0);
   const recv = accounts.filter((a) => a.type === 'receivable');
-  const formerRecv = recv.filter((a) => a.unitId && a.liableParty && a.accountId !== mainReceivableId(a.unitId, a.liableParty));
+  const formerRecv = recv.filter((a) => a.unitId && a.liableParty && !isPrimaryReceivableId(a.accountId, a.unitId, a.liableParty));
   const cash = sum('cash');
   const bank = sum('bank');
   return {
@@ -435,6 +437,8 @@ export type DueReminder = {
   dueDate: IsoDate;
   /** O vadedeki acik (odenmemis) tutar. */
   amount: number;
+  /** Finans 2.1: paydas alt carisi; hatirlatma yalnizca bu paydasa gider. */
+  userId?: string;
 };
 
 const shiftDate = (d: IsoDate, days: number): IsoDate =>
@@ -446,14 +450,20 @@ const shiftDate = (d: IsoDate, days: number): IsoDate =>
  * Acik tutar ayni FIFO kuraliyla bulunur (anapara once, deftere yazilmis tazminat en son);
  * ayni vadeli kalemler toplanir. Iptal edilen islemler sayilmaz.
  */
-export function buildDueReminders(transactions: Transaction[], receivableIds: Set<string>, date: IsoDate): DueReminder[] {
+export function buildDueReminders(
+  transactions: Transaction[],
+  receivableIds: Set<string>,
+  date: IsoDate,
+  /** Hesap -> paydas kullanici (paydas alt carileri, Finans 2.1). */
+  holders: ReadonlyMap<string, string> = new Map(),
+): DueReminder[] {
   const targets = new Map<IsoDate, DueReminderKind>([
     [shiftDate(date, 3), 'upcoming'],
     [shiftDate(date, -1), 'overdue_1'],
     [shiftDate(date, -7), 'overdue_7'],
   ]);
   const cancelled = cancelledTransactions(transactions);
-  type Acc = { unitId: string; party: LiableParty; lines: AccountLine[] };
+  type Acc = { accountId: string; unitId: string; party: LiableParty; lines: AccountLine[] };
   const perAccount = new Map<string, Acc>();
 
   for (const tx of transactions) {
@@ -461,7 +471,7 @@ export function buildDueReminders(transactions: Transaction[], receivableIds: Se
       if (!line.unitId || !line.liableParty || !receivableIds.has(line.accountId)) continue;
       let acc = perAccount.get(line.accountId);
       if (!acc) {
-        acc = { unitId: line.unitId, party: line.liableParty, lines: [] };
+        acc = { accountId: line.accountId, unitId: line.unitId, party: line.liableParty, lines: [] };
         perAccount.set(line.accountId, acc);
       }
       acc.lines.push({ transaction: tx, side: line.side, amount: line.amount, date: tx.date });
@@ -469,14 +479,17 @@ export function buildDueReminders(transactions: Transaction[], receivableIds: Se
   }
 
   const out: DueReminder[] = [];
-  for (const acc of [...perAccount.values()].sort((a, b) => a.unitId.localeCompare(b.unitId) || a.party.localeCompare(b.party))) {
+  for (const acc of [...perAccount.values()].sort(
+    (a, b) => a.unitId.localeCompare(b.unitId) || a.party.localeCompare(b.party) || a.accountId.localeCompare(b.accountId),
+  )) {
+    const userId = holders.get(acc.accountId);
     const { open } = allocate(readSubledger(acc.lines, cancelled), date);
     const byDue = new Map<IsoDate, number>();
     for (const c of open) {
       if (targets.has(c.dueDate)) byDue.set(c.dueDate, (byDue.get(c.dueDate) ?? 0) + c.remaining);
     }
     for (const [dueDate, amount] of [...byDue.entries()].sort(([a], [b]) => a.localeCompare(b))) {
-      out.push({ unitId: acc.unitId, liableParty: acc.party, kind: targets.get(dueDate) as DueReminderKind, dueDate, amount });
+      out.push({ unitId: acc.unitId, liableParty: acc.party, kind: targets.get(dueDate) as DueReminderKind, dueDate, amount, ...(userId ? { userId } : {}) });
     }
   }
   return out;

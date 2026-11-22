@@ -42,7 +42,7 @@ export type DueGeneratedPayload = {
   liableParty: LiableParty;
   totalAmount: Kurus;
   /** liableParty: kalemin gercek borclu tarafi (bos daire kurali); yoksa ust duzeydeki taraf. */
-  items: { unitId: string; amount: Kurus; transactionId: string; liableParty?: LiableParty }[];
+  items: { unitId: string; amount: Kurus; transactionId: string; liableParty?: LiableParty; userId?: string }[];
 };
 
 export type PaymentReceivedPayload = {
@@ -73,7 +73,8 @@ export type DuesBatchSummaryPayload = {
   description: string;
   liableParty: LiableParty;
   totalAmount: Kurus;
-  items: { unitId: string; amount: Kurus; transactionId: string; liableParty: LiableParty }[];
+  /** `userId`: `split` bolumde paydasa ozel kalem (Finans 2.1). */
+  items: { unitId: string; amount: Kurus; transactionId: string; liableParty: LiableParty; userId?: string }[];
 };
 
 /** Bildirim worker'i sakinlere SMS/push gonderir; govde tasinmaz, worker kaydi okur. */
@@ -90,7 +91,8 @@ export type AnnouncementPublishedPayload = {
 export type LateFeePostedPayload = {
   /** Kesinlestirilen donem (YYYY-MM). */
   period: string;
-  items: { unitId: string; liableParty: LiableParty; amount: Kurus; transactionId: string }[];
+  /** `userId`: paydas alt carisinin tazminati (Finans 2.1). */
+  items: { unitId: string; liableParty: LiableParty; amount: Kurus; transactionId: string; userId?: string }[];
 };
 
 export const REMINDER_KINDS = ['upcoming', 'overdue_1', 'overdue_7'] as const;
@@ -100,7 +102,8 @@ export type ReminderKind = (typeof REMINDER_KINDS)[number];
 export type DuesReminderPayload = {
   /** Hatirlatma gunu (Istanbul). */
   date: IsoDate;
-  items: { unitId: string; liableParty: LiableParty; kind: ReminderKind; dueDate: IsoDate; amount: Kurus }[];
+  /** `userId`: paydas alt carisinin hatirlatmasi (Finans 2.1); yalnizca o paydasa gider. */
+  items: { unitId: string; liableParty: LiableParty; kind: ReminderKind; dueDate: IsoDate; amount: Kurus; userId?: string }[];
 };
 
 type PayloadByType = {

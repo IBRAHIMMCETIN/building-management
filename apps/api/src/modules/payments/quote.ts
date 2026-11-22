@@ -18,6 +18,8 @@ export const receivableAccountId = (unitId: string, party: LiableParty) => `recv
 
 export type PartyQuote = {
   liableParty: LiableParty;
+  /** Finans 2.1: ana cari disindaki alt cari (`split` dairede paydas carisi). */
+  accountId?: string;
   /** Pozitif = borc, negatif = avans. */
   balance: Kurus;
   debt: Kurus;
@@ -39,7 +41,7 @@ export type PaymentQuote = {
   totalDue: Kurus;
 };
 
-export type PartyLedgerInput = { party: LiableParty; entries: LedgerEntry[] };
+export type PartyLedgerInput = { party: LiableParty; entries: LedgerEntry[]; accountId?: string };
 
 /**
  * Bir alt carinin kistelyevm girdileri (portal ozetiyle ayni kurallar, `finance/subledger.ts`):
@@ -73,6 +75,7 @@ export function buildPartyQuote(
   const { open } = allocateOpenDues(input.party, input.entries, txById as Map<string, Transaction>, today);
   return {
     liableParty: input.party,
+    ...(input.accountId ? { accountId: input.accountId } : {}),
     balance: toKurus(balance),
     debt: toKurus(debt),
     advance: toKurus(Math.max(-balance, 0)),
@@ -131,6 +134,7 @@ export function allocateSelection(
       if (p.totalDue <= 0) continue;
       allocations.push({
         liableParty: p.liableParty,
+        ...(p.accountId ? { accountId: p.accountId } : {}),
         principal: p.debt,
         lateFee: p.accruedLateFee,
         amount: p.totalDue,
@@ -161,6 +165,7 @@ export function allocateSelection(
       const principal = prefix.reduce((s, it) => s + it.remaining, 0);
       allocations.push({
         liableParty: party,
+        ...(pq.accountId ? { accountId: pq.accountId } : {}),
         principal: toKurus(principal),
         lateFee: toKurus(0),
         amount: toKurus(principal),

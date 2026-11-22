@@ -5,7 +5,8 @@ import { ValidationError, assertId, isIsoDate } from '../core/validation.js';
 import { unpostedLateFee } from '../finance/lateFee.js';
 import { allocate, cancelledIn, feeInputsOf, linesFromEntries, readSubledger } from '../finance/subledger.js';
 import { DEFAULT_LATE_FEE_BASIS_POINTS } from '../finance/service.js';
-import type { LedgerEntry, Payment, Transaction, TransactionKind } from '../finance/types.js';
+import { type LedgerEntry, type Payment, type Transaction, type TransactionKind, coOwnerReceivableId } from '../finance/types.js';
+import type { OwnershipReader } from '../ownership/reader.js';
 import { type PortalRepository, portalRepository } from './repository.js';
 import { type UnitMembership, type UnitRelation, visibleParties } from './types.js';
 
@@ -57,6 +58,11 @@ export type PortalServiceDeps = {
   repository: PortalRepository;
   core: Pick<CoreRepository, 'getUnit' | 'getBlock' | 'getSite'>;
   now: () => Date;
+  /**
+   * Finans 2.1: `split` faturalamali dairede malik paydas yalnizca KENDI alt carisini gorur ve
+   * oder. Verilmezse (testler / eski cagiranlar) malik tarafi daima ortak malik carisidir.
+   */
+  ownership?: Pick<OwnershipReader, 'billingOf'>;
 };
 
 // ---------------------------------------------------------------------------
@@ -227,8 +233,10 @@ function parseOptionalDate(value: string | undefined, field: string): IsoDate | 
 // Servis
 // ---------------------------------------------------------------------------
 
-type ResolvedUnit = { membership: UnitMembership; unit: Unit; parties: LiableParty[] };
-export type PartyLedger = { party: LiableParty; entries: LedgerEntry[] };
+/** `accounts`: taraf -> kullanicinin gordugu alt cari (ana cari veya `split` dairede paydas carisi). */
+type ResolvedUnit = { membership: UnitMembership; unit: Unit; parties: LiableParty[]; accounts: Record<LiableParty, string> };
+/** `accountId` yalnizca ana cari DISINDA (paydas alt carisi) doldurulur. */
+export type PartyLedger = { party: LiableParty; entries: LedgerEntry[]; accountId?: string };
 
 export function createPortalService(overrides: Partial<PortalServiceDeps> = {}) {
   const deps: PortalServiceDeps = {
@@ -292,25 +300,36 @@ export function createPortalService(overrides: Partial<PortalServiceDeps> = {}) 
     const m = membership as UnitMembership;
     const unit = await deps.core.getUnit(ctx.apartmentId, m.unitId);
     if (!unit) throw new PortalError('not_found', 'Bagimsiz bolum bulunamadi');
-    return { membership: m, unit, parties: visibleParties(m) };
+    // Finans 2.1: `split` dairede malik tarafi kullanicinin paydas alt carisidir.
+    const billing = m.relation === 'owner' && deps.ownership ? await deps.ownership.billingOf(ctx.apartmentId, unit.unitId) : 'joint';
+    const accounts: Record<LiableParty, string> = {
+      occupant: receivableId(unit.unitId, 'occupant'),
+      owner: billing === 'split' ? coOwnerReceivableId(unit.unitId, m.userId) : receivableId(unit.unitId, 'owner'),
+    };
+    return { membership: m, unit, parties: visibleParties(m), accounts };
   }
+
+  /** Makbuz bu kullanicinin gordugu alt cariye mi alinmis? (ayrilan / baska paydas carisi haric) */
+  const ownsPayment = (r: ResolvedUnit, p: Payment) =>
+    r.parties.includes(p.liableParty) && (p.receivableAccountId ?? receivableId(r.unit.unitId, p.liableParty)) === r.accounts[p.liableParty];
 
   /** Sakinin gorebilecegi cari satirlari: kendi alt carisi + uyelik donemi. */
   async function loadLedgers(r: ResolvedUnit): Promise<{ ledgers: PartyLedger[]; txById: Map<string, Transaction> }> {
-    const { unit, membership, parties } = r;
+    const { unit, membership, parties, accounts } = r;
     const ledgers = await Promise.all(
       parties.map(async (party): Promise<PartyLedger> => {
-        const raw = await repo.listLedgerEntries(unit.siteId, receivableId(unit.unitId, party));
+        const accountId = accounts[party];
+        const raw = await repo.listLedgerEntries(unit.siteId, accountId);
         const entries = raw
           .filter(
             (e) =>
               e.siteId === unit.siteId &&
-              e.accountId === receivableId(unit.unitId, party) &&
+              e.accountId === accountId &&
               (e.unitId === undefined || e.unitId === unit.unitId) &&
               inWindow(e.date, membership),
           )
           .sort(compareEntries);
-        return { party, entries };
+        return { party, entries, ...(accountId !== receivableId(unit.unitId, party) ? { accountId } : {}) };
       }),
     );
     const ids = ledgers.flatMap((l) => l.entries.map((e) => e.transactionId));
@@ -527,7 +546,8 @@ export function createPortalService(overrides: Partial<PortalServiceDeps> = {}) 
           p.siteId === ctx.apartmentId &&
           p.unitId === unit.unitId &&
           parties.has(p.liableParty) &&
-          !p.receivableAccountId &&
+          // Ayrilan sakin/malik carisine veya baska paydasin carisine alinan tahsilat haric.
+          ownsPayment(resolved, p) &&
           inWindow(p.paidAt, membership) &&
           !cancelled.has(p.transactionId),
       )
@@ -608,8 +628,8 @@ export function createPortalService(overrides: Partial<PortalServiceDeps> = {}) 
           p.siteId === ctx.apartmentId &&
           p.unitId === unit.unitId &&
           parties.includes(p.liableParty) &&
-          // Ayrilan sakin/malik carisine alinan tahsilat bugunku sakinin makbuzu degildir.
-          !p.receivableAccountId &&
+          // Ayrilan sakin/malik carisine (veya baska paydasin carisine) alinan tahsilat bu kullanicinin makbuzu degildir.
+          ownsPayment(resolved, p) &&
           inWindow(p.paidAt, membership),
       )
       .sort((a, b) => b.paidAt.localeCompare(a.paidAt) || b.receiptNumber.localeCompare(a.receiptNumber))

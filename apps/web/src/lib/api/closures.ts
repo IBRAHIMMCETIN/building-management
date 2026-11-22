@@ -85,6 +85,8 @@ export const closureSchema = z.object({
   status: z.enum(['completed', 'reversed']),
   reason: z.string(),
   reversal: z.object({ at: z.string(), by: z.string(), reason: z.string() }).optional(),
+  /** Finans 2.1: mulk/hisse devriyle yapilan kapama (yalnizca devir geri alinarak iptal edilir). */
+  ownershipTransferId: z.string().optional(),
   createdAt: z.string(),
   createdBy: z.string(),
 });

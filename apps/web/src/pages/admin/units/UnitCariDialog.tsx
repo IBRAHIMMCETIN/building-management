@@ -92,6 +92,7 @@ function ClosureCard({
           {c.status === 'completed' ? <Badge tone="success">Tamamlandı</Badge> : <Badge>Geri alındı</Badge>}
         </div>
         <p className="mt-2 text-small">{outcomeText(c, formatTRY)}</p>
+        {c.ownershipTransferId && <p className="text-small text-muted">Mülk / hisse devriyle yapıldı; geri almak için Mülkiyet penceresinden devri geri alın.</p>}
         {c.lateFee > 0 && <p className="text-small text-muted">Çıkışa kadar yazılan tazminat: {formatTRY(c.lateFee)}</p>}
         <p className="mt-1 text-small text-muted">
           Gerekçe: {c.reason} · {formatDateTime(c.createdAt)}

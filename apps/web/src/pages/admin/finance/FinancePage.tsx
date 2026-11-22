@@ -10,6 +10,7 @@ import { DuesPanel } from './DuesPanel';
 import { ExpenseDialog } from './ExpenseDialog';
 import { FormerAccountsPanel } from './FormerAccountsPanel';
 import { OnlinePaymentsPanel } from './OnlinePaymentsPanel';
+import { OwnershipPanel } from './OwnershipPanel';
 import { PayablesPanel } from './PayablesPanel';
 import { PaymentDialog, type PaymentPreset } from './PaymentDialog';
 import { SummaryCards } from './SummaryCards';
@@ -19,6 +20,7 @@ const TABS = [
   { id: 'transactions', label: 'Hareketler' },
   { id: 'dues', label: 'Aidat durumu' },
   { id: 'former', label: 'Ayrılan cariler' },
+  { id: 'ownership', label: 'Paydaşlar / hisse' },
   { id: 'online', label: 'Online ödemeler' },
   { id: 'bank', label: 'Banka' },
   { id: 'payables', label: 'Tedarikçiler' },
@@ -97,6 +99,7 @@ export function FinancePage() {
           {tab === 'transactions' && <TransactionsPanel />}
           {tab === 'dues' && <DuesPanel canWrite={canWrite} onCollect={(preset) => setModal({ kind: 'payment', preset })} />}
           {tab === 'former' && <FormerAccountsPanel canWrite={canWrite} onCollect={(preset) => setModal({ kind: 'payment', preset })} />}
+          {tab === 'ownership' && <OwnershipPanel canWrite={canWrite} onCollect={(preset) => setModal({ kind: 'payment', preset })} />}
           {tab === 'online' && <OnlinePaymentsPanel />}
           {tab === 'bank' && <BankPanel canWrite={canWrite} />}
           {tab === 'payables' && <PayablesPanel canWrite={canWrite} />}
