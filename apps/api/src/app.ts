@@ -18,6 +18,8 @@ import { type CoreService, createCoreService } from './modules/core/service.js';
 import { documentRoutes } from './modules/documents/routes.js';
 import { type DocumentsService, createDocumentsService } from './modules/documents/service.js';
 import { financeRoutes } from './modules/finance/routes.js';
+import { bankRoutes } from './modules/finance/bank/routes.js';
+import { type BankService, createBankService } from './modules/finance/bank/service.js';
 import { importRoutes } from './modules/imports/routes.js';
 import { type ImportsService, createImportsService } from './modules/imports/service.js';
 import { type ClosureService, createClosureService } from './modules/finance/closures.js';
@@ -86,6 +88,8 @@ export type AppConfig = {
   portalService?: PortalService;
   documentsService?: DocumentsService;
   importsService?: ImportsService;
+  /** Faz B1: banka ekstresi aktarimi (testlerde sahte depo/depolama/HMAC). */
+  bankService?: BankService;
   membershipService?: MembershipService;
   residentsService?: ResidentsService;
   announcementService?: AnnouncementService;
@@ -197,6 +201,8 @@ export function createApp(config: AppConfig) {
       closures: config.closureService ?? (config.financeService ? undefined : createClosureService({ finance: financeService })),
     }),
   );
+  // Faz B1: banka ekstresi aktarimi (ekstre yukleme, onizleme, satir aktarimi, sutun eslemesi).
+  app.route('/api/bank', bankRoutes({ authenticate, service: config.bankService ?? createBankService() }));
   app.route('/api/payments', paymentCallbackRoutes({ service: paymentsService, payouts: payoutService, fake: fakePaymentProvider }));
   app.route('/api/admin/payments', paymentAdminRoutes({ authenticate, service: paymentsService, payouts: payoutService, invoices: invoiceService }));
 

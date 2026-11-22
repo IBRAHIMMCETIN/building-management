@@ -152,6 +152,19 @@ data "aws_iam_policy_document" "api" {
       resources = statement.value
     }
   }
+  # Faz B1 (bank.tf): banka ekstresindeki karsi taraf IBAN'inin HMAC ozeti. Yalnizca bu anahtar ve
+  # yalnizca HMAC_SHA_256; VerifyMac / Encrypt / Decrypt YOK.
+  statement {
+    sid       = "BankIbanMac"
+    actions   = ["kms:GenerateMac"]
+    resources = [aws_kms_key.bank_iban_hmac.arn]
+    condition {
+      test     = "StringEquals"
+      variable = "kms:MacAlgorithm"
+      values   = ["HMAC_SHA_256"]
+    }
+  }
+
   # P4: aktarim alicisini SIFRELEME (Decrypt yok); yalnizca payment-payee baglamiyla.
   dynamic "statement" {
     for_each = local.payments_enabled ? [local.payee_kms_key_arn] : []
@@ -205,6 +218,8 @@ resource "aws_lambda_function" "api" {
       MFA_GRACE_PERIOD_DAYS = tostring(var.mfa_grace_period_days)
       # EMF guvenlik metrikleri (MfaVerifyFailed, MfaReset, MfaRequiredDenied) icin boyut.
       METRICS_STACK = local.name
+      # Faz B1: banka ekstresi karsi taraf IBAN HMAC anahtari (bank.tf).
+      BANK_IBAN_MAC_KEY_ID = aws_kms_key.bank_iban_hmac.arn
     }, local.payments_env)
   }
 

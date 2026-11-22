@@ -6,6 +6,8 @@
 # - Anahtar duzeni (apps/api/src/modules/documents/keys.ts):
 #     apartments/{apartmentId}/receipts/{yyyy}/{mm}/...   makbuz onbellegi
 #     apartments/{apartmentId}/invoices/{yyyy}/{mm}/...   gider faturalari
+#     apartments/{apartmentId}/bank-statements/{yyyy}/{mm}/{statementId}
+#                                                         banka ekstresi dosyalari (Faz B1; kalici)
 #     tmp/{apartmentId}/invoice-uploads/{uploadId}        tarayicidan yuklenen, henuz gidere
 #                                                         baglanmamis dosya (1 gunde silinir)
 # - Surumleme acik: yanlislikla uzerine yazilan dosya geri alinabilir (eski surumler 90 gun).

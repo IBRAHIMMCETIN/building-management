@@ -2,7 +2,7 @@
 
 Türkiye'deki apartman, site ve profesyonel yönetim firmaları için çok kiracılı (multi-tenant), sunucusuz bir site ve aidat yönetim platformu. Kat Mülkiyeti Kanunu'na uygun alt cari (malik / kiracı) ayrımı, dağıtım anahtarlarıyla toplu tahakkuk ve değişmez (append-only) finansal defter üzerine kuruludur.
 
-> **Durum (21.11.2026):** Aktif geliştirme. Backend çekirdeği, yönetici ve sakin web ekranları, kıstelyevm, belge deposu ve toplu aktarım `main` dalında; `dev` ortamı AWS `eu-north-1` bölgesinde, web Cloudflare Pages üzerinde canlı. Online ödeme (Adım 8b: iyzico Pazaryeri altyapısı, ekranlar, inceleme/iade aracı), taşınmada cari kapama / borç devri ve güvenilir olay ve bildirim hattı (transactional outbox, Streams relay, süpürücü, gecelik defter denetimi, SES e-posta kanalı) `main`'e alındı. Bildirimler alan adı alınana kadar `log` modunda; iyzico sandbox uçtan uca doğrulaması ve SES aktivasyonu bilerek canlıya geçişe bırakıldı ([Canlıya Geçiş Kontrol Listesi](#canlıya-geçiş-kontrol-listesi)). Sıradaki iş: güvenlik sertleştirmesi. Ayrıntılar için [Yol Haritası](#yol-haritası).
+> **Durum (22.11.2026):** Aktif geliştirme. Backend çekirdeği, yönetici ve sakin web ekranları, kıstelyevm, belge deposu ve toplu aktarım `main` dalında; `dev` ortamı AWS `eu-north-1` bölgesinde, web Cloudflare Pages üzerinde canlı. Online ödeme (Adım 8b ve v2 P1–P5: iyzico + PayTR, komisyon, şifreli IBAN, aktarımlar, platform faturası), taşınmada cari kapama / borç devri, güvenilir olay ve bildirim hattı ile güvenlik sertleştirmesi G1–G2 (denetim günlüğü, zorunlu MFA) `main`'e alındı. Canlı ödeme aktivasyonu (şirket ve iyzico/PayTR ticari başvuruları), SES ve G3 (Cloudflare WAF) alan adı ve başvurular tamamlanana kadar bekliyor ([Canlıya Geçiş Kontrol Listesi](#canlıya-geçiş-kontrol-listesi)). Sıradaki iş: **Banka ekstresi aktarımı ve eşleştirme** — Faz B1 (ekstre yükleme, ayrıştırma, yinelenen satır koruması, IBAN HMAC) yerel doğrulamada; ardından B2 (ödeme referans kodu, öneri motoru, eşleştirme/geri alma, web arayüzü). Ayrıntılar için [Yol Haritası](#yol-haritası).
 
 ---
 
@@ -187,6 +187,7 @@ npm run dev:api
 | `PLATFORM_INVOICE_MODE` / `PLATFORM_INVOICE_VAT_BPS` / `PLATFORM_INVOICE_VAT_MODE` | P4: platform komisyon faturası taslağı: `monthly` (varsayılan) \| `per_payment`; KDV baz puan (varsayılan `2000` = %20); `inclusive` (varsayılan; kesilen platform payı KDV dahil, fatura toplamı = defterdeki platform payı) \| `exclusive` (pay + KDV). |
 | `PAYTR_SECRET_ARN` / `PAYTR_TEST_MODE` | PayTR mağaza anahtarları (Secrets Manager JSON `{"merchantId","merchantKey","merchantSalt"}`) ve `test_mode` (`1` varsayılan, canlıda `0`; Terraform `paytr_test_mode`). Yerelde `PAYTR_MERCHANT_ID` / `PAYTR_MERCHANT_KEY` / `PAYTR_MERCHANT_SALT`. |
 | `PAYMENTS_POS_RATE_BPS` / `PAYMENTS_POS_FIXED_FEE_KURUS` | Online ödeme sağlayıcısının sözleşme komisyonu: oran baz puan (`249` = %2,49; 0-1000) ve işlem başı sabit ücret kuruş (`25` = 0,25 TL; 0-5000). Varsayılan `0`; geçersiz değer başlangıçta hata verir. Komisyon tahmininde kullanılır, ödeme hesabı bazında geçersiz kılınabilir (Terraform `payments_pos_rate_bps`, `payments_pos_fixed_fee_kurus`). |
+| `BANK_IBAN_MAC_KEY_ID` | Faz B1: banka ekstresindeki karşı taraf IBAN'ının HMAC özeti için müşteri yönetimli KMS `HMAC_256` anahtarı (Terraform `bank_iban_mac_key_arn`). API yalnızca `kms:GenerateMac` (`HMAC_SHA_256`) yapar; düz IBAN hiçbir kayda yazılmaz. Yerelde verilmezse deterministik bellek içi HMAC (`BANK_IBAN_MAC_LOCAL_KEY` ile değiştirilebilir); production'da anahtarsız ekstre aktarılamaz (503). |
 | `AUDIT_TABLE_NAME` | Denetim günlüğü tablosu (Terraform: `<proje>-<ortam>-audit`). Lambda'da tanımsızsa hassas yazımlar reddedilir (fail closed); yerel geliştirme ve testlerde tanımsızsa denetim atlanır. |
 
 Gizli bilgiler koda gömülmez; AWS kimlik bilgileri SDK'nın varsayılan credential zincirinden gelir.
@@ -223,6 +224,7 @@ Serverless yığın `infra/` kök modülündedir:
 | `operations.tf` | Platform alarmları (EMF özel metrikleri, `BuildingManagement` / `Stack`): `LedgerDrift` (gecelik defter denetimi sapması), `OutboxSweepFailed`, `OutboxOldestPendingSeconds` |
 | `audit.tf` | Değiştirilemez denetim tablosu (yalnızca ekleme; güncelleme/silme IAM ve kaynak politikasında reddedilir), 10 yıl TTL, PITR |
 | `security_monitoring.tf` | Hassas uçlar için ayrı JWT rotaları + rota bazlı throttling; giriş hatası, MFA, API 5xx, denetim zinciri ve gece denetimi alarmları (bkz. [Güvenlik ve izleme](#güvenlik-ve-izleme)) |
+| `bank.tf` | Faz B1: banka ekstresi karşı taraf IBAN HMAC anahtarı (`HMAC_256`, `GENERATE_VERIFY_MAC`) ve alias `<yığın>-bank-iban-hmac`. HMAC anahtarlarında otomatik döndürme yoktur; anahtar silinmemeli (eski özetler eşleşmez) |
 
 Önemli değişkenler: `environment` (`prod` / `staging`), `alert_email`, `cors_allow_origins`, `cognito_user_pool_tier` (`LITE` / `ESSENTIALS`), `ses_identity_arn`, `ses_from_address`, `api_throttle_rate_limit`, `api_throttle_burst_limit`, `mfa_enforcement_mode`, `mfa_grace_period_days`; hassas rota sınırları ve güvenlik alarm eşikleri ([Güvenlik ve izleme](#güvenlik-ve-izleme)).
 
@@ -305,6 +307,7 @@ Tüm uçlar `/api` altındadır. `GET /api/health` dışındakiler JWT ile korun
 | `portal` | `/api/portal` | Sakin ekranı: `my-unit`, `my-dues`, `my-statement`, `my-receipts`, duyurular |
 | `audit` | `/api/audit` | Denetim günlüğü, salt okunur: en yeni önce, `limit` (≤100), `cursor`, `from`/`to`, `action` öneki, `actorId`. Varsayılan kapsam JWT'deki apartman (`apartment_manager`, `management_company`, `observer`; `platform_admin` yalnızca destek oturumuyla); `?scope=platform` yalnızca doğrudan `platform_admin` (platform zinciri). Yanıt hash'e giren tüm alanları içerir (tarayıcıda doğrulama). `GET /integrity?scope=`: gece doğrulamasının durumu (`verified` / `pending` / `stale` / `empty`) |
 | `mfa` | `/api/mfa` | `GET /users/:userId` (MFA ve hesap durumu, `canReset` / `blockedReason`; sıfırlamayla aynı yetki kuralları), `GET /users?email=` (yalnızca `platform_admin`), `POST /users/:userId/reset` `{ reason }` (10-500 karakter): cihaz kaybında TOTP'yi kapatır ve tüm oturumları düşürür; önce denetim günlüğüne yazılır. `platform_admin` herkes için; `apartment_manager` / `management_company` yalnızca kendi apartmanındaki, başka apartmanda yönetici/denetçi olmayan ve `platform_admin` olmayan kullanıcılar için. Kendi MFA'sı ve destek oturumu ile yapılamaz |
+| `finance/bank` | `/api/bank` | Faz B1 banka ekstresi aktarımı: `POST /statements/upload-url` (5 dk imzalı PUT, S3 `apartments/{apt}/bank-statements/{yyyy}/{mm}/{statementId}`, ≤ 5 MB), `POST /statements` (önizleme: CSV/XLSX/HTML-xls, sütun eşleme istek > hesaba kayıtlı > otomatik, dosya içi ve önceden aktarılmış tekrarlar, bakiye sürekliliği, çakışan dönem), `POST /statements/:id/commit` `{ expectedVersion, acknowledgeWarnings? }` (idempotent satır yazımı + denetim), `GET /statements[/:id]`, `GET /lines?bankAccountId=&status=&from=&to=&statementId=&order=&limit=&cursor=`, `GET\|PUT /formats/:bankAccountId` (sürüm koşullu), `GET /templates`. Yazma: `apartment_manager`, `management_company`; okuma: + `observer` (`platform_admin` yalnızca destek oturumuyla) |
 | `support` | `/api/support/sessions` | Yalnızca `platform_admin`: gerekçeli (≥20 karakter) ve süreli (≤60 dk) destek oturumu aç/listele/bitir. Oturum `X-Support-Session: <apartmentId>.<sessionId>` başlığıyla o apartmanda **salt okunur** (`observer`) erişim verir; her istek işlenmeden önce denetime yazılır |
 
 ---
@@ -344,7 +347,7 @@ Yedi rol: `platform_admin`, `management_company`, `apartment_manager`, `resident
 | --- | --- | --- |
 | `POST /api/me/mfa/totp/setup`, `POST /api/me/mfa/totp/verify` | 1/sn, 5 | `mfa_route_rate_limit`, `mfa_route_burst_limit` |
 | `POST /api/mfa/users/{userId}/reset`, `POST /api/support/sessions` | 1/sn, 3 | `security_admin_route_rate_limit`, `security_admin_route_burst_limit` |
-| `POST /api/residents/invite`, `POST /api/finance/dues`, `POST /api/imports` | 2/sn, 5 | `bulk_write_route_rate_limit`, `bulk_write_route_burst_limit` |
+| `POST /api/residents/invite`, `POST /api/finance/dues`, `POST /api/imports`, `POST /api/bank/statements/upload-url`, `POST /api/bank/statements`, `POST /api/bank/statements/{statementId}/commit` | 2/sn, 5 | `bulk_write_route_rate_limit`, `bulk_write_route_burst_limit` |
 | Ödeme callback/webhook (kimliksiz) | 5/sn, 10 | `payments_callback_rate_limit` |
 | Diğer tüm uçlar | 50/sn, 100 | `api_throttle_rate_limit`, `api_throttle_burst_limit` |
 
@@ -508,15 +511,34 @@ API Gateway sınırı istemci başına değil, rota başınadır: arka ucu ve ma
 - [x] Destek erişimi arayüzü: oturum açma/geçmiş, sekme bazlı destek modu (salt okunur, geri sayım, otomatik kapanma)
 - [x] Hassas uçlarda rota bazlı throttling; giriş hatası, MFA, 5xx, zincir bozukluğu ve "gece denetimi çalışmadı" alarmları (EMF: `MfaVerifyFailed`, `MfaReset`, `MfaRequiredDenied`, `AuditRun`)
 
+**Banka ekstresi aktarımı — Faz B1 (yerel doğrulama bekliyor)** (modül: `apps/api/src/modules/finance/bank/`)
+
+- [x] Bağımlılıksız dosya okuyucu: CSV (`;` `,` TAB `|` otomatik, RFC 4180 tırnakları, UTF-8 / Windows-1254), XLSX (ZIP + XML, ilk sayfa, sıkıştırma bombası sınırı) ve internet şubelerinin ".xls" adıyla verdiği HTML tablosu. Eski ikili Excel 97-2003 ve PDF açık mesajla reddedilir
+- [x] Sütun eşleme: başlık satırı ilk 40 satırda otomatik bulunur (Türkçe karakter/noktalama duyarsız takma adlar); tutar modları `signed` / `debit_credit` / `amount_direction` (B/A). Hesaba kayıtlı eşleme `BANKFMT#<bankAccountId>` (sürüm koşullu, denetimli). Hazır banka şablonları (Ziraat, VakıfBank, Halkbank, İş, Garanti BBVA, Yapı Kredi, Akbank, QNB, DenizBank) takma ad kümesidir ve **gerçek ekstrelerle henüz doğrulanmadı** (`verified: false`)
+- [x] Veri modeli: `BANKSTMT#<statementId>` (önizleme/aktarım özeti), `BANKFILE#<sha256>` (aynı dosya ikinci kez yüklenemez), `BANKTX#<bankAccountId>#<tarih>#<fp>` (banka hareketi; defter kaydı değildir, `status: unmatched`). Yeni GSI yok
+- [x] Deterministik parmak izi (sha256: hesap, tarih, yön, tutar, işlem sonrası bakiye, referans, normalize açıklama): çakışan dönemli ekstrelerde aynı hareket tekrar yazılmaz. Bakiye ve referansı olmayan satırlarda gün içi sıra numarası (zayıf iz) ve çakışan dönem uyarısı
+- [x] Bakiye sürekliliği (eskiden yeniye / yeniden eskiye otomatik), açılış/kapanış bakiyesi; okunamayan satır, bakiye tutarsızlığı veya zayıf iz + çakışmada aktarım için açık onay (`acknowledgeWarnings`)
+- [x] Karşı taraf IBAN'ı: açıklama/sütundan ayıklanır, her yerde maskelenir; eşleştirme için yalnızca KMS HMAC özeti (`k1:`, apartman kapsamlı mesaj). Düz IBAN hiçbir kayda, yanıta veya denetim ayrıntısına yazılmaz
+- [x] Aktarım: dosya yeniden okunup sha256 doğrulanır, aynı eşleme ile aynı satırlar üretilir; yalnızca olmayan satırlar `attribute_not_exists` ile yazılır (yarıda kalırsa tekrar çağrılabilir); ekstre `committed` + `bank.statement.commit` denetim kaydı
+- [x] Altyapı: `bank.tf` (KMS `HMAC_256` + alias), API rolüne yalnızca bu anahtarla `kms:GenerateMac` (`kms:MacAlgorithm = HMAC_SHA_256`), banka yazma rotaları toplu yazım sınırında, dağıtım politikasında anahtar türü kısıtı (`SYMMETRIC_DEFAULT` / `HMAC_256`); plan testleri
+- [ ] Dağıtım sırası: önce `infra/modules/deploy-policy` değişikliği yönetici kimliğiyle (`infra/github-deploy-user` ve/veya `infra/github-oidc`) uygulanır, sonra ana yığın
+
 ### Sırada
 
 > iyzico sandbox Pazaryeri yetkisi ve ilk uçtan uca ödeme doğrulaması tüm modüller tamamlandıktan sonra yapılacak (bkz. [Canlıya Geçiş Kontrol Listesi](#canlıya-geçiş-kontrol-listesi)).
 
+**Banka hareketi eşleştirme — Faz B2 (sıradaki iş)**
+
+- [ ] Alt cari başına ödeme referans kodu (`BANKREF#<kod>`), sakin "Havale/EFT ile öde" kartı
+- [ ] Öneri motoru: referans kodu, öğrenilmiş gönderen (`PAYER#<ibanMac>`), blok/daire kalıpları, ad benzerliği, tutar
+- [ ] Eşleştirme (`postBatch` ile tahsilat + makbuz + `PAYMENT_RECEIVED` outbox + `BANKMATCH#` + satır durumu tek atomik yazımda), bölme, yoksayma, ters kayıtla geri alma
+- [ ] Web: Finans → "Banka" sekmesi (yükleme sihirbazı, sütun eşleme, eşleştirme kuyruğu, mutabakat kartı)
+- [ ] B3: toplu otomatik onay, mutabakat raporu, çıkan satırlardan gider; `ledger_audit` genişlemesi
+
 **Ödeme ve tahsilatın devamı**
 
-- [ ] Online tahsilatın banka hesabına aktarım mutabakatı: sağlayıcı ekstresi ↔ `PAYOUT#` kayıtları ↔ banka hareketi otomatik eşleştirme (P4/P5'te aktarım takibi, geri dönüş ve elle yeniden gönderim hazır)
+- [ ] Online tahsilatın banka hesabına aktarım mutabakatı: sağlayıcı ekstresi ↔ `PAYOUT#` kayıtları ↔ banka hareketi otomatik eşleştirme (B4; canlı ödeme sonrası. P4/P5'te aktarım takibi, geri dönüş ve elle yeniden gönderim hazır)
 - [ ] Taksit, otomatik ödeme talimatı, şifresiz ödeme linki, iade
-- [ ] Banka hareketi eşleştirme
 
 **Finans**
 
@@ -533,7 +555,7 @@ API Gateway sınırı istemci başına değil, rota başınadır: arka ucu ve ma
 - [ ] Rapor/PDF, banka ve OCR worker'ları
 - [ ] Bildirim devamı: web'de tercih ekranı, yöneticiye toplu işlem özeti, SES geri dönüş/şikâyet olaylarının işlenmesi, SMS/WhatsApp kanalı
 
-**Güvenlik sertleştirmesi (sıradaki iş: G3, alan adına bağlı)**
+**Güvenlik sertleştirmesi (G3 alan adına bağlı, beklemede)**
 
 - [ ] Denetim günlüğü devamı: S3 Object Lock (WORM) dışa aktarım
 - [ ] MFA devamı: `warn` → `enforce` geçişinin ortam bazında planlanması
