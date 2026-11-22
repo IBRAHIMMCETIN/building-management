@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { apiClient } from './client';
+import { signedDownloadSchema } from './documentModel';
 import { ApiError } from './errors';
 
 /*
@@ -34,6 +35,17 @@ export const suggestionSchema = z.object({
   ),
 });
 
+/** B3.5: cikan satir -> tedarikci borcu onerisi. */
+export const payableSuggestionSchema = z.object({
+  kind: z.literal('payable'),
+  payableAccountId: z.string(),
+  name: z.string(),
+  openBalance: kurus,
+  confidence: z.number(),
+  reasons: z.array(z.string()),
+});
+export type PayableSuggestion = z.infer<typeof payableSuggestionSchema>;
+
 export const bankLineSchema = z.object({
   lineId: z.string(),
   bankAccountId: z.string(),
@@ -53,6 +65,7 @@ export const bankLineSchema = z.object({
   decisionNo: z.number().int().optional(),
   weakFingerprint: z.boolean().optional(),
   suggestion: suggestionSchema.optional(),
+  payableSuggestion: payableSuggestionSchema.optional(),
 });
 
 export const targetSchema = z.object({
@@ -272,6 +285,32 @@ const expenseResultSchema = z.object({
   expense: z.object({ expenseId: z.string(), transactionId: z.string(), amount: kurus.optional(), description: z.string().optional() }),
 });
 
+// ----- B3.5 -----
+
+export const payableOptionSchema = z.object({
+  accountId: z.string(),
+  name: z.string(),
+  openBalance: kurus,
+  openItems: z.array(z.object({ amount: kurus, description: z.string(), reference: z.string().optional() })),
+});
+export type PayableOption = z.infer<typeof payableOptionSchema>;
+
+const payableSuggestionsSchema = z.object({
+  line: bankLineSchema,
+  suggestions: z.array(payableSuggestionSchema),
+  payables: z.array(payableOptionSchema),
+});
+
+export type SettlePayableInput = {
+  bankAccountId: string;
+  expectedVersion: number;
+  payableAccountId: string;
+  description?: string;
+  reason?: string;
+  source?: 'suggestion' | 'manual';
+  confidence?: number;
+};
+
 export type BankExpenseInput = {
   bankAccountId: string;
   expectedVersion: number;
@@ -330,9 +369,21 @@ export const bankApi = {
   },
   preview: (input: { statementId: string; bankAccountId: string; fileName: string; format?: FormatSpec }) =>
     apiClient.post('/api/bank/statements', input, { schema: previewSchema }),
-  commit: (statementId: string, input: { expectedVersion: number; acknowledgeWarnings?: boolean }) =>
+  commit: (statementId: string, input: { expectedVersion: number; acknowledgeWarnings?: boolean; rememberFormat?: boolean }) =>
     apiClient.post(`/api/bank/statements/${enc(statementId)}/commit`, input, {
-      schema: z.object({ alreadyCommitted: z.boolean(), written: z.number().int(), existing: z.number().int(), statement: statementSchema }),
+      schema: z.object({
+        alreadyCommitted: z.boolean(),
+        written: z.number().int(),
+        existing: z.number().int(),
+        statement: statementSchema,
+        /** B3.5: `rememberFormat` ile gonderildiyse: kaydedilen esleme surumu (degismediyse null). */
+        formatSaved: z.object({ version: z.number().int() }).nullable().optional(),
+      }),
+    }),
+  getFormat: (bankAccountId: string, signal?: AbortSignal) =>
+    apiClient.get(`/api/bank/formats/${enc(bankAccountId)}`, {
+      signal,
+      schema: z.object({ bankAccountId: z.string(), format: formatSpecSchema.nullable(), version: z.number().int().nullable(), updatedAt: z.string().nullable() }),
     }),
 
   // ----- B2: eslestirme -----
@@ -371,6 +422,18 @@ export const bankApi = {
     }),
   autoMatch: (statementId: string, input: { idempotencyKey: string; minConfidence: number }) =>
     apiClient.post(`/api/bank/statements/${enc(statementId)}/auto-match`, input, { schema: autoMatchResultSchema }),
+  // ----- B3.5 -----
+  payableSuggestions: (lineId: string, bankAccountId: string, signal?: AbortSignal) =>
+    apiClient.get(`/api/bank/lines/${enc(lineId)}/payable-suggestions`, { signal, query: { bankAccountId }, schema: payableSuggestionsSchema }),
+  settlePayable: (lineId: string, input: SettlePayableInput) =>
+    apiClient.post(`/api/bank/lines/${enc(lineId)}/settle-payable`, input, {
+      schema: z.object({ replayed: z.boolean(), line: bankLineSchema, transactionId: z.string(), openBalanceAfter: kurus.optional() }),
+    }),
+  reconciliationReport: (bankAccountId: string, range: { from?: string; to?: string } = {}) =>
+    apiClient.get('/api/bank/reconciliation/report', {
+      query: { bankAccountId, ...(range.from ? { from: range.from } : {}), ...(range.to ? { to: range.to } : {}) },
+      schema: signedDownloadSchema,
+    }),
   expense: (lineId: string, input: BankExpenseInput) => apiClient.post(`/api/bank/lines/${enc(lineId)}/expense`, input, { schema: expenseResultSchema }),
 };
 

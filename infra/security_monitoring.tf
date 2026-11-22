@@ -23,6 +23,7 @@ locals {
   # Daha ozel rota `ANY /api/{proxy+}`'den once eslesir; yetki kontrolu uygulamada degismez.
   # Faz B1: banka ekstresi uclari (S3 okuma, KMS GenerateMac, toplu satir yazimi) toplu yazim sinirinda.
   # Faz B3: toplu otomatik eslestirme (istek basina 25 satira kadar atomik defter yazimi) da ayni grupta.
+  # Faz B3.5: donemsel mutabakat PDF'i (istek aninda pdf-lib ile uretim + S3) da ayni grupta.
   sensitive_routes = {
     "POST /api/me/mfa/totp/setup"                        = { rate = var.mfa_route_rate_limit, burst = var.mfa_route_burst_limit }
     "POST /api/me/mfa/totp/verify"                       = { rate = var.mfa_route_rate_limit, burst = var.mfa_route_burst_limit }
@@ -35,6 +36,7 @@ locals {
     "POST /api/bank/statements"                          = { rate = var.bulk_write_route_rate_limit, burst = var.bulk_write_route_burst_limit }
     "POST /api/bank/statements/{statementId}/commit"     = { rate = var.bulk_write_route_rate_limit, burst = var.bulk_write_route_burst_limit }
     "POST /api/bank/statements/{statementId}/auto-match" = { rate = var.bulk_write_route_rate_limit, burst = var.bulk_write_route_burst_limit }
+    "GET /api/bank/reconciliation/report"                = { rate = var.bulk_write_route_rate_limit, burst = var.bulk_write_route_burst_limit }
   }
 }
 

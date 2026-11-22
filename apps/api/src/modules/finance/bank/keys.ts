@@ -68,6 +68,8 @@ export const bankKeys = {
   ref: (apartmentId: string, code: string) => ({ PK: tenantPk(apartmentId), SK: skKey('BANKREF', code) }),
   refOf: (apartmentId: string, accountId: string) => ({ PK: tenantPk(apartmentId), SK: skKey('BANKREFOF', accountId) }),
   profile: (apartmentId: string, bankAccountId: string) => ({ PK: tenantPk(apartmentId), SK: skKey('BANKPROFILE', bankAccountId) }),
+  // Faz B3.5
+  payee: (apartmentId: string, ibanMac: string) => ({ PK: tenantPk(apartmentId), SK: skKey('PAYEE', ibanMac) }),
   // Faz B3
   autoRun: (apartmentId: string, statementId: string, idempotencyKey: string) => ({
     PK: tenantPk(apartmentId),

@@ -42,7 +42,7 @@ export const transactionSchema = z.object({
   dueDate: isoDate.optional(),
   description: z.string(),
   /** transfer: tasinmada cari devri (kapama), refund: avans iadesi. */
-  kind: z.enum(['dues_charge', 'payment', 'expense', 'reversal', 'late_fee', 'opening_balance', 'transfer', 'refund']),
+  kind: z.enum(['dues_charge', 'payment', 'expense', 'reversal', 'late_fee', 'opening_balance', 'transfer', 'refund', 'payable_payment']),
   category: z.enum(TRANSACTION_CATEGORIES),
   amount: kurus,
   funds: z.array(
@@ -224,6 +224,35 @@ const duesResultSchema = z.union([
   }),
 ]);
 
+// ----- Faz B3.5: tedarikci borcu -----
+
+export const payableAccountSchema = z.object({
+  accountId: z.string(),
+  name: z.string(),
+  status: z.enum(['active', 'inactive']),
+  /** Acik borc (kurus, >= 0). */
+  openBalance: kurus,
+  version: z.number().int(),
+  billed: kurus.optional(),
+  paid: kurus.optional(),
+  openItemCount: z.number().int().optional(),
+  lastPaymentDate: z.string().optional(),
+  openItems: z
+    .array(z.object({ transactionId: z.string(), date: z.string(), description: z.string(), reference: z.string().optional(), amount: kurus, open: kurus }))
+    .default([]),
+});
+export type PayableAccount = z.infer<typeof payableAccountSchema>;
+
+export type RecordPayablePaymentInput = {
+  idempotencyKey: string;
+  /** Kasa veya banka hesabi (varsayilan: banka). */
+  fundsAccountId: string;
+  amount: number;
+  date: string;
+  description?: string;
+  reference?: string;
+};
+
 export const financeApi = {
   summary: (signal?: AbortSignal) => apiClient.get('/api/finance/summary', { signal, schema: summarySchema }),
   duesStatus: (signal?: AbortSignal) => apiClient.get('/api/finance/dues-status', { signal, schema: duesStatusSchema }),
@@ -242,6 +271,12 @@ export const financeApi = {
   chargeDues: (input: ChargeDuesInput) => apiClient.post('/api/finance/dues', input, { schema: duesResultSchema }),
   previewDues: (input: DuesBulkInput, signal?: AbortSignal) =>
     apiClient.post('/api/finance/dues/preview', input, { signal, schema: duesPreviewSchema }),
+  payables: (signal?: AbortSignal) =>
+    apiClient.get('/api/finance/payables', { signal, schema: z.object({ items: z.array(payableAccountSchema), totalOpen: kurus }) }),
+  recordPayablePayment: (accountId: string, input: RecordPayablePaymentInput) =>
+    apiClient.post(`/api/finance/payables/${encodeURIComponent(accountId)}/payments`, input, {
+      schema: z.object({ replayed: z.boolean(), transaction: z.object({ transactionId: z.string() }), openBalance: kurus }),
+    }),
 };
 
 export const CATEGORY_LABELS: Record<TransactionCategory, string> = {

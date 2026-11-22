@@ -499,6 +499,11 @@ export function createBankService(overrides: Partial<BankServiceDeps> = {}) {
       const ownPrior = [...before.values()].filter((sid) => sid === statementId).length;
       const result = await deps.repo.putLinesIfAbsent(ctx.apartmentId, lines);
 
+      // Faz B3.5: "bu eslemeyi hesap icin hatirla" -> BANKFMT# ekstreyle ayni atomik yazimda.
+      const remember = o.rememberFormat === true;
+      const savedFormat = remember ? await deps.repo.getFormat(ctx.apartmentId, st.bankAccountId) : undefined;
+      const formatChanged = remember && (!savedFormat || !sameSpec(savedFormat.spec, st.format));
+
       const next: BankStatement = {
         ...st,
         status: 'committed',
@@ -512,9 +517,51 @@ export function createBankService(overrides: Partial<BankServiceDeps> = {}) {
         updatedBy: ctx.userId,
         version: st.version + 1,
       };
+      const format: BankFormat | undefined = formatChanged
+        ? {
+            ...bankKeys.format(ctx.apartmentId, st.bankAccountId),
+            entityType: 'BANK_FORMAT',
+            apartmentId: ctx.apartmentId,
+            bankAccountId: st.bankAccountId,
+            spec: st.format,
+            createdAt: savedFormat?.createdAt ?? now,
+            createdBy: savedFormat?.createdBy ?? ctx.userId,
+            updatedAt: now,
+            updatedBy: ctx.userId,
+            version: savedFormat ? savedFormat.version + 1 : 1,
+          }
+        : undefined;
+      const commitAudit = auditDraft(ctx, 'bank.statement.commit', next, {
+        committed: next.committed,
+        ...(remember ? { rememberFormat: true, formatSaved: Boolean(format) } : {}),
+      });
       try {
-        await deps.repo.replaceStatement(next, st.version, auditDraft(ctx, 'bank.statement.commit', next, { committed: next.committed }));
+        if (format) {
+          await deps.repo.commitStatementWithFormat(next, st.version, format, savedFormat?.version, [
+            commitAudit,
+            {
+              apartmentId: ctx.apartmentId,
+              action: 'bank.format.save',
+              target: { type: 'bank_format', id: st.bankAccountId },
+              actorId: ctx.userId,
+              details: {
+                amountMode: format.spec.amountMode,
+                columns: format.spec.columns,
+                headerRow: format.spec.headerRow,
+                templateId: format.spec.templateId,
+                version: format.version,
+                source: 'statement_commit',
+                statementId,
+              },
+            },
+          ]);
+        } else {
+          await deps.repo.replaceStatement(next, st.version, commitAudit);
+        }
       } catch (err) {
+        if (err instanceof DataAccessError && err.code === 'conflict' && err.message === 'format') {
+          throw new BankError('version_conflict', 'Hesaba kayitli esleme bu arada degisti; aktarimi esleme kaydetmeden tekrarlayin veya yeniden onizleyin');
+        }
         if (err instanceof DataAccessError && err.code === 'conflict') {
           const latest = await deps.repo.getStatement(ctx.apartmentId, statementId);
           if (latest?.status === 'committed') {
@@ -524,7 +571,13 @@ export function createBankService(overrides: Partial<BankServiceDeps> = {}) {
         }
         throw err;
       }
-      return { statement: publicStatement(next), alreadyCommitted: false, written: next.committed?.newLines ?? 0, existing: next.committed?.existingLines ?? 0 };
+      return {
+        statement: publicStatement(next),
+        alreadyCommitted: false,
+        written: next.committed?.newLines ?? 0,
+        existing: next.committed?.existingLines ?? 0,
+        ...(remember ? { formatSaved: format ? { version: format.version } : null } : {}),
+      };
     },
 
     async listStatements(ctx: BankContext, query: { bankAccountId?: string }) {
@@ -615,3 +668,18 @@ export function createBankService(overrides: Partial<BankServiceDeps> = {}) {
 }
 
 export type BankService = ReturnType<typeof createBankService>;
+
+/** Anahtar sirasindan bagimsiz karsilastirma (esleme degismediyse yeniden kaydedilmez). */
+function stable(v: unknown): unknown {
+  if (Array.isArray(v)) return v.map(stable);
+  if (v && typeof v === 'object') {
+    return Object.fromEntries(
+      Object.entries(v as Record<string, unknown>)
+        .filter(([, x]) => x !== undefined)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([k, x]) => [k, stable(x)]),
+    );
+  }
+  return v;
+}
+export const sameSpec = (a: unknown, b: unknown) => JSON.stringify(stable(a)) === JSON.stringify(stable(b));

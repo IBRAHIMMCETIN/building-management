@@ -66,7 +66,7 @@ export function reconciliationRows(r: Pick<Reconciliation, 'lines' | 'breakdown'
   }
   return [
     { key: 'matchedIn', label: 'Eşleşen giren (tahsilat)', ...b.matchedIn, tone: 'success' },
-    { key: 'matchedOut', label: 'Eşleşen çıkan (gider)', ...b.matchedOut, tone: 'success' },
+    { key: 'matchedOut', label: 'Eşleşen çıkan (gider / tedarikçi)', ...b.matchedOut, tone: 'success' },
     { key: 'unmatchedIn', label: 'Bekleyen giren', ...b.unmatchedIn, tone: 'warning' },
     { key: 'unmatchedOut', label: 'Bekleyen çıkan', ...b.unmatchedOut, tone: 'warning' },
     { key: 'ignoredIn', label: 'Yoksayılan giren', ...b.ignoredIn, tone: 'neutral' },

@@ -212,7 +212,15 @@ export type MatchAllocation = {
  * restore : yoksayilan satir yeniden `unmatched`
  * expense : (B3) cikan satir gider kaydina cevrildi (gider hesabi borc / banka alacak)
  */
-export type DecisionKind = 'match' | 'unmatch' | 'ignore' | 'restore' | 'expense';
+export type DecisionKind = 'match' | 'unmatch' | 'ignore' | 'restore' | 'expense' | 'payable';
+
+/** B3.5: cikan satirla kapatilan tedarikci borcu (karar kaydinda). */
+export type PayableDecision = {
+  payableAccountId: string;
+  payableName: string;
+  /** Odeme oncesi acik borc (raporlama). */
+  openBefore: number;
+};
 
 /** B3: cikan satirdan olusturulan gider (karar kaydinda). */
 export type ExpenseDecision = {
@@ -241,6 +249,8 @@ export type BankDecision = TableKeys & {
   allocations?: MatchAllocation[];
   /** expense (B3): olusturulan gider kaydi. */
   expense?: ExpenseDecision;
+  /** payable (B3.5): kapatilan tedarikci borcu. */
+  payable?: PayableDecision;
   /** match: yazilan islemler (tazminat + tahsilat); expense: gider islemi; unmatch: yazilan ters kayitlar. */
   transactionIds: string[];
   /** match: makbuzlar. */
@@ -368,6 +378,26 @@ export type BankAutoRun = TableKeys & {
   lastSkipped: AutoMatchSkipped;
   createdAt: IsoDateTime;
   createdBy: string;
+  updatedAt: IsoDateTime;
+  version: number;
+};
+
+// ---------------------------------------------------------------------------
+// Faz B3.5: ogrenilmis alici (tedarikci) IBAN'i
+// ---------------------------------------------------------------------------
+
+/**
+ * Cikan satirin karsi taraf IBAN ozeti -> daha once odenen tedarikci hesaplari.
+ *   PK = APT#<apt>, SK = PAYEE#<ibanMac>
+ * Gonderen (`PAYER#`) kaydindan ayridir: tahsilat onerisine tedarikci, tedarikci onerisine
+ * alt cari karismaz. Tedarikci odemesiyle ayni yazimda guncellenir (surum kosullu).
+ */
+export type BankPayee = TableKeys & {
+  entityType: 'BANK_PAYEE';
+  apartmentId: string;
+  ibanMac: string;
+  accounts: { accountId: string; count: number; lastPaidAt: IsoDateTime }[];
+  createdAt: IsoDateTime;
   updatedAt: IsoDateTime;
   version: number;
 };

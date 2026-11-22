@@ -96,6 +96,19 @@ export function financeRoutes({ authenticate, service, closures }: FinanceRoutes
     );
   });
 
+  // ----- Faz B3.5: tedarikci borcu -----
+  r.get('/payables', requireRole(READ_ROLES), async (c) =>
+    c.json(await service.listPayables(ctx(c), { includeItems: c.req.query('items') !== 'false' })),
+  );
+
+  r.post('/payables/:accountId/payments', requireRole(WRITE_ROLES), async (c) => {
+    const result = await service.recordPayablePayment(ctx(c), c.req.param('accountId'), await readJson(c));
+    return c.json(
+      { replayed: result.replayed, transaction: publicView(result.transaction), openBalance: result.openBalance },
+      result.replayed ? 200 : 201,
+    );
+  });
+
   // ----- Raporlar (salt okunur) -----
   r.get('/summary', requireRole(READ_ROLES), async (c) => c.json(await service.summary(ctx(c))));
 

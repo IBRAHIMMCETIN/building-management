@@ -10,7 +10,7 @@ import {
   tenantPk,
   toDataAccessError,
 } from '../../../config/dynamodb.js';
-import { type AuditDraft, auditedPutNew, auditedPutVersioned, sendWithAudit } from '../../audit/log.js';
+import { type AuditDraft, auditedPutNew, auditedPutVersioned, sendWithAudit, sendWithAudits } from '../../audit/log.js';
 import type { IsoDate } from '../../core/types.js';
 import { BankError } from './errors.js';
 import { PROFILE_PREFIX, REF_PREFIX, STATEMENT_PREFIX, bankKeys, decisionPrefix, linePrefix, parseLineId } from './keys.js';
@@ -21,6 +21,7 @@ import type {
   BankFileLock,
   BankFormat,
   BankLine,
+  BankPayee,
   BankPayer,
   BankRef,
   BankRefOf,
@@ -48,6 +49,19 @@ export type BankRepository = {
   createStatement(statement: BankStatement, lock: BankFileLock, audit: AuditDraft): Promise<void>;
   /** Surum kosullu ustune yazim + denetim kaydi. Surum uyusmazsa `DataAccessError('conflict')`. */
   replaceStatement(statement: BankStatement, expectedVersion: number, audit: AuditDraft): Promise<void>;
+  /**
+   * Faz B3.5: ekstre aktarimi + hesaba kayitli sutun eslemesi TEK atomik yazim (iki denetim
+   * kaydi: `bank.statement.commit`, `bank.format.save`). `formatExpectedVersion` yoksa esleme
+   * yeni olmali. Ekstre degismisse `conflict` (label `statement`), esleme degismisse `conflict`
+   * (label `format`).
+   */
+  commitStatementWithFormat(
+    statement: BankStatement,
+    expectedVersion: number,
+    format: BankFormat,
+    formatExpectedVersion: number | undefined,
+    audits: [AuditDraft, AuditDraft],
+  ): Promise<void>;
   /** Verilen satir SK'larindan veritabaninda olanlar. */
   existingLineKeys(apartmentId: string, sks: string[]): Promise<Set<string>>;
   /** Veritabaninda olan satirlar: SK -> satiri ilk aktaran ekstre. */
@@ -69,6 +83,8 @@ export type BankRepository = {
    */
   writeDecision(line: BankLine, expectedVersion: number, decision: BankDecision, audit: AuditDraft): Promise<void>;
   getPayer(apartmentId: string, ibanMac: string): Promise<BankPayer | undefined>;
+  /** Faz B3.5: ogrenilmis tedarikci IBAN'i. */
+  getPayee(apartmentId: string, ibanMac: string): Promise<BankPayee | undefined>;
   listRefs(apartmentId: string): Promise<BankRef[]>;
   getRefOf(apartmentId: string, accountId: string): Promise<BankRefOf | undefined>;
   /** Kod + ters esleme, yalnizca ikisi de yoksa (atomik). Kod baskasina aitse 'code_taken'. */
@@ -152,6 +168,34 @@ export const bankRepository: BankRepository = {
   },
 
   replaceStatement: (statement, expectedVersion, audit) => auditedPutVersioned(statement, expectedVersion, audit),
+
+  async commitStatementWithFormat(statement, expectedVersion, format, formatExpectedVersion, audits) {
+    const { client, tableName } = getDynamo();
+    const versioned = (v: number) => ({
+      ConditionExpression: 'attribute_exists(PK) AND #version = :v',
+      ExpressionAttributeNames: { '#version': 'version' },
+      ExpressionAttributeValues: { ':v': v },
+    });
+    try {
+      await sendWithAudits(
+        client,
+        [
+          { Put: { TableName: tableName, Item: statement, ...versioned(expectedVersion) } },
+          formatExpectedVersion === undefined
+            ? { Put: { TableName: tableName, Item: format, ConditionExpression: 'attribute_not_exists(PK)' } }
+            : { Put: { TableName: tableName, Item: format, ...versioned(formatExpectedVersion) } },
+        ],
+        audits,
+      );
+    } catch (err) {
+      if (err instanceof TransactionCanceledException) {
+        const reasons = err.CancellationReasons ?? [];
+        if (reasons[0]?.Code === 'ConditionalCheckFailed') throw new DataAccessError('conflict', 'statement', { cause: err });
+        if (reasons[1]?.Code === 'ConditionalCheckFailed') throw new DataAccessError('conflict', 'format', { cause: err });
+      }
+      throw toDataAccessError(err);
+    }
+  },
 
   async existingLineKeys(apt, sks) {
     return new Set((await bankRepository.existingLineStatements(apt, sks)).keys());
@@ -322,6 +366,8 @@ export const bankRepository: BankRepository = {
   },
 
   getPayer: (apt, mac) => getTenantItem<BankPayer>(bankKeys.payer(apt, mac)),
+
+  getPayee: (apt, mac) => getTenantItem<BankPayee>(bankKeys.payee(apt, mac)),
 
   listRefs: (apt) => queryTenantAll<BankRef>(apt, REF_PREFIX, { ConsistentRead: true }).then((items) => items.filter((i) => i.entityType === 'BANK_REF')),
 

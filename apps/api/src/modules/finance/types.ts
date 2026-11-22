@@ -81,7 +81,9 @@ export type TransactionKind =
   | 'late_fee'
   | 'opening_balance'
   | 'transfer'
-  | 'refund';
+  | 'refund'
+  /** Faz B3.5: tedarikci borcunun odenmesi (borc: tedarikci/payable, alacak: kasa/banka). */
+  | 'payable_payment';
 
 /**
  * Cari devri kalemi (yalnizca `transfer` + `role: 'open'`): hedef caride orijinal vadesiyle

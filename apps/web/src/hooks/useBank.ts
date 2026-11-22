@@ -1,5 +1,5 @@
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { type BankExpenseInput, type FormatSpec, type LineStatus, type MatchInput, bankApi } from '@/lib/api/bank';
+import { type BankExpenseInput, type FormatSpec, type LineStatus, type MatchInput, type SettlePayableInput, bankApi } from '@/lib/api/bank';
 import { runAutoMatch } from '@/lib/bank/autoMatch';
 import { portalApi } from '@/lib/api/portal';
 import { usePortalUnit } from '@/context/PortalUnitContext';
@@ -18,6 +18,8 @@ export const bankKeys = {
   queue: (apt: string, acct: string, status?: LineStatus) => [...bankKeys.all(apt), 'queue', acct, status ?? 'all'] as const,
   targets: (apt: string) => [...bankKeys.all(apt), 'targets'] as const,
   suggestions: (apt: string, acct: string, lineId: string) => [...bankKeys.all(apt), 'suggestions', acct, lineId] as const,
+  payableSuggestions: (apt: string, acct: string, lineId: string) => [...bankKeys.all(apt), 'payable-suggestions', acct, lineId] as const,
+  format: (apt: string, acct: string) => [...bankKeys.all(apt), 'format', acct] as const,
 };
 
 function useApt() {
@@ -162,8 +164,12 @@ export function useStatementPreview() {
 export function useCommitStatement() {
   const invalidate = useInvalidate();
   return useMutation({
-    mutationFn: (v: { statementId: string; expectedVersion: number; acknowledgeWarnings: boolean }) =>
-      bankApi.commit(v.statementId, { expectedVersion: v.expectedVersion, acknowledgeWarnings: v.acknowledgeWarnings }),
+    mutationFn: (v: { statementId: string; expectedVersion: number; acknowledgeWarnings: boolean; rememberFormat?: boolean }) =>
+      bankApi.commit(v.statementId, {
+        expectedVersion: v.expectedVersion,
+        acknowledgeWarnings: v.acknowledgeWarnings,
+        ...(v.rememberFormat ? { rememberFormat: true } : {}),
+      }),
     onSuccess: invalidate,
   });
 }
@@ -183,5 +189,32 @@ export function useMyPaymentReference() {
     enabled: user?.role === 'resident' && !!user.apartmentId,
     retry,
     staleTime: 10 * 60_000,
+  });
+}
+
+// ----- Faz B3.5 -----
+
+/** Cikan satir icin tedarikci onerileri ve acik borclu tedarikciler (diyalog acikken). */
+export function usePayableSuggestions(bankAccountId: string, lineId: string | undefined) {
+  const { apt, enabled } = useApt();
+  return useQuery({
+    queryKey: bankKeys.payableSuggestions(apt, bankAccountId, lineId ?? ''),
+    queryFn: ({ signal }) => bankApi.payableSuggestions(lineId as string, bankAccountId, signal),
+    enabled: enabled && !!lineId && !!bankAccountId,
+  });
+}
+
+export function useSettlePayable() {
+  const invalidate = useInvalidate();
+  return useMutation({ mutationFn: (v: { lineId: string; input: SettlePayableInput }) => bankApi.settlePayable(v.lineId, v.input), onSuccess: invalidate });
+}
+
+/** Hesaba kayitli sutun eslemesi (yukleme sihirbazinda kaynak gosterimi). */
+export function useSavedFormat(bankAccountId: string | undefined) {
+  const { apt, enabled } = useApt();
+  return useQuery({
+    queryKey: bankKeys.format(apt, bankAccountId ?? ''),
+    queryFn: ({ signal }) => bankApi.getFormat(bankAccountId as string, signal),
+    enabled: enabled && !!bankAccountId,
   });
 }

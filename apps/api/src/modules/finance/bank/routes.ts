@@ -42,6 +42,10 @@ export type BankRoutesDeps = { authenticate: Authenticator; service: BankService
  *        (API Gateway'de toplu yazim throttling grubunda: infra/security_monitoring.tf)
  *   POST /lines/:lineId/expense  { bankAccountId, expectedVersion, expenseAccountId, description?, supplier?, invoiceNumber?, reason? }
  *   GET  /reconciliation?bankAccountId=&from=&to=   ayrintili dokum (acilis/kapanis, fark, eslesen/bekleyen/yoksayilan)
+ * Faz B3.5:
+ *   GET  /lines/:lineId/payable-suggestions?bankAccountId=   tedarikci onerileri + acik borclu tedarikciler
+ *   POST /lines/:lineId/settle-payable  { bankAccountId, expectedVersion, payableAccountId, description?, reason?, source?, confidence? }
+ *   GET  /reconciliation/report?bankAccountId=&from=&to=     donemsel mutabakat PDF'i -> { url (5 dk), fileName, cached }
  */
 export function bankRoutes({ authenticate, service, match }: BankRoutesDeps) {
   const r = new Hono<Env>();
@@ -126,6 +130,16 @@ export function bankRoutes({ authenticate, service, match }: BankRoutesDeps) {
       c.json(await match.autoMatch(ctx(c), statementId(c), await readJson(c))),
     );
     r.post('/lines/:lineId/expense', requireRole(WRITE_ROLES), async (c) => c.json(await match.expense(ctx(c), lineId(c), await readJson(c))));
+    // Faz B3.5
+    r.get('/lines/:lineId/payable-suggestions', requireRole(READ_ROLES), async (c) =>
+      c.json(await match.payableSuggestions(ctx(c), lineId(c), { bankAccountId: c.req.query('bankAccountId') })),
+    );
+    r.post('/lines/:lineId/settle-payable', requireRole(WRITE_ROLES), async (c) => c.json(await match.settlePayable(ctx(c), lineId(c), await readJson(c))));
+    r.get('/reconciliation/report', requireRole(READ_ROLES), async (c) =>
+      c.json(
+        await match.reconciliationReport(ctx(c), { bankAccountId: c.req.query('bankAccountId'), from: c.req.query('from'), to: c.req.query('to') }),
+      ),
+    );
     r.get('/accounts', requireRole(READ_ROLES), async (c) => c.json(await match.listAccounts(ctx(c))));
     r.put('/accounts/:bankAccountId/profile', requireRole(WRITE_ROLES), async (c) =>
       c.json(await match.saveProfile(ctx(c), c.req.param('bankAccountId'), await readJson(c))),

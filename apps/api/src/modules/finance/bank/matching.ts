@@ -374,3 +374,83 @@ export function suggestMatches(input: SuggestInput): Suggestion[] {
     .sort((a, b) => b.confidence - a.confidence || (a.allocations[0]?.accountId ?? '').localeCompare(b.allocations[0]?.accountId ?? ''))
     .slice(0, limit);
 }
+
+// ---------------------------------------------------------------------------
+// Faz B3.5: cikan satir -> tedarikci borcu onerisi (toplu otomatik onaya dahil DEGIL)
+// ---------------------------------------------------------------------------
+
+export type PayableCandidate = {
+  accountId: string;
+  name: string;
+  /** Acik borc (kurus). 0 ise odeme onerilmez. */
+  openBalance: number;
+  /** Acik faturalar (tutar ve aciklama/referans). */
+  openItems: readonly { amount: number; description: string; reference?: string }[];
+};
+
+export type PayableSuggestion = {
+  kind: 'payable';
+  payableAccountId: string;
+  name: string;
+  openBalance: number;
+  confidence: number;
+  reasons: string[];
+};
+
+/**
+ * Puanlama: ogrenilmis alici IBAN'i 0.85 (ilk hesap) / 0.7; tedarikci adi karsi taraf adinda veya
+ * aciklamada (tam 0.7, kismi 0.5); tutar acik borca veya bir acik faturaya esit +0.15, fatura
+ * referansi aciklamada +0.1. Tutar acik borcu asiyorsa oneri yapilmaz (fazla odeme reddedilir).
+ * Ust sinir 0.95.
+ */
+export function suggestPayables(input: {
+  line: Pick<MatchLine, 'amount' | 'description' | 'counterpartyName'>;
+  candidates: readonly PayableCandidate[];
+  payee?: { accounts: readonly { accountId: string; count: number }[] };
+  limit?: number;
+}): PayableSuggestion[] {
+  const { line } = input;
+  const text = `${line.counterpartyName ?? ''} ${line.description}`;
+  const compactText = normalizeText(text).replace(/\s+/g, '');
+  const learned = new Map((input.payee?.accounts ?? []).map((a, i) => [a.accountId, i]));
+  const out: PayableSuggestion[] = [];
+  for (const c of input.candidates) {
+    if (c.openBalance <= 0 || line.amount > c.openBalance) continue;
+    const reasons: string[] = [];
+    let score = 0;
+    const rank = learned.get(c.accountId);
+    if (rank !== undefined) {
+      score = rank === 0 ? 0.85 : 0.7;
+      reasons.push('Bu IBAN’a daha önce bu tedarikçiye ödeme yapıldı');
+    }
+    const sim = nameSimilarity(c.name, text);
+    if (sim >= 0.99 && score < 0.7) {
+      score = 0.7;
+      reasons.push('Tedarikçi adı açıklamada geçiyor');
+    } else if (sim >= 0.5 && score < 0.5) {
+      score = 0.5;
+      reasons.push('Tedarikçi adı kısmen eşleşiyor');
+    }
+    if (score === 0) continue;
+    if (line.amount === c.openBalance) {
+      score += 0.15;
+      reasons.push('Tutar açık borca eşit');
+    } else if (c.openItems.some((i) => i.amount === line.amount)) {
+      score += 0.15;
+      reasons.push('Tutar açık bir faturaya eşit');
+    }
+    if (c.openItems.some((i) => i.reference && i.reference.length >= 4 && compactText.includes(normalizeText(i.reference).replace(/\s+/g, '')))) {
+      score += 0.1;
+      reasons.push('Fatura numarası açıklamada geçiyor');
+    }
+    out.push({
+      kind: 'payable',
+      payableAccountId: c.accountId,
+      name: c.name,
+      openBalance: c.openBalance,
+      confidence: Math.round(Math.min(0.95, score) * 100) / 100,
+      reasons,
+    });
+  }
+  return out.sort((a, b) => b.confidence - a.confidence || b.openBalance - a.openBalance).slice(0, input.limit ?? 5);
+}
