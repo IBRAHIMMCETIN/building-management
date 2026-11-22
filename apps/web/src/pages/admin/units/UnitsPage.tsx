@@ -8,6 +8,7 @@ import { CreateUnitDialog } from './CreateUnitDialog';
 import { ExemptionsDialog } from './ExemptionsDialog';
 import { InviteResidentDialog } from './InviteResidentDialog';
 import { UnitCariDialog } from './UnitCariDialog';
+import { UnitOwnershipDialog } from './UnitOwnershipDialog';
 import { UnitsTable, UnitsTableSkeleton } from './UnitsTable';
 import { type UnitRow, buildUnitRows, filterRows } from './unitRows';
 
@@ -26,6 +27,7 @@ export function UnitsPage() {
   const [inviteRow, setInviteRow] = useState<UnitRow | null>(null);
   const [exemptionsRow, setExemptionsRow] = useState<UnitRow | null>(null);
   const [cari, setCari] = useState<{ row: UnitRow; wizard: boolean } | null>(null);
+  const [ownershipRow, setOwnershipRow] = useState<UnitRow | null>(null);
   const { canRead: canViewCari } = useFinancePermissions();
   const names = useMemo(() => new Map((people.data ?? []).map((p) => [p.userId, p.fullName])), [people.data]);
 
@@ -179,9 +181,14 @@ export function UnitsPage() {
               onExemptions={setExemptionsRow}
               canViewCari={canViewCari}
               onCari={(row, wizard) => setCari({ row, wizard })}
+              onOwnership={setOwnershipRow}
             />
           )}
         </>
+      )}
+
+      {canViewCari && (
+        <UnitOwnershipDialog row={ownershipRow} names={names} people={people.data ?? []} onClose={() => setOwnershipRow(null)} />
       )}
 
       {canViewCari && (

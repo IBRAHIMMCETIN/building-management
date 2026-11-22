@@ -15,7 +15,8 @@ import type { PortalContext, PortalService } from '../../portal/service.js';
 import { type PersonRepository, personRepository } from '../../residents/repository.js';
 import { type FinanceRepository, LedgerConflictError, financeRepository } from '../repository.js';
 import { DEFAULT_LATE_FEE_BASIS_POINTS, type FinanceService, type ResolvedBankAllocation } from '../service.js';
-import { type Account, mainReceivableId } from '../types.js';
+import { type Account, coOwnerReceivableId, isCoOwnerReceivableId, isPrimaryReceivableId, mainReceivableId } from '../types.js';
+import type { OwnershipReader } from '../../ownership/reader.js';
 import { BankError } from './errors.js';
 import { isValidTrIban, maskIban, normalizeIban } from './iban.js';
 import { AUTO_RUN_KEY_PATTERN, LINES_PAGE_MAX, MAX_LINES, bankKeys, isStatementId, istanbulDate, parseLineId } from './keys.js';
@@ -92,6 +93,11 @@ export type BankMatchDeps = {
   portal?: Pick<PortalService, 'resolveUnit'>;
   /** Faz B3.5: mutabakat PDF onbellegi (S3; yoksa rapor 503). */
   documents?: DocumentStore;
+  /**
+   * Finans 2.1: `split` faturalamali bolumlerde malik tahsilati paydasin alt carisine onerilir ve
+   * eslestirilir. Verilmezse (testler / eski cagiranlar) malik tarafi daima ortak cari.
+   */
+  ownership?: Pick<OwnershipReader, 'splitUnits'>;
   now: () => Date;
 };
 
@@ -162,7 +168,7 @@ export function createBankMatchService(overrides: Partial<BankMatchDeps> & Pick<
   async function loadCandidates(apartmentId: string, opts: { maskNames?: boolean } = {}) {
     const asOf = today();
     const from = istanbulDate(new Date(deps.now().getTime() - 62 * 86_400_000));
-    const [accounts, units, blocks, memberships, people, refs, recent] = await Promise.all([
+    const [accounts, units, blocks, memberships, people, refs, recent, splitUnits] = await Promise.all([
       deps.accounts.listAccounts(apartmentId),
       deps.core.listUnits(apartmentId),
       deps.core.listBlocks(apartmentId),
@@ -170,6 +176,7 @@ export function createBankMatchService(overrides: Partial<BankMatchDeps> & Pick<
       deps.people.list(apartmentId),
       deps.repo.listRefs(apartmentId),
       deps.accounts.listTransactions(apartmentId, { from }),
+      deps.ownership ? deps.ownership.splitUnits(apartmentId) : Promise.resolve(new Set<string>()),
     ]);
     const unitById = new Map(units.map((u) => [u.unitId, u]));
     const blockName = new Map(blocks.map((b) => [b.blockId, b.name]));
@@ -187,7 +194,8 @@ export function createBankMatchService(overrides: Partial<BankMatchDeps> & Pick<
     };
     for (const m of memberships) {
       if (m.status !== 'active' || m.startDate > asOf || (m.endDate && m.endDate < asOf)) continue;
-      if (m.relation === 'owner') addHolder(mainReceivableId(m.unitId, 'owner'), m.userId);
+      // Finans 2.1: `split` bolumde malik, kendi paydas alt carisinin sorumlusudur.
+      if (m.relation === 'owner') addHolder(splitUnits.has(m.unitId) ? coOwnerReceivableId(m.unitId, m.userId) : mainReceivableId(m.unitId, 'owner'), m.userId);
       if (m.relation === 'tenant' || m.residesInUnit) addHolder(mainReceivableId(m.unitId, 'occupant'), m.userId);
     }
     // Son aidat tahakkuku (aylik aidat tahmini).
@@ -203,8 +211,12 @@ export function createBankMatchService(overrides: Partial<BankMatchDeps> & Pick<
       const unit = unitById.get(a.unitId);
       if (!unit) continue;
       const bName = blockName.get(unit.blockId);
-      const former = a.accountId !== mainReceivableId(a.unitId, a.liableParty);
+      const coOwner = isCoOwnerReceivableId(a.accountId, a.unitId);
+      // `split` bolumde bakiyesiz ortak malik carisi onerilmez (tahsilat paydas carisine yazilir).
+      if (splitUnits.has(a.unitId) && a.accountId === mainReceivableId(a.unitId, 'owner') && a.balance === 0) continue;
+      const former = !isPrimaryReceivableId(a.accountId, a.unitId, a.liableParty);
       for (const userId of a.holder?.userIds ?? []) addHolder(a.accountId, userId);
+      if (coOwner && a.coOwner) addHolder(a.accountId, a.coOwner.userId);
       candidates.push({
         accountId: a.accountId,
         unitId: a.unitId,
@@ -219,7 +231,11 @@ export function createBankMatchService(overrides: Partial<BankMatchDeps> & Pick<
         ...(a.closedThrough ? { closedThrough: a.closedThrough } : {}),
         ...(codeOf.has(a.accountId) ? { refCode: codeOf.get(a.accountId) as string } : {}),
         accountName: a.name,
-        partyLabel: former ? `Ayrılan ${a.liableParty === 'owner' ? 'malik' : 'sakin'} carisi` : PARTY_LABEL[a.liableParty],
+        partyLabel: former
+          ? `Ayrılan ${a.liableParty === 'owner' ? 'malik' : 'sakin'} carisi`
+          : coOwner
+            ? 'Kat maliki (paydaş)'
+            : PARTY_LABEL[a.liableParty],
       });
     }
     candidates.sort((x, y) => x.unitLabel.localeCompare(y.unitLabel, 'tr', { numeric: true }) || x.accountId.localeCompare(y.accountId));
@@ -1524,7 +1540,8 @@ export function createBankMatchService(overrides: Partial<BankMatchDeps> & Pick<
       const blockName = blocks.find((b) => b.blockId === resolved.unit.blockId)?.name;
       const references = [];
       for (const party of resolved.parties) {
-        const accountId = mainReceivableId(resolved.unit.unitId, party);
+        // Finans 2.1: `split` bolumde malikin referans kodu kendi paydas carisine aittir.
+        const accountId = resolved.accounts?.[party] ?? mainReceivableId(resolved.unit.unitId, party);
         references.push({ liableParty: party, label: PARTY_LABEL[party], code: await ensureRef(ctx.apartmentId, accountId, resolved.unit.unitId, party, ctx.userId) });
       }
       return {

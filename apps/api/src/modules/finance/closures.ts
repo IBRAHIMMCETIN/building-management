@@ -75,6 +75,11 @@ export type CariClosure = TableKeys & {
   transactionIds: { lateFee?: string; close?: string; open?: string; refund?: string };
   /** Bu kapamadan onceki kilit (geri almada geri yuklenir). */
   previousClosedThrough?: IsoDate;
+  /**
+   * Finans 2.1: kapama bir mulk/hisse devrinin parcasi (ayni atomik yazim). Boyle bir kapama tek
+   * basina geri alinamaz; devir geri alinir (sicil ve uyelikler de birlikte doner).
+   */
+  ownershipTransferId?: string;
   status: 'completed' | 'reversed';
   reason: string;
   reversal?: { at: IsoDateTime; by: string; reason: string; transactionIds: string[] };
@@ -215,6 +220,51 @@ function parseUserIds(value: unknown): string[] {
 function reqDate(value: unknown, field: string): IsoDate {
   if (typeof value !== 'string' || !isIsoDate(value)) throw new ValidationError(`${field} YYYY-MM-DD olmalidir`, field);
   return value;
+}
+
+/**
+ * Kapama geri alinirken ters kaydedilecek islemler (saf; `reverse` ve mulk devri geri almasi ortak
+ * kullanir). Kapama/acilis islemleri ve ayrilan caride sistemin yazdigi tazminatlar ters kaydedilir;
+ * hedef caride tahsilat mahsubu veya avans kullanimi varsa `FinanceError` firlatir. Kapama tarihine
+ * kadarki tazminat yerinde kalir (o gune kadar islemis gercek borctur).
+ */
+export function reversibleTransactions(closure: CariClosure, all: readonly Transaction[], today: IsoDate): Transaction[] {
+  const byId = new Map(all.map((t) => [t.transactionId, t]));
+  const cancelled = cancelledIn(all);
+  const toReverse: Transaction[] = [];
+  const close = closure.transactionIds.close ? byId.get(closure.transactionIds.close) : undefined;
+  const open = closure.transactionIds.open ? byId.get(closure.transactionIds.open) : undefined;
+  if (close && !cancelled.has(close.transactionId)) toReverse.push(close);
+
+  if (open && !cancelled.has(open.transactionId) && closure.targetAccountId) {
+    const target = closure.targetAccountId;
+    const own = new Set(Object.values(closure.transactionIds));
+    const isFormer = target.endsWith(`-c${closure.closureId}`);
+    if (isFormer) {
+      // Ayrilan caride yalnizca bu kapamanin acilisi ve sistemin yazdigi tazminatlar olabilir.
+      const others = linesOfAccount(target, all).filter((l) => !own.has(l.transaction.transactionId) && !cancelled.has(l.transaction.transactionId));
+      if (others.some((l) => l.transaction.kind !== 'late_fee')) {
+        throw new FinanceError('unprocessable', 'Ayrilan sakin carisinde tahsilat veya duzeltme var; kapama geri alinamaz');
+      }
+      toReverse.push(...[...new Set(others.map((l) => l.transaction))]);
+    } else {
+      // Paylasilan cari (malik / yeni malik): devredilen kalemler hic mahsup edilmemis olmali.
+      const sub = readSubledger(linesOfAccount(target, all), cancelled);
+      const { all: allocated, advance } = allocate(sub, today);
+      if (closure.debt > 0) {
+        const touched = (open.transfer?.items ?? []).some((_, i) => {
+          const c = allocated.find((x) => x.id === transferItemId(open.transactionId, i));
+          return !c || c.paid > 0;
+        });
+        if (touched) throw new FinanceError('unprocessable', 'Devredilen kalemlere tahsilat mahsup edilmis; kapama geri alinamaz');
+      } else if (advance < closure.advance) {
+        throw new FinanceError('unprocessable', 'Devredilen avans kullanilmis; kapama geri alinamaz');
+      }
+    }
+    toReverse.push(open);
+  }
+
+  return toReverse;
 }
 
 export function createClosureService(overrides: Partial<ClosureServiceDeps> & Pick<ClosureServiceDeps, 'finance'>) {
@@ -697,6 +747,9 @@ export function createClosureService(overrides: Partial<ClosureServiceDeps> & Pi
     if (reason.length < 5) throw new ValidationError('Gerekce en az 5 karakter olmalidir', 'reason');
     const closure = await get(ctx, closureId);
     if (closure.status === 'reversed') throw new FinanceError('conflict', 'Kapama zaten geri alinmis');
+    if (closure.ownershipTransferId) {
+      throw new FinanceError('unprocessable', 'Bu kapama bir mulk/hisse devriyle yapildi; devri geri alin');
+    }
     if (closure.transactionIds.refund) {
       throw new FinanceError('unprocessable', 'Avans iade edildigi icin kapama geri alinamaz; duzeltmeyi elle kayitla yapin');
     }
@@ -707,44 +760,11 @@ export function createClosureService(overrides: Partial<ClosureServiceDeps> & Pi
       deps.memberships.list(ctx.apartmentId, { unitId: closure.unitId }),
     ]);
     const all = txPage.items;
-    const byId = new Map(all.map((t) => [t.transactionId, t]));
-    const cancelled = cancelledIn(all);
     if (source?.closedThrough && source.closedThrough > closure.moveOutDate) {
       throw new FinanceError('unprocessable', 'Bu cari daha sonra tekrar kapatilmis; once sonraki kapamayi geri alin');
     }
 
-    const toReverse: Transaction[] = [];
-    const close = closure.transactionIds.close ? byId.get(closure.transactionIds.close) : undefined;
-    const open = closure.transactionIds.open ? byId.get(closure.transactionIds.open) : undefined;
-    if (close && !cancelled.has(close.transactionId)) toReverse.push(close);
-
-    if (open && !cancelled.has(open.transactionId) && closure.targetAccountId) {
-      const target = closure.targetAccountId;
-      const own = new Set(Object.values(closure.transactionIds));
-      const isFormer = target.endsWith(`-c${closure.closureId}`);
-      if (isFormer) {
-        // Ayrilan caride yalnizca bu kapamanin acilisi ve sistemin yazdigi tazminatlar olabilir.
-        const others = linesOfAccount(target, all).filter((l) => !own.has(l.transaction.transactionId) && !cancelled.has(l.transaction.transactionId));
-        if (others.some((l) => l.transaction.kind !== 'late_fee')) {
-          throw new FinanceError('unprocessable', 'Ayrilan sakin carisinde tahsilat veya duzeltme var; kapama geri alinamaz');
-        }
-        toReverse.push(...[...new Set(others.map((l) => l.transaction))]);
-      } else {
-        // Paylasilan cari (malik / yeni malik): devredilen kalemler hic mahsup edilmemis olmali.
-        const sub = readSubledger(linesOfAccount(target, all), cancelled);
-        const { all: allocated, advance } = allocate(sub, today());
-        if (closure.debt > 0) {
-          const touched = (open.transfer?.items ?? []).some((_, i) => {
-            const c = allocated.find((x) => x.id === transferItemId(open.transactionId, i));
-            return !c || c.paid > 0;
-          });
-          if (touched) throw new FinanceError('unprocessable', 'Devredilen kalemlere tahsilat mahsup edilmis; kapama geri alinamaz');
-        } else if (advance < closure.advance) {
-          throw new FinanceError('unprocessable', 'Devredilen avans kullanilmis; kapama geri alinamaz');
-        }
-      }
-      toReverse.push(open);
-    }
+    const toReverse = reversibleTransactions(closure, all, today());
 
     const date = today();
     const reversals = toReverse.map((t) =>

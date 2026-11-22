@@ -707,9 +707,9 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
    * defterine gore `lateFeeAsOf` itibariyla yazilmamis tazminatin kucugu. Niyet ile onay
    * arasinda aylik kesinlestirme calistiysa ayni tazminat iki kez yazilmaz; fark avans kalir.
    */
-  async function lateFeeCap(intent: PaymentIntent, party: LiableParty, planned: Kurus): Promise<Kurus> {
+  async function lateFeeCap(intent: PaymentIntent, party: LiableParty, planned: Kurus, account?: string): Promise<Kurus> {
     if (planned <= 0) return toKurus(0);
-    const accountId = receivableAccountId(intent.unitId, party);
+    const accountId = account ?? receivableAccountId(intent.unitId, party);
     const entries = (await deps.ledger.listLedgerEntries(intent.apartmentId, accountId)).filter(
       (e) => e.siteId === intent.apartmentId && e.accountId === accountId,
     );
@@ -738,8 +738,9 @@ export function createPaymentsService(overrides: Partial<PaymentsServiceDeps> & 
     const allocations = await Promise.all(
       intent.allocations.map(async (a) => ({
         liableParty: a.liableParty,
+        ...(a.accountId ? { accountId: a.accountId } : {}),
         amount: a.amount,
-        lateFee: await lateFeeCap(intent, a.liableParty, a.lateFee),
+        lateFee: await lateFeeCap(intent, a.liableParty, a.lateFee, a.accountId),
       })),
     );
     const settlement = initialSettlement(intent, o);

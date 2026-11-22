@@ -16,6 +16,7 @@ import { type PayoutService, createPayoutService } from '../modules/payments/pay
 import { type PaymentsService, createPaymentsService } from '../modules/payments/service.js';
 import { portalRepository } from '../modules/portal/repository.js';
 import { createPortalService } from '../modules/portal/service.js';
+import { createOwnershipReader } from '../modules/ownership/reader.js';
 import type { SqsBatchResponse, SqsEvent } from './notification-worker.js';
 
 /**
@@ -147,7 +148,8 @@ export function createSchedulerWorker(overrides: Partial<SchedulerDeps> = {}) {
   const lazyOps: { outbox?: SchedulerDeps['outbox']; auditor?: SchedulerDeps['auditor']; auditChain?: SchedulerDeps['auditChain']; metrics?: MetricsEmitter } = {};
   const now = overrides.now ?? (() => new Date());
   const events = () => (lazy.events ??= overrides.events ?? createEventPublisherFromEnv());
-  const finance = () => (lazy.finance ??= overrides.finance ?? createFinanceService({ now, memberships: membershipRepository }));
+  const finance = () =>
+    (lazy.finance ??= overrides.finance ?? createFinanceService({ now, memberships: membershipRepository, ownership: createOwnershipReader() }));
   /** Odeme servisleri tek yapilandirmadan, ilk kullanimda kurulur. */
   function paymentServices() {
     if (lazy.payments !== undefined && lazy.payouts !== undefined && lazy.invoices !== undefined) return;
@@ -159,9 +161,9 @@ export function createSchedulerWorker(overrides: Partial<SchedulerDeps> = {}) {
         ? overrides.payments
         : enabled && config
           ? createPaymentsService({
-              portal: createPortalService({ now }),
+              portal: createPortalService({ now, ownership: createOwnershipReader() }),
               ledger: portalRepository,
-              finance: createFinanceService({ now, memberships: membershipRepository }),
+              finance: createFinanceService({ now, memberships: membershipRepository, ownership: createOwnershipReader() }),
               // Mutabakat her niyeti kendi saglayicisiyla sorgular (acik tum saglayicilar).
               providers: config.providers,
               // P4: vadesi gelen platform transferleri burada gonderilir (IBAN yalnizca burada cozulur).

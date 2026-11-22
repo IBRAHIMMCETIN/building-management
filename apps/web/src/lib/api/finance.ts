@@ -111,6 +111,11 @@ export const accountSchema = z.object({
   status: z.enum(['active', 'inactive']),
   balance: kurus,
   system: z.boolean().optional(),
+  /** Alt cari (receivable) ise daire ve taraf. */
+  unitId: z.string().optional(),
+  liableParty: party.optional(),
+  /** Finans 2.1: `split` faturalamada paydasin malik alt carisi. */
+  coOwner: z.object({ userId: z.string() }).optional(),
 });
 
 export type FinanceSummary = z.infer<typeof summarySchema>;

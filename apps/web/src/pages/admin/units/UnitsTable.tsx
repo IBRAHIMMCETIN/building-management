@@ -1,4 +1,4 @@
-import { History, LogOut, ShieldMinus, UserPlus } from 'lucide-react';
+import { History, LogOut, PieChart, ShieldMinus, UserPlus } from 'lucide-react';
 import { Badge, Button, Skeleton } from '@/components/ui';
 import { expenseCategoryLabel } from '@/lib/api/finance';
 import { UNIT_TYPE_LABELS } from '@/lib/api/units';
@@ -14,6 +14,8 @@ type Props = {
   canViewCari?: boolean;
   /** Tasinma sihirbazi (wizard=true) veya kapama gecmisi. */
   onCari?: (row: UnitRow, wizard: boolean) => void;
+  /** Finans 2.1: daire mulkiyeti (paydaslar, faturalama modu, devirler). */
+  onOwnership?: (row: UnitRow) => void;
 };
 
 function Parties({ parties, empty = '—' }: { parties: RowParty[]; empty?: string }) {
@@ -54,7 +56,7 @@ function exemptionText(row: UnitRow): string | null {
 }
 
 /** md ve ustu: tablo. Alti: kart listesi (yatay kaydirma yerine okunabilir satirlar). */
-export function UnitsTable({ rows, showResidents, canManage, onInvite, onExemptions, canViewCari = false, onCari }: Props) {
+export function UnitsTable({ rows, showResidents, canManage, onInvite, onExemptions, canViewCari = false, onCari, onOwnership }: Props) {
   const showActions = canManage || (canViewCari && !!onCari);
   const historyButton = (row: UnitRow, full = false) =>
     canViewCari && onCari ? (
@@ -67,6 +69,19 @@ export function UnitsTable({ rows, showResidents, canManage, onInvite, onExempti
       >
         <History className="size-4" aria-hidden="true" />
         {full && 'Cari geçmişi'}
+      </Button>
+    ) : null;
+  const ownershipButton = (row: UnitRow, full = false) =>
+    canViewCari && onOwnership ? (
+      <Button
+        variant={full ? 'secondary' : 'ghost'}
+        size="sm"
+        onClick={() => onOwnership(row)}
+        aria-label={`${unitLabel(row)} mülkiyet ve hisse devri`}
+        title="Mülkiyet ve hisse devri"
+      >
+        <PieChart className="size-4" aria-hidden="true" />
+        {full && 'Mülkiyet'}
       </Button>
     ) : null;
   const moveOutButton = (row: UnitRow, full = false) =>
@@ -144,6 +159,7 @@ export function UnitsTable({ rows, showResidents, canManage, onInvite, onExempti
                         </>
                       )}
                       {moveOutButton(row)}
+                      {ownershipButton(row)}
                       {historyButton(row)}
                     </div>
                   </td>
@@ -196,6 +212,7 @@ export function UnitsTable({ rows, showResidents, canManage, onInvite, onExempti
                   </>
                 )}
                 {moveOutButton(row, true)}
+                {ownershipButton(row, true)}
                 {historyButton(row, true)}
               </div>
             )}

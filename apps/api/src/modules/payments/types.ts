@@ -136,6 +136,11 @@ export const MAX_PLATFORM_FEE_BASIS_POINTS = 2_000;
 /** Bir alt cari icin odeme dagilimi. `amount = principal + lateFee`. */
 export type IntentAllocation = {
   liableParty: LiableParty;
+  /**
+   * Finans 2.1: tahsilatin yazilacagi alt cari, yalnizca ana cari DISINDA (`split` dairede
+   * paydasin alt carisi). Yoksa tarafin ana carisi.
+   */
+  accountId?: string;
   /** Kapatilan borc (acik tahakkuklar + deftere yazilmis acik tazminat kalemleri). */
   principal: Kurus;
   /** Odeme aninda kesinlesecek, henuz deftere yazilmamis gecikme tazminati (yalnizca total). */

@@ -16,6 +16,7 @@ import {
 } from '../core/validation.js';
 import { type UnitMembership, type UnitRelation, visibleParties } from '../portal/types.js';
 import { type MembershipRepository, membershipKeys, membershipRepository } from './repository.js';
+import type { OwnershipReader } from '../ownership/reader.js';
 
 /**
  * Yonetici tarafi daire uyeligi yonetimi (malik / kiraci atama, giris-cikis tarihleri).
@@ -41,6 +42,11 @@ export type MembershipServiceDeps = {
   repository: MembershipRepository;
   core: Pick<CoreRepository, 'getUnit'>;
   now: () => Date;
+  /**
+   * Finans 2.1: mulkiyet sicili olan bolumde pay YALNIZCA devir veya sicil duzeltmesiyle degisir
+   * (uyelikteki pay sicilin aynasidir). Verilmezse (testler / eski cagiranlar) kural uygulanmaz.
+   */
+  ownership?: Pick<OwnershipReader, 'hasRegister'>;
 };
 
 export type MembershipView = UnitMembership & {
@@ -158,12 +164,21 @@ export function createMembershipService(overrides: Partial<MembershipServiceDeps
     return m;
   }
 
+  const registered = async (ctx: MembershipContext, unitId: string) =>
+    deps.ownership ? deps.ownership.hasRegister(ctx.apartmentId, unitId) : false;
+
   async function checkConflicts(ctx: MembershipContext, candidate: UnitMembership): Promise<void> {
     const others = (await repo.list(ctx.apartmentId, { unitId: candidate.unitId })).filter(
       (m) => m.userId !== candidate.userId,
     );
-    assertNoConflicts(candidate, others);
+    // Sicilli bolumde pay kurali sicildedir (tarih bazli, toplam tam 1); uyelikteki tek degerli pay
+    // alanlari gecmis donemlerle karsilastirilmaz. Oturan malik / kiraci kurali her durumda gecerli.
+    const subject = (await registered(ctx, candidate.unitId)) ? { ...candidate, ownershipShare: undefined } : candidate;
+    assertNoConflicts(subject, others);
   }
+
+  const REGISTER_ONLY =
+    'Bu bölümün mülkiyet sicili var; hisse payı yalnızca mülk/hisse devri veya sicil düzeltmesiyle değişir';
 
   function mapWriteError(err: unknown, onConflict: string): unknown {
     if (err instanceof DataAccessError && err.code === 'conflict') return new CoreError('conflict', onConflict);
@@ -185,6 +200,7 @@ export function createMembershipService(overrides: Partial<MembershipServiceDeps
 
     const unit = await deps.core.getUnit(ctx.apartmentId, unitId);
     if (!unit || unit.status !== 'active') throw new CoreError('not_found', 'Bagimsiz bolum bulunamadi veya pasif');
+    if (ownershipShare && (await registered(ctx, unitId))) throw new CoreError('conflict', REGISTER_ONLY);
 
     const ts = stamp();
     const membership: UnitMembership = {
@@ -286,6 +302,10 @@ export function createMembershipService(overrides: Partial<MembershipServiceDeps
       version: current.version + 1,
     };
     assertShape(next);
+    const shareChanged =
+      (current.ownershipShare?.numerator ?? 0) !== (next.ownershipShare?.numerator ?? 0) ||
+      (current.ownershipShare?.denominator ?? 0) !== (next.ownershipShare?.denominator ?? 0);
+    if (shareChanged && (await registered(ctx, unitId))) throw new CoreError('conflict', REGISTER_ONLY);
     await checkConflicts(ctx, next);
 
     try {

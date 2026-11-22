@@ -120,6 +120,8 @@ export function outcomeText(c: Pick<CariClosure, 'party' | 'debt' | 'advance' | 
 export function canOfferReverse(c: CariClosure, all: readonly CariClosure[]): boolean {
   if (c.status !== 'completed') return false;
   if (c.advance > 0 && c.advanceTo === 'refund') return false;
+  // Mulk/hisse devriyle yapilan kapama devirle birlikte geri alinir (Mulkiyet penceresi).
+  if (c.ownershipTransferId) return false;
   // Ayni cari icin daha sonraki tamamlanmis kapama varsa once o geri alinmali.
   return !all.some((o) => o !== c && o.status === 'completed' && o.sourceAccountId === c.sourceAccountId && o.moveOutDate > c.moveOutDate);
 }
