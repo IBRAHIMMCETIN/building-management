@@ -179,11 +179,15 @@ data "aws_iam_policy_document" "deploy" {
     ]
   }
 
-  # P4 (payments.tf): aktarim alicisi sifreleme anahtari. Anahtar olusturma kaynak duzeyinde
-  # kisitlanamaz; Project etiketi zorunlu. Yonetim islemleri yalnizca bu projenin etiketli
-  # anahtarlarinda; alias yalnizca <proje>* adinda. Dagitim anahtarla SIFRELEME/COZME yapamaz.
+  # Yigindaki musteri yonetimli KMS anahtarlari:
+  #   - P4 (payments.tf): aktarim alicisi sifreleme anahtari (SYMMETRIC_DEFAULT / ENCRYPT_DECRYPT)
+  #   - Faz B1 (bank.tf): banka ekstresi IBAN HMAC anahtari (HMAC_256 / GENERATE_VERIFY_MAC)
+  # Anahtar olusturma kaynak duzeyinde kisitlanamaz; Project etiketi zorunlu ve yalnizca bu iki anahtar
+  # turu olusturulabilir (IfExists: saglayici turu gondermezse varsayilan SYMMETRIC_DEFAULT'tur).
+  # Yonetim islemleri yalnizca bu projenin etiketli anahtarlarinda; alias yalnizca <proje>* adinda.
+  # Dagitim anahtarla SIFRELEME/COZME/MAC URETME yapamaz.
   statement {
-    sid       = "KmsCreatePayeeKey"
+    sid       = "KmsCreateProjectKey"
     actions   = ["kms:CreateKey", "kms:TagResource"]
     resources = ["*"]
 
@@ -192,10 +196,22 @@ data "aws_iam_policy_document" "deploy" {
       variable = "aws:RequestTag/Project"
       values   = [var.project]
     }
+
+    condition {
+      test     = "StringEqualsIfExists"
+      variable = "kms:KeySpec"
+      values   = ["SYMMETRIC_DEFAULT", "HMAC_256"]
+    }
+
+    condition {
+      test     = "StringEqualsIfExists"
+      variable = "kms:KeyUsage"
+      values   = ["ENCRYPT_DECRYPT", "GENERATE_VERIFY_MAC"]
+    }
   }
 
   statement {
-    sid = "KmsManagePayeeKey"
+    sid = "KmsManageProjectKey"
     actions = [
       "kms:DescribeKey",
       "kms:GetKeyPolicy",

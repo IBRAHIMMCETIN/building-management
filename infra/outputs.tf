@@ -125,6 +125,11 @@ output "payments_callback_urls" {
   } : null
 }
 
+output "bank_iban_mac_key_arn" {
+  description = "Faz B1: banka ekstresi karsi taraf IBAN HMAC anahtari (GenerateMac, HMAC_SHA_256)."
+  value       = aws_kms_key.bank_iban_hmac.arn
+}
+
 output "payee_kms_key_arn" {
   description = "P4: aktarim alicisi (IBAN) sifreleme anahtari. Odeme kapaliysa null."
   value       = local.payee_kms_key_arn

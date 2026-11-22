@@ -535,6 +535,7 @@ run "prod_plan" {
       toset(keys(aws_apigatewayv2_route.sensitive)) == toset([
         "POST /api/me/mfa/totp/setup", "POST /api/me/mfa/totp/verify", "POST /api/mfa/users/{userId}/reset",
         "POST /api/support/sessions", "POST /api/residents/invite", "POST /api/finance/dues", "POST /api/imports",
+        "POST /api/bank/statements/upload-url", "POST /api/bank/statements", "POST /api/bank/statements/{statementId}/commit",
       ]) &&
       alltrue([for r in aws_apigatewayv2_route.sensitive : r.authorization_type == "JWT"])
     )
@@ -753,6 +754,90 @@ run "ses_requires_from_address" {
 # Online odeme (Adim 8b)
 # ---------------------------------------------------------------------------
 
+# --- Faz B1: banka ekstresi IBAN HMAC anahtari ---
+run "bank_iban_hmac" {
+  command = plan
+
+  variables {
+    environment                  = "dev"
+    dynamodb_deletion_protection = false
+  }
+
+  # Anahtar ARN'i plan asamasinda sabitlenir (IAM kaynagi ve Lambda ortam degiskeni kontrolu icin).
+  override_resource {
+    target          = aws_kms_key.bank_iban_hmac
+    override_during = plan
+    values = {
+      arn    = "arn:aws:kms:eu-central-1:123456789012:key/5b2f7c1e-0d6a-4c1f-9e3b-6a7d8c9b0a12"
+      key_id = "5b2f7c1e-0d6a-4c1f-9e3b-6a7d8c9b0a12"
+    }
+  }
+
+  assert {
+    condition = (
+      aws_kms_key.bank_iban_hmac.key_usage == "GENERATE_VERIFY_MAC" &&
+      aws_kms_key.bank_iban_hmac.customer_master_key_spec == "HMAC_256" &&
+      aws_kms_key.bank_iban_hmac.deletion_window_in_days == 7 &&
+      aws_kms_alias.bank_iban_hmac.name == "alias/building-management-dev-bank-iban-hmac"
+    )
+    error_message = "IBAN anahtari: musteri yonetimli HMAC_256 (GENERATE_VERIFY_MAC), alias <proje>-<ortam>-bank-iban-hmac"
+  }
+  # Odeme kapaliyken de olusur: banka ekstresi aktarimi odemeden bagimsizdir.
+  assert {
+    condition     = length(aws_kms_key.payee) == 0
+    error_message = "Bu testte odeme kapali olmali (IBAN anahtari odemeden bagimsiz)"
+  }
+  assert {
+    condition = (
+      [for st in data.aws_iam_policy_document.api.statement : {
+        sid       = st.sid
+        actions   = toset(st.actions)
+        resources = toset(st.resources)
+        ctx       = [for c in st.condition : "${c.test}|${c.variable}|${join(",", c.values)}"]
+      } if anytrue([for a in st.actions : startswith(a, "kms:")])] ==
+      [{
+        sid       = "BankIbanMac"
+        actions   = toset(["kms:GenerateMac"])
+        resources = toset(["arn:aws:kms:eu-central-1:123456789012:key/5b2f7c1e-0d6a-4c1f-9e3b-6a7d8c9b0a12"])
+        ctx       = ["StringEquals|kms:MacAlgorithm|HMAC_SHA_256"]
+      }]
+    )
+    error_message = "API Lambda yalnizca bu anahtarla, yalnizca HMAC_SHA_256 ile kms:GenerateMac yapabilmeli (VerifyMac/Encrypt/Decrypt yok)"
+  }
+  assert {
+    condition = alltrue([
+      for doc in [data.aws_iam_policy_document.scheduler_worker, data.aws_iam_policy_document.pre_token] :
+      length([for a in flatten([for st in doc.statement : st.actions]) : a if a == "kms:GenerateMac" || a == "kms:VerifyMac"]) == 0
+    ])
+    error_message = "IBAN HMAC yetkisi yalnizca API Lambda'da olmali"
+  }
+  assert {
+    condition = (
+      aws_lambda_function.api.environment[0].variables.BANK_IBAN_MAC_KEY_ID == "arn:aws:kms:eu-central-1:123456789012:key/5b2f7c1e-0d6a-4c1f-9e3b-6a7d8c9b0a12" &&
+      !contains(keys(aws_lambda_function.scheduler_worker.environment[0].variables), "BANK_IBAN_MAC_KEY_ID") &&
+      output.bank_iban_mac_key_arn == "arn:aws:kms:eu-central-1:123456789012:key/5b2f7c1e-0d6a-4c1f-9e3b-6a7d8c9b0a12"
+    )
+    error_message = "API Lambda IBAN HMAC anahtarini BANK_IBAN_MAC_KEY_ID ile almali; cikti bank_iban_mac_key_arn"
+  }
+  assert {
+    condition = alltrue([
+      for k in ["POST /api/bank/statements/upload-url", "POST /api/bank/statements", "POST /api/bank/statements/{statementId}/commit"] :
+      aws_apigatewayv2_route.sensitive[k].authorization_type == "JWT" &&
+      anytrue([for rs in aws_apigatewayv2_stage.default.route_settings : rs.route_key == k && rs.throttling_rate_limit == 2 && rs.throttling_burst_limit == 5])
+    ])
+    error_message = "Banka ekstresi yazma uclari JWT'li ayri rotalar ve toplu yazim siniri (2/5) almali"
+  }
+}
+
+run "bank_iban_hmac_prod_retention" {
+  command = plan
+
+  assert {
+    condition     = aws_kms_key.bank_iban_hmac.deletion_window_in_days == 30 && aws_kms_alias.bank_iban_hmac.name == "alias/building-management-bank-iban-hmac"
+    error_message = "Prod'da IBAN HMAC anahtari 30 gun silme beklemesiyle korunmali"
+  }
+}
+
 run "payments_disabled_by_default" {
   command = plan
 
@@ -786,7 +871,8 @@ run "payments_disabled_by_default" {
       length(aws_kms_key.payee) == 0 && length(aws_kms_alias.payee) == 0 && output.payee_kms_key_arn == null &&
       !contains(keys(aws_scheduler_schedule.jobs), "payout_returns") && !contains(keys(aws_scheduler_schedule.jobs), "platform_invoices") &&
       length(aws_cloudwatch_metric_alarm.payout_returned) == 0 && length(aws_cloudwatch_metric_alarm.payout_failed) == 0 &&
-      length([for a in flatten([for st in data.aws_iam_policy_document.api.statement : st.actions]) : a if startswith(a, "kms:")]) == 0
+      # Odemeden bagimsiz tek KMS yetkisi: banka ekstresi IBAN HMAC'i (Faz B1, bank_iban_hmac testi).
+      length([for a in flatten([for st in data.aws_iam_policy_document.api.statement : st.actions if st.sid != "BankIbanMac"]) : a if startswith(a, "kms:")]) == 0
     )
     error_message = "Odeme kapaliyken alici anahtari, aktarim/fatura isleri ve alarmlari olusmamali"
   }
@@ -945,7 +1031,8 @@ run "payments_iyzico" {
   # Yetki ayrimi: API yalnizca sifreler, worker yalnizca cozer; ikisi de payment-payee baglamina kosullu.
   assert {
     condition = (
-      [for st in data.aws_iam_policy_document.api.statement : { sid = st.sid, actions = toset(st.actions), ctx = [for c in st.condition : "${c.test}|${c.variable}|${join(",", c.values)}"] } if anytrue([for a in st.actions : startswith(a, "kms:")])] ==
+      # BankIbanMac (Faz B1) ayri anahtar ve ayri testte (bank_iban_hmac) dogrulanir.
+      [for st in data.aws_iam_policy_document.api.statement : { sid = st.sid, actions = toset(st.actions), ctx = [for c in st.condition : "${c.test}|${c.variable}|${join(",", c.values)}"] } if st.sid != "BankIbanMac" && anytrue([for a in st.actions : startswith(a, "kms:")])] ==
       [{ sid = "EncryptPaymentPayee", actions = toset(["kms:Encrypt"]), ctx = ["StringEquals|kms:EncryptionContext:purpose|payment-payee"] }]
     )
     error_message = "API Lambda alici anahtariyla yalnizca kms:Encrypt (payment-payee baglami) yapabilmeli"
