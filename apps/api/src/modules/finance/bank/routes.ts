@@ -35,6 +35,13 @@ export type BankRoutesDeps = { authenticate: Authenticator; service: BankService
  *   POST /lines/:lineId/unmatch  { bankAccountId, expectedVersion, reason }
  *   GET  /reconciliation?bankAccountId=
  *   GET  /accounts, PUT /accounts/:bankAccountId/profile { iban, accountHolderName, bankName?, residentVisible, expectedVersion? }
+ * Faz B3:
+ *   GET  /statements/:statementId/auto-match?minConfidence=   toplu onay on izlemesi
+ *   POST /statements/:statementId/auto-match  { idempotencyKey, minConfidence? (vars. 0.85) }
+ *        -> { matchedCount, totalMatchedAmount, skippedLowConfidence, skippedAmbiguous, skippedClosed, skippedConflict, remaining, ... }
+ *        (API Gateway'de toplu yazim throttling grubunda: infra/security_monitoring.tf)
+ *   POST /lines/:lineId/expense  { bankAccountId, expectedVersion, expenseAccountId, description?, supplier?, invoiceNumber?, reason? }
+ *   GET  /reconciliation?bankAccountId=&from=&to=   ayrintili dokum (acilis/kapanis, fark, eslesen/bekleyen/yoksayilan)
  */
 export function bankRoutes({ authenticate, service, match }: BankRoutesDeps) {
   const r = new Hono<Env>();
@@ -108,8 +115,17 @@ export function bankRoutes({ authenticate, service, match }: BankRoutesDeps) {
     r.post('/lines/:lineId/ignore', requireRole(WRITE_ROLES), async (c) => c.json(await match.ignore(ctx(c), lineId(c), await readJson(c))));
     r.post('/lines/:lineId/unmatch', requireRole(WRITE_ROLES), async (c) => c.json(await match.unmatch(ctx(c), lineId(c), await readJson(c))));
     r.get('/reconciliation', requireRole(READ_ROLES), async (c) =>
-      c.json(await match.reconciliation(ctx(c), { bankAccountId: c.req.query('bankAccountId') })),
+      c.json(await match.reconciliation(ctx(c), { bankAccountId: c.req.query('bankAccountId'), from: c.req.query('from'), to: c.req.query('to') })),
     );
+    // Faz B3
+    const statementId = (c: Context<Env>) => c.req.param('statementId') ?? '';
+    r.get('/statements/:statementId/auto-match', requireRole(READ_ROLES), async (c) =>
+      c.json(await match.autoMatchPreview(ctx(c), statementId(c), { minConfidence: c.req.query('minConfidence') })),
+    );
+    r.post('/statements/:statementId/auto-match', requireRole(WRITE_ROLES), async (c) =>
+      c.json(await match.autoMatch(ctx(c), statementId(c), await readJson(c))),
+    );
+    r.post('/lines/:lineId/expense', requireRole(WRITE_ROLES), async (c) => c.json(await match.expense(ctx(c), lineId(c), await readJson(c))));
     r.get('/accounts', requireRole(READ_ROLES), async (c) => c.json(await match.listAccounts(ctx(c))));
     r.put('/accounts/:bankAccountId/profile', requireRole(WRITE_ROLES), async (c) =>
       c.json(await match.saveProfile(ctx(c), c.req.param('bankAccountId'), await readJson(c))),

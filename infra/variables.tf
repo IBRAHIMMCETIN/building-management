@@ -279,6 +279,17 @@ variable "api_5xx_alarm_threshold" {
   description = "5 dakikada bu sayida veya daha fazla API Gateway 5xx yaniti alarm uretir."
 }
 
+variable "bank_recon_diff_alarm_threshold" {
+  type        = number
+  default     = 0
+  description = "Faz B3: gece denetiminde bir apartmanin banka mutabakatindaki aciklanamayan fark (kurus, mutlak) bu degeri asarsa alarm uretir (operations.tf)."
+
+  validation {
+    condition     = var.bank_recon_diff_alarm_threshold >= 0 && floor(var.bank_recon_diff_alarm_threshold) == var.bank_recon_diff_alarm_threshold
+    error_message = "bank_recon_diff_alarm_threshold negatif olmayan tam sayi (kurus) olmali."
+  }
+}
+
 variable "scheduler_enabled" {
   description = "Zamanlanmis gorevler (aylik aidat, gecikme tazminati, hatirlatma) acik mi? Kapaliyken zamanlamalar DISABLED olur; worker ve kuyruk yine kurulur (elle tetiklenebilir)."
   type        = bool

@@ -354,6 +354,22 @@ run "prod_plan" {
     )
     error_message = "Defter sapmasi ilk bulguda, outbox takilmasi 15 dakikada alarm uretmeli"
   }
+  # --- Faz B3: banka mutabakati metrigi (gece denetimi, EMF) ---
+  assert {
+    condition = (
+      aws_cloudwatch_metric_alarm.bank_recon_diff.namespace == "BuildingManagement" &&
+      aws_cloudwatch_metric_alarm.bank_recon_diff.metric_name == "BankReconDiff" &&
+      aws_cloudwatch_metric_alarm.bank_recon_diff.dimensions["Stack"] == "building-management" &&
+      length(aws_cloudwatch_metric_alarm.bank_recon_diff.dimensions) == 1 &&
+      aws_cloudwatch_metric_alarm.bank_recon_diff.statistic == "Maximum" &&
+      aws_cloudwatch_metric_alarm.bank_recon_diff.period == 86400 &&
+      aws_cloudwatch_metric_alarm.bank_recon_diff.threshold == 0 &&
+      aws_cloudwatch_metric_alarm.bank_recon_diff.comparison_operator == "GreaterThanThreshold" &&
+      aws_cloudwatch_metric_alarm.bank_recon_diff.treat_missing_data == "notBreaching" &&
+      contains(aws_cloudwatch_metric_alarm.bank_recon_diff.alarm_actions, aws_sns_topic.alerts.arn)
+    )
+    error_message = "BankReconDiff: worker EMF metrigi (Stack boyutu), gunluk pencere, varsayilan esik 0 kurus, platform uyari topic'i"
+  }
   assert {
     condition = length([
       for st in data.aws_iam_policy_document.scheduler_worker.statement : st
@@ -536,6 +552,7 @@ run "prod_plan" {
         "POST /api/me/mfa/totp/setup", "POST /api/me/mfa/totp/verify", "POST /api/mfa/users/{userId}/reset",
         "POST /api/support/sessions", "POST /api/residents/invite", "POST /api/finance/dues", "POST /api/imports",
         "POST /api/bank/statements/upload-url", "POST /api/bank/statements", "POST /api/bank/statements/{statementId}/commit",
+        "POST /api/bank/statements/{statementId}/auto-match",
       ]) &&
       alltrue([for r in aws_apigatewayv2_route.sensitive : r.authorization_type == "JWT"])
     )
@@ -821,11 +838,14 @@ run "bank_iban_hmac" {
   }
   assert {
     condition = alltrue([
-      for k in ["POST /api/bank/statements/upload-url", "POST /api/bank/statements", "POST /api/bank/statements/{statementId}/commit"] :
+      for k in [
+        "POST /api/bank/statements/upload-url", "POST /api/bank/statements", "POST /api/bank/statements/{statementId}/commit",
+        "POST /api/bank/statements/{statementId}/auto-match",
+      ] :
       aws_apigatewayv2_route.sensitive[k].authorization_type == "JWT" &&
       anytrue([for rs in aws_apigatewayv2_stage.default.route_settings : rs.route_key == k && rs.throttling_rate_limit == 2 && rs.throttling_burst_limit == 5])
     ])
-    error_message = "Banka ekstresi yazma uclari JWT'li ayri rotalar ve toplu yazim siniri (2/5) almali"
+    error_message = "Banka ekstresi yazma uclari ve toplu otomatik eslestirme JWT'li ayri rotalar ve toplu yazim siniri (2/5) almali"
   }
 }
 
@@ -1402,6 +1422,7 @@ run "security_thresholds_configurable" {
     mfa_verify_failure_alarm_threshold = 25
     mfa_reset_alarm_threshold          = 6
     api_5xx_alarm_threshold            = 12
+    bank_recon_diff_alarm_threshold    = 5000
   }
 
   assert {
@@ -1416,8 +1437,23 @@ run "security_thresholds_configurable" {
       aws_cloudwatch_metric_alarm.cognito_signin_failures.threshold == 50 &&
       aws_cloudwatch_metric_alarm.mfa_verify_failed.threshold == 25 &&
       aws_cloudwatch_metric_alarm.mfa_reset_spike.threshold == 6 &&
-      aws_cloudwatch_metric_alarm.api_5xx.threshold == 12
+      aws_cloudwatch_metric_alarm.api_5xx.threshold == 12 &&
+      aws_cloudwatch_metric_alarm.bank_recon_diff.threshold == 5000
     )
     error_message = "Alarm esikleri degiskenlerden gelmeli"
   }
+  assert {
+    condition     = anytrue([for rs in aws_apigatewayv2_stage.default.route_settings : rs.route_key == "POST /api/bank/statements/{statementId}/auto-match" && rs.throttling_rate_limit == 3])
+    error_message = "Toplu otomatik eslestirme rotasi toplu yazim degiskenini izlemeli"
+  }
+}
+
+run "rejects_negative_bank_recon_threshold" {
+  command = plan
+
+  variables {
+    bank_recon_diff_alarm_threshold = -1
+  }
+
+  expect_failures = [var.bank_recon_diff_alarm_threshold]
 }

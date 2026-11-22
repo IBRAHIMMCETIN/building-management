@@ -22,17 +22,19 @@ locals {
   # Hassas uclar: ayri JWT rotalari (ayni Lambda entegrasyonu) + daha siki rota sinirlari.
   # Daha ozel rota `ANY /api/{proxy+}`'den once eslesir; yetki kontrolu uygulamada degismez.
   # Faz B1: banka ekstresi uclari (S3 okuma, KMS GenerateMac, toplu satir yazimi) toplu yazim sinirinda.
+  # Faz B3: toplu otomatik eslestirme (istek basina 25 satira kadar atomik defter yazimi) da ayni grupta.
   sensitive_routes = {
-    "POST /api/me/mfa/totp/setup"                    = { rate = var.mfa_route_rate_limit, burst = var.mfa_route_burst_limit }
-    "POST /api/me/mfa/totp/verify"                   = { rate = var.mfa_route_rate_limit, burst = var.mfa_route_burst_limit }
-    "POST /api/mfa/users/{userId}/reset"             = { rate = var.security_admin_route_rate_limit, burst = var.security_admin_route_burst_limit }
-    "POST /api/support/sessions"                     = { rate = var.security_admin_route_rate_limit, burst = var.security_admin_route_burst_limit }
-    "POST /api/residents/invite"                     = { rate = var.bulk_write_route_rate_limit, burst = var.bulk_write_route_burst_limit }
-    "POST /api/finance/dues"                         = { rate = var.bulk_write_route_rate_limit, burst = var.bulk_write_route_burst_limit }
-    "POST /api/imports"                              = { rate = var.bulk_write_route_rate_limit, burst = var.bulk_write_route_burst_limit }
-    "POST /api/bank/statements/upload-url"           = { rate = var.bulk_write_route_rate_limit, burst = var.bulk_write_route_burst_limit }
-    "POST /api/bank/statements"                      = { rate = var.bulk_write_route_rate_limit, burst = var.bulk_write_route_burst_limit }
-    "POST /api/bank/statements/{statementId}/commit" = { rate = var.bulk_write_route_rate_limit, burst = var.bulk_write_route_burst_limit }
+    "POST /api/me/mfa/totp/setup"                        = { rate = var.mfa_route_rate_limit, burst = var.mfa_route_burst_limit }
+    "POST /api/me/mfa/totp/verify"                       = { rate = var.mfa_route_rate_limit, burst = var.mfa_route_burst_limit }
+    "POST /api/mfa/users/{userId}/reset"                 = { rate = var.security_admin_route_rate_limit, burst = var.security_admin_route_burst_limit }
+    "POST /api/support/sessions"                         = { rate = var.security_admin_route_rate_limit, burst = var.security_admin_route_burst_limit }
+    "POST /api/residents/invite"                         = { rate = var.bulk_write_route_rate_limit, burst = var.bulk_write_route_burst_limit }
+    "POST /api/finance/dues"                             = { rate = var.bulk_write_route_rate_limit, burst = var.bulk_write_route_burst_limit }
+    "POST /api/imports"                                  = { rate = var.bulk_write_route_rate_limit, burst = var.bulk_write_route_burst_limit }
+    "POST /api/bank/statements/upload-url"               = { rate = var.bulk_write_route_rate_limit, burst = var.bulk_write_route_burst_limit }
+    "POST /api/bank/statements"                          = { rate = var.bulk_write_route_rate_limit, burst = var.bulk_write_route_burst_limit }
+    "POST /api/bank/statements/{statementId}/commit"     = { rate = var.bulk_write_route_rate_limit, burst = var.bulk_write_route_burst_limit }
+    "POST /api/bank/statements/{statementId}/auto-match" = { rate = var.bulk_write_route_rate_limit, burst = var.bulk_write_route_burst_limit }
   }
 }
 

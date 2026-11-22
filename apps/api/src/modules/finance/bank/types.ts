@@ -177,8 +177,8 @@ export type BankLine = TableKeys & {
   status: LineStatus;
   /** B2: son karar kaydinin sira numarasi (`BANKMATCH#<lineId>#<n>`); karar yoksa yok. */
   decisionNo?: number;
-  /** B2: `matched` iken bagli defter kayitlari (karar kaydiyla ayni). */
-  match?: { decisionNo: number; transactionIds: string[]; paymentIds: string[] };
+  /** B2: `matched` iken bagli defter kayitlari (karar kaydiyla ayni). B3: gidere cevrilen satirda `expenseId`. */
+  match?: { decisionNo: number; transactionIds: string[]; paymentIds: string[]; expenseId?: string };
   /** B2: son durum degisikligi (eslestirme / yoksayma / geri alma). */
   updatedAt?: IsoDateTime;
   updatedBy?: string;
@@ -210,8 +210,18 @@ export type MatchAllocation = {
  * unmatch : bagli tahsilatlar ters kayitla iptal edildi, satir yeniden `unmatched`
  * ignore  : ic virman / banka masrafi vb. (defter kaydi yok)
  * restore : yoksayilan satir yeniden `unmatched`
+ * expense : (B3) cikan satir gider kaydina cevrildi (gider hesabi borc / banka alacak)
  */
-export type DecisionKind = 'match' | 'unmatch' | 'ignore' | 'restore';
+export type DecisionKind = 'match' | 'unmatch' | 'ignore' | 'restore' | 'expense';
+
+/** B3: cikan satirdan olusturulan gider (karar kaydinda). */
+export type ExpenseDecision = {
+  expenseId: string;
+  expenseAccountId: string;
+  description: string;
+  supplier?: string;
+  invoiceNumber?: string;
+};
 
 /**
  * Eslestirme karari: YALNIZCA EKLENIR (append-only). Geri alma eski kaydi degistirmez; yeni bir
@@ -229,7 +239,9 @@ export type BankDecision = TableKeys & {
   kind: DecisionKind;
   /** match: alt cari dagilimi (toplam = satir tutari). */
   allocations?: MatchAllocation[];
-  /** match: yazilan islemler (tazminat + tahsilat); unmatch: yazilan ters kayitlar. */
+  /** expense (B3): olusturulan gider kaydi. */
+  expense?: ExpenseDecision;
+  /** match: yazilan islemler (tazminat + tahsilat); expense: gider islemi; unmatch: yazilan ters kayitlar. */
   transactionIds: string[];
   /** match: makbuzlar. */
   paymentIds: string[];
@@ -238,8 +250,10 @@ export type BankDecision = TableKeys & {
   /** unmatch: iptal edilen islemler. */
   reversedTransactionIds?: string[];
   reason?: string;
-  /** Oneriden mi, elle mi? (raporlama) */
-  source?: 'suggestion' | 'manual';
+  /** Oneriden mi, elle mi, toplu otomatik onaydan mi? (raporlama) */
+  source?: 'suggestion' | 'manual' | 'auto';
+  /** B3: toplu otomatik onay calismasi (`BANKAUTO#` kaydi). */
+  autoRunId?: string;
   confidence?: number;
   createdAt: IsoDateTime;
   createdBy: string;
@@ -301,3 +315,59 @@ export type BankAccountProfile = TableKeys &
     /** Sakin "Havale / EFT ile ode" kartinda gosterilecek hesap (apartmanda en fazla bir). */
     residentVisible: boolean;
   };
+
+// ---------------------------------------------------------------------------
+// Faz B3: toplu otomatik eslestirme
+// ---------------------------------------------------------------------------
+
+/** Varsayilan guven esigi ve kabul edilen en dusuk esik. */
+export const AUTO_MATCH_DEFAULT_MIN_CONFIDENCE = 0.85;
+export const AUTO_MATCH_MIN_CONFIDENCE_FLOOR = 0.6;
+/**
+ * "Cakismasiz" oneri: ikinci onerinin guveni ilkinden en az bu kadar dusuk olmali (aksi halde
+ * iki aday yakin; insan karari gerekir).
+ */
+export const AUTO_MATCH_MARGIN = 0.1;
+/**
+ * Tek istekte en fazla bu kadar satir eslestirilir (API Gateway 29 sn siniri; satir basina tek
+ * atomik yazim). Kalan satirlar ayni anahtarla tekrar cagrilarak islenir (`remaining`).
+ */
+export const AUTO_MATCH_BATCH = 25;
+
+export type AutoMatchSkipped = {
+  /** En iyi oneri esigin altinda (veya hic oneri yok). */
+  lowConfidence: number;
+  /** Ikinci oneri ilkine cok yakin (insan karari gerekir). */
+  ambiguous: number;
+  /** Oneri, tasinma kapamasiyla kapanmis (closedThrough) bir cariye dusuyor. */
+  closed: number;
+  /** Satir isleme sirasinda baska bir istekle degisti. */
+  conflict: number;
+};
+
+/**
+ * Toplu otomatik eslestirme calismasi (istemcinin idempotency anahtari basina tek kayit).
+ *   PK = APT#<apt>, SK = BANKAUTO#<statementId>#<idempotencyKey>
+ * Her cagri yalnizca hala `unmatched` olan satirlari isler; eslestirilen satir sayisi ve tutari
+ * cagrilar boyunca birikir (surum kosullu). Atlanan satir sayilari son cagrinin anlik goruntusudur.
+ */
+export type BankAutoRun = TableKeys & {
+  entityType: 'BANK_AUTO_RUN';
+  apartmentId: string;
+  /** `<statementId>#<idempotencyKey>` (karar kayitlarinda `autoRunId`). */
+  runId: string;
+  statementId: string;
+  bankAccountId: string;
+  idempotencyKey: string;
+  minConfidence: number;
+  status: 'running' | 'completed';
+  calls: number;
+  matchedCount: number;
+  totalMatchedAmount: Kurus;
+  /** Son cagrida atlanan satirlar (anlik goruntu; sonraki cagri yeniden degerlendirir). */
+  lastSkipped: AutoMatchSkipped;
+  createdAt: IsoDateTime;
+  createdBy: string;
+  updatedAt: IsoDateTime;
+  version: number;
+};

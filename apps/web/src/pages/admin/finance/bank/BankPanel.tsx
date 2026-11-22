@@ -1,12 +1,15 @@
-import { Check, FileUp, Landmark, Split, Undo2, X } from 'lucide-react';
+import { Check, FileUp, Landmark, ReceiptText, Split, Undo2, X } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { Alert, Badge, Button, Card, Dialog, FilterChips, FormField, Input, Select, Skeleton } from '@/components/ui';
 import { useBankAccounts, useBankQueue, useIgnoreLine, useMatchLine, useReconciliation, useSaveBankProfile, useUnmatchLine } from '@/hooks/useBank';
 import { type BankAccount, type BankLine, LINE_STATUS_LABELS, type LineStatus } from '@/lib/api/bank';
 import { errorMessage } from '@/lib/api/errors';
 import { canQuickConfirm, confidenceBadge, groupIban } from '@/lib/bank/allocation';
+import { differenceNote, reconciliationRows } from '@/lib/bank/autoMatch';
 import { formatDate } from '@/lib/dates';
 import { formatSignedTRY, formatTRY } from '@/lib/money';
+import { AutoMatchBar } from './AutoMatchBar';
+import { ExpenseFromLineDialog } from './ExpenseFromLineDialog';
 import { MatchDialog, ReasonDialog } from './MatchDialog';
 import { UploadWizard } from './UploadWizard';
 
@@ -18,37 +21,93 @@ const FILTERS: readonly { value: StatusFilter; label: string }[] = [
   { value: 'all', label: 'Tümü' },
 ];
 
+const BADGE_TONE = { success: 'success', warning: 'warning', neutral: 'neutral' } as const;
+
+/**
+ * Mutabakat: ekstre acilis/kapanis bakiyesi, kapanis gunundeki defter bakiyesi ve fark; farkin
+ * bekleyen satirlarla aciklanip aciklanmadigi; aralikta eslesen / bekleyen / yoksayilan dokum.
+ */
 function ReconciliationCard({ bankAccountId }: { bankAccountId: string }) {
-  const r = useReconciliation(bankAccountId);
-  if (r.isPending) return <Skeleton className="h-28 w-full" />;
-  if (r.isError) return <Alert tone="danger">{errorMessage(r.error)}</Alert>;
+  const [range, setRange] = useState<{ from: string; to: string }>({ from: '', to: '' });
+  const r = useReconciliation(bankAccountId, { ...(range.from ? { from: range.from } : {}), ...(range.to ? { to: range.to } : {}) });
+  const header = (
+    <div className="flex flex-wrap items-end justify-between gap-3">
+      <h3 className="text-base font-semibold">Mutabakat</h3>
+      <div className="flex flex-wrap items-end gap-2">
+        <FormField label="Başlangıç">
+          <Input type="date" value={range.from} onChange={(e) => setRange((x) => ({ ...x, from: e.target.value }))} aria-label="Mutabakat başlangıç" />
+        </FormField>
+        <FormField label="Bitiş">
+          <Input type="date" value={range.to} onChange={(e) => setRange((x) => ({ ...x, to: e.target.value }))} aria-label="Mutabakat bitiş" />
+        </FormField>
+        {(range.from || range.to) && (
+          <Button size="sm" variant="ghost" onClick={() => setRange({ from: '', to: '' })}>
+            Son ekstre
+          </Button>
+        )}
+      </div>
+    </div>
+  );
+  if (r.isPending) return <Card className="flex flex-col gap-3">{header}<Skeleton className="h-28 w-full" /></Card>;
+  if (r.isError) return <Card className="flex flex-col gap-3">{header}<Alert tone="danger">{errorMessage(r.error)}</Alert></Card>;
   const d = r.data;
   const diff = d.difference;
+  const note = differenceNote(d);
   return (
-    <Card className="grid grid-cols-2 gap-3 sm:grid-cols-4" aria-label="Mutabakat özeti">
-      <div>
-        <p className="text-small text-muted">Ekstre bakiyesi</p>
-        <p className="font-semibold tabular-nums">{d.statement?.closingBalance !== undefined ? formatSignedTRY(d.statement.closingBalance) : '—'}</p>
-        {d.statement?.period && <p className="text-xs text-muted">{formatDate(d.statement.period.to)} itibarıyla</p>}
+    <Card className="flex flex-col gap-4" aria-label="Mutabakat özeti">
+      {header}
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+        <div>
+          <p className="text-small text-muted">Açılış (ekstre)</p>
+          <p className="font-semibold tabular-nums">{d.openingBalance !== undefined ? formatSignedTRY(d.openingBalance) : '—'}</p>
+          {d.openingStatement?.period && <p className="text-xs text-muted">{formatDate(d.openingStatement.period.from)} başı</p>}
+        </div>
+        <div>
+          <p className="text-small text-muted">Kapanış (ekstre)</p>
+          <p className="font-semibold tabular-nums">{d.statement?.closingBalance !== undefined ? formatSignedTRY(d.statement.closingBalance) : '—'}</p>
+          {d.statement?.period && <p className="text-xs text-muted">{formatDate(d.statement.period.to)} itibarıyla</p>}
+        </div>
+        <div>
+          <p className="text-small text-muted">Defter (banka hesabı)</p>
+          <p className="font-semibold tabular-nums">{formatSignedTRY(d.ledgerBalanceAtStatementEnd ?? d.ledgerBalance)}</p>
+          <p className="text-xs text-muted">Güncel: {formatSignedTRY(d.ledgerBalance)}</p>
+        </div>
+        <div>
+          <p className="text-small text-muted">Banka − defter farkı</p>
+          <p className={`font-semibold tabular-nums ${diff === undefined ? '' : diff === 0 ? 'text-success' : 'text-warning'}`}>
+            {diff === undefined ? '—' : formatSignedTRY(diff)}
+          </p>
+          {d.pendingNet !== undefined && d.pendingNet !== 0 && <p className="text-xs text-muted">Bekleyen net: {formatSignedTRY(d.pendingNet)}</p>}
+        </div>
+        <div>
+          <p className="text-small text-muted">Açıklanamayan fark</p>
+          <p className={`font-semibold tabular-nums ${d.unexplainedDiff === undefined ? '' : d.unexplainedDiff === 0 ? 'text-success' : 'text-danger'}`}>
+            {d.unexplainedDiff === undefined ? '—' : formatSignedTRY(d.unexplainedDiff)}
+          </p>
+        </div>
       </div>
-      <div>
-        <p className="text-small text-muted">Defter bakiyesi</p>
-        <p className="font-semibold tabular-nums">{formatSignedTRY(d.ledgerBalanceAtStatementEnd ?? d.ledgerBalance)}</p>
-        <p className="text-xs text-muted">Güncel: {formatSignedTRY(d.ledgerBalance)}</p>
-      </div>
-      <div>
-        <p className="text-small text-muted">Fark</p>
-        <p className={`font-semibold tabular-nums ${diff === undefined ? '' : diff === 0 ? 'text-success' : 'text-warning'}`}>
-          {diff === undefined ? '—' : formatSignedTRY(diff)}
-        </p>
-      </div>
-      <div>
-        <p className="text-small text-muted">Eşleşmeyen satır</p>
-        <p className="font-semibold tabular-nums">{d.lines.unmatchedIn.count + d.lines.unmatchedOut.count}</p>
-        <p className="text-xs text-muted">
-          Giren {formatTRY(d.lines.unmatchedIn.amount)} · Çıkan {formatTRY(d.lines.unmatchedOut.amount)}
-        </p>
-      </div>
+      {note && <Alert tone={note.tone}>{note.text}</Alert>}
+      <table className="w-full text-left text-small">
+        <caption className="sr-only">Banka satırı dökümü</caption>
+        <thead className="text-xs text-muted">
+          <tr>
+            <th scope="col" className="py-1 font-medium">Satırlar{d.period.from || d.period.to ? ' (aralıkta)' : ''}</th>
+            <th scope="col" className="py-1 text-right font-medium">Adet</th>
+            <th scope="col" className="py-1 text-right font-medium">Tutar</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-border">
+          {reconciliationRows(d).map((row) => (
+            <tr key={row.key}>
+              <td className="py-1.5">
+                <Badge tone={BADGE_TONE[row.tone]}>{row.label}</Badge>
+              </td>
+              <td className="py-1.5 text-right tabular-nums">{row.count}</td>
+              <td className="py-1.5 text-right tabular-nums">{formatTRY(row.amount)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </Card>
   );
 }
@@ -126,6 +185,7 @@ type Modal =
   | { kind: 'match'; line: BankLine }
   | { kind: 'ignore'; line: BankLine }
   | { kind: 'unmatch'; line: BankLine }
+  | { kind: 'expense'; line: BankLine }
   | null;
 
 function SuggestionCell({ line }: { line: BankLine }) {
@@ -199,6 +259,8 @@ export function BankPanel({ canWrite }: { canWrite: boolean }) {
       )}
 
       {accountId && <ReconciliationCard bankAccountId={accountId} />}
+
+      {accountId && <AutoMatchBar bankAccountId={accountId} canWrite={canWrite} />}
 
       <FilterChips label="Satır durumu" value={filter} options={FILTERS} onChange={setFilter} />
       {quick.isError && <Alert tone="danger">{errorMessage(quick.error)}</Alert>}
@@ -274,6 +336,12 @@ export function BankPanel({ canWrite }: { canWrite: boolean }) {
                               Eşleştir / Böl
                             </Button>
                           )}
+                          {l.status === 'unmatched' && l.direction === 'out' && (
+                            <Button size="xs" variant="secondary" onClick={() => setModal({ kind: 'expense', line: l })}>
+                              <ReceiptText className="size-3.5" aria-hidden="true" />
+                              Gider Oluştur
+                            </Button>
+                          )}
                           {l.status === 'unmatched' && (
                             <Button size="xs" variant="ghost" onClick={() => setModal({ kind: 'ignore', line: l })}>
                               <X className="size-3.5" aria-hidden="true" />
@@ -309,6 +377,7 @@ export function BankPanel({ canWrite }: { canWrite: boolean }) {
           <UploadWizard open={modal?.kind === 'upload'} onClose={close} bankAccountId={accountId} />
           <ProfileDialog open={modal?.kind === 'profile'} onClose={close} account={account} />
           <MatchDialog open={modal?.kind === 'match'} onClose={close} line={modal?.kind === 'match' ? modal.line : null} bankAccountId={accountId} />
+          <ExpenseFromLineDialog open={modal?.kind === 'expense'} onClose={close} line={modal?.kind === 'expense' ? modal.line : null} bankAccountId={accountId} />
           <ReasonDialog
             open={modal?.kind === 'ignore'}
             title="Satırı yoksay"
@@ -333,7 +402,9 @@ export function BankPanel({ canWrite }: { canWrite: boolean }) {
             description={
               modal?.kind === 'unmatch' && modal.line.status === 'ignored'
                 ? 'Satır yeniden eşleştirme kuyruğuna alınır.'
-                : 'Bağlı tahsilat ve kesinleşen tazminat ters kayıtla iptal edilir, makbuzlar “iptal” olarak görünür ve satır kuyruğa döner.'
+                : modal?.kind === 'unmatch' && modal.line.direction === 'out'
+                  ? 'Bu satırdan oluşturulan gider ters kayıtla iptal edilir ve satır kuyruğa döner.'
+                  : 'Bağlı tahsilat ve kesinleşen tazminat ters kayıtla iptal edilir, makbuzlar “iptal” olarak görünür ve satır kuyruğa döner.'
             }
             actionLabel="Geri al"
             danger

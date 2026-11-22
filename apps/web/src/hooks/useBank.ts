@@ -1,5 +1,6 @@
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { type FormatSpec, type LineStatus, type MatchInput, bankApi } from '@/lib/api/bank';
+import { type BankExpenseInput, type FormatSpec, type LineStatus, type MatchInput, bankApi } from '@/lib/api/bank';
+import { runAutoMatch } from '@/lib/bank/autoMatch';
 import { portalApi } from '@/lib/api/portal';
 import { usePortalUnit } from '@/context/PortalUnitContext';
 import { ApiError } from '@/lib/api/errors';
@@ -11,7 +12,9 @@ import { portalKeys } from './usePortal';
 export const bankKeys = {
   all: (apt: string) => [...financeKeys.all(apt), 'bank'] as const,
   accounts: (apt: string) => [...bankKeys.all(apt), 'accounts'] as const,
-  reconciliation: (apt: string, acct: string) => [...bankKeys.all(apt), 'reconciliation', acct] as const,
+  reconciliation: (apt: string, acct: string, from = '', to = '') => [...bankKeys.all(apt), 'reconciliation', acct, from, to] as const,
+  statements: (apt: string, acct: string) => [...bankKeys.all(apt), 'statements', acct] as const,
+  autoPreview: (apt: string, statementId: string, min: number) => [...bankKeys.all(apt), 'auto-match', statementId, min] as const,
   queue: (apt: string, acct: string, status?: LineStatus) => [...bankKeys.all(apt), 'queue', acct, status ?? 'all'] as const,
   targets: (apt: string) => [...bankKeys.all(apt), 'targets'] as const,
   suggestions: (apt: string, acct: string, lineId: string) => [...bankKeys.all(apt), 'suggestions', acct, lineId] as const,
@@ -34,13 +37,48 @@ export function useBankAccounts() {
   return useQuery({ queryKey: bankKeys.accounts(apt), queryFn: ({ signal }) => bankApi.accounts(signal).then((r) => r.items), enabled });
 }
 
-export function useReconciliation(bankAccountId: string | undefined) {
+export function useReconciliation(bankAccountId: string | undefined, range: { from?: string; to?: string } = {}) {
   const { apt, enabled } = useApt();
   return useQuery({
-    queryKey: bankKeys.reconciliation(apt, bankAccountId ?? ''),
-    queryFn: ({ signal }) => bankApi.reconciliation(bankAccountId as string, signal),
+    queryKey: bankKeys.reconciliation(apt, bankAccountId ?? '', range.from, range.to),
+    queryFn: ({ signal }) => bankApi.reconciliation(bankAccountId as string, range, signal),
     enabled: enabled && !!bankAccountId,
   });
+}
+
+// ----- Faz B3 -----
+
+export function useBankStatements(bankAccountId: string | undefined) {
+  const { apt, enabled } = useApt();
+  return useQuery({
+    queryKey: bankKeys.statements(apt, bankAccountId ?? ''),
+    queryFn: ({ signal }) => bankApi.statements(bankAccountId as string, signal).then((r) => r.items),
+    enabled: enabled && !!bankAccountId,
+  });
+}
+
+export function useAutoMatchPreview(statementId: string | undefined, minConfidence: number) {
+  const { apt, enabled } = useApt();
+  return useQuery({
+    queryKey: bankKeys.autoPreview(apt, statementId ?? '', minConfidence),
+    queryFn: ({ signal }) => bankApi.autoMatchPreview(statementId as string, minConfidence, signal),
+    enabled: enabled && !!statementId,
+  });
+}
+
+/** Toplu onay: ayni anahtarla, calisma tamamlanana kadar tekrar cagirir (API istek basina sinirli). */
+export function useAutoMatch() {
+  const invalidate = useInvalidate();
+  return useMutation({
+    mutationFn: (v: { statementId: string; minConfidence: number; idempotencyKey: string }) =>
+      runAutoMatch(() => bankApi.autoMatch(v.statementId, { idempotencyKey: v.idempotencyKey, minConfidence: v.minConfidence })),
+    onSettled: invalidate,
+  });
+}
+
+export function useCreateBankExpense() {
+  const invalidate = useInvalidate();
+  return useMutation({ mutationFn: (v: { lineId: string; input: BankExpenseInput }) => bankApi.expense(v.lineId, v.input), onSuccess: invalidate });
 }
 
 export function useBankQueue(bankAccountId: string | undefined, status?: LineStatus) {

@@ -27,6 +27,25 @@ export function createFakeFinanceRepo(defaultApartmentId = 'apt-1') {
   /** Transactional outbox: `apt|eventId` -> olay (yazim sirasiyla). */
   const outbox = new Map<string, DomainEvent>();
 
+  /**
+   * Gercek tabloda idempotency kaydi tek anahtardadir (`IDEM#<id>`): `postBatch.idempotency` ile
+   * de, `newDocs` icinde yazilan isaretle de (ornegin banka geri almasinin `REV_<islem>` kaydi)
+   * ayni kayit olusur. Sahte depo ikisini de gorur; boylece elle ikinci ters kayit engellenir.
+   */
+  function idemOf(apt: string, id: string): IdempotencyRecord | undefined {
+    const direct = idem.get(k(apt, id));
+    if (direct) return direct;
+    const doc = docs.get(`APT#${apt}|IDEM#${id}`) as (Record<string, unknown> & Partial<IdempotencyRecord>) | undefined;
+    if (!doc || typeof doc.transactionId !== 'string' || typeof doc.fingerprint !== 'string') return undefined;
+    return {
+      transactionId: doc.transactionId,
+      fingerprint: doc.fingerprint,
+      ...(doc.recordId ? { recordId: doc.recordId } : {}),
+      ...(doc.transactionIds ? { transactionIds: doc.transactionIds } : {}),
+      ...(doc.recordIds ? { recordIds: doc.recordIds } : {}),
+    } as IdempotencyRecord;
+  }
+
   async function postBatch(input: PostBatchInput): Promise<void> {
     if (failNextPost) {
       const e = failNextPost;
@@ -50,7 +69,7 @@ export function createFakeFinanceRepo(defaultApartmentId = 'apt-1') {
       if (debit !== credit) throw new Error('dengesiz islem');
       if (tx.siteId !== apt) throw new Error('tenant');
     }
-    if (idem.has(k(apt, input.idempotency.id))) throw new LedgerConflictError('duplicate');
+    if (idemOf(apt, input.idempotency.id)) throw new LedgerConflictError('duplicate');
     for (const tx of input.transactions) {
       for (const l of tx.lines) {
         const acc = accounts.get(k(apt, l.accountId));
@@ -144,7 +163,7 @@ export function createFakeFinanceRepo(defaultApartmentId = 'apt-1') {
     getTransaction: async (apt, id) => transactions.get(k(apt, id)),
     getPayment: async (apt, id) => payments.get(k(apt, id)),
     getExpense: async (apt, id) => expenses.get(k(apt, id)),
-    getIdempotency: async (apt, id) => idem.get(k(apt, id)),
+    getIdempotency: async (apt, id) => idemOf(apt, id),
     getCounter: async (apt, name) => counters.get(k(apt, name)) ?? 0,
     listTransactions: async (apt, q = {}) => {
       const lo = (q.from ?? '0000-00-00').replaceAll('-', '');

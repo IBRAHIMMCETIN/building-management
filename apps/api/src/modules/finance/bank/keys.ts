@@ -68,7 +68,15 @@ export const bankKeys = {
   ref: (apartmentId: string, code: string) => ({ PK: tenantPk(apartmentId), SK: skKey('BANKREF', code) }),
   refOf: (apartmentId: string, accountId: string) => ({ PK: tenantPk(apartmentId), SK: skKey('BANKREFOF', accountId) }),
   profile: (apartmentId: string, bankAccountId: string) => ({ PK: tenantPk(apartmentId), SK: skKey('BANKPROFILE', bankAccountId) }),
+  // Faz B3
+  autoRun: (apartmentId: string, statementId: string, idempotencyKey: string) => ({
+    PK: tenantPk(apartmentId),
+    SK: skKey('BANKAUTO', statementId, idempotencyKey),
+  }),
 };
+
+/** Toplu onay istemci anahtari (UUID veya benzeri; anahtar SK'ya girer). */
+export const AUTO_RUN_KEY_PATTERN = /^[A-Za-z0-9_-]{8,64}$/;
 
 export const decisionPrefix = (lineId: string) => `BANKMATCH#${lineId}#`;
 export const DECISION_PREFIX = 'BANKMATCH#';
