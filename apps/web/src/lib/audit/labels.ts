@@ -4,6 +4,7 @@ import { ROLE_LABELS, isRole } from '@/types/roles';
 export const AUDIT_CATEGORIES = [
   { prefix: 'ledger.', label: 'Defter (tahakkuk, tahsilat, gider, ters kayıt)' },
   { prefix: 'closure.', label: 'Taşınma / cari kapama' },
+  { prefix: 'finance.', label: 'Avans mahsubu ve borç yapılandırma' },
   { prefix: 'payment.', label: 'Online ödeme ve iade' },
   { prefix: 'membership.', label: 'Daire üyelikleri' },
   { prefix: 'ownership.', label: 'Mülkiyet sicili ve hisse devri' },
@@ -20,6 +21,16 @@ export const AUDIT_CATEGORIES = [
 const EXACT: Record<string, string> = {
   'closure.create': 'Cari kapama',
   'closure.reverse': 'Cari kapama geri alındı',
+  'finance.offset': 'Avans mahsubu',
+  'finance.offset_reverse': 'Avans mahsubu geri alındı',
+  'finance.offset_request': 'Sakin avans mahsubu talebi',
+  'finance.offset_request_reject': 'Avans mahsubu talebi reddedildi',
+  'finance.plan_create': 'Borç yapılandırma (taksit planı) oluşturuldu',
+  'finance.plan_accelerate': 'Taksit planı muaccel kılındı',
+  'finance.plan_pull_forward': 'Taksit planı erken kapatıldı',
+  'finance.plan_cancel': 'Taksit planı iptal edildi',
+  'finance.plan_default': 'Taksit planında temerrüt tespit edildi',
+  'finance.plan_default_cleared': 'Taksit planı temerrüdü giderildi',
   'ownership.backfill': 'Mülkiyet sicili oluşturuldu (ilk geçiş)',
   'ownership.register': 'Mülkiyet sicili / hisseler düzeltildi',
   'ownership.billing': 'Malik faturalama modu değişti',
@@ -79,7 +90,31 @@ const LEDGER_KINDS: Record<string, string> = {
   opening_balance: 'açılış bakiyesi',
   transfer: 'cari devri',
   refund: 'iade',
+  payable_payment: 'tedarikçi ödemesi',
+  offset: 'avans mahsubu',
+  restructure: 'borç yapılandırma',
 };
+
+/** Gece defter denetimi bulgu kodlari (apps/api/src/modules/finance/audit.ts `AUDIT_CODES`). */
+export const LEDGER_FINDING_LABELS: Record<string, string> = {
+  tx_unbalanced: 'Dengesiz işlem (borç ≠ alacak)',
+  tx_entries_mismatch: 'İşlem satırları ile defter kayıtları uyuşmuyor',
+  entry_orphan: 'İşlemi olmayan defter kaydı',
+  entry_account_missing: 'Hesabı olmayan defter kaydı',
+  balance_mismatch: 'Hesap bakiyesi defterle uyuşmuyor',
+  closed_period_write: 'Kapatılmış döneme kayıt',
+  closure_lock_missing: 'Cari kapama kilidi eksik',
+  closure_lock_orphan: 'Kapaması olmayan cari kilidi',
+  receipt_duplicate: 'Mükerrer makbuz numarası',
+  receipt_counter_behind: 'Makbuz sayacı geride',
+  online_payment_unposted: 'Deftere yazılmamış online ödeme',
+  bank_match_mismatch: 'Banka eşleştirmesi defterle uyuşmuyor',
+  settlement_invalid: 'Hedefli mahsup tutarsız (avans mahsubu / yapılandırma)',
+};
+
+export function findingLabel(code: string): string {
+  return LEDGER_FINDING_LABELS[code] ?? code.replace(/_/g, ' ');
+}
 
 /** `ledger.payment+late_fee` -> "Defter: tahsilat + gecikme faizi" */
 export function actionLabel(action: string): string {

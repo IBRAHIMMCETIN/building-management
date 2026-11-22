@@ -31,7 +31,7 @@ export type FinanceRoutesDeps = {
  *        POST /offsets/:id/reverse
  *        GET  /offset-requests?status, POST /offset-requests/:id/approve, /offset-requests/:id/reject
  * Finans 2.2 - borc yapilandirma:
- *        POST /plans/preview (yazmaz), POST /plans, GET /plans?accountId&status, GET /plans/:id,
+ *        POST /plans/preview (yazmaz), POST /plans, GET /plans?accountId&status, GET /plans/open-items?accountId, GET /plans/:id,
  *        POST /plans/:id/accelerate, /plans/:id/pull-forward, /plans/:id/cancel
  *
  * Tenant izolasyonu: `apartmentId` YALNIZCA JWT claim'inden gelir; URL/govde ile
@@ -210,6 +210,8 @@ export function financeRoutes({ authenticate, service, closures, offsets, plans 
     r.get('/plans', requireRole(READ_ROLES), async (c) =>
       c.json({ items: await plans.list(ctx(c), { accountId: c.req.query('accountId'), status: c.req.query('status') }) }),
     );
+    // Sihirbaz: caridaki acik kalemler ve dondurulacak tazminat (`:planId`'den once kayitli).
+    r.get('/plans/open-items', requireRole(WRITE_ROLES), async (c) => c.json(await plans.openItems(ctx(c), c.req.query('accountId'))));
     r.get('/plans/:planId', requireRole(READ_ROLES), async (c) => c.json(await plans.get(ctx(c), c.req.param('planId'))));
     r.post('/plans/:planId/accelerate', requireRole(WRITE_ROLES), async (c) =>
       c.json({ plan: await plans.accelerate(ctx(c), c.req.param('planId'), await readJson(c)) }),

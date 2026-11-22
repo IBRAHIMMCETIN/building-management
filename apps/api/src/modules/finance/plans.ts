@@ -538,6 +538,37 @@ export function createPlanService(overrides: Partial<PlanServiceDeps> & Pick<Pla
 
   // ----- Okuma -----
 
+  /**
+   * Yapilandirma sihirbazi icin: caridaki acik kalemler (FIFO sirasinda), bugune kadar islemis
+   * (dondurulacak) tazminat ve varsa aktif plan. Yazmaz.
+   */
+  async function openItems(ctx: PlanContext, accountId: string | undefined) {
+    const account = await requireAccount(ctx, assertId(accountId, 'accountId'));
+    const R = today();
+    const [txPage, r, plans] = await Promise.all([repo.listTransactions(ctx.apartmentId), rate(ctx.apartmentId), deps.plans.list(ctx.apartmentId)]);
+    const txs = txPage.items;
+    const cancelled = cancelledIn(txs);
+    const { open } = allocate(readSubledger(linesOfAccount(account.accountId, txs), cancelled), R);
+    const active = plans.find((x) => x.accountId === account.accountId && x.status === 'active');
+    return {
+      accountId: account.accountId,
+      date: R,
+      lateFeeMonthlyBasisPoints: r,
+      accruedLateFee: toKurus(r > 0 ? unpostedLateFee(feeLedgerFor(account.accountId, txs, cancelled), r, R) : 0),
+      ...(active ? { activePlanId: active.planId } : {}),
+      items: open.map((c) => ({
+        chargeId: c.id,
+        description: c.description,
+        dueDate: c.dueDate,
+        amount: toKurus(c.amount),
+        remaining: c.remaining,
+        overdue: c.overdue,
+        lateFee: c.lateFee,
+        ...(c.plan ? { planId: c.plan.planId } : {}),
+      })),
+    };
+  }
+
   async function requirePlan(ctx: PlanContext, planId: string): Promise<InstallmentPlan> {
     assertId(planId, 'planId');
     const plan = await deps.plans.get(ctx.apartmentId, planId);
@@ -842,7 +873,7 @@ export function createPlanService(overrides: Partial<PlanServiceDeps> & Pick<Pla
     return { unitId: resolved.unit.unitId, currency: 'TRY' as const, items };
   }
 
-  return { preview, create, get, list, accelerate, pullForward, cancel, checkDefaults, portalPlans };
+  return { preview, create, get, list, openItems, accelerate, pullForward, cancel, checkDefaults, portalPlans };
 }
 
 export type PlanService = ReturnType<typeof createPlanService>;

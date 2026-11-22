@@ -1,0 +1,199 @@
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { usePortalUnit } from '@/context/PortalUnitContext';
+import { ApiError } from '@/lib/api/errors';
+import {
+  type ApproveOffsetRequestInput,
+  type CreateOffsetInput,
+  type CreateOffsetRequestInput,
+  type CreatePlanInput,
+  type OffsetRequestStatus,
+  type PlanAction,
+  type PlanDisplayStatus,
+  type PlanInput,
+  restructureApi,
+} from '@/lib/api/restructure';
+import { useAuth } from './useAuth';
+import { financeKeys, useFinancePermissions } from './useFinance';
+import { portalKeys } from './usePortal';
+
+/** Mahsup ve plan verisi finans anahtarinin altinda: her yazim defteri de etkiler. */
+export const restructureKeys = {
+  all: (apt: string) => [...financeKeys.all(apt), 'restructure'] as const,
+  offsetPreview: (apt: string, source: string, target: string) => [...restructureKeys.all(apt), 'offset-preview', source, target] as const,
+  offsets: (apt: string, accountId?: string) => [...restructureKeys.all(apt), 'offsets', accountId ?? 'all'] as const,
+  requests: (apt: string, status?: OffsetRequestStatus) => [...restructureKeys.all(apt), 'offset-requests', status ?? 'all'] as const,
+  plans: (apt: string, filter: { accountId?: string; status?: PlanDisplayStatus }) => [...restructureKeys.all(apt), 'plans', filter] as const,
+  openItems: (apt: string, accountId: string) => [...restructureKeys.all(apt), 'open-items', accountId] as const,
+  planPreview: (apt: string, input: PlanInput | null) => [...restructureKeys.all(apt), 'plan-preview', input] as const,
+};
+
+function useApt() {
+  const { user } = useAuth();
+  const { canRead, canWrite } = useFinancePermissions();
+  const apt = user?.apartmentId ?? '';
+  return { apt, canRead: !!apt && canRead, canWrite: !!apt && canWrite };
+}
+
+function useInvalidate() {
+  const { apt } = useApt();
+  const queryClient = useQueryClient();
+  return () => queryClient.invalidateQueries({ queryKey: financeKeys.all(apt) });
+}
+
+// ----- Avans mahsubu -----
+
+/** Onizleme (yazmaz): kaynak ve hedef secilip farkli olunca. */
+export function useOffsetPreview(sourceAccountId: string, targetAccountId: string) {
+  const { apt, canWrite } = useApt();
+  return useQuery({
+    queryKey: restructureKeys.offsetPreview(apt, sourceAccountId, targetAccountId),
+    queryFn: ({ signal }) => restructureApi.previewOffset({ sourceAccountId, targetAccountId }, signal),
+    enabled: canWrite && !!sourceAccountId && !!targetAccountId && sourceAccountId !== targetAccountId,
+    retry: false,
+  });
+}
+
+export function useOffsets(accountId?: string) {
+  const { apt, canRead } = useApt();
+  return useQuery({
+    queryKey: restructureKeys.offsets(apt, accountId),
+    queryFn: ({ signal }) => restructureApi.listOffsets(accountId, signal).then((r) => r.items),
+    enabled: canRead,
+  });
+}
+
+export function useCreateOffset() {
+  const invalidate = useInvalidate();
+  return useMutation({ mutationFn: (input: CreateOffsetInput) => restructureApi.createOffset(input), onSuccess: invalidate });
+}
+
+export function useReverseOffset() {
+  const invalidate = useInvalidate();
+  return useMutation({ mutationFn: (v: { offsetId: string; reason: string }) => restructureApi.reverseOffset(v.offsetId, v.reason), onSuccess: invalidate });
+}
+
+export function useOffsetRequests(status?: OffsetRequestStatus) {
+  const { apt, canRead } = useApt();
+  return useQuery({
+    queryKey: restructureKeys.requests(apt, status),
+    queryFn: ({ signal }) => restructureApi.listOffsetRequests(status, signal).then((r) => r.items),
+    enabled: canRead,
+  });
+}
+
+export function useApproveOffsetRequest() {
+  const invalidate = useInvalidate();
+  return useMutation({
+    mutationFn: (v: { requestId: string; input: ApproveOffsetRequestInput }) => restructureApi.approveOffsetRequest(v.requestId, v.input),
+    onSuccess: invalidate,
+  });
+}
+
+export function useRejectOffsetRequest() {
+  const invalidate = useInvalidate();
+  return useMutation({
+    mutationFn: (v: { requestId: string; reason: string }) => restructureApi.rejectOffsetRequest(v.requestId, v.reason),
+    onSuccess: invalidate,
+  });
+}
+
+// ----- Borc yapilandirma -----
+
+export function usePlans(filter: { accountId?: string; status?: PlanDisplayStatus } = {}) {
+  const { apt, canRead } = useApt();
+  return useQuery({
+    queryKey: restructureKeys.plans(apt, filter),
+    queryFn: ({ signal }) => restructureApi.listPlans(filter, signal).then((r) => r.items),
+    enabled: canRead,
+  });
+}
+
+export function usePlanOpenItems(accountId: string) {
+  const { apt, canWrite } = useApt();
+  return useQuery({
+    queryKey: restructureKeys.openItems(apt, accountId),
+    queryFn: ({ signal }) => restructureApi.planOpenItems(accountId, signal),
+    enabled: canWrite && !!accountId,
+  });
+}
+
+/** Plan onizlemesi (yazmaz): taslak gecersizken (null) istek atilmaz. */
+export function usePlanPreview(input: PlanInput | null) {
+  const { apt, canWrite } = useApt();
+  return useQuery({
+    queryKey: restructureKeys.planPreview(apt, input),
+    queryFn: ({ signal }) => restructureApi.previewPlan(input as PlanInput, signal),
+    enabled: canWrite && input !== null,
+    placeholderData: keepPreviousData,
+    retry: false,
+  });
+}
+
+export function useCreatePlan() {
+  const invalidate = useInvalidate();
+  return useMutation({ mutationFn: (input: CreatePlanInput) => restructureApi.createPlan(input), onSuccess: invalidate });
+}
+
+export function usePlanAction() {
+  const invalidate = useInvalidate();
+  return useMutation({
+    mutationFn: (v: { planId: string; action: PlanAction; reason: string }) => restructureApi.planAction(v.planId, v.action, v.reason),
+    onSuccess: invalidate,
+  });
+}
+
+// ----- Sakin portali -----
+
+/** Daire secimi / uyelik yok gibi "beklenen" 4xx'ler tekrar denenmez. */
+const retry = (count: number, err: unknown) => !(err instanceof ApiError && err.status < 500) && count < 2;
+
+function usePortalScope() {
+  const { user } = useAuth();
+  const { unitId } = usePortalUnit();
+  return { apt: user?.apartmentId ?? '', userId: user?.sub ?? '', unitId, enabled: user?.role === 'resident' && !!user.apartmentId };
+}
+
+const portalRestructureKeys = {
+  plans: (apt: string, user: string, unitId?: string) => [...portalKeys.all(apt, user), 'plans', unitId ?? 'auto'] as const,
+  options: (apt: string, user: string, unitId?: string) => [...portalKeys.all(apt, user), 'offset-options', unitId ?? 'auto'] as const,
+  requests: (apt: string, user: string) => [...portalKeys.all(apt, user), 'offset-requests'] as const,
+};
+
+export function useMyPlans() {
+  const { apt, userId, unitId, enabled } = usePortalScope();
+  return useQuery({
+    queryKey: portalRestructureKeys.plans(apt, userId, unitId),
+    queryFn: ({ signal }) => restructureApi.myPlans(unitId, signal).then((r) => r.items),
+    enabled,
+    retry,
+  });
+}
+
+export function useOffsetOptions() {
+  const { apt, userId, unitId, enabled } = usePortalScope();
+  return useQuery({
+    queryKey: portalRestructureKeys.options(apt, userId, unitId),
+    queryFn: ({ signal }) => restructureApi.offsetOptions(unitId, signal),
+    enabled,
+    retry,
+  });
+}
+
+export function useMyOffsetRequests() {
+  const { apt, userId, enabled } = usePortalScope();
+  return useQuery({
+    queryKey: portalRestructureKeys.requests(apt, userId),
+    queryFn: ({ signal }) => restructureApi.myOffsetRequests(signal).then((r) => r.items),
+    enabled,
+    retry,
+  });
+}
+
+export function useCreateOffsetRequest() {
+  const { apt, userId, unitId } = usePortalScope();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: Omit<CreateOffsetRequestInput, 'unitId'>) => restructureApi.createOffsetRequest({ ...input, ...(unitId ? { unitId } : {}) }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: portalKeys.all(apt, userId) }),
+  });
+}

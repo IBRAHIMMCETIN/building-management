@@ -1,12 +1,16 @@
-import { History, LogOut, Undo2 } from 'lucide-react';
+import { ArrowLeftRight, CalendarRange, History, LogOut, Undo2 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { Alert, Badge, Button, Card, Dialog, FormField, Skeleton, Textarea } from '@/components/ui';
 import { useReverseClosure, useUnitClosures } from '@/hooks/useClosures';
 import { useFinancePermissions } from '@/hooks/useFinance';
+import { usePlans } from '@/hooks/useRestructure';
 import type { CariClosure } from '@/lib/api/closures';
 import { errorMessage } from '@/lib/api/errors';
 import { formatDate, formatDateTime } from '@/lib/dates';
 import { formatTRY } from '@/lib/money';
+import { PLAN_STATUS_LABELS, PLAN_STATUS_TONES, installmentSummary } from '@/lib/restructure/model';
+import { OffsetDialog } from '../finance/OffsetDialog';
+import { RestructureWizard } from '../finance/RestructureWizard';
 import { MoveOutWizard } from './MoveOutWizard';
 import { CLOSURE_PARTY_LABELS, canOfferReverse, outcomeText, reasonError } from './moveOut';
 import type { UnitRow } from './unitRows';
@@ -116,12 +120,64 @@ function ClosureCard({
   );
 }
 
+/**
+ * Finans 2.2: dairenin acik (aktif / muaccel, tamamlanmamis) taksit planlari ve mahsup /
+ * yapilandirma kisayollari. Planli caride tasinma kapamasi yapilamaz (API 409).
+ */
+export function UnitPlansSection({ unitId, canWrite, onOffset, onRestructure }: { unitId: string; canWrite: boolean; onOffset: () => void; onRestructure: () => void }) {
+  const plans = usePlans();
+  const open = (plans.data ?? []).filter((p) => p.unitId === unitId && (p.state.displayStatus === 'active' || p.state.displayStatus === 'accelerated'));
+  return (
+    <div className="flex flex-col gap-2 rounded-lg border border-border p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-small font-medium">Taksit planları</p>
+        {canWrite && (
+          <div className="flex flex-wrap gap-2">
+            <Button size="sm" variant="ghost" onClick={onOffset}>
+              <ArrowLeftRight className="size-4" aria-hidden="true" />
+              Avans mahsubu
+            </Button>
+            <Button size="sm" variant="ghost" onClick={onRestructure}>
+              <CalendarRange className="size-4" aria-hidden="true" />
+              Borç yapılandır
+            </Button>
+          </div>
+        )}
+      </div>
+      {plans.isError && <Alert tone="danger">{errorMessage(plans.error)}</Alert>}
+      {plans.isSuccess && open.length === 0 && <p className="text-small text-muted">Bu dairede açık taksit planı yok.</p>}
+      {open.length > 0 && (
+        <ul className="flex flex-col gap-1" aria-label="Açık taksit planları">
+          {open.map((p) => {
+            const next = installmentSummary(p.state.installments).next;
+            const status = p.state.displayStatus;
+            return (
+              <li key={p.planId} className="flex flex-wrap items-center justify-between gap-2 text-small">
+                <span>
+                  {formatDate(p.date)} · kalan <strong className="tabular-nums">{formatTRY(p.state.remaining)}</strong>
+                  {next ? ` · sıradaki ${next.no}. taksit ${formatDate(next.dueDate)}` : ''}
+                </span>
+                <span className="flex gap-1">
+                  {status === 'active' && (p.state.inDefault || p.default) && <Badge tone="danger">Temerrüt</Badge>}
+                  <Badge tone={PLAN_STATUS_TONES[status]}>{PLAN_STATUS_LABELS[status]}</Badge>
+                </span>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      {open.length > 0 && <p className="text-xs text-muted">Açık planı olan caride taşınma kapaması yapılamaz; önce planı kapatın veya iptal edin.</p>}
+    </div>
+  );
+}
+
 /** Daire cari ayrintisi: tasinma kapama gecmisi + geri alma + yeni tasinma sihirbazi. */
 export function UnitCariDialog({ row, names, startWithWizard, onClose, onInvite }: Props) {
   const { canWrite } = useFinancePermissions();
   const closures = useUnitClosures(row?.unit.unitId);
   const [mode, setMode] = useState<'history' | 'wizard'>('history');
   const [reversingId, setReversingId] = useState<string | null>(null);
+  const [tool, setTool] = useState<'offset' | 'restructure' | null>(null);
   // Sihirbaz her acilista sifirdan baslasin (key).
   const [wizardRun, setWizardRun] = useState(0);
 
@@ -137,75 +193,84 @@ export function UnitCariDialog({ row, names, startWithWizard, onClose, onInvite 
   const items = closures.data ?? [];
 
   return (
-    <Dialog open={row !== null} onClose={onClose} title={title} className="max-w-2xl">
-      {row && mode === 'wizard' && (
-        <MoveOutWizard
-          key={wizardRun}
-          row={row}
-          names={names}
-          onCancel={() => setMode('history')}
-          onDone={() => setMode('history')}
-          onInvite={() => onInvite(row)}
-        />
-      )}
+    <>
+      <Dialog open={row !== null} onClose={onClose} title={title} className="max-w-2xl">
+        {row && mode === 'wizard' && (
+          <MoveOutWizard
+            key={wizardRun}
+            row={row}
+            names={names}
+            onCancel={() => setMode('history')}
+            onDone={() => setMode('history')}
+            onInvite={() => onInvite(row)}
+          />
+        )}
 
-      {row && mode === 'history' && (
-        <div className="flex flex-col gap-4">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <p className="flex items-center gap-2 text-small font-medium">
-              <History className="size-4 text-muted" aria-hidden="true" />
-              Kapama geçmişi
-            </p>
-            {canWrite && (
-              <Button
-                size="sm"
-                onClick={() => {
-                  setWizardRun((n) => n + 1);
-                  setMode('wizard');
-                }}
-              >
-                <LogOut className="size-4" aria-hidden="true" />
-                Taşınma kaydet
-              </Button>
-            )}
-          </div>
-
-          {closures.isPending && (
-            <div role="status" aria-label="Kapama geçmişi yükleniyor" className="flex flex-col gap-2">
-              <Skeleton className="h-20 w-full" />
-              <Skeleton className="h-20 w-full" />
+        {row && mode === 'history' && (
+          <div className="flex flex-col gap-4">
+            <UnitPlansSection unitId={row.unit.unitId} canWrite={canWrite} onOffset={() => setTool('offset')} onRestructure={() => setTool('restructure')} />
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="flex items-center gap-2 text-small font-medium">
+                <History className="size-4 text-muted" aria-hidden="true" />
+                Kapama geçmişi
+              </p>
+              {canWrite && (
+                <Button
+                  size="sm"
+                  onClick={() => {
+                    setWizardRun((n) => n + 1);
+                    setMode('wizard');
+                  }}
+                >
+                  <LogOut className="size-4" aria-hidden="true" />
+                  Taşınma kaydet
+                </Button>
+              )}
             </div>
-          )}
-          {closures.isError && <Alert tone="danger">{errorMessage(closures.error)}</Alert>}
-          {closures.isSuccess && items.length === 0 && (
-            <p className="py-6 text-center text-small text-muted">
-              Bu dairede henüz taşınma / cari kapama yapılmamış. Kiracı çıktığında veya daire satıldığında “Taşınma kaydet” ile
-              ayrılan kişinin borcunu ayrı bir cariye alın.
-            </p>
-          )}
-          {items.length > 0 && (
-            <ul className="flex max-h-[60vh] flex-col gap-2 overflow-y-auto">
-              {items.map((c) => (
-                <ClosureCard
-                  key={c.closureId}
-                  c={c}
-                  all={items}
-                  names={names}
-                  canWrite={canWrite}
-                  reversing={reversingId === c.closureId}
-                  onReverse={() => setReversingId(c.closureId)}
-                  onReverseEnd={() => setReversingId(null)}
-                />
-              ))}
-            </ul>
-          )}
-          <div className="flex justify-end">
-            <Button variant="ghost" onClick={onClose}>
-              Kapat
-            </Button>
+
+            {closures.isPending && (
+              <div role="status" aria-label="Kapama geçmişi yükleniyor" className="flex flex-col gap-2">
+                <Skeleton className="h-20 w-full" />
+                <Skeleton className="h-20 w-full" />
+              </div>
+            )}
+            {closures.isError && <Alert tone="danger">{errorMessage(closures.error)}</Alert>}
+            {closures.isSuccess && items.length === 0 && (
+              <p className="py-6 text-center text-small text-muted">
+                Bu dairede henüz taşınma / cari kapama yapılmamış. Kiracı çıktığında veya daire satıldığında “Taşınma kaydet” ile
+                ayrılan kişinin borcunu ayrı bir cariye alın.
+              </p>
+            )}
+            {items.length > 0 && (
+              <ul className="flex max-h-[60vh] flex-col gap-2 overflow-y-auto">
+                {items.map((c) => (
+                  <ClosureCard
+                    key={c.closureId}
+                    c={c}
+                    all={items}
+                    names={names}
+                    canWrite={canWrite}
+                    reversing={reversingId === c.closureId}
+                    onReverse={() => setReversingId(c.closureId)}
+                    onReverseEnd={() => setReversingId(null)}
+                  />
+                ))}
+              </ul>
+            )}
+            <div className="flex justify-end">
+              <Button variant="ghost" onClick={onClose}>
+                Kapat
+              </Button>
+            </div>
           </div>
-        </div>
+        )}
+      </Dialog>
+      {canWrite && row && (
+        <>
+          <OffsetDialog open={tool === 'offset'} onClose={() => setTool(null)} preset={{ unitId: row.unit.unitId }} />
+          <RestructureWizard open={tool === 'restructure'} onClose={() => setTool(null)} preset={{ unitId: row.unit.unitId }} />
+        </>
       )}
-    </Dialog>
+    </>
   );
 }

@@ -48,6 +48,26 @@ const fee = async (w: W, day: string) => unpostedLateFee(feeLedgerFor(MAIN, awai
 const FROZEN = 13667;
 
 describe('yapilandirma - olusturma', () => {
+  it('sihirbaz: acik kalemler ve dondurulacak tazminat (yazmaz); aktif plan gosterilir', async () => {
+    const w = cariWorld();
+    await debtor(w);
+    const r = await w.call('GET', `/api/finance/plans/open-items?accountId=${MAIN}`, manager);
+    expect(r.status).toBe(200);
+    expect(r.json).toMatchObject({ accountId: MAIN, date: '2026-11-05', accruedLateFee: FROZEN });
+    expect(r.json.items.map((i: any) => [i.dueDate, i.remaining, i.overdue])).toEqual([
+      ['2026-09-10', TL(1000), true],
+      ['2026-10-10', TL(1000), true],
+    ]);
+    expect(r.json).not.toHaveProperty('activePlanId');
+    const plan = (await w.call('POST', '/api/finance/plans', manager, await planBody(w))).json.plan;
+    const after = await w.call('GET', `/api/finance/plans/open-items?accountId=${MAIN}`, manager);
+    expect(after.json.activePlanId).toBe(plan.planId);
+    expect(after.json.items.every((i: any) => i.planId === plan.planId)).toBe(true);
+    expect((await w.call('GET', `/api/finance/plans/open-items?accountId=${MAIN}`, observer)).status).toBe(403);
+    expect((await w.call('GET', '/api/finance/plans/open-items', manager)).status).toBe(400);
+  });
+
+
   it('onizleme yazmaz: dondurulan tazminat, secilen kalemler, taksit tablosu', async () => {
     const w = cariWorld();
     await debtor(w);
