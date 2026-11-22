@@ -70,6 +70,15 @@ export const myStatementSchema = z.object({
   closingBalance: kurus,
 });
 
+/** Havale / EFT: apartmanin tahsilat IBAN'i ve sakinin alt cari odeme referans kodlari. */
+export const myPaymentReferenceSchema = z.object({
+  unitId: z.string(),
+  unitLabel: z.string(),
+  bank: z.object({ iban: z.string(), accountHolderName: z.string(), bankName: z.string().optional() }).nullable(),
+  references: z.array(z.object({ liableParty: z.enum(['owner', 'occupant']), label: z.string(), code: z.string() })),
+});
+export type MyPaymentReference = z.infer<typeof myPaymentReferenceSchema>;
+
 export type MySummary = z.infer<typeof mySummarySchema>;
 export type MyStatement = z.infer<typeof myStatementSchema>;
 export type StatementRow = z.infer<typeof statementRow> & { liableParty: 'owner' | 'occupant' };
@@ -83,6 +92,8 @@ export const portalApi = {
     apiClient.get('/api/portal/my-summary', { signal, query: unitQuery(unitId), schema: mySummarySchema }),
   myStatement: (unitId: string | undefined, signal?: AbortSignal) =>
     apiClient.get('/api/portal/my-statement', { signal, query: unitQuery(unitId), schema: myStatementSchema }),
+  myPaymentReference: (unitId: string | undefined, signal?: AbortSignal) =>
+    apiClient.get('/api/portal/my-payment-reference', { signal, query: unitQuery(unitId), schema: myPaymentReferenceSchema }),
 };
 
 /** Birden fazla daire: API secim icin etiketli liste dondurur. */

@@ -10,7 +10,10 @@ export type BankErrorCode =
   | 'unsupported_format'
   | 'too_large'
   | 'unavailable'
-  | 'storage_error';
+  | 'storage_error'
+  // Faz B2
+  | 'account_closed'
+  | 'invalid_state';
 
 const HTTP_STATUS = {
   not_found: 404,
@@ -25,6 +28,8 @@ const HTTP_STATUS = {
   too_large: 413,
   unavailable: 503,
   storage_error: 502,
+  account_closed: 409,
+  invalid_state: 409,
 } as const satisfies Record<BankErrorCode, number>;
 
 /** Banka ekstresi islemleri hatalari; anlamli HTTP durum koduna eslenir. */

@@ -20,6 +20,7 @@ import { type DocumentsService, createDocumentsService } from './modules/documen
 import { financeRoutes } from './modules/finance/routes.js';
 import { bankRoutes } from './modules/finance/bank/routes.js';
 import { type BankService, createBankService } from './modules/finance/bank/service.js';
+import { type BankMatchService, createBankMatchService } from './modules/finance/bank/matchService.js';
 import { importRoutes } from './modules/imports/routes.js';
 import { type ImportsService, createImportsService } from './modules/imports/service.js';
 import { type ClosureService, createClosureService } from './modules/finance/closures.js';
@@ -90,6 +91,8 @@ export type AppConfig = {
   importsService?: ImportsService;
   /** Faz B1: banka ekstresi aktarimi (testlerde sahte depo/depolama/HMAC). */
   bankService?: BankService;
+  /** Faz B2: banka satiri eslestirme (testlerde sahte depolarla). */
+  bankMatchService?: BankMatchService;
   membershipService?: MembershipService;
   residentsService?: ResidentsService;
   announcementService?: AnnouncementService;
@@ -202,7 +205,9 @@ export function createApp(config: AppConfig) {
     }),
   );
   // Faz B1: banka ekstresi aktarimi (ekstre yukleme, onizleme, satir aktarimi, sutun eslemesi).
-  app.route('/api/bank', bankRoutes({ authenticate, service: config.bankService ?? createBankService() }));
+  // Faz B2: eslestirme finans cekirdegini (postBatch) ve portal uyelik kurallarini kullanir.
+  const bankMatchService = config.bankMatchService ?? createBankMatchService({ finance: financeService, portal: portalService });
+  app.route('/api/bank', bankRoutes({ authenticate, service: config.bankService ?? createBankService(), match: bankMatchService }));
   app.route('/api/payments', paymentCallbackRoutes({ service: paymentsService, payouts: payoutService, fake: fakePaymentProvider }));
   app.route('/api/admin/payments', paymentAdminRoutes({ authenticate, service: paymentsService, payouts: payoutService, invoices: invoiceService }));
 
@@ -246,6 +251,7 @@ export function createApp(config: AppConfig) {
     portalRoutes({
       authenticate,
       service: portalService,
+      paymentReference: (ctx, unitId) => bankMatchService.paymentReference(ctx, unitId),
     }),
   );
 

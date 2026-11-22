@@ -1,6 +1,7 @@
 import { getTenantItem, queryTenantAll } from '../../config/dynamodb.js';
 import type { Kurus } from '../core/types.js';
 import type { PaymentIntent } from '../payments/types.js';
+import type { BankDecision, BankLine } from './bank/types.js';
 import type { CariClosure } from './closures.js';
 import { financeKeys } from './repository.js';
 import type { Account, LedgerEntry, Payment, Transaction } from './types.js';
@@ -24,6 +25,9 @@ import type { Account, LedgerEntry, Payment, Transaction } from './types.js';
  *  - receipt_duplicate        ayni makbuz numarasi birden fazla tahsilatta
  *  - receipt_counter_behind   makbuz sayaci en buyuk makbuz numarasinin gerisinde
  *  - online_payment_unposted  SUCCEEDED odeme niyetinin tahsilat/islem kaydi eksik veya tutarsiz
+ *  - bank_match_mismatch      (Faz B2) `matched` banka satirinin karar kaydi / dagilim toplami / bagli
+ *                             tahsilat ve tazminat islemleri tutarsiz; geri alinan eslestirmenin islemleri
+ *                             iptal edilmemis
  *
  * Es zamanli yazimlar: okumalar tek anlik goruntu degildir. Yanlis alarmi onlemek icin
  * okuma sirasi bilincli secilir (niyet -> kapama -> islem -> LE# -> hesap -> tahsilat -> sayac)
@@ -43,6 +47,7 @@ export const AUDIT_CODES = [
   'receipt_duplicate',
   'receipt_counter_behind',
   'online_payment_unposted',
+  'bank_match_mismatch',
 ] as const;
 export type AuditCode = (typeof AUDIT_CODES)[number];
 
@@ -53,6 +58,8 @@ export type AuditFinding = {
   intentId?: string;
   closureId?: string;
   receiptNumber?: string;
+  /** Faz B2: banka satiri. */
+  lineId?: string;
   expected?: number | string;
   actual?: number | string;
   detail?: string;
@@ -67,6 +74,9 @@ export type AuditSnapshot = {
   accounts: Account[];
   payments: Payment[];
   receiptCounter: number;
+  /** Faz B2: banka satirlari ve eslestirme kararlari (eski kaynaklarda yok). */
+  bankLines?: BankLine[];
+  bankDecisions?: BankDecision[];
 };
 
 /** Borc pozitif, alacak negatif (repository `ADD #balance :delta` ile ayni isaret). */
@@ -248,6 +258,72 @@ export function checkOnlinePayments(s: Pick<AuditSnapshot, 'intents' | 'payments
   return out;
 }
 
+/**
+ * Faz B2: banka eslestirmeleri. `matched` satirin son karari `match` olmali; dagilim toplami satir
+ * tutarina esit; her dagilim icin banka hesabina borc / alt cariye alacak tahsilat islemi ve
+ * (varsa) tazminat satiri defterde ve iptal edilmemis. Geri alinan (`unmatch`) eslestirmenin
+ * islemleri ters kayitla iptal edilmis olmali.
+ */
+export function checkBankMatches(s: Pick<AuditSnapshot, 'transactions' | 'bankLines' | 'bankDecisions'>): AuditFinding[] {
+  const out: AuditFinding[] = [];
+  const lines = s.bankLines ?? [];
+  const decisions = s.bankDecisions ?? [];
+  if (lines.length === 0 && decisions.length === 0) return out;
+  const txs = new Map(s.transactions.map((t) => [t.transactionId, t]));
+  const cancelled = new Set(s.transactions.filter((t) => t.kind === 'reversal' && t.reversalOf).map((t) => t.reversalOf as string));
+  const byKey = new Map(decisions.map((d) => [`${d.lineId}|${d.decisionNo}`, d]));
+  const fail = (line: { lineId: string }, detail: string, extra: Partial<AuditFinding> = {}) =>
+    out.push({ code: 'bank_match_mismatch', lineId: line.lineId, detail, ...extra });
+
+  for (const line of lines) {
+    if (line.status !== 'matched') {
+      if (line.match) fail(line, `satir ${line.status} ama eslestirme bilgisi tasiyor`);
+      continue;
+    }
+    const d = line.match ? byKey.get(`${line.lineId}|${line.match.decisionNo}`) : undefined;
+    if (!d || d.kind !== 'match') {
+      fail(line, 'eslestirme karar kaydi yok');
+      continue;
+    }
+    const allocations = d.allocations ?? [];
+    const total = allocations.reduce((sum, a) => sum + a.amount, 0);
+    if (total !== line.amount) fail(line, 'dagilim toplami satir tutarina esit degil', { expected: line.amount, actual: total });
+    const used = new Set<string>();
+    for (const a of allocations) {
+      const tx = d.transactionIds
+        .map((id) => txs.get(id))
+        .find(
+          (t) =>
+            t &&
+            !used.has(t.transactionId) &&
+            t.kind === 'payment' &&
+            t.lines.some((l) => l.side === 'debit' && l.accountId === line.bankAccountId && l.amount === a.amount) &&
+            t.lines.some((l) => l.side === 'credit' && l.accountId === a.accountId && l.amount === a.amount),
+        );
+      if (!tx) {
+        fail(line, 'tahsilat islemi defterde yok veya tutari uyusmuyor', { accountId: a.accountId, expected: a.amount });
+        continue;
+      }
+      used.add(tx.transactionId);
+      if (cancelled.has(tx.transactionId)) fail(line, 'tahsilat ters kayitla iptal edilmis ama satir eslesmis', { transactionId: tx.transactionId });
+      if (a.lateFee > 0) {
+        const fee = d.transactionIds
+          .map((id) => txs.get(id))
+          .find((t) => t?.kind === 'late_fee' && t.lines.some((l) => l.side === 'debit' && l.accountId === a.accountId && l.amount === a.lateFee));
+        if (!fee) fail(line, 'kesinlestirilen tazminat defterde yok', { accountId: a.accountId, expected: a.lateFee });
+        else if (cancelled.has(fee.transactionId)) fail(line, 'tazminat iptal edilmis ama satir eslesmis', { transactionId: fee.transactionId });
+      }
+    }
+  }
+  for (const d of decisions) {
+    if (d.kind !== 'unmatch') continue;
+    for (const id of d.reversedTransactionIds ?? []) {
+      if (!cancelled.has(id)) fail(d, 'geri alinan eslestirmenin islemi iptal edilmemis', { transactionId: id });
+    }
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // Veri kaynagi ve denetci
 // ---------------------------------------------------------------------------
@@ -259,6 +335,8 @@ export type AuditSource = {
   listAccountEntries(apartmentId: string, accountId: string): Promise<LedgerEntry[]>;
   getTransaction(apartmentId: string, transactionId: string): Promise<Transaction | undefined>;
   listClosures(apartmentId: string): Promise<CariClosure[]>;
+  /** Faz B2: banka bulgusunu raporlamadan once satirin guncel halini okur (eski kaynaklarda yok). */
+  getBankLine?(apartmentId: string, sk: string): Promise<BankLine | undefined>;
 };
 
 export function createDynamoAuditSource(): AuditSource {
@@ -268,17 +346,21 @@ export function createDynamoAuditSource(): AuditSource {
       // Sira onemli: bir kaydi doguran yazim, ona bagli kayitlardan ONCE okunur.
       const intents = (await all<PaymentIntent>(apartmentId, 'PI#')).filter((i) => i.entityType === 'PAYMENT_INTENT');
       const closures = await all<CariClosure>(apartmentId, 'CLOSURE#');
+      // Banka satiri ve karari, bagli islemlerle ayni atomik yazimdadir: islemlerden ONCE okunur.
+      const bankLines = (await all<BankLine>(apartmentId, 'BANKTX#')).filter((l) => l.entityType === 'BANK_LINE');
+      const bankDecisions = (await all<BankDecision>(apartmentId, 'BANKMATCH#')).filter((d) => d.entityType === 'BANK_MATCH');
       const transactions = await all<Transaction>(apartmentId, 'TX#');
       const entries = await all<LedgerEntry>(apartmentId, 'LE#');
       const accounts = await all<Account>(apartmentId, 'ACCT#');
       const payments = await all<Payment>(apartmentId, 'PAY#');
       const counter = await getTenantItem<{ value?: number }>(financeKeys.counter(apartmentId, 'receipt'));
-      return { apartmentId, intents, closures, transactions, entries, accounts, payments, receiptCounter: counter?.value ?? 0 };
+      return { apartmentId, intents, closures, transactions, entries, accounts, payments, receiptCounter: counter?.value ?? 0, bankLines, bankDecisions };
     },
     getAccount: (apartmentId, accountId) => getTenantItem<Account>(financeKeys.account(apartmentId, accountId)),
     listAccountEntries: (apartmentId, accountId) => all<LedgerEntry>(apartmentId, `LE#${accountId}#`),
     getTransaction: (apartmentId, transactionId) => getTenantItem<Transaction>(financeKeys.transaction(apartmentId, transactionId)),
     listClosures: (apartmentId) => all<CariClosure>(apartmentId, 'CLOSURE#'),
+    getBankLine: (apartmentId, sk) => getTenantItem<BankLine>({ PK: `APT#${apartmentId}`, SK: sk }),
   };
 }
 
@@ -339,6 +421,20 @@ export function createLedgerAuditor(source: AuditSource) {
 
     findings.push(...checkReceipts(s));
     findings.push(...checkOnlinePayments(s));
+
+    // Faz B2: banka eslestirmeleri. Satir okuma sirasinda degistiyse (es zamanli eslestirme / geri
+    // alma) bulgu raporlanmaz, kararsiz sayilir.
+    for (const f of checkBankMatches(s)) {
+      const snap = s.bankLines?.find((l) => l.lineId === f.lineId);
+      if (snap && source.getBankLine) {
+        const now = await source.getBankLine(apartmentId, snap.SK);
+        if (!now || now.version !== snap.version) {
+          unstable.push(`bank:${f.lineId}`);
+          continue;
+        }
+      }
+      findings.push(f);
+    }
 
     return {
       apartmentId,

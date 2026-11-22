@@ -1,5 +1,6 @@
 import { ReceiptText } from 'lucide-react';
 import { useMemo } from 'react';
+import { BankTransferCard } from '@/components/portal/BankTransferCard';
 import { ChangeUnitLink, PortalQueryState } from '@/components/portal/PortalQueryState';
 import { PayOnlineButton } from '@/components/portal/PayOnlineButton';
 import { PortalStatusBadge } from '@/components/portal/PortalStatusBadge';
@@ -235,6 +236,7 @@ export function DuesPage() {
     <div className="flex flex-col gap-6">
       <h1 className="text-title font-bold">Borçlarım</h1>
       <SummaryCard />
+      <BankTransferCard />
       <Movements />
     </div>
   );

@@ -17,7 +17,7 @@
  *    degismez; yalnizca eslestirme durumu (`status`, B2) surum kosuluyla guncellenir.
  *  - Satir kayitlari TTL tasimaz.
  */
-import type { AuditFields, IsoDate, IsoDateTime, Kurus, TableKeys } from '../../core/types.js';
+import type { AuditFields, IsoDate, IsoDateTime, Kurus, LiableParty, TableKeys } from '../../core/types.js';
 
 // ---------------------------------------------------------------------------
 // Sutun esleme (BANKFMT / istek)
@@ -175,7 +175,129 @@ export type BankLine = TableKeys & {
   /** Bakiye ve banka referansi yok: parmak izi gun ici sira numarasina dayanir. */
   weakFingerprint?: true;
   status: LineStatus;
+  /** B2: son karar kaydinin sira numarasi (`BANKMATCH#<lineId>#<n>`); karar yoksa yok. */
+  decisionNo?: number;
+  /** B2: `matched` iken bagli defter kayitlari (karar kaydiyla ayni). */
+  match?: { decisionNo: number; transactionIds: string[]; paymentIds: string[] };
+  /** B2: son durum degisikligi (eslestirme / yoksayma / geri alma). */
+  updatedAt?: IsoDateTime;
+  updatedBy?: string;
   createdAt: IsoDateTime;
   createdBy: string;
   version: number;
 };
+
+// ---------------------------------------------------------------------------
+// Faz B2: eslestirme kararlari, ogrenilmis gonderen, odeme referans kodu, hesap profili
+// ---------------------------------------------------------------------------
+
+/** Tek banka satirinin en fazla bolunebilecegi alt cari sayisi. */
+export const MAX_ALLOCATIONS = 10;
+
+export type MatchAllocation = {
+  /** Alt cari (ana veya tasinmada acilmis ayrilan cari). */
+  accountId: string;
+  unitId: string;
+  liableParty: LiableParty;
+  /** Alt cariye alacak yazilan tahsilat (kurus). */
+  amount: Kurus;
+  /** Odeme aninda kesinlestirilen gecikme tazminati (kurus, 0 olabilir). */
+  lateFee: Kurus;
+};
+
+/**
+ * match   : satir tahsilata cevrildi (tazminat kesinlestirme + tahsilat + makbuz)
+ * unmatch : bagli tahsilatlar ters kayitla iptal edildi, satir yeniden `unmatched`
+ * ignore  : ic virman / banka masrafi vb. (defter kaydi yok)
+ * restore : yoksayilan satir yeniden `unmatched`
+ */
+export type DecisionKind = 'match' | 'unmatch' | 'ignore' | 'restore';
+
+/**
+ * Eslestirme karari: YALNIZCA EKLENIR (append-only). Geri alma eski kaydi degistirmez; yeni bir
+ * `unmatch` karari `reverses` ile eskisini gosterir (`reversedBy` okumada turetilir).
+ *   PK = APT#<apt>, SK = BANKMATCH#<lineId>#<nnn>
+ */
+export type BankDecision = TableKeys & {
+  entityType: 'BANK_MATCH';
+  apartmentId: string;
+  bankAccountId: string;
+  lineId: string;
+  /** BANKTX satirinin SK'si (denetim ve geri izleme). */
+  lineSk: string;
+  decisionNo: number;
+  kind: DecisionKind;
+  /** match: alt cari dagilimi (toplam = satir tutari). */
+  allocations?: MatchAllocation[];
+  /** match: yazilan islemler (tazminat + tahsilat); unmatch: yazilan ters kayitlar. */
+  transactionIds: string[];
+  /** match: makbuzlar. */
+  paymentIds: string[];
+  /** unmatch / restore: geri alinan kararin numarasi. */
+  reverses?: number;
+  /** unmatch: iptal edilen islemler. */
+  reversedTransactionIds?: string[];
+  reason?: string;
+  /** Oneriden mi, elle mi? (raporlama) */
+  source?: 'suggestion' | 'manual';
+  confidence?: number;
+  createdAt: IsoDateTime;
+  createdBy: string;
+};
+
+/**
+ * Ogrenilmis gonderen (karsi taraf IBAN'inin HMAC ozeti -> alt cariler). Her onaylanan
+ * eslestirmede guncellenir (surum kosullu); geri almada sayac azaltilir.
+ *   PK = APT#<apt>, SK = PAYER#<ibanMac>
+ */
+export type BankPayer = TableKeys & {
+  entityType: 'BANK_PAYER';
+  apartmentId: string;
+  ibanMac: string;
+  accounts: { accountId: string; unitId: string; liableParty: LiableParty; count: number; lastMatchedAt: IsoDateTime }[];
+  createdAt: IsoDateTime;
+  updatedAt: IsoDateTime;
+  version: number;
+};
+
+/**
+ * Alt cari basina deterministik odeme referans kodu (sakin havale aciklamasina yazar).
+ *   PK = APT#<apt>, SK = BANKREF#<code>          kod -> alt cari (tekillik)
+ *   PK = APT#<apt>, SK = BANKREFOF#<accountId>   alt cari -> kod
+ * Ikisi tek atomik yazimla, yalnizca yoksa olusturulur.
+ */
+export type BankRef = TableKeys & {
+  entityType: 'BANK_REF';
+  apartmentId: string;
+  code: string;
+  accountId: string;
+  unitId: string;
+  liableParty: LiableParty;
+  createdAt: IsoDateTime;
+  createdBy: string;
+};
+
+export type BankRefOf = TableKeys & {
+  entityType: 'BANK_REF_OF';
+  apartmentId: string;
+  accountId: string;
+  code: string;
+  createdAt: IsoDateTime;
+};
+
+/**
+ * Banka hesabinin sakinlere gosterilen bilgileri (apartmanin KENDI tahsilat hesabi; kisisel
+ * veri degildir, sakin kartinda acikca gosterilir).
+ *   PK = APT#<apt>, SK = BANKPROFILE#<bankAccountId>
+ */
+export type BankAccountProfile = TableKeys &
+  AuditFields & {
+    entityType: 'BANK_PROFILE';
+    apartmentId: string;
+    bankAccountId: string;
+    iban: string;
+    accountHolderName: string;
+    bankName?: string;
+    /** Sakin "Havale / EFT ile ode" kartinda gosterilecek hesap (apartmanda en fazla bir). */
+    residentVisible: boolean;
+  };

@@ -2,6 +2,7 @@ import { type Context, Hono } from 'hono';
 import type { Authenticator, Role } from '../../../auth/claims.js';
 import { type Env, authenticateWith, handleError, readJson, requireRole } from '../../../http/helpers.js';
 import { BankError } from './errors.js';
+import type { BankMatchService } from './matchService.js';
 import type { BankContext, BankService } from './service.js';
 
 /**
@@ -11,7 +12,7 @@ import type { BankContext, BankService } from './service.js';
 const READ_ROLES: readonly Role[] = ['apartment_manager', 'management_company', 'observer'];
 const WRITE_ROLES: readonly Role[] = ['apartment_manager', 'management_company'];
 
-export type BankRoutesDeps = { authenticate: Authenticator; service: BankService };
+export type BankRoutesDeps = { authenticate: Authenticator; service: BankService; match?: BankMatchService };
 
 /**
  * `/api/bank` - Faz B1: banka ekstresi aktarimi.
@@ -24,8 +25,18 @@ export type BankRoutesDeps = { authenticate: Authenticator; service: BankService
  *   GET  /lines?bankAccountId=&status=&from=&to=&statementId=&order=&limit=&cursor=
  *   GET  /formats/:bankAccountId          hesaba kayitli sutun eslemesi
  *   PUT  /formats/:bankAccountId          { format, expectedVersion? } (surum kosullu, denetlenir)
+ * Faz B2 (eslestirme):
+ *   GET  /queue?bankAccountId=&status=...          satirlar + eslesmemis giris satirlarinda ilk oneri
+ *   GET  /targets                                  eslestirilebilir alt cariler
+ *   GET  /lines/:lineId/suggestions?bankAccountId= oneriler
+ *   GET  /lines/:lineId/history?bankAccountId=     karar gecmisi
+ *   POST /lines/:lineId/match    { bankAccountId, expectedVersion, allocations[{accountId, amount}], reason?, source?, confidence? }
+ *   POST /lines/:lineId/ignore   { bankAccountId, expectedVersion, reason }
+ *   POST /lines/:lineId/unmatch  { bankAccountId, expectedVersion, reason }
+ *   GET  /reconciliation?bankAccountId=
+ *   GET  /accounts, PUT /accounts/:bankAccountId/profile { iban, accountHolderName, bankName?, residentVisible, expectedVersion? }
  */
-export function bankRoutes({ authenticate, service }: BankRoutesDeps) {
+export function bankRoutes({ authenticate, service, match }: BankRoutesDeps) {
   const r = new Hono<Env>();
   r.onError((err, c) => {
     if (err instanceof BankError) {
@@ -82,6 +93,28 @@ export function bankRoutes({ authenticate, service }: BankRoutesDeps) {
   r.put('/formats/:bankAccountId', requireRole(WRITE_ROLES), async (c) =>
     c.json(await service.putFormat(ctx(c), c.req.param('bankAccountId'), await readJson(c))),
   );
+
+  if (match) {
+    const lineId = (c: Context<Env>) => c.req.param('lineId') ?? '';
+    r.get('/queue', requireRole(READ_ROLES), async (c) => c.json(await match.queue(ctx(c), c.req.query())));
+    r.get('/targets', requireRole(READ_ROLES), async (c) => c.json(await match.targets(ctx(c))));
+    r.get('/lines/:lineId/suggestions', requireRole(READ_ROLES), async (c) =>
+      c.json(await match.suggestions(ctx(c), lineId(c), { bankAccountId: c.req.query('bankAccountId') })),
+    );
+    r.get('/lines/:lineId/history', requireRole(READ_ROLES), async (c) =>
+      c.json(await match.history(ctx(c), lineId(c), { bankAccountId: c.req.query('bankAccountId') })),
+    );
+    r.post('/lines/:lineId/match', requireRole(WRITE_ROLES), async (c) => c.json(await match.match(ctx(c), lineId(c), await readJson(c))));
+    r.post('/lines/:lineId/ignore', requireRole(WRITE_ROLES), async (c) => c.json(await match.ignore(ctx(c), lineId(c), await readJson(c))));
+    r.post('/lines/:lineId/unmatch', requireRole(WRITE_ROLES), async (c) => c.json(await match.unmatch(ctx(c), lineId(c), await readJson(c))));
+    r.get('/reconciliation', requireRole(READ_ROLES), async (c) =>
+      c.json(await match.reconciliation(ctx(c), { bankAccountId: c.req.query('bankAccountId') })),
+    );
+    r.get('/accounts', requireRole(READ_ROLES), async (c) => c.json(await match.listAccounts(ctx(c))));
+    r.put('/accounts/:bankAccountId/profile', requireRole(WRITE_ROLES), async (c) =>
+      c.json(await match.saveProfile(ctx(c), c.req.param('bankAccountId'), await readJson(c))),
+    );
+  }
 
   return r;
 }
