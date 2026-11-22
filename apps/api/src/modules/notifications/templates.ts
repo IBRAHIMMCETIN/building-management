@@ -171,6 +171,18 @@ function spec(n: Notification, ctx: EmailContext): Spec | undefined {
         cta: { label: upcoming ? 'Borçlarımı görüntüle' : 'Şimdi öde', path: upcoming ? 'dues' : 'odeme' },
       };
     }
+    case 'dues_reminder_plan_default':
+      return {
+        subject: 'Taksit planınızda gecikme',
+        heading: 'Taksit planınızda geciken ödemeler var',
+        preheader: `${unit}: ${formatTL(num(d.amount))}`,
+        blocks: [
+          { kind: 'p', text: `${unit} için yapılandırılan borcunuzun taksitlerinde gecikme tespit edildi. Planın koşullarına göre kalan borcun tamamı muaccel hale gelebilir.` },
+          { kind: 'rows', rows: [['Kalan plan borcu', formatTL(num(d.amount))], ['Geciken ilk taksit vadesi', formatDate(d.dueDate)]] },
+          { kind: 'note', text: 'Geciken taksitleri ödeyerek planınızı sürdürebilirsiniz.' },
+        ],
+        cta: { label: 'Şimdi öde', path: 'odeme' },
+      };
     case 'announcement_published':
       return {
         subject: `Yeni duyuru: ${str(d.title)}`,

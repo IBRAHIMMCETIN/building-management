@@ -95,7 +95,11 @@ export type LateFeePostedPayload = {
   items: { unitId: string; liableParty: LiableParty; amount: Kurus; transactionId: string; userId?: string }[];
 };
 
-export const REMINDER_KINDS = ['upcoming', 'overdue_1', 'overdue_7'] as const;
+/**
+ * Finans 2.2: `plan_default` taksit planinda temerrut (muacceliyet) tespiti/uyarisi; `dueDate`
+ * geciken ilk taksitin vadesi, `amount` plandaki odenmemis toplam.
+ */
+export const REMINDER_KINDS = ['upcoming', 'overdue_1', 'overdue_7', 'plan_default'] as const;
 export type ReminderKind = (typeof REMINDER_KINDS)[number];
 
 /** Zamanlanmis gorev: vadeden 3 gun once, vade gectikten 1 ve 7 gun sonra hatirlatma. */

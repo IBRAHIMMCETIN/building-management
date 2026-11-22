@@ -40,6 +40,11 @@ locals {
       cron        = "cron(40 3 * * ? *)"
       description = "Her gun 03:40 - salt okunur defter denetimi (sapma -> LedgerDrift metrigi + alarm)"
     }
+    # Finans 2.2: taksit plani temerrut (muacceliyet) taramasi; bildirim outbox ile (DUES_REMINDER).
+    installment_plans = {
+      cron        = "cron(30 9 * * ? *)"
+      description = "Her gun 09:30 - taksit planlarinda temerrut tespiti, bildirim ve (plan ayarina gore) muacceliyet"
+    }
   }
 
   # Suprucu bu yastan genc outbox kayitlarina dokunmaz (relay'e birakir).

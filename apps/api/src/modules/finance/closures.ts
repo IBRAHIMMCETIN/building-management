@@ -31,7 +31,7 @@ import { feeLedgerFor, unpostedLateFee } from './lateFee.js';
 import { coversDay } from './occupancy.js';
 import { type FinanceRepository, LedgerConflictError, type ReplaceRecord, financeKeys, financeRepository } from './repository.js';
 import { DEFAULT_LATE_FEE_BASIS_POINTS, FinanceError, type FinanceService, SYSTEM_ACCOUNTS } from './service.js';
-import { allocate, cancelledIn, linesOfAccount, readSubledger, transferItemId } from './subledger.js';
+import { allocate, cancelledIn, linesOfAccount, openPlanIds, readSubledger, transferItemId } from './subledger.js';
 import { type Account, type Transaction, type TransactionLine, type TransferItem, mainReceivableId } from './types.js';
 
 export const DEBT_TARGETS = ['former', 'owner', 'new_owner'] as const;
@@ -370,6 +370,10 @@ export function createClosureService(overrides: Partial<ClosureServiceDeps> & Pi
     );
 
     const warnings: string[] = [];
+    const lockedBy = openPlanIds(sourceAccountId, txPage.items);
+    if (lockedBy.length > 0) {
+      warnings.push('Bu caride aktif bir borç yapılandırma (taksit) planı var; kapama yapılamaz. Önce planı kapatın veya iptal edin.');
+    }
     if (source?.closedThrough && moveOutDate <= source.closedThrough) {
       warnings.push(`Bu cari ${trDate(source.closedThrough)} tarihine kadar zaten kapatilmis; cikis tarihi bundan sonra olmali.`);
     }
@@ -460,6 +464,10 @@ export function createClosureService(overrides: Partial<ClosureServiceDeps> & Pi
     ]);
     if (source?.closedThrough && p.moveOutDate <= source.closedThrough) {
       throw new FinanceError('unprocessable', `Bu cari ${trDate(source.closedThrough)} tarihine kadar zaten kapatilmis`);
+    }
+    // Finans 2.2: aktif taksit plani olan cari kapatilamaz (plan once kapanmali / iptal edilmeli).
+    if (openPlanIds(sourceAccountId, txPage.items).length > 0) {
+      throw new FinanceError('conflict', 'Bu caride aktif bir borç yapılandırma planı var; önce planı kapatın veya iptal edin');
     }
 
     // Uyelikler: secilenler bu tarafta D gunu kayitli olmali.

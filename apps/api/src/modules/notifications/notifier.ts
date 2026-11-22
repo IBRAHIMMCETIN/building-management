@@ -8,7 +8,7 @@ export type NotificationTemplate =
   | 'payment_received'
   | 'announcement_published'
   | 'late_fee_posted'
-  | `dues_reminder_${'upcoming' | 'overdue_1' | 'overdue_7'}`;
+  | `dues_reminder_${'upcoming' | 'overdue_1' | 'overdue_7' | 'plan_default'}`;
 
 /** Ozet bildirimlerdeki kalem satiri (kisisel veri yok). */
 export type NotificationLine = { unitId: string; amount: number };

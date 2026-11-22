@@ -1556,6 +1556,27 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
     if (original.kind === 'transfer') {
       throw new FinanceError('unprocessable', 'Cari devri islemleri yalnizca kapamanin geri alinmasiyla cevrilebilir');
     }
+    if (original.kind === 'offset') {
+      throw new FinanceError('unprocessable', 'Avans mahsubu yalnizca mahsup kaydindan geri alinabilir');
+    }
+    if (original.kind === 'restructure') {
+      throw new FinanceError('unprocessable', 'Yapilandirma islemleri yalnizca planin iptaliyle cevrilebilir');
+    }
+    // Finans 2.2: hedefli mahsupla (yapilandirma / mahsup) kapatilmis bir kalemin islemi ters
+    // cevrilemez; once ilgili plan veya mahsup geri alinmali.
+    if (original.lines.some((l) => l.side === 'debit' && l.unitId && l.liableParty)) {
+      const all = (await repo.listTransactions(ctx.apartmentId)).items;
+      const cancelledIds = cancelledTransactions(all);
+      const prefix = original.transactionId;
+      const settled = all.some(
+        (t) =>
+          !cancelledIds.has(t.transactionId) &&
+          t.lines.some((l) => l.settles?.some((x) => x.chargeId === prefix || x.chargeId.startsWith(`${prefix}_`))),
+      );
+      if (settled) {
+        throw new FinanceError('unprocessable', 'Bu kalem bir yapılandırma planına veya avans mahsubuna bağlı; önce plan/mahsup geri alınmalı');
+      }
+    }
     // Kapatilmis doneme ait kayit: kalemi devredildi; ters kayit kaynakta etkisiz kalir.
     for (const accountId of new Set(original.lines.filter((l) => l.unitId && l.liableParty).map((l) => l.accountId))) {
       const acc = await repo.getAccount(ctx.apartmentId, accountId);

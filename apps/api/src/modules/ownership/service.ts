@@ -24,6 +24,7 @@ import { ValidationError, asObject, assertId, isIsoDate, optString, reqEnum, req
 import { type CariClosure, type ClosureRepository, closureKeys, closureRepository, planClosure, reversibleTransactions } from '../finance/closures.js';
 import { type FinanceRepository, LedgerConflictError, type ReplaceRecord, financeKeys, financeRepository } from '../finance/repository.js';
 import { DEFAULT_LATE_FEE_BASIS_POINTS, FinanceError, type FinanceService, SYSTEM_ACCOUNTS } from '../finance/service.js';
+import { openPlanIds } from '../finance/subledger.js';
 import {
   type Account,
   type Transaction,
@@ -839,6 +840,10 @@ export function createOwnershipService(overrides: Partial<OwnershipServiceDeps> 
       throw new ValidationError(`Tek devirde en fazla ${MAX_TRANSFER_CLOSURES} cari kapatılabilir; devri parçalara bölün`, 'moves');
     }
     for (const c of closures) {
+      // Finans 2.2: aktif taksit plani olan cari devredilemez.
+      if (openPlanIds(c.sourceAccountId, txs).length > 0) {
+        throw new FinanceError('conflict', `${c.sourceAccountId} carisinde aktif bir borç yapılandırma planı var; önce planı kapatın veya iptal edin`);
+      }
       if (c.source?.closedThrough && cutoff <= c.source.closedThrough) {
         throw new FinanceError('unprocessable', `Bu cari ${trDate(c.source.closedThrough)} tarihine kadar zaten kapatılmış`);
       }

@@ -8,6 +8,8 @@ import type { CoreRepository } from '../../src/modules/core/repository.js';
 import { type Unit, toKurus } from '../../src/modules/core/types.js';
 import { type CariClosure, type ClosureRepository, createClosureService } from '../../src/modules/finance/closures.js';
 import { toLedgerEntries } from '../../src/modules/finance/repository.js';
+import { type AccountOffset, type OffsetRepository, type OffsetRequest, createOffsetService } from '../../src/modules/finance/offsets.js';
+import { type InstallmentPlan, type PlanRepository, createPlanService } from '../../src/modules/finance/plans.js';
 import { createFinanceService } from '../../src/modules/finance/service.js';
 import type { Transaction } from '../../src/modules/finance/types.js';
 import { type MembershipRepository, membershipKeys } from '../../src/modules/memberships/repository.js';
@@ -98,6 +100,27 @@ export function cariWorld(start = '2026-09-01', opts: { vacancyRule?: boolean } 
     core: { ...core, getBlock: async () => undefined } as unknown as PortalServiceDeps['core'],
     now: () => now,
   });
+  // Finans 2.2: mahsup ve yapilandirma kayitlari da ayni belge deposunda (atomik yazim).
+  const offsetsRepo: OffsetRepository = {
+    get: async (apt, id) => docsOf<AccountOffset>('ACCOUNT_OFFSET').find((o) => o.apartmentId === apt && o.offsetId === id),
+    list: async (apt) => docsOf<AccountOffset>('ACCOUNT_OFFSET').filter((o) => o.apartmentId === apt),
+    getRequest: async (apt, id) => docsOf<OffsetRequest>('OFFSET_REQUEST').find((o) => o.apartmentId === apt && o.requestId === id),
+    listRequests: async (apt) => docsOf<OffsetRequest>('OFFSET_REQUEST').filter((o) => o.apartmentId === apt),
+  };
+  const plansRepo: PlanRepository = {
+    get: async (apt, id) => docsOf<InstallmentPlan>('INSTALLMENT_PLAN').find((p) => p.apartmentId === apt && p.planId === id),
+    list: async (apt) => docsOf<InstallmentPlan>('INSTALLMENT_PLAN').filter((p) => p.apartmentId === apt),
+  };
+  const offsets = createOffsetService({ financeRepo: fake.repo, offsets: offsetsRepo, memberships, portal, now: () => now, newId });
+  const plans = createPlanService({
+    finance,
+    financeRepo: fake.repo,
+    plans: plansRepo,
+    core: core as unknown as Pick<CoreRepository, 'getSite'>,
+    portal,
+    now: () => now,
+    newId,
+  });
   // Daireler ekraninin kaynagi (GET /api/memberships?current=true) ayni belge deposundan okur.
   const membershipRepo: MembershipRepository = {
     get: async (apt, userId, unitId) => fake.docs.get(`APT#${apt}|MEMBER#${userId}#${unitId}`) as unknown as UnitMembership | undefined,
@@ -113,6 +136,9 @@ export function cariWorld(start = '2026-09-01', opts: { vacancyRule?: boolean } 
     version: 'test',
     financeService: finance,
     closureService: closures,
+    offsetService: offsets,
+    planService: plans,
+    portalService: portal,
     membershipService: createMembershipService({ repository: membershipRepo, core: core as Pick<CoreRepository, 'getUnit'>, now: () => now }),
     authenticate: (c) => {
       const raw = c.req.header('x-test-claims');
@@ -161,6 +187,6 @@ export function cariWorld(start = '2026-09-01', opts: { vacancyRule?: boolean } 
     now = new Date(`${d}T09:00:00.000Z`);
   };
   const addUnit = (id: string, number: string) => units.push({ ...unit(id), number });
-  return { fake, finance, closures, portal, call, member, memberOf, charge, pay, txs, acc, setNow, ctx, addUnit };
+  return { fake, finance, closures, offsets, plans, portal, call, member, memberOf, charge, pay, txs, acc, setNow, ctx, addUnit };
 }
 

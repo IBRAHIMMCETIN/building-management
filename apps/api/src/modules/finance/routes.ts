@@ -2,12 +2,22 @@ import { type Context, Hono } from 'hono';
 import type { Authenticator, Role } from '../../auth/claims.js';
 import { type Env, authenticateWith, handleError, publicView, readJson, requireRole } from '../../http/helpers.js';
 import type { CariClosure, ClosureService } from './closures.js';
+import type { OffsetService } from './offsets.js';
+import type { PlanService } from './plans.js';
 import type { FinanceContext, FinanceService } from './service.js';
 
 const READ_ROLES: readonly Role[] = ['apartment_manager', 'management_company', 'observer'];
 const WRITE_ROLES: readonly Role[] = ['apartment_manager', 'management_company'];
 
-export type FinanceRoutesDeps = { authenticate: Authenticator; service: FinanceService; closures?: ClosureService };
+export type FinanceRoutesDeps = {
+  authenticate: Authenticator;
+  service: FinanceService;
+  closures?: ClosureService;
+  /** Finans 2.2: avans mahsubu ve sakin mahsup talepleri. */
+  offsets?: OffsetService;
+  /** Finans 2.2: borc yapilandirma / taksit planlari. */
+  plans?: PlanService;
+};
 
 /**
  * Uclar: GET /accounts, /summary, /dues-status, /former-accounts, /transactions?from&to&limit&cursor, /balance/:unitId
@@ -16,11 +26,18 @@ export type FinanceRoutesDeps = { authenticate: Authenticator; service: FinanceS
  *        GET  /units/:unitId/closures/preview?party&moveOutDate&userIds   (yazmaz)
  *        GET  /units/:unitId/closures, /closures/:closureId
  *        POST /units/:unitId/closures, /closures/:closureId/reverse
+ * Finans 2.2 - avans mahsubu:
+ *        POST /offsets/preview (yazmaz), POST /offsets, GET /offsets?accountId, GET /offsets/:id,
+ *        POST /offsets/:id/reverse
+ *        GET  /offset-requests?status, POST /offset-requests/:id/approve, /offset-requests/:id/reject
+ * Finans 2.2 - borc yapilandirma:
+ *        POST /plans/preview (yazmaz), POST /plans, GET /plans?accountId&status, GET /plans/:id,
+ *        POST /plans/:id/accelerate, /plans/:id/pull-forward, /plans/:id/cancel
  *
  * Tenant izolasyonu: `apartmentId` YALNIZCA JWT claim'inden gelir; URL/govde ile
  * degistirilemez. Claim'de apartmentId yoksa (ornegin apartman secilmemis) 403 doner.
  */
-export function financeRoutes({ authenticate, service, closures }: FinanceRoutesDeps) {
+export function financeRoutes({ authenticate, service, closures, offsets, plans }: FinanceRoutesDeps) {
   const r = new Hono<Env>();
   r.use('*', authenticateWith(authenticate));
   r.use('*', async (c, next) => {
@@ -157,6 +174,53 @@ export function financeRoutes({ authenticate, service, closures }: FinanceRoutes
     );
   }
 
+  // ----- Finans 2.2: avans mahsubu -----
+  if (offsets) {
+    r.post('/offsets/preview', requireRole(WRITE_ROLES), async (c) => c.json(await offsets.preview(ctx(c), await readJson(c))));
+    r.post('/offsets', requireRole(WRITE_ROLES), async (c) => {
+      const result = await offsets.create(ctx(c), await readJson(c));
+      return c.json({ replayed: result.replayed, offset: publicView(result.offset) }, result.replayed ? 200 : 201);
+    });
+    r.get('/offsets', requireRole(READ_ROLES), async (c) =>
+      c.json({ items: (await offsets.list(ctx(c), { accountId: c.req.query('accountId') })).map(publicView) }),
+    );
+    r.get('/offsets/:offsetId', requireRole(READ_ROLES), async (c) => c.json(publicView(await offsets.get(ctx(c), c.req.param('offsetId')))));
+    r.post('/offsets/:offsetId/reverse', requireRole(WRITE_ROLES), async (c) =>
+      c.json({ offset: publicView(await offsets.reverse(ctx(c), c.req.param('offsetId'), await readJson(c))) }),
+    );
+    r.get('/offset-requests', requireRole(READ_ROLES), async (c) =>
+      c.json({ items: (await offsets.listRequests(ctx(c), { status: c.req.query('status') })).map(publicView) }),
+    );
+    r.post('/offset-requests/:requestId/approve', requireRole(WRITE_ROLES), async (c) => {
+      const result = await offsets.approveRequest(ctx(c), c.req.param('requestId'), await readJson(c));
+      return c.json({ request: publicView(result.request), offset: publicView(result.offset) }, 201);
+    });
+    r.post('/offset-requests/:requestId/reject', requireRole(WRITE_ROLES), async (c) =>
+      c.json({ request: publicView(await offsets.rejectRequest(ctx(c), c.req.param('requestId'), await readJson(c))) }),
+    );
+  }
+
+  // ----- Finans 2.2: borc yapilandirma -----
+  if (plans) {
+    r.post('/plans/preview', requireRole(WRITE_ROLES), async (c) => c.json(await plans.preview(ctx(c), await readJson(c))));
+    r.post('/plans', requireRole(WRITE_ROLES), async (c) => {
+      const result = await plans.create(ctx(c), await readJson(c));
+      return c.json({ replayed: result.replayed, plan: await plans.get(ctx(c), result.plan.planId) }, result.replayed ? 200 : 201);
+    });
+    r.get('/plans', requireRole(READ_ROLES), async (c) =>
+      c.json({ items: await plans.list(ctx(c), { accountId: c.req.query('accountId'), status: c.req.query('status') }) }),
+    );
+    r.get('/plans/:planId', requireRole(READ_ROLES), async (c) => c.json(await plans.get(ctx(c), c.req.param('planId'))));
+    r.post('/plans/:planId/accelerate', requireRole(WRITE_ROLES), async (c) =>
+      c.json({ plan: await plans.accelerate(ctx(c), c.req.param('planId'), await readJson(c)) }),
+    );
+    r.post('/plans/:planId/pull-forward', requireRole(WRITE_ROLES), async (c) =>
+      c.json({ plan: await plans.pullForward(ctx(c), c.req.param('planId'), await readJson(c)) }),
+    );
+    r.post('/plans/:planId/cancel', requireRole(WRITE_ROLES), async (c) =>
+      c.json({ plan: await plans.cancel(ctx(c), c.req.param('planId'), await readJson(c)) }),
+    );
+  }
+
   return r;
 }
-

@@ -24,6 +24,8 @@ import { type BankMatchService, createBankMatchService } from './modules/finance
 import { importRoutes } from './modules/imports/routes.js';
 import { type ImportsService, createImportsService } from './modules/imports/service.js';
 import { type ClosureService, createClosureService } from './modules/finance/closures.js';
+import { type OffsetService, createOffsetService } from './modules/finance/offsets.js';
+import { type PlanService, createPlanService } from './modules/finance/plans.js';
 import { type FinanceService, createFinanceService } from './modules/finance/service.js';
 import { healthRoutes } from './modules/health/routes.js';
 import { meRoutes } from './modules/me/routes.js';
@@ -89,6 +91,9 @@ export type AppConfig = {
   financeService?: FinanceService;
   /** Tasinmada cari kapama (testlerde sahte depolarla). */
   closureService?: ClosureService;
+  /** Finans 2.2: avans mahsubu ve borc yapilandirma (testlerde sahte depolarla). */
+  offsetService?: OffsetService;
+  planService?: PlanService;
   /** Finans 2.1: hisseli mulkiyet ve mulk/hisse devri (testlerde sahte depolarla). */
   ownershipService?: OwnershipService;
   portalService?: PortalService;
@@ -204,12 +209,17 @@ export function createApp(config: AppConfig) {
     invoiceService ??= createInvoiceService({ settings: payments.invoices });
   }
   app.route('/api/finance/online-payments', paymentManagerRoutes({ authenticate, service: paymentsService }));
+  // Finans 2.2: sahte finans servisiyle kurulan testlerde (servis verilmemisse) baglanmaz.
+  const offsetService = config.offsetService ?? (config.financeService ? undefined : createOffsetService({ portal: portalService }));
+  const planService = config.planService ?? (config.financeService ? undefined : createPlanService({ finance: financeService, portal: portalService }));
   app.route(
     '/api/finance',
     financeRoutes({
       authenticate,
       service: financeService,
       closures: config.closureService ?? (config.financeService ? undefined : createClosureService({ finance: financeService })),
+      ...(offsetService ? { offsets: offsetService } : {}),
+      ...(planService ? { plans: planService } : {}),
     }),
   );
   // Faz B1: banka ekstresi aktarimi (ekstre yukleme, onizleme, satir aktarimi, sutun eslemesi).
@@ -263,6 +273,8 @@ export function createApp(config: AppConfig) {
       authenticate,
       service: portalService,
       paymentReference: (ctx, unitId) => bankMatchService.paymentReference(ctx, unitId),
+      ...(offsetService ? { offsets: offsetService } : {}),
+      ...(planService ? { plans: planService } : {}),
     }),
   );
 
