@@ -48,6 +48,9 @@ import type { SqsBatchResponse, SqsEvent } from './notification-worker.js';
  *                  kayitlarini relay cekirdegiyle yeniden yayinlar (apartman dongusu yok; tek tur).
  *   ledger_audit   her gece 03:40: apartman basina SALT OKUNUR defter denetimi; sapma ->
  *                  log + `LedgerDrift` metrigi + platform alarmi (duzeltme yok). Pasif siteler dahil.
+ *                  Faz B3: banka hesabi mutabakati (son ekstre kapanisi <-> defter, bekleyen
+ *                  satirlarla aciklanamayan fark) `BankReconDiff` (kurus, mutlak toplam) ve
+ *                  `BankReconAccountsOff` (farkli hesap sayisi) metrikleri.
  *
  * Idempotency: her defter yazimi donem bazli anahtar kullanir (auto-dues-<YYYY-MM>,
  * lf-<YYYY-MM>-...), olay kimlikleri deterministiktir ve bildirim worker'i ayni olayi bir kez
@@ -245,6 +248,13 @@ export function createSchedulerWorker(overrides: Partial<SchedulerDeps> = {}) {
       { LedgerDrift: drift, LedgerAuditUnstable: report.unstable.length, AuditChainBroken: chain.findings.length },
       { msg: 'ledger_audit_metrics', apartmentId },
     );
+    // Faz B3: banka mutabakati (kaynak eski surumse alan yok -> metrik de yok).
+    const recon = report.bankRecon;
+    if (recon) {
+      const off = recon.filter((r) => r.unexplainedDiff !== 0);
+      metrics().emit({ BankReconDiff: off.reduce((sum, r) => sum + Math.abs(r.unexplainedDiff), 0) }, { msg: 'bank_recon_metrics', apartmentId, accounts: off }, 'None');
+      metrics().emit({ BankReconAccountsOff: off.length }, { msg: 'bank_recon_accounts', apartmentId });
+    }
     const entry = {
       level: drift > 0 ? 'error' : 'info',
       msg: 'ledger_audit',
@@ -252,6 +262,7 @@ export function createSchedulerWorker(overrides: Partial<SchedulerDeps> = {}) {
       counts: { ...report.counts, auditEntriesChecked: chain.checked },
       findings: [...report.findings, ...chain.findings],
       unstable: report.unstable,
+      ...(recon ? { bankRecon: recon } : {}),
     };
     if (drift > 0) log.error(JSON.stringify(entry));
     else log.info(JSON.stringify(entry));

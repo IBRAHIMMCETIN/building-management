@@ -10,6 +10,7 @@ export const AUDIT_CATEGORIES = [
   { prefix: 'person.', label: 'Kişiler ve davetler' },
   { prefix: 'site.', label: 'Site ayarları' },
   { prefix: 'import.', label: 'Toplu aktarım' },
+  { prefix: 'bank.', label: 'Banka ekstresi ve eşleştirme' },
   { prefix: 'support.', label: 'Platform destek erişimi' },
   { prefix: 'mfa.', label: 'İki adımlı doğrulama' },
   { prefix: 'notification_preferences.', label: 'Bildirim tercihleri' },
@@ -49,6 +50,16 @@ const EXACT: Record<string, string> = {
   'mfa.reset': 'İki adımlı doğrulama sıfırlandı',
   'mfa.reset.failed': 'MFA sıfırlama başarısız',
   'notification_preferences.update': 'Bildirim tercihi değişti',
+  'bank.statement.preview': 'Banka ekstresi önizlendi',
+  'bank.statement.commit': 'Banka ekstresi aktarıldı',
+  'bank.format.save': 'Banka sütun eşlemesi kaydedildi',
+  'bank.account.profile': 'Banka hesabı bilgileri güncellendi',
+  'bank.line.match': 'Banka satırı eşleştirildi',
+  'bank.line.unmatch': 'Banka eşleştirmesi geri alındı',
+  'bank.line.ignore': 'Banka satırı yoksayıldı',
+  'bank.line.restore': 'Yoksayılan banka satırı geri açıldı',
+  'bank.line.expense': 'Banka satırından gider oluşturuldu',
+  'bank.statement.auto_match': 'Banka satırları toplu onaylandı',
 };
 
 const LEDGER_KINDS: Record<string, string> = {

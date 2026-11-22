@@ -214,9 +214,30 @@ export type BankPaymentInput = {
   documents: (r: { payments: Payment[]; transactions: Transaction[]; allocations: ResolvedBankAllocation[] }) => BankLedgerDocuments;
 };
 
+/**
+ * Faz B3: bankadan cikan satirin gidere cevrilmesi (gider hesabi borc / banka hesabi alacak).
+ * Gider kaydi (EXPENSE), islem, banka modulunun belgeleri ve denetim TEK atomik yazimdir.
+ */
+export type BankExpenseInput = {
+  /** Idempotency kimligi (ornek `bankexpense-<lineId>-<n>`). */
+  idempotencyId: string;
+  /** Odemenin ciktigi banka hesabi (ekstrenin hesabi). */
+  bankAccountId: string;
+  expenseAccountId: string;
+  amount: Kurus;
+  /** Banka valoru. */
+  date: IsoDate;
+  description: string;
+  supplier?: string;
+  invoiceNumber?: string;
+  /** Islem referansi (`BANK:<dekont no | lineId>`). */
+  reference: string;
+  documents: (r: { expense: Expense; transaction: Transaction }) => BankLedgerDocuments;
+};
+
 export type BankReversalInput = {
   idempotencyId: string;
-  /** Ters cevrilecek islemler (banka eslestirmesinin tazminat + tahsilat kayitlari). */
+  /** Ters cevrilecek islemler (banka eslestirmesinin tazminat + tahsilat veya gider kayitlari). */
   transactionIds: string[];
   reason: string;
   documents: (r: { reversals: Transaction[] }) => BankLedgerDocuments;
@@ -1959,6 +1980,104 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
   }
 
   /**
+   * Faz B3: bankadan cikan satiri gider olarak deftere isler (gider hesabi borc, banka alacak).
+   * Banka ekstresi gerceklesmis odemenin kaydidir: kasa/banka "yetersiz bakiye" kontrolu
+   * UYGULANMAZ (defterde henuz eslestirilmemis tahsilatlar olabilir). Kapali donem kilidi ve
+   * banka satirinin surum kosulu (`precondition`) cagirana oldugu gibi iletilir.
+   */
+  async function recordBankExpense(ctx: FinanceContext, p: BankExpenseInput) {
+    assertId(p.idempotencyId, 'idempotencyId');
+    assertId(p.bankAccountId, 'bankAccountId');
+    assertId(p.expenseAccountId, 'expenseAccountId');
+    if (!isIsoDate(p.date)) throw new ValidationError('date YYYY-MM-DD olmali', 'date');
+    if (!Number.isSafeInteger(p.amount) || p.amount < 1 || p.amount > MAX_AMOUNT) throw new ValidationError('amount pozitif kurus olmali', 'amount');
+    const description = p.description.replace(/\s+/g, ' ').trim();
+    if (description.length < 2 || description.length > 200) throw new ValidationError('description 2-200 karakter olmali', 'description');
+    const supplier = p.supplier?.trim() ? p.supplier.trim().slice(0, 120) : undefined;
+    const invoiceNumber = p.invoiceNumber?.trim() ? p.invoiceNumber.trim().slice(0, 60) : undefined;
+    const fp = fingerprint({
+      op: 'bank_expense',
+      bankAccountId: p.bankAccountId,
+      expenseAccountId: p.expenseAccountId,
+      amount: p.amount,
+      date: p.date,
+      description,
+      supplier,
+      invoiceNumber,
+      reference: p.reference,
+    });
+    const replay = async () => {
+      const existing = await repo.getIdempotency(ctx.apartmentId, p.idempotencyId);
+      if (!existing) return undefined;
+      if (existing.fingerprint !== fp) throw new FinanceError('idempotency_conflict', 'Bu satir farkli bir gider bilgisiyle kaydedilmis');
+      const expense = existing.recordId ? await repo.getExpense(ctx.apartmentId, existing.recordId) : undefined;
+      const transaction = await repo.getTransaction(ctx.apartmentId, existing.transactionId);
+      if (!expense || !transaction) throw new FinanceError('not_found', 'Gider kaydi bulunamadi');
+      return { expense, transaction, replayed: true };
+    };
+    const previous = await replay();
+    if (previous) return previous;
+
+    await ensureSystemAccounts(ctx);
+    const bank = await repo.getAccount(ctx.apartmentId, p.bankAccountId);
+    if (!bank || bank.type !== 'bank' || bank.status !== 'active') throw new FinanceError('unprocessable', 'Odeme hesabi aktif bir banka hesabi olmali');
+    const expenseAccount = await repo.getAccount(ctx.apartmentId, p.expenseAccountId);
+    if (!expenseAccount) throw new FinanceError('not_found', 'Gider hesabi bulunamadi');
+    if (expenseAccount.type !== 'expense' || expenseAccount.status !== 'active') {
+      throw new FinanceError('unprocessable', 'Gider hesabi aktif bir gider hesabi olmali');
+    }
+
+    const expenseId = deps.newId();
+    const transaction = buildTx(ctx, {
+      kind: 'expense',
+      date: p.date,
+      description,
+      reference: p.reference,
+      lines: [
+        { accountId: p.expenseAccountId, side: 'debit', amount: p.amount },
+        { accountId: p.bankAccountId, side: 'credit', amount: p.amount },
+      ],
+    });
+    const expense: Expense = {
+      ...financeKeys.expense(ctx.apartmentId, expenseId),
+      entityType: 'EXPENSE',
+      expenseId,
+      siteId: ctx.apartmentId,
+      expenseAccountId: p.expenseAccountId,
+      creditAccountId: p.bankAccountId,
+      amount: p.amount,
+      date: p.date,
+      description,
+      ...(supplier ? { supplier } : {}),
+      ...(invoiceNumber ? { invoiceNumber } : {}),
+      transactionId: transaction.transactionId,
+      createdAt: transaction.createdAt,
+      createdBy: ctx.userId,
+    };
+    const docs = p.documents({ expense, transaction });
+    try {
+      await repo.postBatch({
+        transactions: [transaction],
+        idempotency: { id: p.idempotencyId, fingerprint: fp, recordId: expenseId },
+        records: [expense],
+        ...(docs.newDocs?.length ? { newDocs: docs.newDocs } : {}),
+        ...(docs.replaceRecords?.length ? { replaceRecords: docs.replaceRecords } : {}),
+        ...(docs.audit ? { audit: docs.audit } : {}),
+      });
+    } catch (err) {
+      if (err instanceof LedgerConflictError) {
+        if (err.reason === 'duplicate') {
+          const again = await replay();
+          if (again) return again;
+        }
+        if (err.reason === 'closed' || err.reason === 'precondition') throw err;
+      }
+      throw mapConflict(err);
+    }
+    return { expense, transaction, replayed: false };
+  }
+
+  /**
    * Banka eslestirmesinin islemlerini TEK atomik yazimla ters kayitla iptal eder. Her islem icin
    * `REV_<islem>` idempotency kaydi da yazilir: makbuz "iptal" olarak uretilir ve ayni islem elle
    * ikinci kez ters cevrilemez.
@@ -1984,8 +2103,9 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
 
     const originals = await Promise.all(p.transactionIds.map((id) => loadTx(ctx, id)));
     for (const original of originals) {
-      if (original.kind !== 'payment' && original.kind !== 'late_fee') {
-        throw new FinanceError('unprocessable', `Yalnizca tahsilat ve tazminat islemleri geri alinabilir: ${original.transactionId}`);
+      // B3: bankadan cikan satirdan olusturulan gider de ayni yolla geri alinir.
+      if (original.kind !== 'payment' && original.kind !== 'late_fee' && original.kind !== 'expense') {
+        throw new FinanceError('unprocessable', `Yalnizca tahsilat, tazminat ve banka gideri islemleri geri alinabilir: ${original.transactionId}`);
       }
       if (await repo.getIdempotency(ctx.apartmentId, `REV_${original.transactionId}`)) {
         throw new FinanceError('conflict', `Bu islem zaten ters kayitla duzeltilmis: ${original.transactionId}`);
@@ -2061,6 +2181,8 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
     /** Faz B2: banka satiri eslestirme ve geri alma. */
     recordBankPayment,
     reverseBankPayments,
+    /** Faz B3: bankadan cikan satirdan gider. */
+    recordBankExpense,
     recordExpense,
     reverseTransaction,
     getUnitBalance,

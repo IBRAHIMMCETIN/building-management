@@ -14,17 +14,25 @@ import { DEFAULT_LATE_FEE_BASIS_POINTS, type FinanceService, type ResolvedBankAl
 import { type Account, mainReceivableId } from '../types.js';
 import { BankError } from './errors.js';
 import { isValidTrIban, maskIban, normalizeIban } from './iban.js';
-import { LINES_PAGE_MAX, bankKeys, isStatementId, istanbulDate, parseLineId } from './keys.js';
+import { AUTO_RUN_KEY_PATTERN, LINES_PAGE_MAX, MAX_LINES, bankKeys, isStatementId, istanbulDate, parseLineId } from './keys.js';
 import { type MatchCandidate, type Suggestion, refCodeFor, suggestMatches, validateAllocations } from './matching.js';
+import { addLines, emptyBreakdown, ledgerBalanceThrough, pendingNetThrough, pickStatements } from './reconciliation.js';
 import { type BankRepository, bankRepository } from './repository.js';
 import { publicLine } from './service.js';
 import {
+  AUTO_MATCH_BATCH,
+  AUTO_MATCH_DEFAULT_MIN_CONFIDENCE,
+  AUTO_MATCH_MARGIN,
+  AUTO_MATCH_MIN_CONFIDENCE_FLOOR,
+  type AutoMatchSkipped,
   type BankAccountProfile,
+  type BankAutoRun,
   type BankDecision,
   type BankLine,
   type BankPayer,
   type BankRef,
   type BankRefOf,
+  type BankStatement,
   type LineStatus,
   MAX_ALLOCATIONS,
   type MatchAllocation,
@@ -42,13 +50,20 @@ import {
  *   GET  /reconciliation              ekstre kapanis bakiyesi <-> defter banka bakiyesi + kuyruk ozeti
  *   GET  /accounts, PUT /accounts/:id/profile   banka hesaplari ve sakine gosterilen IBAN
  *   (portal) GET /api/portal/my-payment-reference   apartman IBAN'i + alt cari referans kodu
+ *
+ * Faz B3:
+ *   GET  /statements/:id/auto-match        toplu onay on izlemesi (esik ustu, cakismasiz satirlar)
+ *   POST /statements/:id/auto-match        toplu otomatik onay (istek basina en fazla AUTO_MATCH_BATCH satir)
+ *   POST /lines/:lineId/expense            cikan satir -> gider (gider hesabi borc / banka alacak)
+ *   POST /lines/:lineId/unmatch            gidere cevrilmis satiri da ters kayitla geri alir
+ *   GET  /reconciliation?from&to           ayrintili mutabakat dokumu
  */
 
 export type BankMatchContext = { apartmentId: string; userId: string; role: Role };
 
 export type BankMatchDeps = {
   repo: BankRepository;
-  finance: Pick<FinanceService, 'recordBankPayment' | 'reverseBankPayments'>;
+  finance: Pick<FinanceService, 'recordBankPayment' | 'reverseBankPayments' | 'recordBankExpense'>;
   accounts: Pick<FinanceRepository, 'getAccount' | 'listAccounts' | 'listTransactions'>;
   ledger: Pick<PortalRepository, 'listLedgerEntries' | 'getTransactions'>;
   core: Pick<CoreRepository, 'getSite' | 'getUnit' | 'listUnits' | 'listBlocks'>;
@@ -76,6 +91,12 @@ const reqId = (v: unknown, field: string): string => {
 const reqVersion = (v: unknown): number => {
   if (typeof v !== 'number' || !Number.isSafeInteger(v) || v < 1) fail('expectedVersion pozitif tam sayi olmalidir', 'expectedVersion');
   return v as number;
+};
+const optText = (v: unknown, field: string, max: number): string | undefined => {
+  if (v === undefined || v === null || v === '') return undefined;
+  if (typeof v !== 'string' || v.length > max) fail(`${field} en fazla ${max} karakter olmalidir`, field);
+  const t = (v as string).replace(/\s+/g, ' ').trim();
+  return t || undefined;
 };
 const reqReason = (v: unknown, required: boolean): string | undefined => {
   if (v === undefined && !required) return undefined;
@@ -336,6 +357,227 @@ export function createBankMatchService(overrides: Partial<BankMatchDeps> & Pick<
     return { replayed: false, line: publicLine(next), decision: publicDecision(decision) };
   }
 
+  type MatchOptions = { reason?: string; source: 'suggestion' | 'manual' | 'auto'; confidence?: number; autoRunId?: string };
+
+  /**
+   * Dogrulanmis dagilimla satiri tahsilata cevirir (tek atomik yazim). `match` ucu ve toplu
+   * otomatik onay ayni yolu kullanir.
+   */
+  async function matchLine(ctx: BankMatchContext, line: BankLine, raw: readonly { accountId: string; amount: number }[], opts: MatchOptions) {
+    const { reason, source, confidence } = opts;
+    const paidAt = line.valueDate ?? line.date;
+    const site = await deps.core.getSite(ctx.apartmentId);
+    const rate = site?.settings.lateFeeMonthlyBasisPoints ?? DEFAULT_LATE_FEE_BASIS_POINTS;
+    const allocations: { accountId: string; amount: Kurus; lateFee: Kurus }[] = [];
+    for (const a of raw) {
+      const acc = await deps.accounts.getAccount(ctx.apartmentId, a.accountId);
+      if (!acc || acc.type !== 'receivable' || !acc.unitId || !acc.liableParty) fail(`Alt cari bulunamadi: ${a.accountId}`, 'allocations');
+      if (acc?.closedThrough && acc.closedThrough >= paidAt) throw await closedError(ctx.apartmentId, acc, a.accountId, acc.closedThrough);
+      allocations.push({ accountId: a.accountId, amount: a.amount as Kurus, lateFee: await lateFeeOf(ctx.apartmentId, a.accountId, paidAt, rate) });
+    }
+
+    const decisionNo = (line.decisionNo ?? 0) + 1;
+    const payer = line.counterpartyIbanMac ? await deps.repo.getPayer(ctx.apartmentId, line.counterpartyIbanMac) : undefined;
+    let written: { decision: BankDecision; line: BankLine } | undefined;
+    let result: Awaited<ReturnType<BankMatchDeps['finance']['recordBankPayment']>>;
+    try {
+      result = await deps.finance.recordBankPayment(
+        { apartmentId: ctx.apartmentId, userId: ctx.userId },
+        {
+          idempotencyId: `bankmatch-${line.lineId}-${decisionNo}`,
+          depositAccountId: line.bankAccountId,
+          paidAt,
+          reference: `BANK:${line.bankReference ? line.bankReference.replace(/[^\w.-]/g, '').slice(0, 40) || line.lineId : line.lineId}`,
+          ...(line.counterpartyName ? { payerName: line.counterpartyName.slice(0, 120) } : {}),
+          note: 'Banka ekstresi eşleştirmesi',
+          allocations,
+          documents: ({ payments, transactions, allocations: resolved }) => {
+            const now = stamp();
+            const allocs: MatchAllocation[] = resolved.map((r: ResolvedBankAllocation) => ({ accountId: r.accountId, unitId: r.unitId, liableParty: r.liableParty, amount: r.amount, lateFee: r.lateFee }));
+            const decision: BankDecision = {
+              ...bankKeys.decision(ctx.apartmentId, line.lineId, decisionNo),
+              entityType: 'BANK_MATCH',
+              apartmentId: ctx.apartmentId,
+              bankAccountId: line.bankAccountId,
+              lineId: line.lineId,
+              lineSk: line.SK,
+              decisionNo,
+              kind: 'match',
+              allocations: allocs,
+              transactionIds: transactions.map((t) => t.transactionId),
+              paymentIds: payments.map((p) => p.paymentId),
+              ...(reason ? { reason } : {}),
+              source,
+              ...(confidence !== undefined ? { confidence } : {}),
+              ...(opts.autoRunId ? { autoRunId: opts.autoRunId } : {}),
+              createdAt: now,
+              createdBy: ctx.userId,
+            };
+            const next: BankLine = {
+              ...line,
+              status: 'matched',
+              decisionNo,
+              match: { decisionNo, transactionIds: decision.transactionIds, paymentIds: decision.paymentIds },
+              updatedAt: now,
+              updatedBy: ctx.userId,
+              version: line.version + 1,
+            };
+            written = { decision, line: next };
+            const p = line.counterpartyIbanMac ? payerUpdate(ctx.apartmentId, payer, line.counterpartyIbanMac, allocs, 1) : undefined;
+            const audit: AuditDraft = {
+              apartmentId: ctx.apartmentId,
+              action: 'bank.line.match',
+              target: { type: 'bank_line', id: line.lineId },
+              actorId: ctx.userId,
+              ...(reason ? { reason } : {}),
+              details: {
+                bankAccountId: line.bankAccountId,
+                statementId: line.statementId,
+                date: paidAt,
+                amount: line.amount,
+                decisionNo,
+                source,
+                confidence,
+                ...(opts.autoRunId ? { autoRunId: opts.autoRunId } : {}),
+                allocations: allocs.map((a) => ({ accountId: a.accountId, amount: a.amount, lateFee: a.lateFee })),
+                transactionIds: decision.transactionIds,
+                paymentIds: decision.paymentIds,
+              },
+            };
+            return {
+              newDocs: [decision, ...(p?.create ? [p.create] : [])],
+              replaceRecords: [{ item: next, expectedVersion: line.version, label: 'bank_line' }, ...(p?.replace ? [p.replace] : [])],
+              audit,
+            };
+          },
+        },
+      );
+    } catch (err) {
+      if (err instanceof LedgerConflictError && err.reason === 'closed') {
+        const acc = err.label ? await deps.accounts.getAccount(ctx.apartmentId, err.label) : undefined;
+        throw await closedError(ctx.apartmentId, acc, err.label ?? '', err.closedThrough);
+      }
+      if (err instanceof LedgerConflictError && err.reason === 'precondition') {
+        throw new BankError('version_conflict', 'Satir veya gonderen kaydi baska bir islemle degisti; listeyi yenileyin', { label: err.label });
+      }
+      throw err;
+    }
+    if (result.replayed || !written) {
+      const current = await deps.repo.getLine(ctx.apartmentId, line.bankAccountId, line.lineId);
+      return { replayed: true, line: current ? publicLine(current) : publicLine(line), payments: result.payments.map((p) => ({ paymentId: p.paymentId, receiptNumber: p.receiptNumber, amount: p.amount })) };
+    }
+    return {
+      replayed: false,
+      line: publicLine(written.line),
+      decision: publicDecision(written.decision),
+      payments: result.payments.map((p) => ({ paymentId: p.paymentId, receiptNumber: p.receiptNumber, amount: p.amount, unitId: p.unitId, liableParty: p.liableParty })),
+      lateFees: result.allocations.filter((a) => a.lateFee > 0).map((a) => ({ accountId: a.accountId, lateFee: a.lateFee })),
+    };
+  }
+
+  // -------------------------------------------------------------------------
+  // Faz B3: toplu otomatik onay ve cikan satirdan gider
+  // -------------------------------------------------------------------------
+
+  const EPS = 1e-9;
+  const zeroSkipped = (): AutoMatchSkipped => ({ lowConfidence: 0, ambiguous: 0, closed: 0, conflict: 0 });
+
+  function parseMinConfidence(v: unknown): number {
+    if (v === undefined || v === null || v === '') return AUTO_MATCH_DEFAULT_MIN_CONFIDENCE;
+    const n = typeof v === 'string' ? Number(v) : v;
+    if (typeof n !== 'number' || !Number.isFinite(n) || n < AUTO_MATCH_MIN_CONFIDENCE_FLOOR - EPS || n > 1 + EPS) {
+      fail(`minConfidence ${AUTO_MATCH_MIN_CONFIDENCE_FLOOR}-1 arasinda olmalidir`, 'minConfidence');
+    }
+    return Math.round((n as number) * 100) / 100;
+  }
+
+  async function requireStatement(ctx: BankMatchContext, statementIdRaw: string): Promise<BankStatement> {
+    if (!isStatementId(statementIdRaw)) throw new BankError('not_found', 'Ekstre bulunamadi');
+    const statement = await deps.repo.getStatement(ctx.apartmentId, statementIdRaw);
+    if (!statement) throw new BankError('not_found', 'Ekstre bulunamadi');
+    if (statement.status !== 'committed') throw new BankError('invalid_state', 'Ekstre henuz aktarilmadi (onizleme)');
+    return statement;
+  }
+
+  /**
+   * Ekstrenin donemindeki (yoksa ekstrenin kendi satirlari) eslesmemis satirlar, eskiden yeniye.
+   * Donem bazli okuma, cakisan onceki ekstreyle aktarilmis ayni hareketleri de kapsar.
+   */
+  async function unmatchedLinesOf(apartmentId: string, statement: BankStatement): Promise<BankLine[]> {
+    const out: BankLine[] = [];
+    let cursor: string | undefined;
+    for (let page = 0; page * LINES_PAGE_MAX < MAX_LINES; page++) {
+      const r = await deps.repo.queryLines(apartmentId, {
+        bankAccountId: statement.bankAccountId,
+        status: 'unmatched',
+        order: 'asc',
+        limit: LINES_PAGE_MAX,
+        ...(statement.period ? { from: statement.period.from, to: statement.period.to } : { statementId: statement.statementId }),
+        ...(cursor ? { cursor } : {}),
+      });
+      out.push(...r.items);
+      cursor = r.cursor;
+      if (!cursor) break;
+    }
+    return out;
+  }
+
+  /**
+   * Toplu onaya uygun satirlar: en iyi oneri esigin ustunde, ikinci oneri en az AUTO_MATCH_MARGIN
+   * geride (cakismasiz) ve hicbir dagilim kapali (closedThrough) cariye dusmuyor.
+   */
+  async function planAuto(apartmentId: string, statement: BankStatement, minConfidence: number) {
+    const lines = await unmatchedLinesOf(apartmentId, statement);
+    const incoming = lines.filter((l) => l.direction === 'in');
+    const skipped = zeroSkipped();
+    const eligible: { line: BankLine; suggestion: ReturnType<typeof enrich> }[] = [];
+    if (incoming.length > 0) {
+      const loaded = await loadCandidates(apartmentId);
+      const byId = new Map(loaded.candidates.map((c) => [c.accountId, c]));
+      for (const line of incoming) {
+        const [top, second] = await suggestFor(apartmentId, line, loaded, 2);
+        if (!top || top.allocations.length === 0 || top.confidence + EPS < minConfidence) {
+          skipped.lowConfidence++;
+          continue;
+        }
+        if (second && second.confidence > top.confidence - AUTO_MATCH_MARGIN + EPS) {
+          skipped.ambiguous++;
+          continue;
+        }
+        const paidAt = line.valueDate ?? line.date;
+        const closed = top.allocations.some((a) => {
+          const closedThrough = byId.get(a.accountId)?.closedThrough;
+          return Boolean(closedThrough && closedThrough >= paidAt);
+        });
+        if (closed) {
+          skipped.closed++;
+          continue;
+        }
+        eligible.push({ line, suggestion: top });
+      }
+    }
+    return { unmatchedIn: incoming.length, unmatchedOut: lines.length - incoming.length, eligible, skipped };
+  }
+
+  const pctLabel = (n: number) => `%${Math.round(n * 100)}`;
+
+  function autoSummary(run: BankAutoRun) {
+    return {
+      statementId: run.statementId,
+      bankAccountId: run.bankAccountId,
+      idempotencyKey: run.idempotencyKey,
+      minConfidence: run.minConfidence,
+      matchedCount: run.matchedCount,
+      totalMatchedAmount: run.totalMatchedAmount,
+      skippedLowConfidence: run.lastSkipped.lowConfidence,
+      skippedAmbiguous: run.lastSkipped.ambiguous,
+      skippedClosed: run.lastSkipped.closed,
+      skippedConflict: run.lastSkipped.conflict,
+      calls: run.calls,
+      completed: run.status === 'completed',
+    };
+  }
+
   // -------------------------------------------------------------------------
   // Uclar
   // -------------------------------------------------------------------------
@@ -412,113 +654,7 @@ export function createBankMatchService(overrides: Partial<BankMatchDeps> & Pick<
       });
       const invalid = validateAllocations(line.amount, raw);
       if (invalid) fail(invalid, 'allocations');
-
-      const paidAt = line.valueDate ?? line.date;
-      const site = await deps.core.getSite(ctx.apartmentId);
-      const rate = site?.settings.lateFeeMonthlyBasisPoints ?? DEFAULT_LATE_FEE_BASIS_POINTS;
-      const allocations: { accountId: string; amount: Kurus; lateFee: Kurus }[] = [];
-      for (const a of raw) {
-        const acc = await deps.accounts.getAccount(ctx.apartmentId, a.accountId);
-        if (!acc || acc.type !== 'receivable' || !acc.unitId || !acc.liableParty) fail(`Alt cari bulunamadi: ${a.accountId}`, 'allocations');
-        if (acc?.closedThrough && acc.closedThrough >= paidAt) throw await closedError(ctx.apartmentId, acc, a.accountId, acc.closedThrough);
-        allocations.push({ accountId: a.accountId, amount: a.amount as Kurus, lateFee: await lateFeeOf(ctx.apartmentId, a.accountId, paidAt, rate) });
-      }
-
-      const decisionNo = (line.decisionNo ?? 0) + 1;
-      const payer = line.counterpartyIbanMac ? await deps.repo.getPayer(ctx.apartmentId, line.counterpartyIbanMac) : undefined;
-      let written: { decision: BankDecision; line: BankLine } | undefined;
-      let result: Awaited<ReturnType<BankMatchDeps['finance']['recordBankPayment']>>;
-      try {
-        result = await deps.finance.recordBankPayment(
-          { apartmentId: ctx.apartmentId, userId: ctx.userId },
-          {
-            idempotencyId: `bankmatch-${lineId}-${decisionNo}`,
-            depositAccountId: line.bankAccountId,
-            paidAt,
-            reference: `BANK:${line.bankReference ? line.bankReference.replace(/[^\w.-]/g, '').slice(0, 40) || lineId : lineId}`,
-            ...(line.counterpartyName ? { payerName: line.counterpartyName.slice(0, 120) } : {}),
-            note: 'Banka ekstresi eşleştirmesi',
-            allocations,
-            documents: ({ payments, transactions, allocations: resolved }) => {
-              const now = stamp();
-              const allocs: MatchAllocation[] = resolved.map((r: ResolvedBankAllocation) => ({ accountId: r.accountId, unitId: r.unitId, liableParty: r.liableParty, amount: r.amount, lateFee: r.lateFee }));
-              const decision: BankDecision = {
-                ...bankKeys.decision(ctx.apartmentId, lineId, decisionNo),
-                entityType: 'BANK_MATCH',
-                apartmentId: ctx.apartmentId,
-                bankAccountId: line.bankAccountId,
-                lineId,
-                lineSk: line.SK,
-                decisionNo,
-                kind: 'match',
-                allocations: allocs,
-                transactionIds: transactions.map((t) => t.transactionId),
-                paymentIds: payments.map((p) => p.paymentId),
-                ...(reason ? { reason } : {}),
-                source,
-                ...(confidence !== undefined ? { confidence } : {}),
-                createdAt: now,
-                createdBy: ctx.userId,
-              };
-              const next: BankLine = {
-                ...line,
-                status: 'matched',
-                decisionNo,
-                match: { decisionNo, transactionIds: decision.transactionIds, paymentIds: decision.paymentIds },
-                updatedAt: now,
-                updatedBy: ctx.userId,
-                version: line.version + 1,
-              };
-              written = { decision, line: next };
-              const p = line.counterpartyIbanMac ? payerUpdate(ctx.apartmentId, payer, line.counterpartyIbanMac, allocs, 1) : undefined;
-              const audit: AuditDraft = {
-                apartmentId: ctx.apartmentId,
-                action: 'bank.line.match',
-                target: { type: 'bank_line', id: lineId },
-                actorId: ctx.userId,
-                ...(reason ? { reason } : {}),
-                details: {
-                  bankAccountId: line.bankAccountId,
-                  statementId: line.statementId,
-                  date: paidAt,
-                  amount: line.amount,
-                  decisionNo,
-                  source,
-                  confidence,
-                  allocations: allocs.map((a) => ({ accountId: a.accountId, amount: a.amount, lateFee: a.lateFee })),
-                  transactionIds: decision.transactionIds,
-                  paymentIds: decision.paymentIds,
-                },
-              };
-              return {
-                newDocs: [decision, ...(p?.create ? [p.create] : [])],
-                replaceRecords: [{ item: next, expectedVersion: line.version, label: 'bank_line' }, ...(p?.replace ? [p.replace] : [])],
-                audit,
-              };
-            },
-          },
-        );
-      } catch (err) {
-        if (err instanceof LedgerConflictError && err.reason === 'closed') {
-          const acc = err.label ? await deps.accounts.getAccount(ctx.apartmentId, err.label) : undefined;
-          throw await closedError(ctx.apartmentId, acc, err.label ?? '', err.closedThrough);
-        }
-        if (err instanceof LedgerConflictError && err.reason === 'precondition') {
-          throw new BankError('version_conflict', 'Satir veya gonderen kaydi baska bir islemle degisti; listeyi yenileyin', { label: err.label });
-        }
-        throw err;
-      }
-      if (result.replayed || !written) {
-        const current = await deps.repo.getLine(ctx.apartmentId, line.bankAccountId, lineId);
-        return { replayed: true, line: current ? publicLine(current) : publicLine(line), payments: result.payments.map((p) => ({ paymentId: p.paymentId, receiptNumber: p.receiptNumber, amount: p.amount })) };
-      }
-      return {
-        replayed: false,
-        line: publicLine(written.line),
-        decision: publicDecision(written.decision),
-        payments: result.payments.map((p) => ({ paymentId: p.paymentId, receiptNumber: p.receiptNumber, amount: p.amount, unitId: p.unitId, liableParty: p.liableParty })),
-        lateFees: result.allocations.filter((a) => a.lateFee > 0).map((a) => ({ accountId: a.accountId, lateFee: a.lateFee })),
-      };
+      return matchLine(ctx, line, raw, { reason, source, confidence });
     },
 
     async ignore(ctx: BankMatchContext, lineId: string, body: unknown) {
@@ -539,10 +675,12 @@ export function createBankMatchService(overrides: Partial<BankMatchDeps> & Pick<
       if (line.status !== 'matched' || !line.match) throw new BankError('invalid_state', 'Yalnizca eslesmis veya yoksayilmis satir geri alinabilir', { status: line.status });
 
       const decisions = await deps.repo.listDecisions(ctx.apartmentId, lineId);
-      const matchDecision = decisions.find((d) => d.decisionNo === line.match?.decisionNo && d.kind === 'match');
+      // B3: gidere cevrilmis satir da ayni yolla (ters kayit) geri alinir.
+      const matchDecision = decisions.find((d) => d.decisionNo === line.match?.decisionNo && (d.kind === 'match' || d.kind === 'expense'));
       if (!matchDecision) throw new BankError('conflict', 'Eslestirme karari bulunamadi');
+      const isExpense = matchDecision.kind === 'expense';
       const decisionNo = (line.decisionNo ?? 0) + 1;
-      const payer = line.counterpartyIbanMac ? await deps.repo.getPayer(ctx.apartmentId, line.counterpartyIbanMac) : undefined;
+      const payer = line.counterpartyIbanMac && !isExpense ? await deps.repo.getPayer(ctx.apartmentId, line.counterpartyIbanMac) : undefined;
       let written: { decision: BankDecision; line: BankLine } | undefined;
       try {
         const r = await deps.finance.reverseBankPayments(
@@ -550,7 +688,7 @@ export function createBankMatchService(overrides: Partial<BankMatchDeps> & Pick<
           {
             idempotencyId: `bankunmatch-${lineId}-${decisionNo}`,
             transactionIds: matchDecision.transactionIds,
-            reason: `Banka eşleştirmesi geri alındı: ${reason}`.slice(0, 300),
+            reason: `${isExpense ? 'Banka gideri geri alındı' : 'Banka eşleştirmesi geri alındı'}: ${reason}`.slice(0, 300),
             documents: ({ reversals }) => {
               const now = stamp();
               const decision: BankDecision = {
@@ -588,6 +726,8 @@ export function createBankMatchService(overrides: Partial<BankMatchDeps> & Pick<
                     bankAccountId: line.bankAccountId,
                     amount: line.amount,
                     decisionNo,
+                    reversedKind: matchDecision.kind,
+                    ...(matchDecision.expense ? { expenseId: matchDecision.expense.expenseId } : {}),
                     reverses: matchDecision.decisionNo,
                     reversedTransactionIds: matchDecision.transactionIds,
                     reversalTransactionIds: decision.transactionIds,
@@ -617,54 +757,371 @@ export function createBankMatchService(overrides: Partial<BankMatchDeps> & Pick<
       return { line: publicLine(line), decisions: decisions.map((d) => publicDecision(d, decisions)) };
     },
 
-    async reconciliation(ctx: BankMatchContext, q: { bankAccountId?: string }) {
+    /**
+     * Mutabakat dokumu. Aralik verilmezse son ekstreye gore (B2 alanlari korunur). Aralikta:
+     * acilis = araligin basindan sonra baslayan ilk ekstrenin acilis bakiyesi, kapanis = araligin
+     * sonundan once biten son ekstrenin kapanis bakiyesi; fark kapanis gunu sonundaki defter
+     * bakiyesiyle hesaplanir. Satir dokumu (eslesen/bekleyen/yoksayilan, giren/cikan) araliktadir.
+     */
+    async reconciliation(ctx: BankMatchContext, q: { bankAccountId?: string; from?: string; to?: string }) {
       const bankAccountId = reqId(q.bankAccountId, 'bankAccountId');
+      for (const k of ['from', 'to'] as const) if (q[k] !== undefined && q[k] !== '' && !isIsoDate(q[k] as string)) fail(`${k} YYYY-AA-GG olmalidir`, k);
+      const range = { ...(q.from ? { from: q.from as IsoDate } : {}), ...(q.to ? { to: q.to as IsoDate } : {}) };
+      if (range.from && range.to && range.from > range.to) fail('from, to tarihinden sonra olamaz', 'from');
       const account = await deps.accounts.getAccount(ctx.apartmentId, bankAccountId);
       if (!account || account.type !== 'bank') throw new BankError('not_found', 'Banka hesabi bulunamadi');
-      const statements = (await deps.repo.listStatements(ctx.apartmentId)).filter(
-        (s) => s.bankAccountId === bankAccountId && s.status === 'committed' && s.period,
-      );
-      const latest = statements.sort(
-        (a, b) => (b.period?.to ?? '').localeCompare(a.period?.to ?? '') || (b.committed?.committedAt ?? '').localeCompare(a.committed?.committedAt ?? ''),
-      )[0];
-      let ledgerAtStatementEnd: number | undefined;
-      if (latest?.period) {
-        const entries = await deps.ledger.listLedgerEntries(ctx.apartmentId, bankAccountId);
-        ledgerAtStatementEnd = entries
-          .filter((e) => e.accountId === bankAccountId && e.date <= (latest.period as { to: IsoDate }).to)
-          .reduce((s, e) => s + (e.side === 'debit' ? e.amount : -e.amount), 0);
-      }
-      // Kuyruk ozeti: tum satirlar sayfalanarak (satir basina tek okuma; buyuk sitede aylik birkac yuz).
-      const totals = { unmatchedIn: { count: 0, amount: 0 }, unmatchedOut: { count: 0, amount: 0 }, matched: { count: 0, amount: 0 }, ignored: { count: 0, amount: 0 } };
+      const statements = await deps.repo.listStatements(ctx.apartmentId);
+      const { opening, closing } = pickStatements(statements, bankAccountId, range);
+      const entries = (await deps.ledger.listLedgerEntries(ctx.apartmentId, bankAccountId)).filter((e) => e.accountId === bankAccountId);
+
+      // Tum satirlar sayfalanarak (bekleyen net etki araliktan bagimsiz, kapanis gunune kadar birikimlidir).
+      const lines: BankLine[] = [];
       let cursor: string | undefined;
       for (let page = 0; page < 50; page++) {
         const r = await deps.repo.queryLines(ctx.apartmentId, { bankAccountId, limit: LINES_PAGE_MAX, order: 'asc', ...(cursor ? { cursor } : {}) });
-        for (const l of r.items) {
-          const bucket = l.status === 'unmatched' ? (l.direction === 'in' ? totals.unmatchedIn : totals.unmatchedOut) : l.status === 'matched' ? totals.matched : totals.ignored;
-          bucket.count++;
-          bucket.amount += l.amount;
-        }
+        lines.push(...r.items);
         cursor = r.cursor;
         if (!cursor) break;
       }
-      const closing = latest?.closingBalance;
+      const breakdown = addLines(emptyBreakdown(), lines, range);
+      const sum = (a: { count: number; amount: number }, b: { count: number; amount: number }) => ({ count: a.count + b.count, amount: a.amount + b.amount });
+
+      const asOf = closing?.period?.to;
+      const closingBalance = closing?.closingBalance;
+      const ledgerAtEnd = asOf ? ledgerBalanceThrough(entries, bankAccountId, asOf) : undefined;
+      const diff = closingBalance !== undefined && ledgerAtEnd !== undefined ? closingBalance - ledgerAtEnd : undefined;
+      const pendingNet = asOf ? pendingNetThrough(lines, asOf) : undefined;
+      const openFrom = opening?.period?.from;
+      const ledgerAtStart = openFrom
+        ? entries.filter((e) => e.date < openFrom).reduce((t, e) => t + (e.side === 'debit' ? e.amount : -e.amount), 0)
+        : undefined;
+      const inRangeStatements = statements.filter(
+        (st) =>
+          st.bankAccountId === bankAccountId &&
+          st.status === 'committed' &&
+          st.period &&
+          (!range.to || st.period.from <= range.to) &&
+          (!range.from || st.period.to >= range.from),
+      ).length;
       return {
         bankAccountId,
         accountName: account.name,
         ledgerBalance: account.balance,
-        ...(latest
+        period: range,
+        statementCount: inRangeStatements,
+        ...(closing
           ? {
               statement: {
-                statementId: latest.statementId,
-                fileName: latest.fileName,
-                period: latest.period,
-                ...(closing !== undefined ? { closingBalance: closing } : {}),
+                statementId: closing.statementId,
+                fileName: closing.fileName,
+                period: closing.period,
+                ...(closingBalance !== undefined ? { closingBalance } : {}),
               },
             }
           : {}),
-        ...(ledgerAtStatementEnd !== undefined ? { ledgerBalanceAtStatementEnd: ledgerAtStatementEnd } : {}),
-        ...(closing !== undefined && ledgerAtStatementEnd !== undefined ? { difference: closing - ledgerAtStatementEnd } : {}),
-        lines: totals,
+        ...(opening
+          ? {
+              openingStatement: {
+                statementId: opening.statementId,
+                fileName: opening.fileName,
+                period: opening.period,
+                ...(opening.openingBalance !== undefined ? { openingBalance: opening.openingBalance } : {}),
+              },
+            }
+          : {}),
+        ...(opening?.openingBalance !== undefined ? { openingBalance: opening.openingBalance } : {}),
+        ...(ledgerAtStart !== undefined ? { ledgerBalanceAtStart: ledgerAtStart } : {}),
+        ...(closingBalance !== undefined ? { closingBalance } : {}),
+        ...(asOf ? { asOf } : {}),
+        ...(ledgerAtEnd !== undefined ? { ledgerBalanceAtStatementEnd: ledgerAtEnd } : {}),
+        ...(diff !== undefined ? { difference: diff, diff } : {}),
+        ...(pendingNet !== undefined ? { pendingNet } : {}),
+        ...(diff !== undefined && pendingNet !== undefined ? { unexplainedDiff: diff - pendingNet } : {}),
+        // B2 ozeti (aralikta): eslesen/yoksayilan giren + cikan toplamlari.
+        lines: {
+          unmatchedIn: breakdown.unmatchedIn,
+          unmatchedOut: breakdown.unmatchedOut,
+          matched: sum(breakdown.matchedIn, breakdown.matchedOut),
+          ignored: sum(breakdown.ignoredIn, breakdown.ignoredOut),
+        },
+        breakdown,
+      };
+    },
+
+    /** Toplu onay on izlemesi (yazim yok): esigi gecen, cakismasiz satirlar. */
+    async autoMatchPreview(ctx: BankMatchContext, statementIdRaw: string, q: { minConfidence?: string }) {
+      const statement = await requireStatement(ctx, statementIdRaw);
+      const minConfidence = parseMinConfidence(q.minConfidence);
+      const plan = await planAuto(ctx.apartmentId, statement, minConfidence);
+      return {
+        statementId: statement.statementId,
+        bankAccountId: statement.bankAccountId,
+        minConfidence,
+        batchSize: AUTO_MATCH_BATCH,
+        eligibleCount: plan.eligible.length,
+        eligibleAmount: plan.eligible.reduce((t, e) => t + e.line.amount, 0),
+        skippedLowConfidence: plan.skipped.lowConfidence,
+        skippedAmbiguous: plan.skipped.ambiguous,
+        skippedClosed: plan.skipped.closed,
+        unmatchedIn: plan.unmatchedIn,
+        unmatchedOut: plan.unmatchedOut,
+        items: plan.eligible.slice(0, LINES_PAGE_MAX).map((e) => ({
+          lineId: e.line.lineId,
+          date: e.line.valueDate ?? e.line.date,
+          amount: e.line.amount,
+          description: e.line.description,
+          suggestion: e.suggestion,
+        })),
+      };
+    },
+
+    /**
+     * Toplu otomatik onay. Istek basina en fazla AUTO_MATCH_BATCH satir; `remaining > 0` ise ayni
+     * `idempotencyKey` ile tekrar cagrilir. Her satir `match` ile ayni atomik yazimla islenir
+     * (`source: 'auto'`, `autoRunId`); yarida kesilen calisma yalnizca hala eslesmemis satirlarla
+     * devam eder. Calisma kaydi (BANKAUTO#) ayni anahtarla es zamanli ikinci cagriyi engeller.
+     */
+    async autoMatch(ctx: BankMatchContext, statementIdRaw: string, body: unknown) {
+      const o = asObj(body);
+      const statement = await requireStatement(ctx, statementIdRaw);
+      if (typeof o.idempotencyKey !== 'string' || !AUTO_RUN_KEY_PATTERN.test(o.idempotencyKey)) {
+        fail('idempotencyKey 8-64 karakter (harf, rakam, - _) olmalidir', 'idempotencyKey');
+      }
+      const key = o.idempotencyKey as string;
+      const minConfidence = parseMinConfidence(o.minConfidence);
+      const runId = `${statement.statementId}#${key}`;
+      const existing = await deps.repo.getAutoRun(ctx.apartmentId, statement.statementId, key);
+      if (existing && existing.minConfidence !== minConfidence) {
+        throw new BankError('conflict', 'Bu anahtar farkli bir guven esigiyle kullanilmis', { minConfidence: existing.minConfidence });
+      }
+      if (existing?.status === 'completed') {
+        return { replayed: true, ...autoSummary(existing), remaining: 0, thisCall: { matchedCount: 0, totalMatchedAmount: 0 }, items: [] };
+      }
+
+      // Calismayi sahiplen: ayni anahtarla es zamanli ikinci cagri burada durur.
+      const started = stamp();
+      const claimed: BankAutoRun = existing
+        ? { ...existing, status: 'running', calls: existing.calls + 1, updatedAt: started, version: existing.version + 1 }
+        : {
+            ...bankKeys.autoRun(ctx.apartmentId, statement.statementId, key),
+            entityType: 'BANK_AUTO_RUN',
+            apartmentId: ctx.apartmentId,
+            runId,
+            statementId: statement.statementId,
+            bankAccountId: statement.bankAccountId,
+            idempotencyKey: key,
+            minConfidence,
+            status: 'running',
+            calls: 1,
+            matchedCount: 0,
+            totalMatchedAmount: 0 as Kurus,
+            lastSkipped: zeroSkipped(),
+            createdAt: started,
+            createdBy: ctx.userId,
+            updatedAt: started,
+            version: 1,
+          };
+      const busy = () => new BankError('version_conflict', 'Ayni toplu onay baska bir istekle suruyor; biraz sonra tekrar deneyin');
+      try {
+        await deps.repo.saveAutoRun(claimed, existing?.version);
+      } catch (err) {
+        if (err instanceof DataAccessError && err.code === 'conflict') throw busy();
+        throw err;
+      }
+
+      const plan = await planAuto(ctx.apartmentId, statement, minConfidence);
+      const skipped = { ...plan.skipped };
+      const items: { lineId: string; amount: number; confidence: number; receiptNumbers: string[] }[] = [];
+      let matched = 0;
+      let amount = 0;
+      let attempted = 0;
+      let failure: unknown;
+      try {
+        for (const { line, suggestion } of plan.eligible) {
+          if (attempted >= AUTO_MATCH_BATCH) break;
+          attempted++;
+          try {
+            const r = await matchLine(
+              ctx,
+              line,
+              suggestion.allocations.map((a) => ({ accountId: a.accountId, amount: a.amount })),
+              { source: 'auto', confidence: suggestion.confidence, autoRunId: runId, reason: `Toplu otomatik onay (eşik ${pctLabel(minConfidence)})` },
+            );
+            matched++;
+            amount += line.amount;
+            items.push({ lineId: line.lineId, amount: line.amount, confidence: suggestion.confidence, receiptNumbers: r.payments.map((p) => p.receiptNumber) });
+          } catch (err) {
+            // Satir bazli beklenen durumlar calismayi durdurmaz.
+            if (err instanceof BankError && err.code === 'account_closed') skipped.closed++;
+            else if (err instanceof BankError && (err.code === 'version_conflict' || err.code === 'invalid_state')) skipped.conflict++;
+            else throw err;
+          }
+        }
+      } catch (err) {
+        failure = err;
+      }
+      const remaining = failure ? plan.eligible.length - matched : plan.eligible.length - attempted;
+      const completed = !failure && remaining === 0;
+      const final: BankAutoRun = {
+        ...claimed,
+        status: completed ? 'completed' : 'running',
+        matchedCount: claimed.matchedCount + matched,
+        totalMatchedAmount: (claimed.totalMatchedAmount + amount) as Kurus,
+        lastSkipped: skipped,
+        updatedAt: stamp(),
+        version: claimed.version + 1,
+      };
+      try {
+        await deps.repo.saveAutoRun(final, claimed.version, {
+          apartmentId: ctx.apartmentId,
+          action: 'bank.statement.auto_match',
+          target: { type: 'bank_statement', id: statement.statementId },
+          actorId: ctx.userId,
+          details: {
+            bankAccountId: statement.bankAccountId,
+            idempotencyKey: key,
+            minConfidence,
+            call: final.calls,
+            matchedCount: matched,
+            totalMatchedAmount: amount,
+            cumulativeMatchedCount: final.matchedCount,
+            cumulativeMatchedAmount: final.totalMatchedAmount,
+            skippedLowConfidence: skipped.lowConfidence,
+            skippedAmbiguous: skipped.ambiguous,
+            skippedClosed: skipped.closed,
+            skippedConflict: skipped.conflict,
+            remaining,
+            lineIds: items.map((i) => i.lineId),
+            ...(failure ? { error: failure instanceof Error ? `${failure.name}: ${failure.message}`.slice(0, 300) : 'unknown' } : {}),
+          },
+        });
+      } catch (err) {
+        if (!failure && err instanceof DataAccessError && err.code === 'conflict') throw busy();
+        if (!failure) throw err;
+      }
+      if (failure) throw failure;
+      return { replayed: false, ...autoSummary(final), remaining, thisCall: { matchedCount: matched, totalMatchedAmount: amount }, items };
+    },
+
+    /**
+     * Cikan satiri gidere cevirir: gider kaydi + islem (gider hesabi borc / banka alacak, valor
+     * tarihli) + BANKMATCH (`kind: 'expense'`) + satir durumu + denetim (`bank.line.expense`) TEK yazim.
+     */
+    async expense(ctx: BankMatchContext, lineId: string, body: unknown) {
+      const o = asObj(body);
+      const line = await requireLine(ctx, o.bankAccountId, lineId);
+      checkVersion(line, reqVersion(o.expectedVersion));
+      if (line.status !== 'unmatched') throw new BankError('invalid_state', `Satir gidere cevrilemez (durum: ${line.status})`, { status: line.status });
+      if (line.direction !== 'out') throw new BankError('invalid_state', 'Yalnizca bankadan cikan (borc) satir gidere cevrilebilir');
+      const expenseAccountId = reqId(o.expenseAccountId, 'expenseAccountId');
+      const description = optText(o.description, 'description', 200) ?? line.description.replace(/\s+/g, ' ').trim().slice(0, 200);
+      if (description.length < 2) fail('description en az 2 karakter olmalidir', 'description');
+      const supplier = optText(o.supplier, 'supplier', 120) ?? (line.counterpartyName ? line.counterpartyName.slice(0, 120) : undefined);
+      const invoiceNumber = optText(o.invoiceNumber, 'invoiceNumber', 60);
+      const reason = reqReason(o.reason, false);
+      const date = line.valueDate ?? line.date;
+      const decisionNo = (line.decisionNo ?? 0) + 1;
+      let written: { decision: BankDecision; line: BankLine } | undefined;
+      let result: Awaited<ReturnType<BankMatchDeps['finance']['recordBankExpense']>>;
+      try {
+        result = await deps.finance.recordBankExpense(
+          { apartmentId: ctx.apartmentId, userId: ctx.userId },
+          {
+            idempotencyId: `bankexpense-${line.lineId}-${decisionNo}`,
+            bankAccountId: line.bankAccountId,
+            expenseAccountId,
+            amount: line.amount,
+            date,
+            description,
+            ...(supplier ? { supplier } : {}),
+            ...(invoiceNumber ? { invoiceNumber } : {}),
+            reference: `BANK:${line.bankReference ? line.bankReference.replace(/[^\w.-]/g, '').slice(0, 40) || line.lineId : line.lineId}`,
+            documents: ({ expense, transaction }) => {
+              const now = stamp();
+              const decision: BankDecision = {
+                ...bankKeys.decision(ctx.apartmentId, line.lineId, decisionNo),
+                entityType: 'BANK_MATCH',
+                apartmentId: ctx.apartmentId,
+                bankAccountId: line.bankAccountId,
+                lineId: line.lineId,
+                lineSk: line.SK,
+                decisionNo,
+                kind: 'expense',
+                expense: {
+                  expenseId: expense.expenseId,
+                  expenseAccountId,
+                  description,
+                  ...(supplier ? { supplier } : {}),
+                  ...(invoiceNumber ? { invoiceNumber } : {}),
+                },
+                transactionIds: [transaction.transactionId],
+                paymentIds: [],
+                ...(reason ? { reason } : {}),
+                source: 'manual',
+                createdAt: now,
+                createdBy: ctx.userId,
+              };
+              const next: BankLine = {
+                ...line,
+                status: 'matched',
+                decisionNo,
+                match: { decisionNo, transactionIds: decision.transactionIds, paymentIds: [], expenseId: expense.expenseId },
+                updatedAt: now,
+                updatedBy: ctx.userId,
+                version: line.version + 1,
+              };
+              written = { decision, line: next };
+              return {
+                newDocs: [decision],
+                replaceRecords: [{ item: next, expectedVersion: line.version, label: 'bank_line' }],
+                audit: {
+                  apartmentId: ctx.apartmentId,
+                  action: 'bank.line.expense',
+                  target: { type: 'bank_line', id: line.lineId },
+                  actorId: ctx.userId,
+                  ...(reason ? { reason } : {}),
+                  details: {
+                    bankAccountId: line.bankAccountId,
+                    statementId: line.statementId,
+                    date,
+                    amount: line.amount,
+                    decisionNo,
+                    expenseAccountId,
+                    expenseId: expense.expenseId,
+                    transactionId: transaction.transactionId,
+                    description,
+                  },
+                },
+              };
+            },
+          },
+        );
+      } catch (err) {
+        if (err instanceof LedgerConflictError && err.reason === 'precondition') {
+          throw new BankError('version_conflict', 'Satir baska bir islemle degisti; listeyi yenileyin', { label: err.label });
+        }
+        if (err instanceof LedgerConflictError && err.reason === 'closed') {
+          throw new BankError('invalid_state', 'Bu tarih kapatilmis bir doneme ait; gider yazilamaz', { closedThrough: err.closedThrough });
+        }
+        throw err;
+      }
+      if (result.replayed || !written) {
+        const current = await deps.repo.getLine(ctx.apartmentId, line.bankAccountId, line.lineId);
+        return { replayed: true, line: publicLine(current ?? line), expense: { expenseId: result.expense.expenseId, transactionId: result.transaction.transactionId } };
+      }
+      const w = written as { decision: BankDecision; line: BankLine };
+      return {
+        replayed: false,
+        line: publicLine(w.line),
+        decision: publicDecision(w.decision),
+        expense: {
+          expenseId: result.expense.expenseId,
+          expenseAccountId,
+          amount: result.expense.amount,
+          date: result.expense.date,
+          description: result.expense.description,
+          transactionId: result.transaction.transactionId,
+        },
       };
     },
 

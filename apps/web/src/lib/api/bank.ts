@@ -7,6 +7,8 @@ import { ApiError } from './errors';
  *   B1: POST /api/bank/statements/upload-url | /statements | /statements/:id/commit, GET /templates
  *   B2: GET /queue | /targets | /lines/:id/suggestions | /reconciliation | /accounts
  *       POST /lines/:id/match | /ignore | /unmatch, PUT /accounts/:id/profile
+ *   B3: GET|POST /statements/:id/auto-match (toplu onay), POST /lines/:id/expense (cikan satir -> gider),
+ *       GET /reconciliation?from&to (ayrintili dokum), GET /statements?bankAccountId
  */
 
 const kurus = z.number().int();
@@ -66,26 +68,53 @@ export const targetSchema = z.object({
   refCode: z.string().optional(),
 });
 
+const bucket = z.object({ count: z.number().int(), amount: kurus });
+const period = z.object({ from: z.string(), to: z.string() });
+
 export const reconciliationSchema = z.object({
   bankAccountId: z.string(),
   accountName: z.string(),
   ledgerBalance: kurus,
+  /** B3: istenen aralik (bossa son ekstre). */
+  period: z.object({ from: z.string().optional(), to: z.string().optional() }).default({}),
+  statementCount: z.number().int().optional(),
   statement: z
     .object({
       statementId: z.string(),
       fileName: z.string(),
-      period: z.object({ from: z.string(), to: z.string() }).optional(),
+      period: period.optional(),
       closingBalance: z.number().int().optional(),
     })
     .optional(),
+  openingStatement: z
+    .object({ statementId: z.string(), fileName: z.string(), period: period.optional(), openingBalance: z.number().int().optional() })
+    .optional(),
+  openingBalance: z.number().int().optional(),
+  ledgerBalanceAtStart: z.number().int().optional(),
+  closingBalance: z.number().int().optional(),
+  asOf: z.string().optional(),
   ledgerBalanceAtStatementEnd: z.number().int().optional(),
   difference: z.number().int().optional(),
+  /** B3: eslesmemis satirlarin kapanis gunune kadar net etkisi (giren - cikan). */
+  pendingNet: z.number().int().optional(),
+  /** B3: farkin bekleyen satirlarla aciklanamayan kismi. */
+  unexplainedDiff: z.number().int().optional(),
   lines: z.object({
-    unmatchedIn: z.object({ count: z.number().int(), amount: kurus }),
-    unmatchedOut: z.object({ count: z.number().int(), amount: kurus }),
-    matched: z.object({ count: z.number().int(), amount: kurus }),
-    ignored: z.object({ count: z.number().int(), amount: kurus }),
+    unmatchedIn: bucket,
+    unmatchedOut: bucket,
+    matched: bucket,
+    ignored: bucket,
   }),
+  breakdown: z
+    .object({
+      matchedIn: bucket,
+      matchedOut: bucket,
+      unmatchedIn: bucket,
+      unmatchedOut: bucket,
+      ignoredIn: bucket,
+      ignoredOut: bucket,
+    })
+    .optional(),
 });
 
 export const bankAccountSchema = z.object({
@@ -202,6 +231,57 @@ const matchResultSchema = z.object({
 });
 const decisionResultSchema = z.object({ replayed: z.boolean(), line: bankLineSchema });
 
+// ----- B3 -----
+
+export const autoMatchPreviewSchema = z.object({
+  statementId: z.string(),
+  bankAccountId: z.string(),
+  minConfidence: z.number(),
+  batchSize: z.number().int(),
+  eligibleCount: z.number().int(),
+  eligibleAmount: kurus,
+  skippedLowConfidence: z.number().int(),
+  skippedAmbiguous: z.number().int(),
+  skippedClosed: z.number().int(),
+  unmatchedIn: z.number().int(),
+  unmatchedOut: z.number().int(),
+  items: z.array(z.object({ lineId: z.string(), date: z.string(), amount: kurus, description: z.string(), suggestion: suggestionSchema })),
+});
+export type AutoMatchPreview = z.infer<typeof autoMatchPreviewSchema>;
+
+export const autoMatchResultSchema = z.object({
+  replayed: z.boolean(),
+  statementId: z.string(),
+  minConfidence: z.number(),
+  /** Calisma boyunca (ayni anahtarla tum cagrilar) toplam. */
+  matchedCount: z.number().int(),
+  totalMatchedAmount: kurus,
+  skippedLowConfidence: z.number().int(),
+  skippedAmbiguous: z.number().int(),
+  skippedClosed: z.number().int(),
+  skippedConflict: z.number().int(),
+  remaining: z.number().int(),
+  completed: z.boolean(),
+  thisCall: z.object({ matchedCount: z.number().int(), totalMatchedAmount: kurus }),
+});
+export type AutoMatchResult = z.infer<typeof autoMatchResultSchema>;
+
+const expenseResultSchema = z.object({
+  replayed: z.boolean(),
+  line: bankLineSchema,
+  expense: z.object({ expenseId: z.string(), transactionId: z.string(), amount: kurus.optional(), description: z.string().optional() }),
+});
+
+export type BankExpenseInput = {
+  bankAccountId: string;
+  expectedVersion: number;
+  expenseAccountId: string;
+  description?: string;
+  supplier?: string;
+  invoiceNumber?: string;
+  reason?: string;
+};
+
 /** Tarayicinin bildirdigi tur bossa/uygunsuzsa uzantidan (API imzali URL'de ayni turu bekler). */
 export function uploadContentType(file: Pick<File, 'name' | 'type'>): string {
   const allowed = [
@@ -259,8 +339,12 @@ export const bankApi = {
   accounts: (signal?: AbortSignal) => apiClient.get('/api/bank/accounts', { signal, schema: z.object({ items: z.array(bankAccountSchema) }) }),
   saveProfile: (bankAccountId: string, input: { iban: string; accountHolderName: string; bankName?: string; residentVisible: boolean; expectedVersion?: number }) =>
     apiClient.put(`/api/bank/accounts/${enc(bankAccountId)}/profile`, input),
-  reconciliation: (bankAccountId: string, signal?: AbortSignal) =>
-    apiClient.get('/api/bank/reconciliation', { signal, query: { bankAccountId }, schema: reconciliationSchema }),
+  reconciliation: (bankAccountId: string, range: { from?: string; to?: string } = {}, signal?: AbortSignal) =>
+    apiClient.get('/api/bank/reconciliation', {
+      signal,
+      query: { bankAccountId, ...(range.from ? { from: range.from } : {}), ...(range.to ? { to: range.to } : {}) },
+      schema: reconciliationSchema,
+    }),
   queue: (q: { bankAccountId: string; status?: LineStatus; cursor?: string; limit?: number }, signal?: AbortSignal) =>
     apiClient.get('/api/bank/queue', { signal, query: q, schema: z.object({ items: z.array(bankLineSchema), cursor: z.string().optional() }) }),
   targets: (signal?: AbortSignal) => apiClient.get('/api/bank/targets', { signal, schema: z.object({ items: z.array(targetSchema) }) }),
@@ -275,6 +359,19 @@ export const bankApi = {
     apiClient.post(`/api/bank/lines/${enc(lineId)}/ignore`, input, { schema: decisionResultSchema }),
   unmatch: (lineId: string, input: { bankAccountId: string; expectedVersion: number; reason: string }) =>
     apiClient.post(`/api/bank/lines/${enc(lineId)}/unmatch`, input, { schema: decisionResultSchema }),
+
+  // ----- B3 -----
+  statements: (bankAccountId: string, signal?: AbortSignal) =>
+    apiClient.get('/api/bank/statements', { signal, query: { bankAccountId }, schema: z.object({ items: z.array(statementSchema) }) }),
+  autoMatchPreview: (statementId: string, minConfidence: number, signal?: AbortSignal) =>
+    apiClient.get(`/api/bank/statements/${enc(statementId)}/auto-match`, {
+      signal,
+      query: { minConfidence: String(minConfidence) },
+      schema: autoMatchPreviewSchema,
+    }),
+  autoMatch: (statementId: string, input: { idempotencyKey: string; minConfidence: number }) =>
+    apiClient.post(`/api/bank/statements/${enc(statementId)}/auto-match`, input, { schema: autoMatchResultSchema }),
+  expense: (lineId: string, input: BankExpenseInput) => apiClient.post(`/api/bank/lines/${enc(lineId)}/expense`, input, { schema: expenseResultSchema }),
 };
 
 /** Kapali cari hatasi (409 account_closed): onerilen ayrilan cariler. */

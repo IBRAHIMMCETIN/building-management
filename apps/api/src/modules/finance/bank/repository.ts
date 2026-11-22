@@ -1,12 +1,22 @@
 import { TransactionCanceledException } from '@aws-sdk/client-dynamodb';
 import { BatchGetCommand, QueryCommand, type QueryCommandOutput, TransactWriteCommand } from '@aws-sdk/lib-dynamodb';
-import { DataAccessError, getDynamo, getTenantItem, queryTenantAll, tenantPk, toDataAccessError } from '../../../config/dynamodb.js';
+import {
+  DataAccessError,
+  getDynamo,
+  getTenantItem,
+  putNewItem,
+  putVersionedItem,
+  queryTenantAll,
+  tenantPk,
+  toDataAccessError,
+} from '../../../config/dynamodb.js';
 import { type AuditDraft, auditedPutNew, auditedPutVersioned, sendWithAudit } from '../../audit/log.js';
 import type { IsoDate } from '../../core/types.js';
 import { BankError } from './errors.js';
 import { PROFILE_PREFIX, REF_PREFIX, STATEMENT_PREFIX, bankKeys, decisionPrefix, linePrefix, parseLineId } from './keys.js';
 import type {
   BankAccountProfile,
+  BankAutoRun,
   BankDecision,
   BankFileLock,
   BankFormat,
@@ -75,6 +85,14 @@ export type BankRepository = {
     others: { item: BankAccountProfile; expectedVersion: number }[],
     audit: AuditDraft,
   ): Promise<void>;
+
+  // ----- Faz B3 -----
+  getAutoRun(apartmentId: string, statementId: string, idempotencyKey: string): Promise<BankAutoRun | undefined>;
+  /**
+   * Yeni (yalnizca yoksa) veya surum kosullu calisma kaydi; `audit` verilirse denetim kaydiyla
+   * atomik. Cakisirsa `DataAccessError('conflict')` (ayni anahtarla es zamanli cagri).
+   */
+  saveAutoRun(run: BankAutoRun, expectedVersion: number | undefined, audit?: AuditDraft): Promise<void>;
 };
 
 const LINE_CHUNK = 25;
@@ -361,5 +379,14 @@ export const bankRepository: BankRepository = {
       if (conditionFailed(err)) throw new DataAccessError('conflict', 'Hesap profili baska bir istekle degismis', { cause: err });
       throw toDataAccessError(err);
     }
+  },
+
+  // ----- Faz B3 -----
+
+  getAutoRun: (apt, statementId, key) => getTenantItem<BankAutoRun>(bankKeys.autoRun(apt, statementId, key)),
+
+  saveAutoRun(run, expectedVersion, audit) {
+    if (!audit) return expectedVersion === undefined ? putNewItem(run) : putVersionedItem(run, expectedVersion);
+    return expectedVersion === undefined ? auditedPutNew(run, audit) : auditedPutVersioned(run, expectedVersion, audit);
   },
 };

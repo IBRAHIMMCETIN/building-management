@@ -4,6 +4,7 @@ import { STATEMENT_PREFIX, linePrefix } from '../../src/modules/finance/bank/key
 import { type BankRepository, decodeCursor, encodeCursor } from '../../src/modules/finance/bank/repository.js';
 import type {
   BankAccountProfile,
+  BankAutoRun,
   BankDecision,
   BankFileLock,
   BankFormat,
@@ -156,6 +157,18 @@ export function createFakeBankRepo(shared?: Map<string, Record<string, unknown>>
       items.set(k(profile.PK, profile.SK), clone(profile));
       for (const o of others) items.set(k(o.item.PK, o.item.SK), clone(o.item));
       audits.push(audit);
+    },
+
+    // ----- Faz B3 -----
+    async getAutoRun(apt, statementId, key) {
+      const v = items.get(k(pkOf(apt), `BANKAUTO#${statementId}#${key}`));
+      return v ? (clone(v) as BankAutoRun) : undefined;
+    },
+    async saveAutoRun(run, expectedVersion, audit) {
+      const cur = items.get(k(run.PK, run.SK));
+      if (expectedVersion === undefined ? Boolean(cur) : !cur || cur.version !== expectedVersion) throw new DataAccessError('conflict', 'surum');
+      items.set(k(run.PK, run.SK), clone(run) as unknown as Record<string, unknown>);
+      if (audit) audits.push(audit);
     },
   };
 

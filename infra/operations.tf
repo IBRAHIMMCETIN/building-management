@@ -10,6 +10,10 @@
 #   LedgerAuditUnstable         es zamanli yazim nedeniyle sonuca varilamayan bakiye kontrolu
 #   OutboxSweepFailed           suprucunun yayinlayamadigi olay sayisi
 #   OutboxOldestPendingSeconds  suprucu turunda en eski bekleyen olayin yasi
+#   BankReconDiff               (Faz B3) ledger_audit: banka ekstresi kapanisi <-> defter banka bakiyesi
+#                               farkinin bekleyen (eslesmemis) satirlarla ACIKLANAMAYAN kismi, kurus,
+#                               apartman basina mutlak toplam (birim None)
+#   BankReconAccountsOff        (Faz B3) aciklanamayan farki olan banka hesabi sayisi
 # ---------------------------------------------------------------------------
 
 locals {
@@ -65,4 +69,24 @@ resource "aws_cloudwatch_metric_alarm" "outbox_stuck" {
   treat_missing_data  = "notBreaching"
   alarm_actions       = [aws_sns_topic.alerts.arn]
   ok_actions          = [aws_sns_topic.alerts.arn]
+}
+
+# Banka mutabakati (Faz B3): ekstre kapanis bakiyesi ile defterdeki banka hesabi bakiyesi arasinda,
+# bekleyen satirlarla aciklanamayan fark (yoksayilip deftere islenmemis masraf, bankaya yansimamis
+# elle kayit, eksik ekstre...). Defter tutarsizligi DEGILDIR (LedgerDrift'ten ayri): veri kalitesi
+# sinyali; esik varsayilan 0 kurus, `bank_recon_diff_alarm_threshold` ile gevsetilebilir.
+# Gunluk metrik (gece denetimi): 1 gunluk pencere.
+resource "aws_cloudwatch_metric_alarm" "bank_recon_diff" {
+  alarm_name          = "${local.name}-bank-recon-diff"
+  alarm_description   = "Gece denetiminde banka ekstresi ile defter arasinda bekleyen satirlarla aciklanamayan fark (kurus) ${var.bank_recon_diff_alarm_threshold} uzerinde. Ayrinti: scheduler-worker loglarinda msg=bank_recon_metrics (apartman, hesap, unexplainedDiff)."
+  namespace           = local.metrics_namespace
+  metric_name         = "BankReconDiff"
+  dimensions          = local.metrics_dimensions
+  statistic           = "Maximum"
+  period              = 86400
+  evaluation_periods  = 1
+  threshold           = var.bank_recon_diff_alarm_threshold
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
 }

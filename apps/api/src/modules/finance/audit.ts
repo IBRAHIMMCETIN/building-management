@@ -1,7 +1,8 @@
 import { getTenantItem, queryTenantAll } from '../../config/dynamodb.js';
 import type { Kurus } from '../core/types.js';
 import type { PaymentIntent } from '../payments/types.js';
-import type { BankDecision, BankLine } from './bank/types.js';
+import { type AccountRecon, reconcileAccount } from './bank/reconciliation.js';
+import type { BankDecision, BankLine, BankStatement } from './bank/types.js';
 import type { CariClosure } from './closures.js';
 import { financeKeys } from './repository.js';
 import type { Account, LedgerEntry, Payment, Transaction } from './types.js';
@@ -27,7 +28,12 @@ import type { Account, LedgerEntry, Payment, Transaction } from './types.js';
  *  - online_payment_unposted  SUCCEEDED odeme niyetinin tahsilat/islem kaydi eksik veya tutarsiz
  *  - bank_match_mismatch      (Faz B2) `matched` banka satirinin karar kaydi / dagilim toplami / bagli
  *                             tahsilat ve tazminat islemleri tutarsiz; geri alinan eslestirmenin islemleri
- *                             iptal edilmemis
+ *                             iptal edilmemis; (B3) gidere cevrilen satirin gider islemi yok/tutarsiz
+ *
+ * Bulgu OLMAYAN rapor alanlari:
+ *  - bankRecon  (Faz B3) banka hesabi basina son ekstre kapanis bakiyesi <-> defter bakiyesi;
+ *               `unexplainedDiff` (bekleyen satirlarla aciklanamayan fark) `BankReconDiff`
+ *               metrigi olarak yayinlanir. Defter tutarsizligi degil, mutabakat sinyalidir.
  *
  * Es zamanli yazimlar: okumalar tek anlik goruntu degildir. Yanlis alarmi onlemek icin
  * okuma sirasi bilincli secilir (niyet -> kapama -> islem -> LE# -> hesap -> tahsilat -> sayac)
@@ -77,6 +83,8 @@ export type AuditSnapshot = {
   /** Faz B2: banka satirlari ve eslestirme kararlari (eski kaynaklarda yok). */
   bankLines?: BankLine[];
   bankDecisions?: BankDecision[];
+  /** Faz B3: banka ekstreleri (mutabakat metrigi). */
+  bankStatements?: BankStatement[];
 };
 
 /** Borc pozitif, alacak negatif (repository `ADD #balance :delta` ile ayni isaret). */
@@ -281,6 +289,21 @@ export function checkBankMatches(s: Pick<AuditSnapshot, 'transactions' | 'bankLi
       continue;
     }
     const d = line.match ? byKey.get(`${line.lineId}|${line.match.decisionNo}`) : undefined;
+    if (d?.kind === 'expense') {
+      // B3: cikan satir -> gider (gider hesabi borc, banka alacak, satir tutari).
+      const tx = d.transactionIds
+        .map((id) => txs.get(id))
+        .find(
+          (t) =>
+            t?.kind === 'expense' &&
+            t.lines.some((l) => l.side === 'credit' && l.accountId === line.bankAccountId && l.amount === line.amount) &&
+            t.lines.some((l) => l.side === 'debit' && l.accountId === d.expense?.expenseAccountId && l.amount === line.amount),
+        );
+      if (line.direction !== 'out') fail(line, 'giren satir gidere cevrilmis');
+      if (!tx) fail(line, 'gider islemi defterde yok veya tutari uyusmuyor', { expected: line.amount });
+      else if (cancelled.has(tx.transactionId)) fail(line, 'gider ters kayitla iptal edilmis ama satir eslesmis', { transactionId: tx.transactionId });
+      continue;
+    }
     if (!d || d.kind !== 'match') {
       fail(line, 'eslestirme karar kaydi yok');
       continue;
@@ -347,6 +370,7 @@ export function createDynamoAuditSource(): AuditSource {
       const intents = (await all<PaymentIntent>(apartmentId, 'PI#')).filter((i) => i.entityType === 'PAYMENT_INTENT');
       const closures = await all<CariClosure>(apartmentId, 'CLOSURE#');
       // Banka satiri ve karari, bagli islemlerle ayni atomik yazimdadir: islemlerden ONCE okunur.
+      const bankStatements = (await all<BankStatement>(apartmentId, 'BANKSTMT#')).filter((x) => x.entityType === 'BANK_STATEMENT');
       const bankLines = (await all<BankLine>(apartmentId, 'BANKTX#')).filter((l) => l.entityType === 'BANK_LINE');
       const bankDecisions = (await all<BankDecision>(apartmentId, 'BANKMATCH#')).filter((d) => d.entityType === 'BANK_MATCH');
       const transactions = await all<Transaction>(apartmentId, 'TX#');
@@ -354,7 +378,7 @@ export function createDynamoAuditSource(): AuditSource {
       const accounts = await all<Account>(apartmentId, 'ACCT#');
       const payments = await all<Payment>(apartmentId, 'PAY#');
       const counter = await getTenantItem<{ value?: number }>(financeKeys.counter(apartmentId, 'receipt'));
-      return { apartmentId, intents, closures, transactions, entries, accounts, payments, receiptCounter: counter?.value ?? 0, bankLines, bankDecisions };
+      return { apartmentId, intents, closures, transactions, entries, accounts, payments, receiptCounter: counter?.value ?? 0, bankLines, bankDecisions, bankStatements };
     },
     getAccount: (apartmentId, accountId) => getTenantItem<Account>(financeKeys.account(apartmentId, accountId)),
     listAccountEntries: (apartmentId, accountId) => all<LedgerEntry>(apartmentId, `LE#${accountId}#`),
@@ -370,7 +394,27 @@ export type AuditReport = {
   findings: AuditFinding[];
   /** Es zamanli yazim nedeniyle sonuca varilamayan bakiye kontrolleri (bulgu sayilmaz). */
   unstable: string[];
+  /** Faz B3: kapanis bakiyeli ekstresi olan banka hesaplarinin mutabakati (bulgu degil; metrik). */
+  bankRecon?: AccountRecon[];
 };
+
+/** Anlik goruntudeki her banka hesabi icin son ekstreye gore mutabakat. */
+export function bankReconciliations(s: Pick<AuditSnapshot, 'accounts' | 'entries' | 'bankLines' | 'bankStatements'>): AccountRecon[] {
+  const statements = s.bankStatements ?? [];
+  if (statements.length === 0) return [];
+  const out: AccountRecon[] = [];
+  for (const a of s.accounts) {
+    if (a.type !== 'bank') continue;
+    const r = reconcileAccount({
+      bankAccountId: a.accountId,
+      statements,
+      lines: (s.bankLines ?? []).filter((l) => l.bankAccountId === a.accountId),
+      entries: s.entries,
+    });
+    if (r) out.push(r);
+  }
+  return out;
+}
 
 export function createLedgerAuditor(source: AuditSource) {
   /** Bakiye: hesap -> LE# -> hesap; surum degismediyse karsilastir. */
@@ -436,6 +480,7 @@ export function createLedgerAuditor(source: AuditSource) {
       findings.push(f);
     }
 
+    const bankRecon = s.bankStatements ? bankReconciliations(s) : undefined;
     return {
       apartmentId,
       counts: {
@@ -448,6 +493,7 @@ export function createLedgerAuditor(source: AuditSource) {
       },
       findings,
       unstable,
+      ...(bankRecon ? { bankRecon } : {}),
     };
   }
 
