@@ -1,8 +1,9 @@
-import { Check, FileUp, Landmark, ReceiptText, Split, Undo2, X } from 'lucide-react';
+import { Check, FileDown, FileUp, Landmark, ReceiptText, Split, Truck, Undo2, X } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { Alert, Badge, Button, Card, Dialog, FilterChips, FormField, Input, Select, Skeleton } from '@/components/ui';
 import { useBankAccounts, useBankQueue, useIgnoreLine, useMatchLine, useReconciliation, useSaveBankProfile, useUnmatchLine } from '@/hooks/useBank';
-import { type BankAccount, type BankLine, LINE_STATUS_LABELS, type LineStatus } from '@/lib/api/bank';
+import { type BankAccount, type BankLine, LINE_STATUS_LABELS, type LineStatus, bankApi } from '@/lib/api/bank';
+import { useOpenDocument } from '@/hooks/useOpenDocument';
 import { errorMessage } from '@/lib/api/errors';
 import { canQuickConfirm, confidenceBadge, groupIban } from '@/lib/bank/allocation';
 import { differenceNote, reconciliationRows } from '@/lib/bank/autoMatch';
@@ -11,6 +12,7 @@ import { formatSignedTRY, formatTRY } from '@/lib/money';
 import { AutoMatchBar } from './AutoMatchBar';
 import { ExpenseFromLineDialog } from './ExpenseFromLineDialog';
 import { MatchDialog, ReasonDialog } from './MatchDialog';
+import { SettlePayableDialog } from './SettlePayableDialog';
 import { UploadWizard } from './UploadWizard';
 
 type StatusFilter = LineStatus | 'all';
@@ -30,6 +32,9 @@ const BADGE_TONE = { success: 'success', warning: 'warning', neutral: 'neutral' 
 function ReconciliationCard({ bankAccountId }: { bankAccountId: string }) {
   const [range, setRange] = useState<{ from: string; to: string }>({ from: '', to: '' });
   const r = useReconciliation(bankAccountId, { ...(range.from ? { from: range.from } : {}), ...(range.to ? { to: range.to } : {}) });
+  // B3.5: donemsel mutabakat PDF'i (5 dk imzali link; saklanmaz).
+  const doc = useOpenDocument();
+  const reportRange = { ...(range.from ? { from: range.from } : {}), ...(range.to ? { to: range.to } : {}) };
   const header = (
     <div className="flex flex-wrap items-end justify-between gap-3">
       <h3 className="text-base font-semibold">Mutabakat</h3>
@@ -45,7 +50,21 @@ function ReconciliationCard({ bankAccountId }: { bankAccountId: string }) {
             Son ekstre
           </Button>
         )}
+        <Button
+          size="sm"
+          variant="secondary"
+          loading={doc.pendingId === 'bank-recon'}
+          onClick={() => void doc.open('bank-recon', () => bankApi.reconciliationReport(bankAccountId, reportRange))}
+        >
+          <FileDown className="size-4" aria-hidden="true" />
+          PDF indir
+        </Button>
       </div>
+      {doc.error && (
+        <div className="w-full">
+          <Alert tone="danger">{doc.error}</Alert>
+        </div>
+      )}
     </div>
   );
   if (r.isPending) return <Card className="flex flex-col gap-3">{header}<Skeleton className="h-28 w-full" /></Card>;
@@ -186,10 +205,24 @@ type Modal =
   | { kind: 'ignore'; line: BankLine }
   | { kind: 'unmatch'; line: BankLine }
   | { kind: 'expense'; line: BankLine }
+  | { kind: 'payable'; line: BankLine }
   | null;
 
 function SuggestionCell({ line }: { line: BankLine }) {
   if (line.status !== 'unmatched') return <span className="text-muted">—</span>;
+  const p = line.payableSuggestion;
+  if (line.direction === 'out' && p) {
+    const pb = confidenceBadge(p.confidence);
+    return (
+      <span className="flex flex-col gap-1" title={p.reasons.join('\n')}>
+        <span className="text-small font-medium">Tedarikçi: {p.name}</span>
+        <span className="flex flex-wrap items-center gap-1">
+          <Badge tone={pb.tone}>{pb.label}</Badge>
+          <span className="text-xs text-muted">{p.reasons[0]}</span>
+        </span>
+      </span>
+    );
+  }
   const s = line.suggestion;
   if (!s) return <span className="text-small text-muted">{line.direction === 'out' ? 'Çıkan hareket' : 'Öneri yok'}</span>;
   const badge = confidenceBadge(s.confidence);
@@ -337,6 +370,12 @@ export function BankPanel({ canWrite }: { canWrite: boolean }) {
                             </Button>
                           )}
                           {l.status === 'unmatched' && l.direction === 'out' && (
+                            <Button size="xs" variant={l.payableSuggestion ? 'primary' : 'secondary'} onClick={() => setModal({ kind: 'payable', line: l })}>
+                              <Truck className="size-3.5" aria-hidden="true" />
+                              Tedarikçi Ödemesi
+                            </Button>
+                          )}
+                          {l.status === 'unmatched' && l.direction === 'out' && (
                             <Button size="xs" variant="secondary" onClick={() => setModal({ kind: 'expense', line: l })}>
                               <ReceiptText className="size-3.5" aria-hidden="true" />
                               Gider Oluştur
@@ -378,6 +417,7 @@ export function BankPanel({ canWrite }: { canWrite: boolean }) {
           <ProfileDialog open={modal?.kind === 'profile'} onClose={close} account={account} />
           <MatchDialog open={modal?.kind === 'match'} onClose={close} line={modal?.kind === 'match' ? modal.line : null} bankAccountId={accountId} />
           <ExpenseFromLineDialog open={modal?.kind === 'expense'} onClose={close} line={modal?.kind === 'expense' ? modal.line : null} bankAccountId={accountId} />
+          <SettlePayableDialog open={modal?.kind === 'payable'} onClose={close} line={modal?.kind === 'payable' ? modal.line : null} bankAccountId={accountId} />
           <ReasonDialog
             open={modal?.kind === 'ignore'}
             title="Satırı yoksay"
@@ -403,7 +443,7 @@ export function BankPanel({ canWrite }: { canWrite: boolean }) {
               modal?.kind === 'unmatch' && modal.line.status === 'ignored'
                 ? 'Satır yeniden eşleştirme kuyruğuna alınır.'
                 : modal?.kind === 'unmatch' && modal.line.direction === 'out'
-                  ? 'Bu satırdan oluşturulan gider ters kayıtla iptal edilir ve satır kuyruğa döner.'
+                  ? 'Bu satırdan oluşturulan gider veya tedarikçi ödemesi ters kayıtla iptal edilir ve satır kuyruğa döner.'
                   : 'Bağlı tahsilat ve kesinleşen tazminat ters kayıtla iptal edilir, makbuzlar “iptal” olarak görünür ve satır kuyruğa döner.'
             }
             actionLabel="Geri al"

@@ -552,7 +552,7 @@ run "prod_plan" {
         "POST /api/me/mfa/totp/setup", "POST /api/me/mfa/totp/verify", "POST /api/mfa/users/{userId}/reset",
         "POST /api/support/sessions", "POST /api/residents/invite", "POST /api/finance/dues", "POST /api/imports",
         "POST /api/bank/statements/upload-url", "POST /api/bank/statements", "POST /api/bank/statements/{statementId}/commit",
-        "POST /api/bank/statements/{statementId}/auto-match",
+        "POST /api/bank/statements/{statementId}/auto-match", "GET /api/bank/reconciliation/report",
       ]) &&
       alltrue([for r in aws_apigatewayv2_route.sensitive : r.authorization_type == "JWT"])
     )
@@ -840,7 +840,7 @@ run "bank_iban_hmac" {
     condition = alltrue([
       for k in [
         "POST /api/bank/statements/upload-url", "POST /api/bank/statements", "POST /api/bank/statements/{statementId}/commit",
-        "POST /api/bank/statements/{statementId}/auto-match",
+        "POST /api/bank/statements/{statementId}/auto-match", "GET /api/bank/reconciliation/report",
       ] :
       aws_apigatewayv2_route.sensitive[k].authorization_type == "JWT" &&
       anytrue([for rs in aws_apigatewayv2_stage.default.route_settings : rs.route_key == k && rs.throttling_rate_limit == 2 && rs.throttling_burst_limit == 5])

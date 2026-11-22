@@ -28,7 +28,8 @@ import type { Account, LedgerEntry, Payment, Transaction } from './types.js';
  *  - online_payment_unposted  SUCCEEDED odeme niyetinin tahsilat/islem kaydi eksik veya tutarsiz
  *  - bank_match_mismatch      (Faz B2) `matched` banka satirinin karar kaydi / dagilim toplami / bagli
  *                             tahsilat ve tazminat islemleri tutarsiz; geri alinan eslestirmenin islemleri
- *                             iptal edilmemis; (B3) gidere cevrilen satirin gider islemi yok/tutarsiz
+ *                             iptal edilmemis; (B3) gidere cevrilen satirin gider islemi yok/tutarsiz;
+ *                             (B3.5) tedarikci odemesine cevrilen satirin islemi yok/tutarsiz
  *
  * Bulgu OLMAYAN rapor alanlari:
  *  - bankRecon  (Faz B3) banka hesabi basina son ekstre kapanis bakiyesi <-> defter bakiyesi;
@@ -302,6 +303,21 @@ export function checkBankMatches(s: Pick<AuditSnapshot, 'transactions' | 'bankLi
       if (line.direction !== 'out') fail(line, 'giren satir gidere cevrilmis');
       if (!tx) fail(line, 'gider islemi defterde yok veya tutari uyusmuyor', { expected: line.amount });
       else if (cancelled.has(tx.transactionId)) fail(line, 'gider ters kayitla iptal edilmis ama satir eslesmis', { transactionId: tx.transactionId });
+      continue;
+    }
+    if (d?.kind === 'payable') {
+      // B3.5: cikan satir -> tedarikci odemesi (borc: tedarikci, alacak: banka, satir tutari).
+      const tx = d.transactionIds
+        .map((id) => txs.get(id))
+        .find(
+          (t) =>
+            t?.kind === 'payable_payment' &&
+            t.lines.some((l) => l.side === 'credit' && l.accountId === line.bankAccountId && l.amount === line.amount) &&
+            t.lines.some((l) => l.side === 'debit' && l.accountId === d.payable?.payableAccountId && l.amount === line.amount),
+        );
+      if (line.direction !== 'out') fail(line, 'giren satir tedarikci odemesine cevrilmis');
+      if (!tx) fail(line, 'tedarikci odemesi defterde yok veya tutari uyusmuyor', { expected: line.amount });
+      else if (cancelled.has(tx.transactionId)) fail(line, 'tedarikci odemesi ters kayitla iptal edilmis ama satir eslesmis', { transactionId: tx.transactionId });
       continue;
     }
     if (!d || d.kind !== 'match') {

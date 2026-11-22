@@ -264,6 +264,57 @@ export async function sendWithAudit(
   throw new AuditChainBusyError();
 }
 
+/**
+ * `items` + birden fazla denetim kaydini (ayni kapsam, ardisik sira) tek `TransactWriteItems` ile
+ * yazar. Kayitlar zincirde arka arkaya baglanir (ikincinin `prevHash`'i birincinin hash'i). Tum
+ * taslaklar ayni apartman kapsaminda olmalidir. Denetim kapaliysa yalnizca `items` yazilir.
+ */
+export async function sendWithAudits(
+  client: DynamoDBDocumentClient,
+  items: TransactItem[],
+  drafts: readonly AuditDraft[],
+  now: () => Date = () => new Date(),
+): Promise<AuditEntry[]> {
+  const table = drafts.length ? auditTable() : undefined;
+  if (!table) {
+    await client.send(new TransactWriteCommand({ TransactItems: items }));
+    return [];
+  }
+  if (drafts.length === 1) {
+    const one = await sendWithAudit(client, items, drafts[0], now);
+    return one ? [one] : [];
+  }
+  const scope = auditScope(drafts[0]?.apartmentId);
+  if (drafts.some((d) => auditScope(d.apartmentId) !== scope)) throw new Error('Denetim kayitlari ayni kapsamda olmali');
+  if (items.length + drafts.length > 100) throw new Error('Atomik yazim 100 ogeyi asamaz (denetim kayitlari dahil)');
+  for (let attempt = 1; attempt <= MAX_CHAIN_ATTEMPTS; attempt++) {
+    let tail = await readTail(client, table, scope);
+    const at = now();
+    const entries: AuditEntry[] = [];
+    for (const d of drafts) {
+      const entry = buildEntry(d, tail, at);
+      entries.push(entry);
+      tail = { seq: entry.seq, hash: entry.hash };
+    }
+    try {
+      await client.send(new TransactWriteCommand({ TransactItems: [...items, ...entries.map((e) => auditPut(table, e))] }));
+      return entries;
+    } catch (err) {
+      if (!auditOnlyConflicts(err, items.length)) throw err;
+      await new Promise((r) => setTimeout(r, 10 * attempt + Math.floor(Math.random() * 10)));
+    }
+  }
+  throw new AuditChainBusyError();
+}
+
+/** Iptal yalnizca denetim kayitlarinin (indeks >= `firstAuditIndex`) kosulundan mi? */
+function auditOnlyConflicts(err: unknown, firstAuditIndex: number): boolean {
+  if (!(err instanceof TransactionCanceledException)) return false;
+  const reasons = err.CancellationReasons ?? [];
+  const failed = reasons.map((r, i) => ({ i, code: r.Code })).filter((r) => r.code && r.code !== 'None');
+  return failed.length > 0 && failed.every((r) => r.i >= firstAuditIndex && (r.code === 'ConditionalCheckFailed' || r.code === 'TransactionConflict'));
+}
+
 /** `putNewItem` + denetim kaydi (atomik). Kayit varsa `DataAccessError('conflict')`. */
 export async function auditedPutNew(item: { PK: string; SK: string; [key: string]: unknown }, draft: AuditDraft): Promise<void> {
   if (!auditTable()) return putNewItem(item);

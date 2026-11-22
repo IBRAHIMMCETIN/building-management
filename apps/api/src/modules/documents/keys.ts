@@ -5,6 +5,7 @@ import type { IsoDate } from '../core/types.js';
  *   apartments/{apt}/receipts/{yyyy}/{mm}/{paymentId}.v{N}.pdf        tahsilat makbuzu (onbellek)
  *   apartments/{apt}/receipts/{yyyy}/{mm}/{paymentId}-iptal.v{N}.pdf  ters kayitla iptal edilmis hali
  *   apartments/{apt}/invoices/{yyyy}/{mm}/{expenseId}.{ext}        gider faturasi
+ *   apartments/{apt}/reports/{yyyy}/{mm}/bank-recon-...-{hash}.pdf  banka mutabakat raporu (B3.5)
  *   tmp/{apt}/invoice-uploads/{uploadId}                           tarayicidan yuklenen, henuz
  *                                                                  gidere baglanmamis dosya
  *                                                                  (S3 yasam dongusu 1 gunde siler)
@@ -26,6 +27,23 @@ export const RECEIPT_TEMPLATE_VERSION = 2;
 
 export function receiptKey(apartmentId: string, paidAt: IsoDate, paymentId: string, reversed: boolean): string {
   return `apartments/${apartmentId}/receipts/${ym(paidAt)}/${paymentId}${reversed ? '-iptal' : ''}.v${RECEIPT_TEMPLATE_VERSION}.pdf`;
+}
+
+/**
+ * Faz B3.5: donemsel banka mutabakat raporu (onbellek). `dataHash` rapor verisinin ve sablon
+ * surumunun ozetidir: veri degisince yeni dosya uretilir, eskisi kayit olarak kalir.
+ *   apartments/{apt}/reports/{yyyy}/{mm}/bank-recon-{bankAccountId}-{from}-{to}-{hash}.pdf
+ */
+export function bankReconReportKey(
+  apartmentId: string,
+  asOf: IsoDate,
+  bankAccountId: string,
+  range: { from?: IsoDate; to?: IsoDate },
+  dataHash: string,
+): string {
+  const from = range.from ? range.from.replaceAll('-', '') : 'start';
+  const to = range.to ? range.to.replaceAll('-', '') : 'latest';
+  return `apartments/${apartmentId}/reports/${ym(asOf)}/bank-recon-${bankAccountId}-${from}-${to}-${dataHash.slice(0, 16)}.pdf`;
 }
 
 export function pendingUploadKey(apartmentId: string, uploadId: string): string {

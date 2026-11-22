@@ -4,6 +4,7 @@ import {
   type DuesBulkInput,
   type FinanceAccount,
   type RecordExpenseInput,
+  type RecordPayablePaymentInput,
   type RecordPaymentInput,
   financeApi,
 } from '@/lib/api/finance';
@@ -31,6 +32,7 @@ export const financeKeys = {
   transactions: (apt: string, filter: { from?: string; to?: string }) => [...financeKeys.all(apt), 'transactions', filter] as const,
   accounts: (apt: string, type?: string) => [...financeKeys.all(apt), 'accounts', type ?? 'all'] as const,
   duesPreview: (apt: string, input: DuesBulkInput | null) => [...financeKeys.all(apt), 'dues-preview', input] as const,
+  payables: (apt: string) => [...financeKeys.all(apt), 'payables'] as const,
 };
 
 function useApt() {
@@ -104,6 +106,21 @@ export function useRecordPayment() {
 export function useRecordExpense() {
   const invalidate = useInvalidateFinance();
   return useMutation({ mutationFn: (input: RecordExpenseInput) => financeApi.recordExpense(input), onSuccess: invalidate });
+}
+
+// ----- Faz B3.5: tedarikci borcu -----
+
+export function usePayables() {
+  const { apt, enabled } = useApt();
+  return useQuery({ queryKey: financeKeys.payables(apt), queryFn: ({ signal }) => financeApi.payables(signal), enabled });
+}
+
+export function useRecordPayablePayment() {
+  const invalidate = useInvalidateFinance();
+  return useMutation({
+    mutationFn: (v: { accountId: string; input: RecordPayablePaymentInput }) => financeApi.recordPayablePayment(v.accountId, v.input),
+    onSuccess: invalidate,
+  });
 }
 
 export function useChargeDues() {

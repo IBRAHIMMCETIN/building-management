@@ -60,6 +60,7 @@ const EXACT: Record<string, string> = {
   'bank.line.restore': 'Yoksayılan banka satırı geri açıldı',
   'bank.line.expense': 'Banka satırından gider oluşturuldu',
   'bank.statement.auto_match': 'Banka satırları toplu onaylandı',
+  'bank.line.payable': 'Banka satırından tedarikçi ödemesi yapıldı',
 };
 
 const LEDGER_KINDS: Record<string, string> = {

@@ -53,6 +53,8 @@ import {
   mainReceivableId,
 } from './types.js';
 import type { MembershipRepository } from '../memberships/repository.js';
+import { type PortalRepository, portalRepository } from '../portal/repository.js';
+import { type PayableSummary, payableSummary } from './payables.js';
 import { type Occupancy, VACANT_SUFFIX, liablePartyFor, occupancyOn } from './occupancy.js';
 
 // ---------------------------------------------------------------------------
@@ -235,6 +237,24 @@ export type BankExpenseInput = {
   documents: (r: { expense: Expense; transaction: Transaction }) => BankLedgerDocuments;
 };
 
+/**
+ * Faz B3.5: bankadan cikan satirla tedarikci borcunun kapatilmasi (borc: tedarikci, alacak:
+ * ekstrenin banka hesabi). Islem, banka modulunun belgeleri ve denetim TEK atomik yazimdir.
+ */
+export type BankPayablePaymentInput = {
+  /** Idempotency kimligi (ornek `bankpayable-<lineId>-<n>`). */
+  idempotencyId: string;
+  bankAccountId: string;
+  payableAccountId: string;
+  amount: Kurus;
+  /** Banka valoru. */
+  date: IsoDate;
+  description: string;
+  /** `BANK:<dekont no | lineId>` */
+  reference: string;
+  documents: (r: { transaction: Transaction; payable: Account }) => BankLedgerDocuments;
+};
+
 export type BankReversalInput = {
   idempotencyId: string;
   /** Ters cevrilecek islemler (banka eslestirmesinin tazminat + tahsilat veya gider kayitlari). */
@@ -258,6 +278,8 @@ export type FinanceServiceDeps = {
    * uygulanmaz (testler / eski cagiranlar); uygulama (app.ts) uyelik deposunu verir.
    */
   memberships?: Pick<MembershipRepository, 'list'>;
+  /** Faz B3.5: tedarikci acik kalemleri icin hesap hareketleri (varsayilan portal deposu). */
+  ledger: Pick<PortalRepository, 'listLedgerEntries' | 'getTransactions'>;
   attachments?: {
     promote(
       apartmentId: string,
@@ -385,6 +407,7 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
   const deps: FinanceServiceDeps = {
     repository: financeRepository,
     core: coreRepository,
+    ledger: portalRepository,
     now: () => new Date(),
     newId: () => randomUUID(),
     ...overrides,
@@ -1985,6 +2008,191 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
    * UYGULANMAZ (defterde henuz eslestirilmemis tahsilatlar olabilir). Kapali donem kilidi ve
    * banka satirinin surum kosulu (`precondition`) cagirana oldugu gibi iletilir.
    */
+  // -------------------------------------------------------------------------
+  // Faz B3.5: tedarikci (payable) borcu
+  // -------------------------------------------------------------------------
+
+  /** Acik tedarikci borcu (alacak-normal hesap; depoda borc - alacak tutulur). */
+  const openOf = (a: Pick<Account, 'balance'>) => Math.max(0, -a.balance);
+
+  async function summaryOf(apartmentId: string, accountId: string): Promise<PayableSummary> {
+    const entries = (await deps.ledger.listLedgerEntries(apartmentId, accountId)).filter((e) => e.siteId === apartmentId && e.accountId === accountId);
+    const ids = [...new Set(entries.map((e) => e.transactionId))];
+    const txs = ids.length ? await deps.ledger.getTransactions(apartmentId, ids) : [];
+    return payableSummary(accountId, entries, new Map(txs.map((t) => [t.transactionId, t])));
+  }
+
+  /**
+   * Tedarikci hesaplari: acik borc (hesap bakiyesi), fatura/odeme toplamlari ve acik faturalar
+   * (FIFO). Pasif hesaplar yalnizca borcu varsa listelenir.
+   */
+  async function listPayables(ctx: FinanceContext, q: { includeItems?: boolean } = {}) {
+    await ensureSystemAccounts(ctx);
+    const accounts = (await repo.listAccounts(ctx.apartmentId)).filter((a) => a.type === 'payable' && (a.status === 'active' || a.balance !== 0));
+    const items = await Promise.all(
+      accounts.map(async (a) => {
+        const sum = q.includeItems === false ? undefined : await summaryOf(ctx.apartmentId, a.accountId);
+        return {
+          accountId: a.accountId,
+          name: a.name,
+          status: a.status,
+          openBalance: openOf(a),
+          version: a.version,
+          ...(sum
+            ? {
+                billed: sum.billed,
+                paid: sum.paid,
+                openItems: sum.openItems.slice(0, 50),
+                openItemCount: sum.openItems.length,
+                ...(sum.lastPaymentDate ? { lastPaymentDate: sum.lastPaymentDate } : {}),
+              }
+            : {}),
+        };
+      }),
+    );
+    items.sort((a, b) => b.openBalance - a.openBalance || a.name.localeCompare(b.name, 'tr'));
+    return { items, totalOpen: items.reduce((s, i) => s + i.openBalance, 0) };
+  }
+
+  /**
+   * Tedarikci odemesi (ortak yol). Acik borctan fazla odeme reddedilir (avans mahsubu Finans
+   * asamasinda); kontrol tedarikci hesabinin surumuyle kosullanir (es zamanli iki odeme ayni
+   * borcu iki kez kapatamaz). `checkFunds`: elle odemede kasa/banka bakiyesi yetmeli; banka
+   * ekstresinden gelen odeme gerceklesmis harekettir, bakiye kontrolu yapilmaz.
+   */
+  async function postPayablePayment(
+    ctx: FinanceContext,
+    p: {
+      idempotencyId: string;
+      fp: string;
+      payableAccountId: string;
+      fundsAccountId: string;
+      amount: Kurus;
+      date: IsoDate;
+      description: string;
+      reference?: string;
+      checkFunds: boolean;
+      documents?: (r: { transaction: Transaction; payable: Account }) => BankLedgerDocuments;
+    },
+  ): Promise<{ transaction: Transaction; payable: Account; replayed: boolean }> {
+    const replay = async () => {
+      const prev = await replayOf(ctx, p.idempotencyId, p.fp);
+      if (!prev) return undefined;
+      const payable = await repo.getAccount(ctx.apartmentId, p.payableAccountId);
+      return { transaction: await loadTx(ctx, prev.transactionId), payable: payable as Account, replayed: true };
+    };
+    const previous = await replay();
+    if (previous) return previous;
+    await ensureSystemAccounts(ctx);
+
+    for (let attempt = 1; ; attempt++) {
+      const payable = await repo.getAccount(ctx.apartmentId, p.payableAccountId);
+      if (!payable) throw new FinanceError('not_found', 'Tedarikci hesabi bulunamadi');
+      if (payable.type !== 'payable') throw new FinanceError('unprocessable', 'Hesap bir tedarikci (borc) hesabi olmali');
+      const funds = await repo.getAccount(ctx.apartmentId, p.fundsAccountId);
+      if (!funds || (funds.type !== 'cash' && funds.type !== 'bank') || funds.status !== 'active') {
+        throw new FinanceError('unprocessable', 'Odeme hesabi aktif bir kasa/banka hesabi olmali');
+      }
+      const open = openOf(payable);
+      if (p.amount > open) {
+        throw new FinanceError('unprocessable', `Odeme tutari tedarikcinin acik borcunu asiyor (acik borc: ${open} kurus); avans mahsubu henuz desteklenmiyor`);
+      }
+      if (p.checkFunds && funds.balance < p.amount) throw new FinanceError('insufficient_funds', 'Kasa/banka bakiyesi bu odeme icin yetersiz');
+
+      const transaction = buildTx(ctx, {
+        kind: 'payable_payment',
+        date: p.date,
+        description: p.description,
+        reference: p.reference,
+        lines: [
+          { accountId: p.payableAccountId, side: 'debit', amount: p.amount },
+          { accountId: p.fundsAccountId, side: 'credit', amount: p.amount },
+        ],
+      });
+      const docs: BankLedgerDocuments = p.documents?.({ transaction, payable }) ?? {};
+      try {
+        await repo.postBatch({
+          transactions: [transaction],
+          idempotency: { id: p.idempotencyId, fingerprint: p.fp },
+          expectedVersions: {
+            [p.payableAccountId]: payable.version,
+            ...(p.checkFunds ? { [p.fundsAccountId]: funds.version } : {}),
+          },
+          ...(docs.newDocs?.length ? { newDocs: docs.newDocs } : {}),
+          ...(docs.replaceRecords?.length ? { replaceRecords: docs.replaceRecords } : {}),
+          ...(docs.audit ? { audit: docs.audit } : {}),
+        });
+        return { transaction, payable, replayed: false };
+      } catch (err) {
+        if (err instanceof LedgerConflictError) {
+          if (err.reason === 'duplicate') {
+            const again = await replay();
+            if (again) return again;
+          }
+          if (err.reason === 'version' && attempt < MAX_ATTEMPTS) continue;
+          if (err.reason === 'closed' || err.reason === 'precondition') throw err;
+        }
+        throw mapConflict(err);
+      }
+    }
+  }
+
+  /** Elle tedarikci odemesi: `POST /api/finance/payables/:accountId/payments`. */
+  async function recordPayablePayment(ctx: FinanceContext, payableAccountId: string, body: unknown) {
+    assertId(payableAccountId, 'accountId');
+    const o = asObject(body);
+    const key = reqKey(o);
+    const fundsAccountId = o.fundsAccountId === undefined ? SYSTEM_ACCOUNTS.bank : assertId(o.fundsAccountId, 'fundsAccountId');
+    const amount = reqAmount(o, 'amount');
+    const date = optDate(o, 'date') ?? today();
+    const reference = optString(o, 'reference', 60);
+    const description = optString(o, 'description', 200) ?? 'Tedarikçi ödemesi';
+    const fp = fingerprint({ op: 'payable_payment', payableAccountId, fundsAccountId, amount, date, description, reference });
+    const r = await postPayablePayment(ctx, {
+      idempotencyId: key,
+      fp,
+      payableAccountId,
+      fundsAccountId,
+      amount,
+      date,
+      description,
+      ...(reference ? { reference } : {}),
+      checkFunds: true,
+    });
+    const after = await repo.getAccount(ctx.apartmentId, payableAccountId);
+    return { transaction: r.transaction, replayed: r.replayed, openBalance: after ? openOf(after) : 0 };
+  }
+
+  /** Banka ekstresinden tedarikci odemesi (banka modulu; belgeler ayni yazimda). */
+  async function recordBankPayablePayment(ctx: FinanceContext, p: BankPayablePaymentInput) {
+    assertId(p.idempotencyId, 'idempotencyId');
+    assertId(p.bankAccountId, 'bankAccountId');
+    assertId(p.payableAccountId, 'payableAccountId');
+    if (!isIsoDate(p.date)) throw new ValidationError('date YYYY-MM-DD olmali', 'date');
+    if (!Number.isSafeInteger(p.amount) || p.amount < 1 || p.amount > MAX_AMOUNT) throw new ValidationError('amount pozitif kurus olmali', 'amount');
+    const description = p.description.replace(/\s+/g, ' ').trim().slice(0, 200) || 'Tedarikçi ödemesi';
+    const fp = fingerprint({
+      op: 'bank_payable_payment',
+      bankAccountId: p.bankAccountId,
+      payableAccountId: p.payableAccountId,
+      amount: p.amount,
+      date: p.date,
+      reference: p.reference,
+    });
+    return postPayablePayment(ctx, {
+      idempotencyId: p.idempotencyId,
+      fp,
+      payableAccountId: p.payableAccountId,
+      fundsAccountId: p.bankAccountId,
+      amount: p.amount,
+      date: p.date,
+      description,
+      reference: p.reference,
+      checkFunds: false,
+      documents: p.documents,
+    });
+  }
+
   async function recordBankExpense(ctx: FinanceContext, p: BankExpenseInput) {
     assertId(p.idempotencyId, 'idempotencyId');
     assertId(p.bankAccountId, 'bankAccountId');
@@ -2104,8 +2312,9 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
     const originals = await Promise.all(p.transactionIds.map((id) => loadTx(ctx, id)));
     for (const original of originals) {
       // B3: bankadan cikan satirdan olusturulan gider de ayni yolla geri alinir.
-      if (original.kind !== 'payment' && original.kind !== 'late_fee' && original.kind !== 'expense') {
-        throw new FinanceError('unprocessable', `Yalnizca tahsilat, tazminat ve banka gideri islemleri geri alinabilir: ${original.transactionId}`);
+      // B3.5: tedarikci odemesi (payable_payment) de ayni yolla geri alinir.
+      if (!['payment', 'late_fee', 'expense', 'payable_payment'].includes(original.kind)) {
+        throw new FinanceError('unprocessable', `Yalnizca tahsilat, tazminat, banka gideri ve tedarikci odemesi geri alinabilir: ${original.transactionId}`);
       }
       if (await repo.getIdempotency(ctx.apartmentId, `REV_${original.transactionId}`)) {
         throw new FinanceError('conflict', `Bu islem zaten ters kayitla duzeltilmis: ${original.transactionId}`);
@@ -2183,6 +2392,10 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
     reverseBankPayments,
     /** Faz B3: bankadan cikan satirdan gider. */
     recordBankExpense,
+    /** Faz B3.5: tedarikci borcu. */
+    listPayables,
+    recordPayablePayment,
+    recordBankPayablePayment,
     recordExpense,
     reverseTransaction,
     getUnitBalance,

@@ -14,14 +14,14 @@ const ENFORCE: MfaPolicy = { mode: 'enforce', graceDays: 7 };
 const H = 3_600_000;
 const iso = (ms: number) => new Date(NOW.getTime() - ms).toISOString();
 
-function chain(n: number, scope: 'apt' | 'platform' = 'apt'): AuditEntry[] {
+function chain(n: number, scope: 'apt' | 'platform' = 'apt', base: Date = NOW): AuditEntry[] {
   const out: AuditEntry[] = [];
   let tail = { seq: 0, hash: GENESIS_HASH };
   for (let i = 0; i < n; i++) {
     const e = buildEntry(
       { ...(scope === 'apt' ? { apartmentId: 'apt-1' } : {}), action: `t.a${i}`, target: { type: 't', id: String(i) } },
       tail,
-      new Date(NOW.getTime() - (n - i) * H),
+      new Date(base.getTime() - (n - i) * H),
     );
     out.push(e);
     tail = { seq: e.seq, hash: e.hash };
@@ -77,7 +77,10 @@ const inApt = (apartmentId: string, role?: string) =>
 
 function world() {
   const apt = chain(3);
-  const platform = chain(2, 'platform');
+  // Butunluk ucu (`GET /api/audit/integrity`) kontrol noktasi yokken tazeligi ilk kaydin `at` alanindan
+  // gercek saate gore olcer (26 saat esigi). Platform zinciri bu yuzden sabit NOW yerine gercek saate
+  // gore kurulur: kayitlar 2 ve 1 saat once olusmus gorunur, takvim ilerledikce bayatlamaz.
+  const platform = chain(2, 'platform', new Date());
   const listed: string[] = [];
   const reader: AuditReader = {
     list: async (scope, q) => {
@@ -88,7 +91,8 @@ function world() {
     listAfter: async (scope, after, limit = 1000) => (scope === 'PLATFORM' ? platform : apt).filter((e) => e.seq > after).slice(0, limit),
     get: async () => undefined,
   };
-  const checkpoints = { get: vi.fn(async (scope: string) => (scope === 'APT#apt-1' ? { seq: 3, hash: apt[2]!.hash, verifiedAt: iso(H) } : undefined)) };
+  // Butunluk ucu tazeligi gercek saate gore olcer: kontrol noktasi sabit tarih yerine 1 saat once (takvim ilerledikce bayatlamaz).
+  const checkpoints = { get: vi.fn(async (scope: string) => (scope === 'APT#apt-1' ? { seq: 3, hash: apt[2]!.hash, verifiedAt: new Date(Date.now() - H).toISOString() } : undefined)) };
   const metrics = { emit: vi.fn() };
   const provider = createMockMfaProvider({ users: { 'sakin@ornek.com': 'r-1', 'admin2@ornek.com': 'admin-2' }, platformAdmins: ['admin-2', 'padmin'] });
   provider.enabledUsers.add('r-1');

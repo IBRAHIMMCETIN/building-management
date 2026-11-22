@@ -5,6 +5,7 @@ import { useCommitStatement, useStatementPreview } from '@/hooks/useBank';
 import { type AmountMode, type BankField, FLAG_LABELS, type FormatSpec, type StatementPreview, sampleRowsFrom } from '@/lib/api/bank';
 import { errorMessage } from '@/lib/api/errors';
 import { previewCounts, previewNeedsAck } from '@/lib/bank/allocation';
+import { FORMAT_SOURCE_LABELS, formatSavedMessage, rememberFormatOption } from '@/lib/bank/formatMemory';
 import { formatDate } from '@/lib/dates';
 import { formatSignedTRY, formatTRY } from '@/lib/money';
 
@@ -207,6 +208,7 @@ export function UploadWizard({ open, onClose, bankAccountId }: { open: boolean; 
   const [sample, setSample] = useState<string[][] | null>(null);
   const [preview, setPreview] = useState<StatementPreview | null>(null);
   const [ack, setAck] = useState(false);
+  const [remember, setRemember] = useState(false);
   const previewM = useStatementPreview();
   const commit = useCommitStatement();
 
@@ -232,6 +234,7 @@ export function UploadWizard({ open, onClose, bankAccountId }: { open: boolean; 
       setStatementId(r.statementId);
       setPreview(r.preview);
       setAck(false);
+      setRemember(rememberFormatOption(r.preview.statement.formatSource).defaultChecked);
       setStep('preview');
     } catch (err) {
       const sid = (err as { statementId?: string }).statementId;
@@ -247,7 +250,8 @@ export function UploadWizard({ open, onClose, bankAccountId }: { open: boolean; 
   const runCommit = async () => {
     if (!preview || !statementId) return;
     try {
-      await commit.mutateAsync({ statementId, expectedVersion: preview.statement.version, acknowledgeWarnings: ack });
+      const rememberFormat = remember && rememberFormatOption(preview.statement.formatSource).visible;
+      await commit.mutateAsync({ statementId, expectedVersion: preview.statement.version, acknowledgeWarnings: ack, rememberFormat });
       setStep('done');
     } catch {
       // asagida gosterilir
@@ -290,6 +294,15 @@ export function UploadWizard({ open, onClose, bankAccountId }: { open: boolean; 
         {step === 'preview' && preview && (
           <>
             <PreviewStep preview={preview} />
+            <div className="flex flex-col gap-1 rounded-md border border-border px-3 py-2 text-small">
+              <span className="text-muted">{FORMAT_SOURCE_LABELS[preview.statement.formatSource]}.</span>
+              {rememberFormatOption(preview.statement.formatSource).visible && (
+                <label className="flex items-start gap-2">
+                  <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} className="mt-1" />
+                  Bu eşlemeyi hesap için hatırla (sonraki ekstreler bu sütunlarla otomatik okunur)
+                </label>
+              )}
+            </div>
             {needsAck && (
               <label className="flex items-start gap-2 text-small">
                 <input type="checkbox" checked={ack} onChange={(e) => setAck(e.target.checked)} className="mt-1" />
@@ -315,6 +328,7 @@ export function UploadWizard({ open, onClose, bankAccountId }: { open: boolean; 
                 ? 'Bu ekstre daha önce içe alınmış.'
                 : `${commit.data.written} yeni banka hareketi aktarıldı${commit.data.existing ? `, ${commit.data.existing} satır zaten vardı` : ''}. Eşleştirme kuyruğunda öneriler hazır.`}
             </Alert>
+            {formatSavedMessage(commit.data.formatSaved) && <Alert tone="info">{formatSavedMessage(commit.data.formatSaved)}</Alert>}
             <div className="flex justify-end">
               <Button onClick={onClose}>Kapat</Button>
             </div>

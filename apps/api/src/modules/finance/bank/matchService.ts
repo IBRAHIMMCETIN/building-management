@@ -1,9 +1,13 @@
+import { createHash } from 'node:crypto';
 import type { Role } from '../../../auth/claims.js';
 import { DataAccessError } from '../../../config/dynamodb.js';
 import type { AuditDraft } from '../../audit/log.js';
 import { type CoreRepository, coreRepository } from '../../core/repository.js';
 import type { IsoDate, Kurus, LiableParty } from '../../core/types.js';
 import { ID_PATTERN, isIsoDate } from '../../core/validation.js';
+import { BANK_RECON_TEMPLATE_VERSION, type BankReconLine, renderBankReconPdf } from '../../documents/bankReconPdf.js';
+import { bankReconReportKey, contentDisposition } from '../../documents/keys.js';
+import { type DocumentStore, URL_TTL_SECONDS, createDocumentStoreFromEnv } from '../../documents/store.js';
 import { type MembershipRepository, membershipRepository } from '../../memberships/repository.js';
 import { accruedLateFeeOf } from '../../payments/quote.js';
 import { type PortalRepository, portalRepository } from '../../portal/repository.js';
@@ -15,7 +19,16 @@ import { type Account, mainReceivableId } from '../types.js';
 import { BankError } from './errors.js';
 import { isValidTrIban, maskIban, normalizeIban } from './iban.js';
 import { AUTO_RUN_KEY_PATTERN, LINES_PAGE_MAX, MAX_LINES, bankKeys, isStatementId, istanbulDate, parseLineId } from './keys.js';
-import { type MatchCandidate, type Suggestion, refCodeFor, suggestMatches, validateAllocations } from './matching.js';
+import {
+  type MatchCandidate,
+  type PayableCandidate,
+  type Suggestion,
+  refCodeFor,
+  suggestMatches,
+  suggestPayables,
+  validateAllocations,
+} from './matching.js';
+import { payableSummary } from '../payables.js';
 import { addLines, emptyBreakdown, ledgerBalanceThrough, pendingNetThrough, pickStatements } from './reconciliation.js';
 import { type BankRepository, bankRepository } from './repository.js';
 import { publicLine } from './service.js';
@@ -29,6 +42,7 @@ import {
   type BankAutoRun,
   type BankDecision,
   type BankLine,
+  type BankPayee,
   type BankPayer,
   type BankRef,
   type BankRefOf,
@@ -56,6 +70,11 @@ import {
  *   POST /statements/:id/auto-match        toplu otomatik onay (istek basina en fazla AUTO_MATCH_BATCH satir)
  *   POST /lines/:lineId/expense            cikan satir -> gider (gider hesabi borc / banka alacak)
  *   POST /lines/:lineId/unmatch            gidere cevrilmis satiri da ters kayitla geri alir
+ *
+ * Faz B3.5:
+ *   GET  /lines/:lineId/payable-suggestions  cikan satir -> tedarikci onerileri
+ *   POST /lines/:lineId/settle-payable       tedarikci borcunu kapat (payable_payment + BANKMATCH + PAYEE)
+ *   GET  /reconciliation/report              donemsel mutabakat PDF'i (S3 onbellek, 5 dk imzali URL)
  *   GET  /reconciliation?from&to           ayrintili mutabakat dokumu
  */
 
@@ -63,7 +82,7 @@ export type BankMatchContext = { apartmentId: string; userId: string; role: Role
 
 export type BankMatchDeps = {
   repo: BankRepository;
-  finance: Pick<FinanceService, 'recordBankPayment' | 'reverseBankPayments' | 'recordBankExpense'>;
+  finance: Pick<FinanceService, 'recordBankPayment' | 'reverseBankPayments' | 'recordBankExpense' | 'recordBankPayablePayment'>;
   accounts: Pick<FinanceRepository, 'getAccount' | 'listAccounts' | 'listTransactions'>;
   ledger: Pick<PortalRepository, 'listLedgerEntries' | 'getTransactions'>;
   core: Pick<CoreRepository, 'getSite' | 'getUnit' | 'listUnits' | 'listBlocks'>;
@@ -71,6 +90,8 @@ export type BankMatchDeps = {
   people: Pick<PersonRepository, 'list'>;
   /** Sakin portali: daire ve gorunur alt cariler (uyelik kurallari tek kaynaktan). */
   portal?: Pick<PortalService, 'resolveUnit'>;
+  /** Faz B3.5: mutabakat PDF onbellegi (S3; yoksa rapor 503). */
+  documents?: DocumentStore;
   now: () => Date;
 };
 
@@ -128,6 +149,8 @@ export function createBankMatchService(overrides: Partial<BankMatchDeps> & Pick<
     people: personRepository,
     now: () => new Date(),
     ...overrides,
+    // `documents: undefined` acikca verilirse (test) ortamdan okunmaz.
+    documents: 'documents' in overrides ? overrides.documents : createDocumentStoreFromEnv(),
   };
   const today = () => istanbulDate(deps.now());
   const stamp = () => deps.now().toISOString();
@@ -579,6 +602,151 @@ export function createBankMatchService(overrides: Partial<BankMatchDeps> & Pick<
   }
 
   // -------------------------------------------------------------------------
+  // Faz B3.5: tedarikci borcu
+  // -------------------------------------------------------------------------
+
+  /** Acik borcu olan aktif tedarikci hesaplari + acik faturalari (oneri ve diyalog). */
+  async function loadPayables(apartmentId: string): Promise<PayableCandidate[]> {
+    const accounts = (await deps.accounts.listAccounts(apartmentId)).filter((a) => a.type === 'payable' && a.status === 'active' && a.balance < 0);
+    return Promise.all(
+      accounts.map(async (a) => {
+        const entries = (await deps.ledger.listLedgerEntries(apartmentId, a.accountId)).filter((e) => e.siteId === apartmentId && e.accountId === a.accountId);
+        const ids = [...new Set(entries.map((e) => e.transactionId))];
+        const txs = ids.length ? await deps.ledger.getTransactions(apartmentId, ids) : [];
+        const sum = payableSummary(a.accountId, entries, new Map(txs.map((t) => [t.transactionId, t])));
+        return {
+          accountId: a.accountId,
+          name: a.name,
+          openBalance: -a.balance,
+          openItems: sum.openItems.map((i) => ({ amount: i.open, description: i.description, ...(i.reference ? { reference: i.reference } : {}) })),
+        };
+      }),
+    );
+  }
+
+  async function payableSuggestionsFor(apartmentId: string, line: BankLine, candidates: readonly PayableCandidate[], limit = 5) {
+    const payee = line.counterpartyIbanMac ? await deps.repo.getPayee(apartmentId, line.counterpartyIbanMac) : undefined;
+    return suggestPayables({ line, candidates, ...(payee ? { payee } : {}), limit });
+  }
+
+  function payeeUpdate(apartmentId: string, existing: BankPayee | undefined, mac: string, accountId: string, delta: 1 | -1) {
+    const now = stamp();
+    const accounts = [...(existing?.accounts ?? [])];
+    const i = accounts.findIndex((x) => x.accountId === accountId);
+    if (i >= 0) {
+      const cur = accounts[i] as BankPayee['accounts'][number];
+      accounts[i] = { ...cur, count: Math.max(0, cur.count + delta), ...(delta > 0 ? { lastPaidAt: now } : {}) };
+    } else if (delta > 0) {
+      accounts.push({ accountId, count: 1, lastPaidAt: now });
+    }
+    const item: BankPayee = {
+      ...bankKeys.payee(apartmentId, mac),
+      entityType: 'BANK_PAYEE',
+      apartmentId,
+      ibanMac: mac,
+      accounts: accounts
+        .filter((a) => a.count > 0)
+        .sort((a, b) => b.lastPaidAt.localeCompare(a.lastPaidAt))
+        .slice(0, MAX_ALLOCATIONS),
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+      version: (existing?.version ?? 0) + 1,
+    };
+    return existing ? { replace: { item, expectedVersion: existing.version, label: 'bank_payee' } } : { create: item };
+  }
+
+  /** Rapor listelerinin ust siniri (PDF boyutu ve okuma maliyeti). */
+  const REPORT_LIST_MAX = 500;
+  const REPORT_REASON_MAX = 200;
+
+  /** Mutabakat hesabi (rapor ve PDF ayni veriyi kullanir). */
+  async function reconcile(ctx: BankMatchContext, q: { bankAccountId?: string; from?: string; to?: string }) {
+    const bankAccountId = reqId(q.bankAccountId, 'bankAccountId');
+    for (const k of ['from', 'to'] as const) if (q[k] !== undefined && q[k] !== '' && !isIsoDate(q[k] as string)) fail(`${k} YYYY-AA-GG olmalidir`, k);
+    const range = { ...(q.from ? { from: q.from as IsoDate } : {}), ...(q.to ? { to: q.to as IsoDate } : {}) };
+    if (range.from && range.to && range.from > range.to) fail('from, to tarihinden sonra olamaz', 'from');
+    const account = await deps.accounts.getAccount(ctx.apartmentId, bankAccountId);
+    if (!account || account.type !== 'bank') throw new BankError('not_found', 'Banka hesabi bulunamadi');
+    const statements = await deps.repo.listStatements(ctx.apartmentId);
+    const { opening, closing } = pickStatements(statements, bankAccountId, range);
+    const entries = (await deps.ledger.listLedgerEntries(ctx.apartmentId, bankAccountId)).filter((e) => e.accountId === bankAccountId);
+
+    // Tum satirlar sayfalanarak (bekleyen net etki araliktan bagimsiz, kapanis gunune kadar birikimlidir).
+    const lines: BankLine[] = [];
+    let cursor: string | undefined;
+    for (let page = 0; page < 50; page++) {
+      const r = await deps.repo.queryLines(ctx.apartmentId, { bankAccountId, limit: LINES_PAGE_MAX, order: 'asc', ...(cursor ? { cursor } : {}) });
+      lines.push(...r.items);
+      cursor = r.cursor;
+      if (!cursor) break;
+    }
+    const breakdown = addLines(emptyBreakdown(), lines, range);
+    const sum = (a: { count: number; amount: number }, b: { count: number; amount: number }) => ({ count: a.count + b.count, amount: a.amount + b.amount });
+
+    const asOf = closing?.period?.to;
+    const closingBalance = closing?.closingBalance;
+    const ledgerAtEnd = asOf ? ledgerBalanceThrough(entries, bankAccountId, asOf) : undefined;
+    const diff = closingBalance !== undefined && ledgerAtEnd !== undefined ? closingBalance - ledgerAtEnd : undefined;
+    const pendingNet = asOf ? pendingNetThrough(lines, asOf) : undefined;
+    const openFrom = opening?.period?.from;
+    const ledgerAtStart = openFrom
+      ? entries.filter((e) => e.date < openFrom).reduce((t, e) => t + (e.side === 'debit' ? e.amount : -e.amount), 0)
+      : undefined;
+    const inRangeStatements = statements.filter(
+      (st) =>
+        st.bankAccountId === bankAccountId &&
+        st.status === 'committed' &&
+        st.period &&
+        (!range.to || st.period.from <= range.to) &&
+        (!range.from || st.period.to >= range.from),
+    ).length;
+    const result = {
+      bankAccountId,
+      accountName: account.name,
+      ledgerBalance: account.balance,
+      period: range,
+      statementCount: inRangeStatements,
+      ...(closing
+        ? {
+            statement: {
+              statementId: closing.statementId,
+              fileName: closing.fileName,
+              period: closing.period,
+              ...(closingBalance !== undefined ? { closingBalance } : {}),
+            },
+          }
+        : {}),
+      ...(opening
+        ? {
+            openingStatement: {
+              statementId: opening.statementId,
+              fileName: opening.fileName,
+              period: opening.period,
+              ...(opening.openingBalance !== undefined ? { openingBalance: opening.openingBalance } : {}),
+            },
+          }
+        : {}),
+      ...(opening?.openingBalance !== undefined ? { openingBalance: opening.openingBalance } : {}),
+      ...(ledgerAtStart !== undefined ? { ledgerBalanceAtStart: ledgerAtStart } : {}),
+      ...(closingBalance !== undefined ? { closingBalance } : {}),
+      ...(asOf ? { asOf } : {}),
+      ...(ledgerAtEnd !== undefined ? { ledgerBalanceAtStatementEnd: ledgerAtEnd } : {}),
+      ...(diff !== undefined ? { difference: diff, diff } : {}),
+      ...(pendingNet !== undefined ? { pendingNet } : {}),
+      ...(diff !== undefined && pendingNet !== undefined ? { unexplainedDiff: diff - pendingNet } : {}),
+      // B2 ozeti (aralikta): eslesen/yoksayilan giren + cikan toplamlari.
+      lines: {
+        unmatchedIn: breakdown.unmatchedIn,
+        unmatchedOut: breakdown.unmatchedOut,
+        matched: sum(breakdown.matchedIn, breakdown.matchedOut),
+        ignored: sum(breakdown.ignoredIn, breakdown.ignoredOut),
+      },
+      breakdown,
+    };
+    return { result, lines, range, account };
+  }
+
+  // -------------------------------------------------------------------------
   // Uclar
   // -------------------------------------------------------------------------
 
@@ -627,10 +795,15 @@ export function createBankMatchService(overrides: Partial<BankMatchDeps> & Pick<
       });
       const needs = page.items.some((l) => l.status === 'unmatched' && l.direction === 'in');
       const loaded = needs ? await loadCandidates(ctx.apartmentId, { maskNames: ctx.role === 'observer' }) : undefined;
+      // B3.5: cikan satirlar icin tedarikci onerisi (yalnizca oneri; toplu onaya girmez).
+      const needsPayables = page.items.some((l) => l.status === 'unmatched' && l.direction === 'out');
+      const payables = needsPayables ? await loadPayables(ctx.apartmentId) : undefined;
       const items = await Promise.all(
         page.items.map(async (l) => {
           const top = loaded && l.status === 'unmatched' && l.direction === 'in' ? (await suggestFor(ctx.apartmentId, l, loaded, 1))[0] : undefined;
-          return { ...publicLine(l), ...(top ? { suggestion: top } : {}) };
+          const payable =
+            payables && l.status === 'unmatched' && l.direction === 'out' ? (await payableSuggestionsFor(ctx.apartmentId, l, payables, 1))[0] : undefined;
+          return { ...publicLine(l), ...(top ? { suggestion: top } : {}), ...(payable ? { payableSuggestion: payable } : {}) };
         }),
       );
       return { items, ...(page.cursor ? { cursor: page.cursor } : {}) };
@@ -676,11 +849,17 @@ export function createBankMatchService(overrides: Partial<BankMatchDeps> & Pick<
 
       const decisions = await deps.repo.listDecisions(ctx.apartmentId, lineId);
       // B3: gidere cevrilmis satir da ayni yolla (ters kayit) geri alinir.
-      const matchDecision = decisions.find((d) => d.decisionNo === line.match?.decisionNo && (d.kind === 'match' || d.kind === 'expense'));
+      // B3.5: tedarikci odemesi de ayni yolla geri alinir.
+      const matchDecision = decisions.find(
+        (d) => d.decisionNo === line.match?.decisionNo && (d.kind === 'match' || d.kind === 'expense' || d.kind === 'payable'),
+      );
       if (!matchDecision) throw new BankError('conflict', 'Eslestirme karari bulunamadi');
       const isExpense = matchDecision.kind === 'expense';
+      const isPayable = matchDecision.kind === 'payable';
       const decisionNo = (line.decisionNo ?? 0) + 1;
-      const payer = line.counterpartyIbanMac && !isExpense ? await deps.repo.getPayer(ctx.apartmentId, line.counterpartyIbanMac) : undefined;
+      const payer =
+        line.counterpartyIbanMac && matchDecision.kind === 'match' ? await deps.repo.getPayer(ctx.apartmentId, line.counterpartyIbanMac) : undefined;
+      const payee = line.counterpartyIbanMac && isPayable ? await deps.repo.getPayee(ctx.apartmentId, line.counterpartyIbanMac) : undefined;
       let written: { decision: BankDecision; line: BankLine } | undefined;
       try {
         const r = await deps.finance.reverseBankPayments(
@@ -688,7 +867,7 @@ export function createBankMatchService(overrides: Partial<BankMatchDeps> & Pick<
           {
             idempotencyId: `bankunmatch-${lineId}-${decisionNo}`,
             transactionIds: matchDecision.transactionIds,
-            reason: `${isExpense ? 'Banka gideri geri alındı' : 'Banka eşleştirmesi geri alındı'}: ${reason}`.slice(0, 300),
+            reason: `${isExpense ? 'Banka gideri geri alındı' : isPayable ? 'Tedarikçi ödemesi geri alındı' : 'Banka eşleştirmesi geri alındı'}: ${reason}`.slice(0, 300),
             documents: ({ reversals }) => {
               const now = stamp();
               const decision: BankDecision = {
@@ -713,9 +892,17 @@ export function createBankMatchService(overrides: Partial<BankMatchDeps> & Pick<
               written = { decision, line: next };
               const p =
                 line.counterpartyIbanMac && payer ? payerUpdate(ctx.apartmentId, payer, line.counterpartyIbanMac, matchDecision.allocations ?? [], -1) : undefined;
+              const pe =
+                line.counterpartyIbanMac && payee && matchDecision.payable
+                  ? payeeUpdate(ctx.apartmentId, payee, line.counterpartyIbanMac, matchDecision.payable.payableAccountId, -1)
+                  : undefined;
               return {
                 newDocs: [decision],
-                replaceRecords: [{ item: next, expectedVersion: line.version, label: 'bank_line' }, ...(p?.replace ? [p.replace] : [])],
+                replaceRecords: [
+                  { item: next, expectedVersion: line.version, label: 'bank_line' },
+                  ...(p?.replace ? [p.replace] : []),
+                  ...(pe?.replace ? [pe.replace] : []),
+                ],
                 audit: {
                   apartmentId: ctx.apartmentId,
                   action: 'bank.line.unmatch',
@@ -728,6 +915,7 @@ export function createBankMatchService(overrides: Partial<BankMatchDeps> & Pick<
                     decisionNo,
                     reversedKind: matchDecision.kind,
                     ...(matchDecision.expense ? { expenseId: matchDecision.expense.expenseId } : {}),
+                    ...(matchDecision.payable ? { payableAccountId: matchDecision.payable.payableAccountId } : {}),
                     reverses: matchDecision.decisionNo,
                     reversedTransactionIds: matchDecision.transactionIds,
                     reversalTransactionIds: decision.transactionIds,
@@ -764,88 +952,7 @@ export function createBankMatchService(overrides: Partial<BankMatchDeps> & Pick<
      * bakiyesiyle hesaplanir. Satir dokumu (eslesen/bekleyen/yoksayilan, giren/cikan) araliktadir.
      */
     async reconciliation(ctx: BankMatchContext, q: { bankAccountId?: string; from?: string; to?: string }) {
-      const bankAccountId = reqId(q.bankAccountId, 'bankAccountId');
-      for (const k of ['from', 'to'] as const) if (q[k] !== undefined && q[k] !== '' && !isIsoDate(q[k] as string)) fail(`${k} YYYY-AA-GG olmalidir`, k);
-      const range = { ...(q.from ? { from: q.from as IsoDate } : {}), ...(q.to ? { to: q.to as IsoDate } : {}) };
-      if (range.from && range.to && range.from > range.to) fail('from, to tarihinden sonra olamaz', 'from');
-      const account = await deps.accounts.getAccount(ctx.apartmentId, bankAccountId);
-      if (!account || account.type !== 'bank') throw new BankError('not_found', 'Banka hesabi bulunamadi');
-      const statements = await deps.repo.listStatements(ctx.apartmentId);
-      const { opening, closing } = pickStatements(statements, bankAccountId, range);
-      const entries = (await deps.ledger.listLedgerEntries(ctx.apartmentId, bankAccountId)).filter((e) => e.accountId === bankAccountId);
-
-      // Tum satirlar sayfalanarak (bekleyen net etki araliktan bagimsiz, kapanis gunune kadar birikimlidir).
-      const lines: BankLine[] = [];
-      let cursor: string | undefined;
-      for (let page = 0; page < 50; page++) {
-        const r = await deps.repo.queryLines(ctx.apartmentId, { bankAccountId, limit: LINES_PAGE_MAX, order: 'asc', ...(cursor ? { cursor } : {}) });
-        lines.push(...r.items);
-        cursor = r.cursor;
-        if (!cursor) break;
-      }
-      const breakdown = addLines(emptyBreakdown(), lines, range);
-      const sum = (a: { count: number; amount: number }, b: { count: number; amount: number }) => ({ count: a.count + b.count, amount: a.amount + b.amount });
-
-      const asOf = closing?.period?.to;
-      const closingBalance = closing?.closingBalance;
-      const ledgerAtEnd = asOf ? ledgerBalanceThrough(entries, bankAccountId, asOf) : undefined;
-      const diff = closingBalance !== undefined && ledgerAtEnd !== undefined ? closingBalance - ledgerAtEnd : undefined;
-      const pendingNet = asOf ? pendingNetThrough(lines, asOf) : undefined;
-      const openFrom = opening?.period?.from;
-      const ledgerAtStart = openFrom
-        ? entries.filter((e) => e.date < openFrom).reduce((t, e) => t + (e.side === 'debit' ? e.amount : -e.amount), 0)
-        : undefined;
-      const inRangeStatements = statements.filter(
-        (st) =>
-          st.bankAccountId === bankAccountId &&
-          st.status === 'committed' &&
-          st.period &&
-          (!range.to || st.period.from <= range.to) &&
-          (!range.from || st.period.to >= range.from),
-      ).length;
-      return {
-        bankAccountId,
-        accountName: account.name,
-        ledgerBalance: account.balance,
-        period: range,
-        statementCount: inRangeStatements,
-        ...(closing
-          ? {
-              statement: {
-                statementId: closing.statementId,
-                fileName: closing.fileName,
-                period: closing.period,
-                ...(closingBalance !== undefined ? { closingBalance } : {}),
-              },
-            }
-          : {}),
-        ...(opening
-          ? {
-              openingStatement: {
-                statementId: opening.statementId,
-                fileName: opening.fileName,
-                period: opening.period,
-                ...(opening.openingBalance !== undefined ? { openingBalance: opening.openingBalance } : {}),
-              },
-            }
-          : {}),
-        ...(opening?.openingBalance !== undefined ? { openingBalance: opening.openingBalance } : {}),
-        ...(ledgerAtStart !== undefined ? { ledgerBalanceAtStart: ledgerAtStart } : {}),
-        ...(closingBalance !== undefined ? { closingBalance } : {}),
-        ...(asOf ? { asOf } : {}),
-        ...(ledgerAtEnd !== undefined ? { ledgerBalanceAtStatementEnd: ledgerAtEnd } : {}),
-        ...(diff !== undefined ? { difference: diff, diff } : {}),
-        ...(pendingNet !== undefined ? { pendingNet } : {}),
-        ...(diff !== undefined && pendingNet !== undefined ? { unexplainedDiff: diff - pendingNet } : {}),
-        // B2 ozeti (aralikta): eslesen/yoksayilan giren + cikan toplamlari.
-        lines: {
-          unmatchedIn: breakdown.unmatchedIn,
-          unmatchedOut: breakdown.unmatchedOut,
-          matched: sum(breakdown.matchedIn, breakdown.matchedOut),
-          ignored: sum(breakdown.ignoredIn, breakdown.ignoredOut),
-        },
-        breakdown,
-      };
+      return (await reconcile(ctx, q)).result;
     },
 
     /** Toplu onay on izlemesi (yazim yok): esigi gecen, cakismasiz satirlar. */
@@ -1122,6 +1229,208 @@ export function createBankMatchService(overrides: Partial<BankMatchDeps> & Pick<
           description: result.expense.description,
           transactionId: result.transaction.transactionId,
         },
+      };
+    },
+
+    // ----- Faz B3.5 -----
+
+    async payableSuggestions(ctx: BankMatchContext, lineId: string, q: { bankAccountId?: string }) {
+      const line = await requireLine(ctx, q.bankAccountId, lineId);
+      const candidates = await loadPayables(ctx.apartmentId);
+      return {
+        line: publicLine(line),
+        suggestions: line.direction === 'out' ? await payableSuggestionsFor(ctx.apartmentId, line, candidates) : [],
+        payables: candidates.map((c) => ({ accountId: c.accountId, name: c.name, openBalance: c.openBalance, openItems: c.openItems.slice(0, 20) })),
+      };
+    },
+
+    /**
+     * Cikan satirla tedarikci borcunu kapatir: `payable_payment` (borc: tedarikci, alacak: banka,
+     * valor tarihli) + BANKMATCH (`kind: 'payable'`) + BANKTX (`matched`) + PAYEE + denetim
+     * (`bank.line.payable`) TEK yazim. Tutar acik borcu asamaz.
+     */
+    async settlePayable(ctx: BankMatchContext, lineId: string, body: unknown) {
+      const o = asObj(body);
+      const line = await requireLine(ctx, o.bankAccountId, lineId);
+      checkVersion(line, reqVersion(o.expectedVersion));
+      if (line.status !== 'unmatched') throw new BankError('invalid_state', `Satir tedarikci odemesine cevrilemez (durum: ${line.status})`, { status: line.status });
+      if (line.direction !== 'out') throw new BankError('invalid_state', 'Yalnizca bankadan cikan (borc) satir tedarikci odemesi olabilir');
+      const payableAccountId = reqId(o.payableAccountId, 'payableAccountId');
+      const reason = reqReason(o.reason, false);
+      const source = o.source === 'suggestion' ? 'suggestion' : 'manual';
+      const confidence = typeof o.confidence === 'number' && o.confidence >= 0 && o.confidence <= 1 ? o.confidence : undefined;
+      const description = optText(o.description, 'description', 200) ?? `Tedarikçi ödemesi: ${line.description.replace(/\s+/g, ' ').trim()}`.slice(0, 200);
+      const date = line.valueDate ?? line.date;
+      const decisionNo = (line.decisionNo ?? 0) + 1;
+      const payee = line.counterpartyIbanMac ? await deps.repo.getPayee(ctx.apartmentId, line.counterpartyIbanMac) : undefined;
+      let written: { decision: BankDecision; line: BankLine } | undefined;
+      let result: Awaited<ReturnType<BankMatchDeps['finance']['recordBankPayablePayment']>>;
+      try {
+        result = await deps.finance.recordBankPayablePayment(
+          { apartmentId: ctx.apartmentId, userId: ctx.userId },
+          {
+            idempotencyId: `bankpayable-${line.lineId}-${decisionNo}`,
+            bankAccountId: line.bankAccountId,
+            payableAccountId,
+            amount: line.amount,
+            date,
+            description,
+            reference: `BANK:${line.bankReference ? line.bankReference.replace(/[^\w.-]/g, '').slice(0, 40) || line.lineId : line.lineId}`,
+            documents: ({ transaction, payable }) => {
+              const now = stamp();
+              const decision: BankDecision = {
+                ...bankKeys.decision(ctx.apartmentId, line.lineId, decisionNo),
+                entityType: 'BANK_MATCH',
+                apartmentId: ctx.apartmentId,
+                bankAccountId: line.bankAccountId,
+                lineId: line.lineId,
+                lineSk: line.SK,
+                decisionNo,
+                kind: 'payable',
+                payable: { payableAccountId, payableName: payable.name, openBefore: Math.max(0, -payable.balance) },
+                transactionIds: [transaction.transactionId],
+                paymentIds: [],
+                ...(reason ? { reason } : {}),
+                source,
+                ...(confidence !== undefined ? { confidence } : {}),
+                createdAt: now,
+                createdBy: ctx.userId,
+              };
+              const next: BankLine = {
+                ...line,
+                status: 'matched',
+                decisionNo,
+                match: { decisionNo, transactionIds: decision.transactionIds, paymentIds: [] },
+                updatedAt: now,
+                updatedBy: ctx.userId,
+                version: line.version + 1,
+              };
+              written = { decision, line: next };
+              const pe = line.counterpartyIbanMac ? payeeUpdate(ctx.apartmentId, payee, line.counterpartyIbanMac, payableAccountId, 1) : undefined;
+              return {
+                newDocs: [decision, ...(pe?.create ? [pe.create] : [])],
+                replaceRecords: [{ item: next, expectedVersion: line.version, label: 'bank_line' }, ...(pe?.replace ? [pe.replace] : [])],
+                audit: {
+                  apartmentId: ctx.apartmentId,
+                  action: 'bank.line.payable',
+                  target: { type: 'bank_line', id: line.lineId },
+                  actorId: ctx.userId,
+                  ...(reason ? { reason } : {}),
+                  details: {
+                    bankAccountId: line.bankAccountId,
+                    statementId: line.statementId,
+                    date,
+                    amount: line.amount,
+                    decisionNo,
+                    payableAccountId,
+                    payableName: payable.name,
+                    openBefore: Math.max(0, -payable.balance),
+                    transactionId: transaction.transactionId,
+                    source,
+                  },
+                },
+              };
+            },
+          },
+        );
+      } catch (err) {
+        if (err instanceof LedgerConflictError && err.reason === 'precondition') {
+          throw new BankError('version_conflict', 'Satir baska bir islemle degisti; listeyi yenileyin', { label: err.label });
+        }
+        if (err instanceof LedgerConflictError && err.reason === 'closed') {
+          throw new BankError('invalid_state', 'Bu tarih kapatilmis bir doneme ait; odeme yazilamaz', { closedThrough: err.closedThrough });
+        }
+        throw err;
+      }
+      if (result.replayed || !written) {
+        const current = await deps.repo.getLine(ctx.apartmentId, line.bankAccountId, line.lineId);
+        return { replayed: true, line: publicLine(current ?? line), transactionId: result.transaction.transactionId };
+      }
+      const w = written as { decision: BankDecision; line: BankLine };
+      return {
+        replayed: false,
+        line: publicLine(w.line),
+        decision: publicDecision(w.decision),
+        transactionId: result.transaction.transactionId,
+        openBalanceAfter: Math.max(0, -result.payable.balance - line.amount),
+      };
+    },
+
+    /**
+     * Donemsel mutabakat PDF'i. Veri (mutabakat + bekleyen/yoksayilan satirlar + sablon surumu)
+     * ozetlenir; ayni ozetli dosya S3'te varsa yeniden uretilmez. 5 dk imzali indirme linki.
+     */
+    async reconciliationReport(ctx: BankMatchContext, q: { bankAccountId?: string; from?: string; to?: string }) {
+      const store = deps.documents;
+      if (!store) throw new BankError('unavailable', 'Belge deposu yapilandirilmamis (DOCUMENTS_BUCKET)');
+      const { result, lines, range, account } = await reconcile(ctx, q);
+      const asOf = result.asOf ?? range.to ?? today();
+      const inRange = (d: string) => (!range.from || d >= range.from) && (!range.to || d <= range.to);
+      const pendingAll = lines.filter((l) => l.status === 'unmatched' && inRange(l.date));
+      const ignoredAll = lines.filter((l) => l.status === 'ignored' && inRange(l.date));
+      const toRow = (l: BankLine, reasonOf?: string): BankReconLine => ({
+        date: l.date,
+        direction: l.direction,
+        amount: l.amount,
+        description: l.description,
+        ...(l.counterpartyName ? { counterpartyName: l.counterpartyName } : {}),
+        ...(reasonOf ? { reason: reasonOf } : {}),
+      });
+      const ignoredShown = ignoredAll.slice(0, REPORT_LIST_MAX);
+      const reasons = new Map<string, string>();
+      for (const l of ignoredShown.slice(0, REPORT_REASON_MAX)) {
+        const d = (await deps.repo.listDecisions(ctx.apartmentId, l.lineId)).filter((x) => x.kind === 'ignore').at(-1);
+        if (d?.reason) reasons.set(l.lineId, d.reason);
+      }
+      const [site, profile] = await Promise.all([deps.core.getSite(ctx.apartmentId), deps.repo.getProfile(ctx.apartmentId, result.bankAccountId)]);
+      const b = result.breakdown;
+      const data = {
+        apartmentName: site?.name ?? 'Apartman Yönetimi',
+        bankAccountName: account.name,
+        ...(profile?.iban ? { ibanMasked: maskIban(profile.iban) } : {}),
+        period: range,
+        ...(result.openingBalance !== undefined ? { openingBalance: result.openingBalance } : {}),
+        ...(result.openingStatement?.period ? { openingDate: result.openingStatement.period.from } : {}),
+        ...(result.ledgerBalanceAtStart !== undefined ? { ledgerBalanceAtStart: result.ledgerBalanceAtStart } : {}),
+        ...(result.closingBalance !== undefined ? { closingBalance: result.closingBalance } : {}),
+        ...(result.asOf ? { asOf: result.asOf } : {}),
+        ...(result.ledgerBalanceAtStatementEnd !== undefined ? { ledgerBalanceAtEnd: result.ledgerBalanceAtStatementEnd } : {}),
+        ...(result.difference !== undefined ? { difference: result.difference } : {}),
+        ...(result.pendingNet !== undefined ? { pendingNet: result.pendingNet } : {}),
+        ...(result.unexplainedDiff !== undefined ? { unexplainedDiff: result.unexplainedDiff } : {}),
+        breakdown: [
+          { label: 'Eşleşen giren (tahsilat)', ...b.matchedIn },
+          { label: 'Eşleşen çıkan (gider / tedarikçi)', ...b.matchedOut },
+          { label: 'Bekleyen giren', ...b.unmatchedIn },
+          { label: 'Bekleyen çıkan', ...b.unmatchedOut },
+          { label: 'Yoksayılan giren', ...b.ignoredIn },
+          { label: 'Yoksayılan çıkan', ...b.ignoredOut },
+        ],
+        pending: pendingAll.slice(0, REPORT_LIST_MAX).map((l) => toRow(l)),
+        ignored: ignoredShown.map((l) => toRow(l, reasons.get(l.lineId))),
+        ...(pendingAll.length > REPORT_LIST_MAX ? { pendingOmitted: pendingAll.length - REPORT_LIST_MAX } : {}),
+        ...(ignoredAll.length > REPORT_LIST_MAX ? { ignoredOmitted: ignoredAll.length - REPORT_LIST_MAX } : {}),
+      };
+      const dataHash = createHash('sha256').update(JSON.stringify({ v: BANK_RECON_TEMPLATE_VERSION, apartmentId: ctx.apartmentId, ...data })).digest('hex');
+      const key = bankReconReportKey(ctx.apartmentId, asOf, result.bankAccountId, range, dataHash);
+      const cached = Boolean(await store.head(key));
+      if (!cached) {
+        const pdf = await renderBankReconPdf({ ...data, generatedAt: stamp(), dataHash });
+        await store.put(key, pdf, 'application/pdf');
+      }
+      const fileName = `Banka-Mutabakat-${account.name}-${range.from ?? 'baslangic'}_${range.to ?? asOf}.pdf`.replace(/[^\w.-]+/g, '-');
+      const url = await store.presignGet(key, {
+        contentDisposition: contentDisposition(fileName, 'attachment'),
+        contentType: 'application/pdf',
+        expiresIn: URL_TTL_SECONDS,
+      });
+      return {
+        url,
+        fileName,
+        contentType: 'application/pdf',
+        expiresAt: new Date(deps.now().getTime() + URL_TTL_SECONDS * 1000).toISOString(),
+        cached,
+        dataHash: dataHash.slice(0, 16),
       };
     },
 

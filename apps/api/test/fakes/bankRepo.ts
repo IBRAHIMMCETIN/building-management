@@ -9,6 +9,7 @@ import type {
   BankFileLock,
   BankFormat,
   BankLine,
+  BankPayee,
   BankPayer,
   BankRef,
   BankRefOf,
@@ -53,6 +54,15 @@ export function createFakeBankRepo(shared?: Map<string, Record<string, unknown>>
       if (!cur || cur.version !== expectedVersion) throw new DataAccessError('conflict', 'surum');
       items.set(k(statement.PK, statement.SK), clone(statement));
       audits.push(audit);
+    },
+    async commitStatementWithFormat(statement, expectedVersion, format, formatExpectedVersion, auditDrafts) {
+      const cur = items.get(k(statement.PK, statement.SK));
+      if (!cur || cur.version !== expectedVersion) throw new DataAccessError('conflict', 'statement');
+      const f = items.get(k(format.PK, format.SK));
+      if (formatExpectedVersion === undefined ? Boolean(f) : !f || f.version !== formatExpectedVersion) throw new DataAccessError('conflict', 'format');
+      items.set(k(statement.PK, statement.SK), clone(statement));
+      items.set(k(format.PK, format.SK), clone(format));
+      audits.push(...auditDrafts);
     },
     async existingLineKeys(apt, sks) {
       return new Set(sks.filter((sk) => items.has(k(pkOf(apt), sk))));
@@ -125,6 +135,10 @@ export function createFakeBankRepo(shared?: Map<string, Record<string, unknown>>
     async getPayer(apt, mac) {
       const v = items.get(k(pkOf(apt), `PAYER#${mac}`));
       return v ? (clone(v) as BankPayer) : undefined;
+    },
+    async getPayee(apt, mac) {
+      const v = items.get(k(pkOf(apt), `PAYEE#${mac}`));
+      return v ? (clone(v) as BankPayee) : undefined;
     },
     async listRefs(apt) {
       return byPrefix<BankRef>(pkOf(apt), 'BANKREF#').filter((r) => r.entityType === 'BANK_REF').map(clone);
