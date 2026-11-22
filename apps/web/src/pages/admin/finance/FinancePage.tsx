@@ -4,6 +4,7 @@ import { useSearchParams } from 'react-router';
 import { Alert, Button } from '@/components/ui';
 import { useFinancePermissions } from '@/hooks/useFinance';
 import { cn } from '@/lib/cn';
+import { BankPanel } from './bank/BankPanel';
 import { ChargeDuesDialog } from './ChargeDuesDialog';
 import { DuesPanel } from './DuesPanel';
 import { ExpenseDialog } from './ExpenseDialog';
@@ -18,6 +19,7 @@ const TABS = [
   { id: 'dues', label: 'Aidat durumu' },
   { id: 'former', label: 'Ayrılan cariler' },
   { id: 'online', label: 'Online ödemeler' },
+  { id: 'bank', label: 'Banka' },
 ] as const;
 type TabId = (typeof TABS)[number]['id'];
 
@@ -94,6 +96,7 @@ export function FinancePage() {
           {tab === 'dues' && <DuesPanel canWrite={canWrite} onCollect={(preset) => setModal({ kind: 'payment', preset })} />}
           {tab === 'former' && <FormerAccountsPanel canWrite={canWrite} onCollect={(preset) => setModal({ kind: 'payment', preset })} />}
           {tab === 'online' && <OnlinePaymentsPanel />}
+          {tab === 'bank' && <BankPanel canWrite={canWrite} />}
         </div>
       </div>
 

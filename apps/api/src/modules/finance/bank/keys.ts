@@ -59,7 +59,21 @@ export const bankKeys = {
     return { PK: tenantPk(apartmentId), SK: lineSk(bankAccountId, date, fp) };
   },
   format: (apartmentId: string, bankAccountId: string) => ({ PK: tenantPk(apartmentId), SK: skKey('BANKFMT', bankAccountId) }),
+  // Faz B2
+  decision: (apartmentId: string, lineId: string, decisionNo: number) => ({
+    PK: tenantPk(apartmentId),
+    SK: skKey('BANKMATCH', lineId, String(decisionNo).padStart(3, '0')),
+  }),
+  payer: (apartmentId: string, ibanMac: string) => ({ PK: tenantPk(apartmentId), SK: skKey('PAYER', ibanMac) }),
+  ref: (apartmentId: string, code: string) => ({ PK: tenantPk(apartmentId), SK: skKey('BANKREF', code) }),
+  refOf: (apartmentId: string, accountId: string) => ({ PK: tenantPk(apartmentId), SK: skKey('BANKREFOF', accountId) }),
+  profile: (apartmentId: string, bankAccountId: string) => ({ PK: tenantPk(apartmentId), SK: skKey('BANKPROFILE', bankAccountId) }),
 };
+
+export const decisionPrefix = (lineId: string) => `BANKMATCH#${lineId}#`;
+export const DECISION_PREFIX = 'BANKMATCH#';
+export const REF_PREFIX = 'BANKREF#';
+export const PROFILE_PREFIX = 'BANKPROFILE#';
 
 export const STATEMENT_PREFIX = 'BANKSTMT#';
 export const linePrefix = (bankAccountId: string) => `BANKTX#${bankAccountId}#`;

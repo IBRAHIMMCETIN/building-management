@@ -6,9 +6,11 @@ import {
   type Kurus,
   type LiableParty,
   type MonthlyDuesPlan,
+  type TableKeys,
   type Unit,
   toKurus,
 } from '../core/types.js';
+import type { AuditDraft } from '../audit/log.js';
 import {
   type Obj,
   ValidationError,
@@ -175,6 +177,49 @@ export type OnlinePaymentInput = {
    * kimlikleri burada uretildigi icin fonksiyon olarak verilir.
    */
   intentUpdate: (r: { payments: Payment[]; transactions: Transaction[] }) => ReplaceRecord;
+};
+
+/**
+ * Faz B2: banka satirinin alt cariye tahsilati. `accountId` ana veya ayrilan (tasinmada acilmis)
+ * alt caridir; daire ve taraf HESAPTAN okunur (istemciye guvenilmez).
+ */
+export type BankPaymentAllocation = {
+  accountId: string;
+  amount: Kurus;
+  /** Odeme aninda kesinlestirilecek gecikme tazminati (0 olabilir). */
+  lateFee: Kurus;
+};
+
+export type ResolvedBankAllocation = BankPaymentAllocation & { unitId: string; liableParty: LiableParty };
+
+/** Ayni atomik yazima eklenecek belgeler ve denetim kaydi (banka modulu uretir). */
+export type BankLedgerDocuments = {
+  newDocs?: (TableKeys & { entityType: string })[];
+  replaceRecords?: ReplaceRecord[];
+  audit?: AuditDraft;
+};
+
+export type BankPaymentInput = {
+  /** Idempotency kimligi (ornek `bankmatch-<lineId>-<n>`): ayni karar iki kez yazilmaz. */
+  idempotencyId: string;
+  /** Tahsilatin girdigi banka hesabi (ekstrenin hesabi). */
+  depositAccountId: string;
+  /** Banka valoru. */
+  paidAt: IsoDate;
+  /** Islem referansi (`BANK:<dekont no | lineId>`). */
+  reference: string;
+  payerName?: string;
+  note?: string;
+  allocations: BankPaymentAllocation[];
+  documents: (r: { payments: Payment[]; transactions: Transaction[]; allocations: ResolvedBankAllocation[] }) => BankLedgerDocuments;
+};
+
+export type BankReversalInput = {
+  idempotencyId: string;
+  /** Ters cevrilecek islemler (banka eslestirmesinin tazminat + tahsilat kayitlari). */
+  transactionIds: string[];
+  reason: string;
+  documents: (r: { reversals: Transaction[] }) => BankLedgerDocuments;
 };
 
 export type FinanceServiceDeps = {
@@ -1742,6 +1787,258 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
     return buildDueReminders(txPage.items, receivables, date);
   }
 
+  // -------------------------------------------------------------------------
+  // Faz B2: banka satiri eslestirme (tahsilat) ve geri alma (ters kayit)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Banka satirini TEK atomik yazimla tahsilata cevirir (online odemeyle ayni kalip):
+   *  - alt cari basina tahsilat (`payment`, borc: banka hesabi) + makbuz + PAYMENT_RECEIVED olayi
+   *  - tazminati olan alt cariler icin odeme aninda kesinlesen tazminat TEK `late_fee` islemiyle
+   *  - banka modulunun belgeleri (BANKMATCH, BANKTX durum gecisi, PAYER) ve denetim kaydi
+   * Kapali (closedThrough) cariye yazim `LedgerConflictError('closed')` olarak OLDUGU GIBI firlatilir:
+   * cagiran (banka modulu) ayrilan cariyi onerebilsin.
+   */
+  async function recordBankPayment(ctx: FinanceContext, p: BankPaymentInput) {
+    assertId(p.idempotencyId, 'idempotencyId');
+    assertId(p.depositAccountId, 'depositAccountId');
+    if (!isIsoDate(p.paidAt)) throw new ValidationError('paidAt YYYY-MM-DD olmali', 'paidAt');
+    if (p.allocations.length < 1 || p.allocations.length > 10) throw new ValidationError('allocations 1-10 alt cari icermeli', 'allocations');
+    const seen = new Set<string>();
+    for (const a of p.allocations) {
+      assertId(a.accountId, 'allocations.accountId');
+      if (seen.has(a.accountId)) throw new ValidationError('Ayni alt cari birden fazla kez secilemez', 'allocations');
+      seen.add(a.accountId);
+      if (!Number.isSafeInteger(a.amount) || a.amount < 1 || a.amount > MAX_AMOUNT) throw new ValidationError('allocations.amount pozitif kurus olmali', 'allocations');
+      if (!Number.isSafeInteger(a.lateFee) || a.lateFee < 0 || a.lateFee > MAX_AMOUNT) throw new ValidationError('allocations.lateFee gecersiz', 'allocations');
+    }
+    const fp = fingerprint({ op: 'bank_payment', depositAccountId: p.depositAccountId, paidAt: p.paidAt, reference: p.reference, allocations: p.allocations });
+    const replay = async () => {
+      const existing = await repo.getIdempotency(ctx.apartmentId, p.idempotencyId);
+      if (!existing) return undefined;
+      if (existing.fingerprint !== fp) throw new FinanceError('idempotency_conflict', 'Bu eslestirme farkli bir dagilimla kaydedilmis');
+      const payments = (await Promise.all((existing.recordIds ?? []).map((id) => repo.getPayment(ctx.apartmentId, id)))).filter((x): x is Payment => !!x);
+      const transactions = (
+        await Promise.all((existing.transactionIds ?? [existing.transactionId]).map((id) => repo.getTransaction(ctx.apartmentId, id)))
+      ).filter((x): x is Transaction => !!x);
+      return { payments, transactions, allocations: [] as ResolvedBankAllocation[], replayed: true };
+    };
+    const previous = await replay();
+    if (previous) return previous;
+
+    await ensureSystemAccounts(ctx);
+    const deposit = await repo.getAccount(ctx.apartmentId, p.depositAccountId);
+    if (!deposit || deposit.type !== 'bank' || deposit.status !== 'active') {
+      throw new FinanceError('unprocessable', 'Tahsilat hesabi aktif bir banka hesabi olmali');
+    }
+    const resolved: (ResolvedBankAllocation & { unitNumber: string; former: boolean })[] = [];
+    for (const a of p.allocations) {
+      const acc = await repo.getAccount(ctx.apartmentId, a.accountId);
+      if (!acc || acc.type !== 'receivable' || !acc.unitId || !acc.liableParty) {
+        throw new FinanceError('unprocessable', `Alt cari bulunamadi: ${a.accountId}`);
+      }
+      const unit = await deps.core.getUnit(ctx.apartmentId, acc.unitId);
+      resolved.push({
+        ...a,
+        unitId: acc.unitId,
+        liableParty: acc.liableParty,
+        unitNumber: unit?.number ?? acc.unitId,
+        former: acc.accountId !== receivableId(acc.unitId, acc.liableParty),
+      });
+    }
+
+    for (let attempt = 1; ; attempt++) {
+      const counterValue = await repo.getCounter(ctx.apartmentId, 'receipt');
+      const transactions: Transaction[] = [];
+      const payments: Payment[] = [];
+      const fees = resolved.filter((a) => a.lateFee > 0);
+      if (fees.length > 0) {
+        const total = fees.reduce((s, a) => s + a.lateFee, 0);
+        const fee = buildTx(ctx, {
+          kind: 'late_fee',
+          date: p.paidAt,
+          dueDate: p.paidAt,
+          description: 'Gecikme tazminatı (banka tahsilatında kesinleşen)',
+          reference: `LATE_FEE:BANK:${p.idempotencyId}`,
+          lines: [
+            ...fees.map((a) => ({ accountId: a.accountId, side: 'debit' as const, amount: a.lateFee, unitId: a.unitId, liableParty: a.liableParty })),
+            { accountId: SYSTEM_ACCOUNTS.incomeLateFee, side: 'credit', amount: toKurus(total) },
+          ],
+        });
+        // Ekstrede tazminat, ayni gunun tahsilatindan once gorunsun.
+        fee.createdAt = new Date(Date.parse(fee.createdAt) - 1).toISOString();
+        transactions.push(fee);
+      }
+      for (const [i, a] of resolved.entries()) {
+        const tx = buildTx(ctx, {
+          kind: 'payment',
+          date: p.paidAt,
+          description: a.former
+            ? `Banka tahsilatı - Daire ${a.unitNumber} (ayrılan ${a.liableParty === 'owner' ? 'malik' : 'sakin'})`
+            : `Banka tahsilatı - Daire ${a.unitNumber}`,
+          reference: p.reference,
+          lines: [
+            { accountId: p.depositAccountId, side: 'debit', amount: a.amount },
+            { accountId: a.accountId, side: 'credit', amount: a.amount, unitId: a.unitId, liableParty: a.liableParty },
+          ],
+        });
+        transactions.push(tx);
+        const paymentId = deps.newId();
+        payments.push({
+          ...financeKeys.payment(ctx.apartmentId, paymentId),
+          entityType: 'PAYMENT',
+          paymentId,
+          siteId: ctx.apartmentId,
+          unitId: a.unitId,
+          liableParty: a.liableParty,
+          method: 'bank_transfer',
+          amount: a.amount,
+          depositAccountId: p.depositAccountId,
+          receiptNumber: `MKB-${String(counterValue + i + 1).padStart(6, '0')}`,
+          transactionId: tx.transactionId,
+          paidAt: p.paidAt,
+          payerName: p.payerName,
+          note: p.note,
+          ...(a.former ? { receivableAccountId: a.accountId } : {}),
+          createdAt: tx.createdAt,
+          createdBy: ctx.userId,
+        });
+      }
+
+      const allocations: ResolvedBankAllocation[] = resolved.map(({ unitNumber: _n, former: _f, ...a }) => a);
+      const docs = p.documents({ payments, transactions, allocations });
+      try {
+        await repo.postBatch({
+          transactions,
+          idempotency: {
+            id: p.idempotencyId,
+            fingerprint: fp,
+            transactionIds: transactions.map((t) => t.transactionId),
+            recordIds: payments.map((x) => x.paymentId),
+          },
+          counter: { name: 'receipt', expected: counterValue, increment: payments.length },
+          records: payments,
+          ...(docs.newDocs?.length ? { newDocs: docs.newDocs } : {}),
+          ...(docs.replaceRecords?.length ? { replaceRecords: docs.replaceRecords } : {}),
+          ...(docs.audit ? { audit: docs.audit } : {}),
+          outbox: payments.map((payment) =>
+            toEvent({
+              eventId: `PAYMENT_RECEIVED:${payment.paymentId}`,
+              type: 'PAYMENT_RECEIVED',
+              apartmentId: ctx.apartmentId,
+              actorId: ctx.userId,
+              groupKey: payment.unitId,
+              payload: {
+                paymentId: payment.paymentId,
+                transactionId: payment.transactionId,
+                receiptNumber: payment.receiptNumber,
+                unitId: payment.unitId,
+                liableParty: payment.liableParty,
+                amount: payment.amount,
+                method: payment.method,
+                paidAt: payment.paidAt,
+                ...(payment.receivableAccountId ? { receivableAccountId: payment.receivableAccountId } : {}),
+              },
+            }),
+          ),
+        });
+      } catch (err) {
+        if (err instanceof LedgerConflictError) {
+          if (err.reason === 'duplicate') {
+            const again = await replay();
+            if (again) return again;
+          }
+          if (err.reason === 'counter' && attempt < MAX_ATTEMPTS) continue;
+          // closed: kapali cari; precondition: banka satiri baska istekle degismis. Cagiran ele alir.
+          if (err.reason === 'closed' || err.reason === 'precondition') throw err;
+        }
+        throw mapConflict(err);
+      }
+      return { payments, transactions, allocations, replayed: false };
+    }
+  }
+
+  /**
+   * Banka eslestirmesinin islemlerini TEK atomik yazimla ters kayitla iptal eder. Her islem icin
+   * `REV_<islem>` idempotency kaydi da yazilir: makbuz "iptal" olarak uretilir ve ayni islem elle
+   * ikinci kez ters cevrilemez.
+   */
+  async function reverseBankPayments(ctx: FinanceContext, p: BankReversalInput) {
+    assertId(p.idempotencyId, 'idempotencyId');
+    const reason = p.reason.trim();
+    if (reason.length < 3 || reason.length > 300) throw new ValidationError('reason 3-300 karakter olmali', 'reason');
+    if (p.transactionIds.length < 1 || p.transactionIds.length > 11) throw new ValidationError('transactionIds 1-11 islem icermeli', 'transactionIds');
+    const date = today();
+    const fp = fingerprint({ op: 'bank_reversal', transactionIds: p.transactionIds, reason });
+    const replay = async () => {
+      const existing = await repo.getIdempotency(ctx.apartmentId, p.idempotencyId);
+      if (!existing) return undefined;
+      if (existing.fingerprint !== fp) throw new FinanceError('idempotency_conflict', 'Bu geri alma farkli bir istekle kaydedilmis');
+      const reversals = (
+        await Promise.all((existing.transactionIds ?? [existing.transactionId]).map((id) => repo.getTransaction(ctx.apartmentId, id)))
+      ).filter((x): x is Transaction => !!x);
+      return { reversals, replayed: true };
+    };
+    const previous = await replay();
+    if (previous) return previous;
+
+    const originals = await Promise.all(p.transactionIds.map((id) => loadTx(ctx, id)));
+    for (const original of originals) {
+      if (original.kind !== 'payment' && original.kind !== 'late_fee') {
+        throw new FinanceError('unprocessable', `Yalnizca tahsilat ve tazminat islemleri geri alinabilir: ${original.transactionId}`);
+      }
+      if (await repo.getIdempotency(ctx.apartmentId, `REV_${original.transactionId}`)) {
+        throw new FinanceError('conflict', `Bu islem zaten ters kayitla duzeltilmis: ${original.transactionId}`);
+      }
+      for (const accountId of new Set(original.lines.filter((l) => l.unitId && l.liableParty).map((l) => l.accountId))) {
+        const acc = await repo.getAccount(ctx.apartmentId, accountId);
+        if (acc?.closedThrough && original.date <= acc.closedThrough) {
+          throw new FinanceError(
+            'unprocessable',
+            `Bu tahsilat tasinma kapamasiyla ${acc.closedThrough} tarihinde kapatilan doneme ait; duzeltmeyi borcun devredildigi caride yapin`,
+          );
+        }
+      }
+    }
+    const reversals = originals.map((original) =>
+      buildTx(ctx, {
+        kind: 'reversal',
+        date,
+        description: `Ters kayit: ${original.description}`,
+        reversalOf: original.transactionId,
+        reason,
+        lines: original.lines.map((l) => ({ ...l, side: l.side === 'debit' ? 'credit' : 'debit' })),
+      }),
+    );
+    const revMarkers = originals.map((original, i) => ({
+      ...financeKeys.idempotency(ctx.apartmentId, `REV_${original.transactionId}`),
+      entityType: 'IDEMPOTENCY',
+      transactionId: (reversals[i] as Transaction).transactionId,
+      fingerprint: fingerprint({ op: 'reversal', transactionId: original.transactionId, reason, date }),
+      createdAt: stamp(),
+    }));
+    const docs = p.documents({ reversals });
+    try {
+      await repo.postBatch({
+        transactions: reversals,
+        idempotency: { id: p.idempotencyId, fingerprint: fp, transactionIds: reversals.map((t) => t.transactionId) },
+        newDocs: [...revMarkers, ...(docs.newDocs ?? [])],
+        ...(docs.replaceRecords?.length ? { replaceRecords: docs.replaceRecords } : {}),
+        ...(docs.audit ? { audit: docs.audit } : {}),
+      });
+    } catch (err) {
+      if (err instanceof LedgerConflictError) {
+        if (err.reason === 'duplicate') {
+          const again = await replay();
+          if (again) return again;
+        }
+        if (err.reason === 'closed' || err.reason === 'precondition') throw err;
+      }
+      throw mapConflict(err);
+    }
+    return { reversals, replayed: false };
+  }
+
   return {
     duesStatus,
     formerAccounts,
@@ -1761,6 +2058,9 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
     previewBulk,
     recordPayment,
     recordOnlinePayment,
+    /** Faz B2: banka satiri eslestirme ve geri alma. */
+    recordBankPayment,
+    reverseBankPayments,
     recordExpense,
     reverseTransaction,
     getUnitBalance,

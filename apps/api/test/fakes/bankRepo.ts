@@ -2,11 +2,26 @@ import { DataAccessError } from '../../src/config/dynamodb.js';
 import type { AuditDraft } from '../../src/modules/audit/log.js';
 import { STATEMENT_PREFIX, linePrefix } from '../../src/modules/finance/bank/keys.js';
 import { type BankRepository, decodeCursor, encodeCursor } from '../../src/modules/finance/bank/repository.js';
-import type { BankFileLock, BankFormat, BankLine, BankStatement } from '../../src/modules/finance/bank/types.js';
+import type {
+  BankAccountProfile,
+  BankDecision,
+  BankFileLock,
+  BankFormat,
+  BankLine,
+  BankPayer,
+  BankRef,
+  BankRefOf,
+  BankStatement,
+} from '../../src/modules/finance/bank/types.js';
+import { parseLineId } from '../../src/modules/finance/bank/keys.js';
 
-/** Bellek ici banka deposu: kosullu yazim ve surum kurallari gercek depoyla ayni. */
-export function createFakeBankRepo() {
-  const items = new Map<string, Record<string, unknown>>();
+/**
+ * Bellek ici banka deposu: kosullu yazim ve surum kurallari gercek depoyla ayni.
+ * `shared`: sahte finans deposunun belge haritasi (`fin.docs`). Verilirse eslestirme yazimlari
+ * (postBatch newDocs/replaceRecords) ile banka kayitlari ayni haritada durur (gercekte tek tablo).
+ */
+export function createFakeBankRepo(shared?: Map<string, Record<string, unknown>>) {
+  const items = shared ?? new Map<string, Record<string, unknown>>();
   const audits: AuditDraft[] = [];
   const k = (pk: string, sk: string) => `${pk}|${sk}`;
   const clone = <T>(v: T): T => structuredClone(v);
@@ -88,8 +103,63 @@ export function createFakeBankRepo() {
       items.set(k(format.PK, format.SK), clone(format));
       audits.push(audit);
     },
+
+    // ----- Faz B2 -----
+    async getLine(apt, acct, lineId) {
+      const p = parseLineId(lineId);
+      if (!p) return undefined;
+      const v = items.get(k(pkOf(apt), `BANKTX#${acct}#${p.date}#${p.fp}`));
+      return v ? (clone(v) as BankLine) : undefined;
+    },
+    async listDecisions(apt, lineId) {
+      return byPrefix<BankDecision>(pkOf(apt), `BANKMATCH#${lineId}#`).map(clone);
+    },
+    async writeDecision(line, expectedVersion, decision, audit) {
+      const cur = items.get(k(line.PK, line.SK));
+      if (items.has(k(decision.PK, decision.SK)) || !cur || cur.version !== expectedVersion) throw new DataAccessError('conflict', 'surum');
+      items.set(k(decision.PK, decision.SK), clone(decision));
+      items.set(k(line.PK, line.SK), clone(line));
+      audits.push(audit);
+    },
+    async getPayer(apt, mac) {
+      const v = items.get(k(pkOf(apt), `PAYER#${mac}`));
+      return v ? (clone(v) as BankPayer) : undefined;
+    },
+    async listRefs(apt) {
+      return byPrefix<BankRef>(pkOf(apt), 'BANKREF#').filter((r) => r.entityType === 'BANK_REF').map(clone);
+    },
+    async getRefOf(apt, accountId) {
+      const v = items.get(k(pkOf(apt), `BANKREFOF#${accountId}`));
+      return v ? (clone(v) as BankRefOf) : undefined;
+    },
+    async createRef(ref, refOf) {
+      if (items.has(k(refOf.PK, refOf.SK))) return 'account_has_code';
+      if (items.has(k(ref.PK, ref.SK))) return 'code_taken';
+      items.set(k(ref.PK, ref.SK), clone(ref));
+      items.set(k(refOf.PK, refOf.SK), clone(refOf));
+      return 'created';
+    },
+    async getProfile(apt, acct) {
+      const v = items.get(k(pkOf(apt), `BANKPROFILE#${acct}`));
+      return v ? (clone(v) as BankAccountProfile) : undefined;
+    },
+    async listProfiles(apt) {
+      return byPrefix<BankAccountProfile>(pkOf(apt), 'BANKPROFILE#').map(clone);
+    },
+    async saveProfile(profile, expectedVersion, others, audit) {
+      const cur = items.get(k(profile.PK, profile.SK));
+      if (expectedVersion === undefined ? Boolean(cur) : !cur || cur.version !== expectedVersion) throw new DataAccessError('conflict', 'surum');
+      for (const o of others) {
+        const c = items.get(k(o.item.PK, o.item.SK));
+        if (!c || c.version !== o.expectedVersion) throw new DataAccessError('conflict', 'surum');
+      }
+      items.set(k(profile.PK, profile.SK), clone(profile));
+      for (const o of others) items.set(k(o.item.PK, o.item.SK), clone(o.item));
+      audits.push(audit);
+    },
   };
 
   const lines = (apt: string) => byPrefix<BankLine>(pkOf(apt), 'BANKTX#');
-  return { repo, items, audits, lines };
+  const decisions = (apt: string) => byPrefix<BankDecision>(pkOf(apt), 'BANKMATCH#');
+  return { repo, items, audits, lines, decisions };
 }

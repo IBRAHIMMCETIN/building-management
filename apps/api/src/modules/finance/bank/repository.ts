@@ -4,8 +4,19 @@ import { DataAccessError, getDynamo, getTenantItem, queryTenantAll, tenantPk, to
 import { type AuditDraft, auditedPutNew, auditedPutVersioned, sendWithAudit } from '../../audit/log.js';
 import type { IsoDate } from '../../core/types.js';
 import { BankError } from './errors.js';
-import { STATEMENT_PREFIX, bankKeys, linePrefix } from './keys.js';
-import type { BankFileLock, BankFormat, BankLine, BankStatement, LineStatus } from './types.js';
+import { PROFILE_PREFIX, REF_PREFIX, STATEMENT_PREFIX, bankKeys, decisionPrefix, linePrefix, parseLineId } from './keys.js';
+import type {
+  BankAccountProfile,
+  BankDecision,
+  BankFileLock,
+  BankFormat,
+  BankLine,
+  BankPayer,
+  BankRef,
+  BankRefOf,
+  BankStatement,
+  LineStatus,
+} from './types.js';
 
 export type LineQuery = {
   bankAccountId: string;
@@ -37,6 +48,33 @@ export type BankRepository = {
   getFormat(apartmentId: string, bankAccountId: string): Promise<BankFormat | undefined>;
   /** `expectedVersion` yoksa yeni kayit (varsa conflict), varsa surum kosullu. Denetlenir. */
   saveFormat(format: BankFormat, expectedVersion: number | undefined, audit: AuditDraft): Promise<void>;
+
+  // ----- Faz B2 -----
+  getLine(apartmentId: string, bankAccountId: string, lineId: string): Promise<BankLine | undefined>;
+  /** Satirin karar gecmisi (eskiden yeniye). */
+  listDecisions(apartmentId: string, lineId: string): Promise<BankDecision[]>;
+  /**
+   * Defter kaydi olmayan karar (yoksayma / yeniden acma): karar kaydi (yalnizca yoksa) + satirin
+   * surum kosullu durum gecisi + denetim kaydi TEK atomik yazim. Surum degismisse `conflict`.
+   */
+  writeDecision(line: BankLine, expectedVersion: number, decision: BankDecision, audit: AuditDraft): Promise<void>;
+  getPayer(apartmentId: string, ibanMac: string): Promise<BankPayer | undefined>;
+  listRefs(apartmentId: string): Promise<BankRef[]>;
+  getRefOf(apartmentId: string, accountId: string): Promise<BankRefOf | undefined>;
+  /** Kod + ters esleme, yalnizca ikisi de yoksa (atomik). Kod baskasina aitse 'code_taken'. */
+  createRef(ref: BankRef, refOf: BankRefOf): Promise<'created' | 'code_taken' | 'account_has_code'>;
+  getProfile(apartmentId: string, bankAccountId: string): Promise<BankAccountProfile | undefined>;
+  listProfiles(apartmentId: string): Promise<BankAccountProfile[]>;
+  /**
+   * Profil kaydi (yeni: yalnizca yoksa; guncelleme: surum kosullu). `others`: sakine gosterilen
+   * hesap tek olsun diye ayni yazimda `residentVisible = false` yapilan diger profiller.
+   */
+  saveProfile(
+    profile: BankAccountProfile,
+    expectedVersion: number | undefined,
+    others: { item: BankAccountProfile; expectedVersion: number }[],
+    audit: AuditDraft,
+  ): Promise<void>;
 };
 
 const LINE_CHUNK = 25;
@@ -230,4 +268,98 @@ export const bankRepository: BankRepository = {
 
   saveFormat: (format, expectedVersion, audit) =>
     expectedVersion === undefined ? auditedPutNew(format, audit) : auditedPutVersioned(format, expectedVersion, audit),
+  // ----- Faz B2 -----
+
+  async getLine(apt, bankAccountId, lineId) {
+    const parsed = parseLineId(lineId);
+    if (!parsed) return undefined;
+    return getTenantItem<BankLine>(bankKeys.line(apt, bankAccountId, parsed.date, parsed.fp));
+  },
+
+  listDecisions: (apt, lineId) => queryTenantAll<BankDecision>(apt, decisionPrefix(lineId), { ConsistentRead: true }),
+
+  async writeDecision(line, expectedVersion, decision, audit) {
+    const { client, tableName } = getDynamo();
+    try {
+      await sendWithAudit(
+        client,
+        [
+          { Put: { TableName: tableName, Item: decision, ConditionExpression: 'attribute_not_exists(PK)' } },
+          {
+            Put: {
+              TableName: tableName,
+              Item: line,
+              ConditionExpression: 'attribute_exists(PK) AND #version = :v',
+              ExpressionAttributeNames: { '#version': 'version' },
+              ExpressionAttributeValues: { ':v': expectedVersion },
+            },
+          },
+        ],
+        audit,
+      );
+    } catch (err) {
+      if (conditionFailed(err)) throw new DataAccessError('conflict', 'Banka satiri baska bir istekle degismis', { cause: err });
+      throw toDataAccessError(err);
+    }
+  },
+
+  getPayer: (apt, mac) => getTenantItem<BankPayer>(bankKeys.payer(apt, mac)),
+
+  listRefs: (apt) => queryTenantAll<BankRef>(apt, REF_PREFIX, { ConsistentRead: true }).then((items) => items.filter((i) => i.entityType === 'BANK_REF')),
+
+  getRefOf: (apt, accountId) => getTenantItem<BankRefOf>(bankKeys.refOf(apt, accountId)),
+
+  async createRef(ref, refOf) {
+    const { client, tableName } = getDynamo();
+    try {
+      await client.send(
+        new TransactWriteCommand({
+          TransactItems: [
+            { Put: { TableName: tableName, Item: ref, ConditionExpression: 'attribute_not_exists(PK)' } },
+            { Put: { TableName: tableName, Item: refOf, ConditionExpression: 'attribute_not_exists(PK)' } },
+          ],
+        }),
+      );
+      return 'created';
+    } catch (err) {
+      if (err instanceof TransactionCanceledException) {
+        const reasons = err.CancellationReasons ?? [];
+        if (reasons[1]?.Code === 'ConditionalCheckFailed') return 'account_has_code';
+        if (reasons[0]?.Code === 'ConditionalCheckFailed') return 'code_taken';
+      }
+      throw toDataAccessError(err);
+    }
+  },
+
+  getProfile: (apt, acct) => getTenantItem<BankAccountProfile>(bankKeys.profile(apt, acct)),
+
+  listProfiles: (apt) => queryTenantAll<BankAccountProfile>(apt, PROFILE_PREFIX, { ConsistentRead: true }),
+
+  async saveProfile(profile, expectedVersion, others, audit) {
+    const { client, tableName } = getDynamo();
+    const versioned = (Item: BankAccountProfile, v: number) => ({
+      Put: {
+        TableName: tableName,
+        Item,
+        ConditionExpression: 'attribute_exists(PK) AND #version = :v',
+        ExpressionAttributeNames: { '#version': 'version' },
+        ExpressionAttributeValues: { ':v': v },
+      },
+    });
+    try {
+      await sendWithAudit(
+        client,
+        [
+          expectedVersion === undefined
+            ? { Put: { TableName: tableName, Item: profile, ConditionExpression: 'attribute_not_exists(PK)' } }
+            : versioned(profile, expectedVersion),
+          ...others.map((o) => versioned(o.item, o.expectedVersion)),
+        ],
+        audit,
+      );
+    } catch (err) {
+      if (conditionFailed(err)) throw new DataAccessError('conflict', 'Hesap profili baska bir istekle degismis', { cause: err });
+      throw toDataAccessError(err);
+    }
+  },
 };
