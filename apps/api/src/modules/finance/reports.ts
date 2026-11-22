@@ -203,7 +203,7 @@ export function buildDuesStatus(
         });
       }
       const list = linesByAccount.get(line.accountId) ?? [];
-      list.push({ transaction: tx, side: line.side, amount: line.amount, date: tx.date });
+      list.push({ transaction: tx, side: line.side, amount: line.amount, date: tx.date, ...(line.settles ? { settles: line.settles } : {}) });
       linesByAccount.set(line.accountId, list);
     }
   }
@@ -237,7 +237,8 @@ export function buildDuesStatus(
     const { open } = allocate(sub, today);
     const overdueOpen = open.filter((c) => c.overdue);
     const dues: PartyDues = {
-      charged: sub.charges.reduce((s, c) => s + c.amount, 0),
+      // Finans 2.2: yapilandirma kalemleri (taksitler) asil kalemlerin yerini alir; iki kez sayilmaz.
+      charged: sub.charges.filter((c) => c.txKind !== 'restructure').reduce((s, c) => s + c.amount, 0),
       paid: sub.credits.reduce((s, c) => s + c.amount, 0),
       balance: sub.balance,
       overdue: overdueOpen.reduce((s, c) => s + c.remaining, 0),
@@ -474,7 +475,8 @@ export function buildDueReminders(
         acc = { accountId: line.accountId, unitId: line.unitId, party: line.liableParty, lines: [] };
         perAccount.set(line.accountId, acc);
       }
-      acc.lines.push({ transaction: tx, side: line.side, amount: line.amount, date: tx.date });
+      // Finans 2.2: hedefli kapama (yapilandirma / mahsup) satirla birlikte tasinir.
+      acc.lines.push({ transaction: tx, side: line.side, amount: line.amount, date: tx.date, ...(line.settles ? { settles: line.settles } : {}) });
     }
   }
 

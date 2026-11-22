@@ -522,8 +522,8 @@ export function createPortalService(overrides: Partial<PortalServiceDeps> = {}) 
         const tx = txById.get(e.transactionId);
         const kind = tx?.kind;
         if (e.side === 'debit' && (kind === 'dues_charge' || kind === 'late_fee' || kind === 'opening_balance' || (kind === 'transfer' && tx?.transfer?.role === 'open'))) totalCharged += e.amount;
-        // Devir avansi (eski sistemde yapilmis odeme) de odenen toplamina girer.
-        if (e.side === 'credit' && (kind === 'payment' || kind === 'opening_balance')) totalPaid += e.amount;
+        // Devir avansi (eski sistemde yapilmis odeme) ve (Finans 2.2) avans mahsubu da odenen toplamina girer.
+        if (e.side === 'credit' && (kind === 'payment' || kind === 'opening_balance' || kind === 'offset')) totalPaid += e.amount;
       }
       if (lateFeeRate > 0) {
         accruedLateFee += unpostedLateFee(feeInputsOf(readSubledger(linesFromEntries(entries, txById), cancelled)), lateFeeRate, day);

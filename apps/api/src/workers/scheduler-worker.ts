@@ -8,6 +8,7 @@ import { type MetricsEmitter, createEmfEmitterFromEnv } from '../observability/m
 import { type CoreRepository, coreRepository } from '../modules/core/repository.js';
 import { type IsoDate, toKurus } from '../modules/core/types.js';
 import { previousPeriod } from '../modules/finance/lateFee.js';
+import { type PlanService, createPlanService } from '../modules/finance/plans.js';
 import { type FinanceService, DEFAULT_LATE_FEE_BASIS_POINTS, SYSTEM_ACTOR, createFinanceService } from '../modules/finance/service.js';
 import { membershipRepository } from '../modules/memberships/repository.js';
 import { loadPaymentsConfig } from '../modules/payments/config.js';
@@ -45,6 +46,9 @@ import type { SqsBatchResponse, SqsEvent } from './notification-worker.js';
  *                  esler -> RETURNED + kritik alarm (apartman dongusu yok; tek tur).
  *   platform_invoices ayin 1'i 04:10 (P4): onceki donemin platform komisyon faturasi taslaklarini
  *                  (aylik veya odeme bazli) uretir; kesilmis taslaklara dokunmaz.
+ *   installment_plans her gun 09:30 (Finans 2.2): aktif taksit planlarinda temerrut (muacceliyet)
+ *                  taramasi; yeni temerrutte sakine DUES_REMINDER `plan_default` (outbox) ve plan
+ *                  `autoAccelerate` ise muaccel kilma, degilse yonetici onayi icin isaretleme.
  *   outbox_sweep   5 dakikada bir: esikten (varsayilan 2 dk) eski, hala bekleyen outbox
  *                  kayitlarini relay cekirdegiyle yeniden yayinlar (apartman dongusu yok; tek tur).
  *   ledger_audit   her gece 03:40: apartman basina SALT OKUNUR defter denetimi; sapma ->
@@ -71,6 +75,7 @@ export const JOBS = [
   'ledger_audit',
   'payout_returns',
   'platform_invoices',
+  'installment_plans',
 ] as const;
 export type Job = (typeof JOBS)[number];
 
@@ -117,6 +122,8 @@ export type SiteOutcome =
 export type SchedulerDeps = {
   core: Pick<CoreRepository, 'listSiteIds' | 'getSite'>;
   finance: Pick<FinanceService, 'autoChargeDues' | 'postLateFees' | 'dueReminders'>;
+  /** Finans 2.2: taksit plani temerrut taramasi (verilmezse ilk kullanimda kurulur). */
+  plans: Pick<PlanService, 'checkDefaults'>;
   /** null: online odeme kapali. Verilmezse ortam degiskenlerinden kurulur (ilk kullanimda). */
   payments: Pick<PaymentsService, 'reconcile' | 'reconcileRefunds'> | null;
   /** P4: platform transferi izleme (null: online odeme kapali). */
@@ -141,6 +148,7 @@ export function createSchedulerWorker(overrides: Partial<SchedulerDeps> = {}) {
   const lazy: {
     events?: EventPublisher;
     finance?: SchedulerDeps['finance'];
+    plans?: SchedulerDeps['plans'];
     payments?: SchedulerDeps['payments'];
     payouts?: SchedulerDeps['payouts'];
     invoices?: SchedulerDeps['invoices'];
@@ -150,6 +158,10 @@ export function createSchedulerWorker(overrides: Partial<SchedulerDeps> = {}) {
   const events = () => (lazy.events ??= overrides.events ?? createEventPublisherFromEnv());
   const finance = () =>
     (lazy.finance ??= overrides.finance ?? createFinanceService({ now, memberships: membershipRepository, ownership: createOwnershipReader() }));
+  const plans = () =>
+    (lazy.plans ??=
+      overrides.plans ??
+      createPlanService({ finance: createFinanceService({ now, memberships: membershipRepository, ownership: createOwnershipReader() }), now }));
   /** Odeme servisleri tek yapilandirmadan, ilk kullanimda kurulur. */
   function paymentServices() {
     if (lazy.payments !== undefined && lazy.payouts !== undefined && lazy.invoices !== undefined) return;
@@ -349,6 +361,12 @@ export function createSchedulerWorker(overrides: Partial<SchedulerDeps> = {}) {
         if (!service) return { apartmentId, status: 'skipped', reason: 'payments_disabled' };
         const r = await service.draftPeriod(apartmentId, previousInvoicePeriod(day));
         return { apartmentId, status: 'done', detail: r };
+      }
+
+      case 'installment_plans': {
+        // DUES_REMINDER `plan_default` olaylari plan yazimiyla ayni atomik islemde outbox'a girer.
+        const r = await plans().checkDefaults(apartmentId, day);
+        return { apartmentId, status: 'done', detail: { date: day, ...r } };
       }
 
       // Apartman dongusu disinda islenir (runJob); ledger_audit yukarida ayrilir.

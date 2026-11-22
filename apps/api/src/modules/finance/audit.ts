@@ -4,6 +4,7 @@ import type { PaymentIntent } from '../payments/types.js';
 import { type AccountRecon, reconcileAccount } from './bank/reconciliation.js';
 import type { BankDecision, BankLine, BankStatement } from './bank/types.js';
 import type { CariClosure } from './closures.js';
+import { cancelledIn, linesOfAccount, readSubledger } from './subledger.js';
 import { financeKeys } from './repository.js';
 import type { Account, LedgerEntry, Payment, Transaction } from './types.js';
 
@@ -55,6 +56,8 @@ export const AUDIT_CODES = [
   'receipt_counter_behind',
   'online_payment_unposted',
   'bank_match_mismatch',
+  /** Finans 2.2: hedefli mahsup (settles) satirin tutarini asiyor ya da ayni caride olmayan/iptal edilmis kaleme isaret ediyor. */
+  'settlement_invalid',
 ] as const;
 export type AuditCode = (typeof AUDIT_CODES)[number];
 
@@ -126,6 +129,57 @@ export function checkTransactions(s: Pick<AuditSnapshot, 'transactions' | 'entri
     if (want.length !== have.length || want.some((w, i) => w !== have[i])) {
       out.push({ code: 'tx_entries_mismatch', transactionId: tx.transactionId, expected: want.length, actual: have.length });
     }
+  }
+  return out;
+}
+
+/**
+ * Finans 2.2: hedefli mahsup tutarliligi. Canli (iptal edilmemis) bir alacak satirindaki `settles`
+ * toplami satir tutarini asamaz; her hedef kalem ayni caride canli bir borc kalemi olmali ve bir
+ * kaleme yapilan hedefli kapamalarin toplami kalem tutarini asmamalidir.
+ */
+export function checkSettlements(s: Pick<AuditSnapshot, 'transactions'>): AuditFinding[] {
+  const out: AuditFinding[] = [];
+  const cancelled = cancelledIn(s.transactions);
+  const subs = new Map<string, { cutoff?: string; charges: Map<string, number> }>();
+  const subOf = (accountId: string) => {
+    let m = subs.get(accountId);
+    if (!m) {
+      const sub = readSubledger(linesOfAccount(accountId, s.transactions), cancelled);
+      m = { ...(sub.cutoff ? { cutoff: sub.cutoff } : {}), charges: new Map(sub.charges.map((c) => [c.id, c.amount])) };
+      subs.set(accountId, m);
+    }
+    return m;
+  };
+  const chargesOf = (accountId: string) => subOf(accountId).charges;
+  const settledTotals = new Map<string, number>();
+  for (const tx of s.transactions) {
+    if (cancelled.has(tx.transactionId)) continue;
+    for (const l of tx.lines) {
+      if (!l.settles?.length) continue;
+      const sum = l.settles.reduce((a, st) => a + st.amount, 0);
+      if (l.side !== 'credit' || sum > l.amount || l.settles.some((st) => !Number.isInteger(st.amount) || st.amount <= 0)) {
+        out.push({ code: 'settlement_invalid', transactionId: tx.transactionId, accountId: l.accountId, expected: l.amount, actual: sum, detail: 'settles_exceeds_line' });
+        continue;
+      }
+      // Cari kapamayla devredilmis donem (kesim oncesi) bu hesapta artik hesaba katilmaz.
+      const cut = subOf(l.accountId).cutoff;
+      if (cut && tx.date <= cut) continue;
+      const charges = chargesOf(l.accountId);
+      for (const st of l.settles) {
+        if (!charges.has(st.chargeId)) {
+          out.push({ code: 'settlement_invalid', transactionId: tx.transactionId, accountId: l.accountId, detail: `unknown_charge:${st.chargeId}` });
+          continue;
+        }
+        const k = `${l.accountId}|${st.chargeId}`;
+        settledTotals.set(k, (settledTotals.get(k) ?? 0) + st.amount);
+      }
+    }
+  }
+  for (const [k, total] of settledTotals) {
+    const [accountId, chargeId] = k.split('|') as [string, string];
+    const amount = chargesOf(accountId).get(chargeId) ?? 0;
+    if (total > amount) out.push({ code: 'settlement_invalid', accountId, expected: amount, actual: total, detail: `over_settled:${chargeId}` });
   }
   return out;
 }
@@ -481,6 +535,7 @@ export function createLedgerAuditor(source: AuditSource) {
 
     findings.push(...checkReceipts(s));
     findings.push(...checkOnlinePayments(s));
+    findings.push(...checkSettlements(s));
 
     // Faz B2: banka eslestirmeleri. Satir okuma sirasinda degistiyse (es zamanli eslestirme / geri
     // alma) bulgu raporlanmaz, kararsiz sayilir.

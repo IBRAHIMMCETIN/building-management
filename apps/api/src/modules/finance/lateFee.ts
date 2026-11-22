@@ -25,12 +25,27 @@ import type { Transaction } from './types.js';
  * `accrueFrom`: tazminatin baslayacagi gun (dahil degil; vadeyle ayni anlam). Cari devrinde
  * hedefteki anapara icin devir tarihidir: o gune kadarki tazminat kaynakta kesinlestirildi.
  */
-export type FeeCharge = { id: string; dueDate: IsoDate; amount: number; accrueFrom?: IsoDate };
+export type FeeCharge = {
+  id: string;
+  dueDate: IsoDate;
+  amount: number;
+  accrueFrom?: IsoDate;
+  /**
+   * Finans 2.2: tazminat tabani (yapilandirma kalemi; yoksa tutarin tamami). Kalem tutari
+   * `amount`; odemeler once anapara payini (`feeBase`) kapatir, tazminat yalnizca kalan anapara
+   * payina isler (taksitlendirilen tazminata tazminat islemez).
+   */
+  feeBase?: number;
+};
 export type FeeCredit = { date: IsoDate; amount: number };
+/** Finans 2.2: kaleme bagli (hedefli) kapama; havuza girmez, o kalemi o gun kapatir. */
+export type FeeSettlement = { chargeId: string; date: IsoDate; amount: number };
 
 export type LateFeeInput = {
   charges: readonly FeeCharge[];
   credits: readonly FeeCredit[];
+  /** Finans 2.2: hedefli kapamalar (yoksa davranis oncekiyle birebir ayni). */
+  settlements?: readonly FeeSettlement[];
   /** Aylik oran, baz puan (500 = %5). */
   monthlyBasisPoints: number;
   /** Hesap gunu (dahil): bu gune kadar islemis tazminat. */
@@ -59,44 +74,68 @@ function roundHalfUp(n: bigint, d: bigint): bigint {
   return (n * 2n + d) / (d * 2n);
 }
 
-export function computeLateFee({ charges, credits, monthlyBasisPoints, asOf }: LateFeeInput): LateFeeResult {
+export function computeLateFee({ charges, credits, settlements = [], monthlyBasisPoints, asOf }: LateFeeInput): LateFeeResult {
   if (!Number.isInteger(monthlyBasisPoints) || monthlyBasisPoints < 0) throw new Error('Gecersiz oran');
   const end = dayNumber(asOf);
-
   const open = [...charges]
     .filter((c) => c.amount > 0)
     .sort((a, b) => a.dueDate.localeCompare(b.dueDate) || a.id.localeCompare(b.id))
     .map((c) => {
       const due = dayNumber(c.dueDate);
+      const feeBase = Math.min(c.feeBase ?? c.amount, c.amount);
       // Tazminat vadeden (veya devir tarihinden, hangisi sonraysa) sonraki gunden itibaren isler.
-      return { due, start: c.accrueFrom ? Math.max(due, dayNumber(c.accrueFrom)) : due, remaining: c.amount };
+      return {
+        id: c.id,
+        due,
+        start: c.accrueFrom ? Math.max(due, dayNumber(c.accrueFrom)) : due,
+        remaining: c.amount,
+        // Odemeler once anapara payini kapatir: kalan tazminat tabani.
+        bearing: feeBase,
+      };
     });
+  const byId = new Map(open.map((c) => [c.id, c]));
 
   let principalDays = 0n;
   const accrue = (amount: number, start: number, closedOn: number) => {
     const days = Math.min(closedOn, end) - start;
     if (days > 0 && amount > 0) principalDays += BigInt(amount) * BigInt(days);
   };
+  /** Kaleme `amount` uygulanir; tazminat tabanindan dusen kisim o gune kadar tazminat dogurur. */
+  const apply = (c: (typeof open)[number], amount: number, day: number) => {
+    const applied = Math.min(amount, c.remaining);
+    const fromBearing = Math.min(applied, c.bearing);
+    accrue(fromBearing, c.start, day);
+    c.bearing -= fromBearing;
+    c.remaining -= applied;
+    return applied;
+  };
 
-  // Tahsilatlar tarih sirasiyla, en eski vadeden baslayarak anaparaya mahsup edilir.
-  const sortedCredits = [...credits].filter((c) => c.amount > 0).sort((a, b) => a.date.localeCompare(b.date));
-  let i = 0;
-  for (const credit of sortedCredits) {
-    let left = credit.amount;
-    const paidOn = dayNumber(credit.date);
-    while (left > 0 && i < open.length) {
-      const c = open[i] as (typeof open)[number];
-      const applied = Math.min(left, c.remaining);
-      accrue(applied, c.start, paidOn);
-      c.remaining -= applied;
-      left -= applied;
-      if (c.remaining === 0) i++;
+  // Olaylar tarih sirasiyla: ayni gunde once hedefli kapamalar, sonra havuz (FIFO).
+  type Ev = { day: number; order: number; amount: number; chargeId?: string };
+  const events: Ev[] = [
+    ...settlements.filter((st) => st.amount > 0).map((st) => ({ day: dayNumber(st.date), order: 0, amount: st.amount, chargeId: st.chargeId })),
+    ...credits.filter((c) => c.amount > 0).map((c) => ({ day: dayNumber(c.date), order: 1, amount: c.amount })),
+  ].sort((a, b) => a.day - b.day || a.order - b.order);
+
+  for (const ev of events) {
+    if (ev.chargeId !== undefined) {
+      const c = byId.get(ev.chargeId);
+      if (c) apply(c, ev.amount, ev.day);
+      continue;
+    }
+    // Havuz: en eski vadeli acik anaparadan baslayarak.
+    let left = ev.amount;
+    for (const c of open) {
+      if (left <= 0) break;
+      if (c.remaining <= 0) continue;
+      left -= apply(c, left, ev.day);
     }
   }
 
   let overduePrincipal = 0;
-  for (const c of open.slice(i)) {
-    accrue(c.remaining, c.start, end);
+  for (const c of open) {
+    if (c.remaining <= 0) continue;
+    accrue(c.bearing, c.start, end);
     if (c.due < end) overduePrincipal += c.remaining;
   }
 
@@ -111,6 +150,8 @@ export function computeLateFee({ charges, credits, monthlyBasisPoints, asOf }: L
 export type AccountFeeLedger = {
   charges: FeeCharge[];
   credits: FeeCredit[];
+  /** Finans 2.2: hedefli kapamalar. */
+  settlements?: FeeSettlement[];
   /** Deftere yazilmis (iptal edilmemis) gecikme tazminati toplami. */
   postedFees: number;
 };
@@ -133,7 +174,7 @@ export function feeLedgerFor(
 
 /** `asOf` itibariyla henuz deftere yazilmamis tazminat (negatif fark 0 sayilir). */
 export function unpostedLateFee(ledger: AccountFeeLedger, monthlyBasisPoints: number, asOf: IsoDate): number {
-  const { fee } = computeLateFee({ charges: ledger.charges, credits: ledger.credits, monthlyBasisPoints, asOf });
+  const { fee } = computeLateFee({ charges: ledger.charges, credits: ledger.credits, settlements: ledger.settlements ?? [], monthlyBasisPoints, asOf });
   return Math.max(fee - ledger.postedFees, 0);
 }
 

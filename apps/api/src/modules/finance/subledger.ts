@@ -15,12 +15,25 @@
  *  - Alacak satirlari (tahsilat vb.) havuzdur; mahsup FIFO: once anapara (vade sirasiyla), en
  *    son tazminat kalemleri (karar 2a).
  *
+ *  - Finans 2.2 hedefli mahsup: alacak satirindaki `settles` kismi havuza girmez, gosterilen
+ *    kalemleri dogrudan kapatir (once uygulanir); kalan kisim havuzdur. Hedefli kapama olmayan
+ *    defterlerde sonuc oncekiyle birebir aynidir.
+ *  - Finans 2.2 yapilandirma kalemleri (`restructure` + `plan.items`): taksit / birlestirilmis
+ *    kalem; tazminat tabani yalnizca `feeBase` (anapara payi), odemeler once anapara payini kapatir.
+ *
  * Saf fonksiyonlar; I/O yok.
  */
 import type { IsoDate, Kurus } from '../core/types.js';
 import type { EntrySide, LedgerEntry, Transaction, TransactionKind } from './types.js';
 
-export type AccountLine = { transaction: Transaction; side: EntrySide; amount: number; date: IsoDate };
+export type AccountLine = {
+  transaction: Transaction;
+  side: EntrySide;
+  amount: number;
+  date: IsoDate;
+  /** Finans 2.2: hedefli mahsup (yalnizca alacak satiri). */
+  settles?: readonly { chargeId: string; amount: number }[];
+};
 
 export type SubCharge = {
   /** Islem kimligi; devir kaleminde `<islem>_<sira>`. Odeme kalem secimi bu kimlikle yapilir. */
@@ -37,15 +50,24 @@ export type SubCharge = {
   /** Tazminatin baslangici (devredilmis anaparada devir tarihi). */
   accrueFrom?: IsoDate;
   amount: number;
+  /** Finans 2.2: tazminat tabani (yapilandirma kalemi; yoksa tutarin tamami). */
+  feeBase?: number;
+  /** Finans 2.2: yapilandirma kalemi ise plan kimligi ve taksit sirasi. */
+  plan?: { planId: string; no: number };
 };
 
 export type SubCredit = { transactionId: string; txKind: TransactionKind; date: IsoDate; amount: number };
+/** Finans 2.2: hedefli kapama (havuz disi). */
+export type SubSettlement = { transactionId: string; txKind: TransactionKind; date: IsoDate; chargeId: string; amount: number };
 
 export type Subledger = {
   /** Son cari kapama kesim tarihi (varsa); bu tarih ve oncesi dikkate alinmadi. */
   cutoff?: IsoDate;
   charges: SubCharge[];
+  /** Havuz (FIFO) alacaklari. */
   credits: SubCredit[];
+  /** Finans 2.2: kaleme bagli (hedefli) kapamalar. */
+  settlements: SubSettlement[];
   /** Bu hesapta deftere yazilmis (iptal edilmemis) tazminat toplami. */
   postedFees: number;
   /** Dikkate alinan satirlarin bakiyesi (borc - alacak). */
@@ -69,7 +91,9 @@ export function linesOfAccount(accountId: string, transactions: Iterable<Transac
   const out: AccountLine[] = [];
   for (const tx of transactions) {
     for (const line of tx.lines) {
-      if (line.accountId === accountId) out.push({ transaction: tx, side: line.side, amount: line.amount, date: tx.date });
+      if (line.accountId === accountId) {
+        out.push({ transaction: tx, side: line.side, amount: line.amount, date: tx.date, ...(line.settles ? { settles: line.settles } : {}) });
+      }
     }
   }
   return out;
@@ -80,7 +104,10 @@ export function linesFromEntries(entries: readonly LedgerEntry[], txById: Readon
   const out: AccountLine[] = [];
   for (const e of entries) {
     const tx = txById.get(e.transactionId);
-    if (tx) out.push({ transaction: tx, side: e.side, amount: e.amount, date: e.date });
+    if (!tx) continue;
+    // Hedefli mahsup islem satirindadir (defter kaydinda tutulmaz).
+    const settles = Array.isArray(tx.lines) && Number.isFinite(e.lineNo) ? tx.lines[e.lineNo - 1]?.settles : undefined;
+    out.push({ transaction: tx, side: e.side, amount: e.amount, date: e.date, ...(settles ? { settles } : {}) });
   }
   return out;
 }
@@ -105,6 +132,8 @@ export function readSubledger(lines: readonly AccountLine[], cancelled: Readonly
 
   const charges: SubCharge[] = [];
   const credits: SubCredit[] = [];
+  const settlements: SubSettlement[] = [];
+  const offsetDebits: { transactionId: string; date: IsoDate; amount: number; description: string }[] = [];
   let postedFees = 0;
   let balance = 0;
 
@@ -112,7 +141,40 @@ export function readSubledger(lines: readonly AccountLine[], cancelled: Readonly
     const tx = l.transaction;
     balance += l.side === 'debit' ? l.amount : -l.amount;
     if (l.side === 'credit') {
-      credits.push({ transactionId: tx.transactionId, txKind: tx.kind, date: l.date, amount: l.amount });
+      let pooled = l.amount;
+      for (const st of l.settles ?? []) {
+        const amount = Math.min(st.amount, pooled);
+        if (amount <= 0) continue;
+        settlements.push({ transactionId: tx.transactionId, txKind: tx.kind, date: l.date, chargeId: st.chargeId, amount });
+        pooled -= amount;
+      }
+      if (pooled > 0) credits.push({ transactionId: tx.transactionId, txKind: tx.kind, date: l.date, amount: pooled });
+      continue;
+    }
+    // Finans 2.2: avans mahsubunun kaynak (borc) satiri kalem degildir; avansi (havuzu) tuketir.
+    if (tx.kind === 'offset') {
+      offsetDebits.push({ transactionId: tx.transactionId, date: l.date, amount: l.amount, description: tx.description });
+      continue;
+    }
+    // Finans 2.2: yapilandirma kalemleri (taksitler / birlestirilmis kalem).
+    const planItems = tx.kind === 'restructure' ? tx.plan?.items : undefined;
+    if (planItems && planItems.length > 0 && planItems.reduce((sum, it) => sum + it.amount, 0) === l.amount) {
+      const planId = tx.plan?.planId ?? '';
+      planItems.forEach((it, i) => {
+        charges.push({
+          id: transferItemId(tx.transactionId, i),
+          transactionId: tx.transactionId,
+          txKind: tx.kind,
+          lateFee: false,
+          feeBearing: it.feeBase > 0,
+          description: it.description,
+          date: tx.date,
+          dueDate: it.dueDate,
+          amount: it.amount,
+          feeBase: Math.min(it.feeBase, it.amount),
+          plan: { planId, no: it.no },
+        });
+      });
       continue;
     }
 
@@ -153,16 +215,63 @@ export function readSubledger(lines: readonly AccountLine[], cancelled: Readonly
     });
   }
 
-  return { ...(cutoff ? { cutoff } : {}), charges, credits, postedFees, balance };
+  // Bilinmeyen (veya bu donemde olmayan) kaleme hedefli kapama havuza sayilir: toplam korunur.
+  const known = new Set(charges.map((c) => c.id));
+  const kept: SubSettlement[] = [];
+  for (const st of settlements) {
+    if (known.has(st.chargeId)) kept.push(st);
+    else credits.push({ transactionId: st.transactionId, txKind: st.txKind, date: st.date, amount: st.amount });
+  }
+  // Avans mahsubu: mahsup gunune kadarki havuz alacaklarindan EN YENIDEN geriye dusulur (eski
+  // alacaklarin kalemlere mahsup zamanlamasi, dolayisiyla tazminat hesabi degismez). Havuz
+  // yetmezse (ornegin sonradan bir tahsilat ters kaydedildi) kalan kisim tazminat dogurmayan,
+  // mahsup gunu vadeli bir borc kalemi olur.
+  for (const od of offsetDebits) {
+    let left = od.amount;
+    const candidates = credits
+      .map((c, i) => ({ c, i }))
+      .filter(({ c }) => c.date <= od.date && c.amount > 0)
+      .sort((a, b) => b.c.date.localeCompare(a.c.date) || b.i - a.i);
+    for (const { c } of candidates) {
+      if (left <= 0) break;
+      const take = Math.min(left, c.amount);
+      c.amount -= take;
+      left -= take;
+    }
+    if (left > 0) {
+      charges.push({
+        id: od.transactionId,
+        transactionId: od.transactionId,
+        txKind: 'offset',
+        lateFee: false,
+        feeBearing: false,
+        description: od.description,
+        date: od.date,
+        dueDate: od.date,
+        amount: left,
+      });
+    }
+  }
+  const pool = credits.filter((c) => c.amount > 0);
+  return { ...(cutoff ? { cutoff } : {}), charges, credits: pool, settlements: kept, postedFees, balance };
 }
 
 /** Kistelyevm girdileri (bkz. `lateFee.ts`). */
 export function feeInputsOf(sub: Subledger) {
+  const bearing = new Set(sub.charges.filter((c) => c.feeBearing).map((c) => c.id));
   return {
     charges: sub.charges
       .filter((c) => c.feeBearing)
-      .map((c) => ({ id: c.id, dueDate: c.dueDate, amount: c.amount, ...(c.accrueFrom ? { accrueFrom: c.accrueFrom } : {}) })),
+      .map((c) => ({
+        id: c.id,
+        dueDate: c.dueDate,
+        amount: c.amount,
+        ...(c.accrueFrom ? { accrueFrom: c.accrueFrom } : {}),
+        ...(c.feeBase !== undefined && c.feeBase < c.amount ? { feeBase: c.feeBase } : {}),
+      })),
     credits: sub.credits.map((c) => ({ date: c.date, amount: c.amount })),
+    // Finans 2.2: tazminat dogurmayan kaleme hedefli kapama tazminat hesabini etkilemez.
+    settlements: sub.settlements.filter((st) => bearing.has(st.chargeId)).map((st) => ({ chargeId: st.chargeId, date: st.date, amount: st.amount })),
     postedFees: sub.postedFees,
   };
 }
@@ -189,10 +298,17 @@ export function fifoOrder(a: SubCharge, b: SubCharge): number {
  */
 export function allocate(sub: Subledger, today: IsoDate): { open: AllocatedCharge[]; all: AllocatedCharge[]; advance: Kurus } {
   let credit = sub.credits.reduce((s, c) => s + c.amount, 0);
+  // Finans 2.2: hedefli kapamalar once kendi kalemlerine; kalem tutarini asan kisim havuza.
+  const settled = new Map<string, number>();
+  for (const st of sub.settlements ?? []) settled.set(st.chargeId, (settled.get(st.chargeId) ?? 0) + st.amount);
   const all: AllocatedCharge[] = [];
   for (const c of [...sub.charges].sort(fifoOrder)) {
-    const applied = Math.min(credit, c.amount);
-    credit -= applied;
+    const total = settled.get(c.id) ?? 0;
+    const targeted = Math.min(total, c.amount);
+    credit += total - targeted;
+    const pooled = Math.min(credit, c.amount - targeted);
+    credit -= pooled;
+    const applied = targeted + pooled;
     const remaining = c.amount - applied;
     const late = remaining > 0 && c.dueDate < today;
     all.push({
@@ -204,4 +320,14 @@ export function allocate(sub: Subledger, today: IsoDate): { open: AllocatedCharg
     });
   }
   return { open: all.filter((c) => c.remaining > 0), all, advance: credit as Kurus };
+}
+
+/**
+ * Finans 2.2: hesapta odenmemis yapilandirma (taksit / muaccel) kalemi kalan planlar. Boyle bir
+ * caride tasinma kapamasi ve mulk/hisse devri yapilamaz (once plan kapanmali veya iptal edilmeli).
+ */
+export function openPlanIds(accountId: string, transactions: readonly Transaction[]): string[] {
+  const sub = readSubledger(linesOfAccount(accountId, transactions), cancelledIn(transactions));
+  const { open } = allocate(sub, '9999-12-31');
+  return [...new Set(open.flatMap((c) => (c.plan ? [c.plan.planId] : [])))];
 }

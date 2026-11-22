@@ -330,6 +330,14 @@ run "prod_plan" {
   }
   assert {
     condition = (
+      aws_scheduler_schedule.jobs["installment_plans"].schedule_expression == "cron(30 9 * * ? *)" &&
+      aws_scheduler_schedule.jobs["installment_plans"].schedule_expression_timezone == "Europe/Istanbul" &&
+      jsondecode(aws_scheduler_schedule.jobs["installment_plans"].target[0].input).job == "installment_plans"
+    )
+    error_message = "installment_plans her gun 09:30 (Istanbul) calismali (Finans 2.2 muacceliyet taramasi)"
+  }
+  assert {
+    condition = (
       aws_lambda_function.scheduler_worker.environment[0].variables.METRICS_STACK == "building-management" &&
       aws_lambda_function.scheduler_worker.environment[0].variables.OUTBOX_SWEEP_MIN_AGE_SECONDS == "120"
     )

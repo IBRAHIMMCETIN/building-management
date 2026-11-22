@@ -106,7 +106,14 @@ export type TransactionKind =
   | 'transfer'
   | 'refund'
   /** Faz B3.5: tedarikci borcunun odenmesi (borc: tedarikci/payable, alacak: kasa/banka). */
-  | 'payable_payment';
+  | 'payable_payment'
+  /** Finans 2.2: avans mahsubu (borc: kaynak alt cari, alacak: hedef alt cari). */
+  | 'offset'
+  /**
+   * Finans 2.2: borc yapilandirma. Ayni alt caride hedefli kapama (alacak, `settles`) + taksit /
+   * birlestirilmis kalem acilisi (borc, `plan.items`); islem kendi icinde dengelidir.
+   */
+  | 'restructure';
 
 /**
  * Cari devri kalemi (yalnizca `transfer` + `role: 'open'`): hedef caride orijinal vadesiyle
@@ -139,12 +146,47 @@ export type TransferInfo = {
   items?: TransferItem[];
 };
 
+/**
+ * Finans 2.2: hedefli mahsup. Alacak satirinin bu kismi havuza (FIFO) girmez; dogrudan gosterilen
+ * kalemleri kapatir. Kalem kimligi alt cari okuyucusundaki `SubCharge.id`dir. Toplam <= satir.
+ */
+export type ChargeSettlement = { chargeId: string; amount: Kurus };
+
 export type TransactionLine = {
   accountId: string;
   side: EntrySide;
   amount: Kurus;
   unitId?: string;
   liableParty?: LiableParty;
+  /** Yalnizca alacak satirinda (Finans 2.2). */
+  settles?: ChargeSettlement[];
+};
+
+/**
+ * Finans 2.2: yapilandirma kalemi (taksit veya birlestirilmis kalem). Alt caride
+ * `<islem>_<sira>` kimlikli, kendi vadesiyle acik borc olarak gorunur. Gecikme tazminati
+ * yalnizca `feeBase` (anapara payi) uzerinden ve vadeden itibaren isler; odemeler once anapara
+ * payini kapatir.
+ */
+export type PlanItem = {
+  /** Taksit sirasi (1..n); birlestirilmis kalemde 0. */
+  no: number;
+  description: string;
+  dueDate: IsoDate;
+  amount: Kurus;
+  feeBase: Kurus;
+};
+
+/**
+ * Finans 2.2: yapilandirma islemi ayrintisi.
+ *   open        : secilen kalemler hedefli kapatilir, taksitler acilir (plan olusturma)
+ *   accelerate  : muacceliyet - kalan taksitler hedefli kapatilir, tek kalem (vadesi bugun) acilir
+ *   pull_forward: erken kapama - ayni islem, cezasiz (borclu talebi)
+ */
+export type PlanInfo = {
+  planId: string;
+  role: 'open' | 'accelerate' | 'pull_forward';
+  items: PlanItem[];
 };
 
 /**
@@ -174,6 +216,10 @@ export type Transaction = TableKeys & {
   invoice?: { expenseId: string; fileName: string };
   /** Cari devri ayrintisi (`kind: 'transfer'`). */
   transfer?: TransferInfo;
+  /** Yapilandirma ayrintisi (`kind: 'restructure'`, Finans 2.2). */
+  plan?: PlanInfo;
+  /** Avans mahsubu kaydi (`kind: 'offset'`, Finans 2.2). */
+  offsetId?: string;
   /** Bos daire kurali: sakin gideri tahakkuk tarihinde dairede oturan olmadigi icin malike yazildi. */
   vacant?: true;
 };
