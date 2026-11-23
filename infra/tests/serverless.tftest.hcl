@@ -221,7 +221,7 @@ run "prod_plan" {
   }
   # Olaylar outbox'tan yayinlanir: API Lambda'si olay yayinlamaz.
   assert {
-    condition     = !contains(keys(aws_lambda_function.api.environment[0].variables), "EVENTS_MODE") && !contains(keys(aws_lambda_function.api.environment[0].variables), "EVENTS_SNS_TOPIC_ARN")
+    condition     = aws_lambda_function.api.environment[0].variables["EVENTS_MODE"] == "none" && !contains(keys(aws_lambda_function.api.environment[0].variables), "EVENTS_SNS_TOPIC_ARN")
     error_message = "API Lambda'sinda EVENTS_* degiskenleri olmamali (olaylar outbox-relay'den yayinlanir)"
   }
   assert {

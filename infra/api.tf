@@ -207,6 +207,7 @@ resource "aws_lambda_function" "api" {
   environment {
     variables = merge({
       NODE_ENV            = "production"
+      EVENTS_MODE         = "none"
       APP_VERSION         = var.app_version
       AUTH_MODE           = "apigw"
       DYNAMODB_TABLE_NAME = aws_dynamodb_table.main.name
