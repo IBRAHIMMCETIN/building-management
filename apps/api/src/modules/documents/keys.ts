@@ -94,3 +94,12 @@ export function contentDisposition(fileName: string, disposition: 'inline' | 'at
     .trim() || 'dosya';
   return `${disposition}; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(fileName)}`;
 }
+
+/**
+ * Finans 2.3-5a: sayac dagitim dokumu (daire basina, onbellek). `dataHash` satir verisi ve sablon
+ * surumunun ozetidir: donem geri alinip duzeltilirse yeni donem yeni dosya uretir.
+ *   apartments/{apt}/reports/{yyyy}/{mm}/meter-statement-{periodId}-{unitId}-{hash}.pdf
+ */
+export function meterStatementKey(apartmentId: string, endDate: IsoDate, periodId: string, unitId: string, dataHash: string): string {
+  return `apartments/${apartmentId}/reports/${ym(endDate)}/meter-statement-${periodId}-${unitId}-${dataHash.slice(0, 16)}.pdf`;
+}

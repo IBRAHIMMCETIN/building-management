@@ -163,6 +163,7 @@ export function createFakeFinanceRepo(defaultApartmentId = 'apt-1') {
     getTransaction: async (apt, id) => transactions.get(k(apt, id)),
     getPayment: async (apt, id) => payments.get(k(apt, id)),
     getExpense: async (apt, id) => expenses.get(k(apt, id)),
+    listExpenses: async (apt) => [...expenses.values()].filter((e) => e.siteId === apt),
     getIdempotency: async (apt, id) => idemOf(apt, id),
     getCounter: async (apt, name) => counters.get(k(apt, name)) ?? 0,
     listTransactions: async (apt, q = {}) => {

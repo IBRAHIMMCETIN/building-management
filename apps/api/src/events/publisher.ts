@@ -30,6 +30,7 @@ export const EVENT_TYPES = [
   'LATE_FEE_POSTED',
   'DUES_REMINDER',
   'DUES_BATCH_SUMMARY',
+  'METER_PERIOD_REVERSED',
 ] as const;
 export type EventType = (typeof EVENT_TYPES)[number];
 
@@ -77,6 +78,18 @@ export type DuesBatchSummaryPayload = {
   items: { unitId: string; amount: Kurus; transactionId: string; liableParty: LiableParty; userId?: string }[];
 };
 
+/**
+ * Finans 2.3-4: sayac donemi tahakkukunun toplu geri alinmasi. Yalnizca yonetici `notify: true`
+ * gonderirse yazilir (varsayilan sessiz). Ayrilan cariye yazilmis kalemler listede yer almaz.
+ */
+export type MeterPeriodReversedPayload = {
+  periodId: string;
+  batchId: string;
+  description: string;
+  totalAmount: Kurus;
+  items: { unitId: string; amount: Kurus; transactionId: string; liableParty: LiableParty; userId?: string }[];
+};
+
 /** Bildirim worker'i sakinlere SMS/push gonderir; govde tasinmaz, worker kaydi okur. */
 export type AnnouncementPublishedPayload = {
   announcementId: string;
@@ -117,6 +130,7 @@ type PayloadByType = {
   LATE_FEE_POSTED: LateFeePostedPayload;
   DUES_REMINDER: DuesReminderPayload;
   DUES_BATCH_SUMMARY: DuesBatchSummaryPayload;
+  METER_PERIOD_REVERSED: MeterPeriodReversedPayload;
 };
 
 export type DomainEvent<T extends EventType = EventType> = {

@@ -142,6 +142,21 @@ function spec(n: Notification, ctx: EmailContext): Spec | undefined {
         cta: { label: 'Borçlarımı görüntüle', path: 'dues' },
       };
     }
+    case 'dues_reversed': {
+      const items = lines(d.items);
+      const total = items.reduce((s, i) => s + num(i.amount), 0);
+      return {
+        subject: `${str(d.description)} tahakkuku geri alındı`,
+        heading: 'Tahakkuk geri alındı',
+        preheader: `Toplam ${formatTL(total)} tutarındaki kayıt düzeltme için geri alındı.`,
+        blocks: [
+          { kind: 'p', text: `"${str(d.description)}" tahakkuku hatalı okuma düzeltmesi nedeniyle geri alınmıştır. Düzeltilmiş tahakkuk yapıldığında ayrıca bildirilecektir.` },
+          { kind: 'table', head: ['Bağımsız bölüm', 'Geri alınan tutar'], rows: items.map((i) => [ctx.unitLabel(i.unitId), formatTL(num(i.amount))]) },
+          { kind: 'note', text: 'Bu tutar için yaptığınız ödemeler hesabınızda avans olarak kalır ve sonraki borçlarınıza mahsup edilir.' },
+        ],
+        cta: { label: 'Hesabımı görüntüle', path: 'dues' },
+      };
+    }
     case 'late_fee_posted':
       return {
         subject: `Gecikme tazminatı: ${formatPeriod(d.period)}`,

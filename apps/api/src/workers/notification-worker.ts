@@ -170,6 +170,23 @@ export function buildNotifications(
       }
       break;
     }
+    case 'METER_PERIOD_REVERSED': {
+      const p = event.payload;
+      const perUser = new Map<string, NotificationLine[]>();
+      for (const item of p.items) {
+        for (const m of current) {
+          if (receives(m, item, item.liableParty)) {
+            const list = perUser.get(m.userId) ?? [];
+            if (!list.some((l) => l.unitId === item.unitId)) list.push({ unitId: item.unitId, amount: item.amount });
+            perUser.set(m.userId, list);
+          }
+        }
+      }
+      for (const [userId, items] of perUser) {
+        add(userId, 'dues_reversed', { batchId: p.batchId, description: p.description, total: items.reduce((s, i) => s + i.amount, 0), items });
+      }
+      break;
+    }
     case 'LATE_FEE_POSTED': {
       const p = event.payload;
       for (const item of p.items) {

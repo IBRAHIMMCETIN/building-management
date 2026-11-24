@@ -1,5 +1,6 @@
 import { getTenantItem, queryTenantAll } from '../../config/dynamodb.js';
 import type { Kurus } from '../core/types.js';
+import type { MeterLine, MeterPeriod } from '../meters/types.js';
 import type { PaymentIntent } from '../payments/types.js';
 import { type AccountRecon, reconcileAccount } from './bank/reconciliation.js';
 import type { BankDecision, BankLine, BankStatement } from './bank/types.js';
@@ -31,6 +32,9 @@ import type { Account, LedgerEntry, Payment, Transaction } from './types.js';
  *                             tahsilat ve tazminat islemleri tutarsiz; geri alinan eslestirmenin islemleri
  *                             iptal edilmemis; (B3) gidere cevrilen satirin gider islemi yok/tutarsiz;
  *                             (B3.5) tedarikci odemesine cevrilen satirin islemi yok/tutarsiz
+ *  - meter_period_mismatch    (Finans 2.3) onayli sayac doneminin satir toplami / tahakkuk toplami /
+ *                             kalem sayisi fatura tutariyla uyusmuyor; geri alinmis donemde canli kalem var
+ *  - meter_period_stuck       (Finans 2.3) donem `posting` / `reversing` ara durumunda 30 dakikadan uzun
  *
  * Bulgu OLMAYAN rapor alanlari:
  *  - bankRecon  (Faz B3) banka hesabi basina son ekstre kapanis bakiyesi <-> defter bakiyesi;
@@ -58,6 +62,10 @@ export const AUDIT_CODES = [
   'bank_match_mismatch',
   /** Finans 2.2: hedefli mahsup (settles) satirin tutarini asiyor ya da ayni caride olmayan/iptal edilmis kaleme isaret ediyor. */
   'settlement_invalid',
+  /** Finans 2.3: sayac donemi tutar mutabakati. */
+  'meter_period_mismatch',
+  /** Finans 2.3: ara durumda takili kalan sayac donemi (onay / geri alma yarida). */
+  'meter_period_stuck',
 ] as const;
 export type AuditCode = (typeof AUDIT_CODES)[number];
 
@@ -70,6 +78,8 @@ export type AuditFinding = {
   receiptNumber?: string;
   /** Faz B2: banka satiri. */
   lineId?: string;
+  /** Finans 2.3: sayac donemi. */
+  periodId?: string;
   expected?: number | string;
   actual?: number | string;
   detail?: string;
@@ -89,6 +99,9 @@ export type AuditSnapshot = {
   bankDecisions?: BankDecision[];
   /** Faz B3: banka ekstreleri (mutabakat metrigi). */
   bankStatements?: BankStatement[];
+  /** Finans 2.3: sayac donemleri ve dagitim satirlari (eski kaynaklarda yok). */
+  meterPeriods?: MeterPeriod[];
+  meterLines?: MeterLine[];
 };
 
 /** Borc pozitif, alacak negatif (repository `ADD #balance :delta` ile ayni isaret). */
@@ -180,6 +193,64 @@ export function checkSettlements(s: Pick<AuditSnapshot, 'transactions'>): AuditF
     const [accountId, chargeId] = k.split('|') as [string, string];
     const amount = chargesOf(accountId).get(chargeId) ?? 0;
     if (total > amount) out.push({ code: 'settlement_invalid', accountId, expected: amount, actual: total, detail: `over_settled:${chargeId}` });
+  }
+  return out;
+}
+
+/** Ara durumda (posting / reversing) izin verilen en uzun sure. */
+export const METER_PERIOD_STUCK_MINUTES = 30;
+
+/**
+ * Finans 2.3: sayac donemi mutabakati.
+ *  - posted: dondurulmus satir toplami = fatura tutari; donemin tahakkuklari (referans
+ *    `METER_PERIOD:<id>`, iptal edilmis olsun olmasin - es zamanli geri almada yanlis alarm olmasin)
+ *    toplami = fatura tutari; kalem sayisi = `chargeCount`; her satirin islemi defterde.
+ *  - reversed: donemin canli (ters kaydedilmemis) tahakkuku kalmamali.
+ *  - posting / reversing: `updatedAt` uzerinden 30 dakikadan uzun sure -> takili.
+ */
+export function checkMeterPeriods(s: Pick<AuditSnapshot, 'transactions' | 'meterPeriods' | 'meterLines'>, now: Date): AuditFinding[] {
+  const periods = (s.meterPeriods ?? []).filter((p) => p.entityType === 'METER_PERIOD');
+  if (periods.length === 0) return [];
+  const out: AuditFinding[] = [];
+  const cancelled = cancelledIn(s.transactions);
+  const charges = new Map<string, Transaction[]>();
+  for (const t of s.transactions) {
+    if (t.kind !== 'dues_charge' || !t.reference?.startsWith('METER_PERIOD:')) continue;
+    const id = t.reference.slice('METER_PERIOD:'.length);
+    charges.set(id, [...(charges.get(id) ?? []), t]);
+  }
+  const lines = (s.meterLines ?? []).filter((l) => l.entityType === 'METER_LINE');
+  const fail = (p: MeterPeriod, detail: string, extra: Partial<AuditFinding> = {}) => out.push({ code: 'meter_period_mismatch', periodId: p.periodId, detail, ...extra });
+
+  for (const p of periods) {
+    const list = charges.get(p.periodId) ?? [];
+    if (p.status === 'posting' || p.status === 'reversing') {
+      const ageMin = (now.getTime() - Date.parse(p.updatedAt)) / 60_000;
+      if (ageMin > METER_PERIOD_STUCK_MINUTES) {
+        out.push({ code: 'meter_period_stuck', periodId: p.periodId, actual: p.updatedAt, detail: `${p.status} ${Math.floor(ageMin)} dk` });
+      }
+      continue;
+    }
+    if (p.status === 'posted') {
+      const expected = p.totalAmount ?? 0;
+      const own = lines.filter((l) => l.periodId === p.periodId && l.calcHash === p.calc?.hash);
+      const lineSum = own.reduce((sum, l) => sum + l.amount, 0);
+      if (lineSum !== expected) fail(p, 'satir toplami fatura tutarina esit degil', { expected, actual: lineSum });
+      const chargeSum = list.reduce((sum, t) => sum + t.totalAmount, 0);
+      if (chargeSum !== expected) fail(p, 'tahakkuk toplami fatura tutarina esit degil', { expected, actual: chargeSum });
+      if (p.chargeCount !== undefined && list.length !== p.chargeCount) fail(p, 'tahakkuk sayisi uyusmuyor', { expected: p.chargeCount, actual: list.length });
+      const ids = new Set(list.map((t) => t.transactionId));
+      for (const l of own) {
+        if (l.transactionId && !ids.has(l.transactionId)) fail(p, `satirin islemi defterde yok (${l.unitId})`, { transactionId: l.transactionId });
+      }
+      continue;
+    }
+    if (p.status === 'reversed') {
+      const live = list.filter((t) => !cancelled.has(t.transactionId));
+      if (live.length) {
+        fail(p, 'geri alinmis donemde ters kaydedilmemis tahakkuk var', { actual: live.reduce((sum, t) => sum + t.totalAmount, 0), transactionId: live[0]?.transactionId });
+      }
+    }
   }
   return out;
 }
@@ -443,12 +514,29 @@ export function createDynamoAuditSource(): AuditSource {
       const bankStatements = (await all<BankStatement>(apartmentId, 'BANKSTMT#')).filter((x) => x.entityType === 'BANK_STATEMENT');
       const bankLines = (await all<BankLine>(apartmentId, 'BANKTX#')).filter((l) => l.entityType === 'BANK_LINE');
       const bankDecisions = (await all<BankDecision>(apartmentId, 'BANKMATCH#')).filter((d) => d.entityType === 'BANK_MATCH');
+      // Finans 2.3: donem -> satirlar -> islemler (donem durumu bagli kayitlardan ONCE okunur).
+      const meterPeriods = (await all<MeterPeriod>(apartmentId, 'MPERIOD#')).filter((p) => p.entityType === 'METER_PERIOD');
+      const meterLines = (await all<MeterLine>(apartmentId, 'MDLINE#')).filter((l) => l.entityType === 'METER_LINE');
       const transactions = await all<Transaction>(apartmentId, 'TX#');
       const entries = await all<LedgerEntry>(apartmentId, 'LE#');
       const accounts = await all<Account>(apartmentId, 'ACCT#');
       const payments = await all<Payment>(apartmentId, 'PAY#');
       const counter = await getTenantItem<{ value?: number }>(financeKeys.counter(apartmentId, 'receipt'));
-      return { apartmentId, intents, closures, transactions, entries, accounts, payments, receiptCounter: counter?.value ?? 0, bankLines, bankDecisions, bankStatements };
+      return {
+        apartmentId,
+        intents,
+        closures,
+        transactions,
+        entries,
+        accounts,
+        payments,
+        receiptCounter: counter?.value ?? 0,
+        bankLines,
+        bankDecisions,
+        bankStatements,
+        meterPeriods,
+        meterLines,
+      };
     },
     getAccount: (apartmentId, accountId) => getTenantItem<Account>(financeKeys.account(apartmentId, accountId)),
     listAccountEntries: (apartmentId, accountId) => all<LedgerEntry>(apartmentId, `LE#${accountId}#`),
@@ -486,7 +574,8 @@ export function bankReconciliations(s: Pick<AuditSnapshot, 'accounts' | 'entries
   return out;
 }
 
-export function createLedgerAuditor(source: AuditSource) {
+export function createLedgerAuditor(source: AuditSource, opts: { now?: () => Date } = {}) {
+  const now = opts.now ?? (() => new Date());
   /** Bakiye: hesap -> LE# -> hesap; surum degismediyse karsilastir. */
   async function recheckBalance(apartmentId: string, accountId: string): Promise<AuditFinding | 'stable_ok' | 'unstable'> {
     const before = await source.getAccount(apartmentId, accountId);
@@ -536,6 +625,7 @@ export function createLedgerAuditor(source: AuditSource) {
     findings.push(...checkReceipts(s));
     findings.push(...checkOnlinePayments(s));
     findings.push(...checkSettlements(s));
+    findings.push(...checkMeterPeriods(s, now()));
 
     // Faz B2: banka eslestirmeleri. Satir okuma sirasinda degistiyse (es zamanli eslestirme / geri
     // alma) bulgu raporlanmaz, kararsiz sayilir.

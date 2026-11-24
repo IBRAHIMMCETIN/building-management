@@ -14,6 +14,7 @@ import {
   getDynamo,
   getTenantItem,
   queryTenantAll,
+  KEY_SEPARATOR,
   skKey,
   tenantPk,
   toDataAccessError,
@@ -505,6 +506,8 @@ export type FinanceRepository = {
   getTransaction(apartmentId: string, transactionId: string): Promise<Transaction | undefined>;
   getPayment(apartmentId: string, paymentId: string): Promise<Payment | undefined>;
   getExpense(apartmentId: string, expenseId: string): Promise<Expense | undefined>;
+  /** 2.3-5b: apartmanin gider kayitlari (sayac donemine fatura baglama secicisi). */
+  listExpenses?(apartmentId: string): Promise<Expense[]>;
   getIdempotency(apartmentId: string, id: string): Promise<IdempotencyRecord | undefined>;
   getCounter(apartmentId: string, name: string): Promise<number>;
 
@@ -658,6 +661,7 @@ export function createFinanceRepository(): FinanceRepository {
       getTenantItem<Transaction>(financeKeys.transaction(apartmentId, id)),
     getPayment: (apartmentId, id) => getTenantItem<Payment>(financeKeys.payment(apartmentId, id)),
     getExpense: (apartmentId, id) => getTenantItem<Expense>(financeKeys.expense(apartmentId, id)),
+    listExpenses: (apartmentId) => queryTenantAll<Expense>(apartmentId, `EXP${KEY_SEPARATOR}`),
     getIdempotency: (apartmentId, id) =>
       getTenantItem<IdempotencyRecord>(financeKeys.idempotency(apartmentId, id)),
     async getCounter(apartmentId, name) {

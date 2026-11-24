@@ -41,6 +41,11 @@ export const isPlatformRole = (role: Role | undefined): role is 'platform_admin'
 export const AUDIT_ROLES = ['apartment_manager', 'management_company', 'observer', 'platform_admin'] as const satisfies readonly Role[];
 
 /** Guvenlik / MFA sifirlama (/admin/security): apartman yoneticisi ve yonetim firmasi. */
+/** Sayac dagitimi (Finans 2.3): sicil / sablon / donem ekranlari (denetci salt okur). */
+export const METER_ROLES = ['apartment_manager', 'management_company', 'observer'] as const satisfies readonly Role[];
+/** Hizli sayac okuma girisi (bina gorevlisi dahil). */
+export const METER_READING_ROLES = ['apartment_manager', 'management_company', 'building_staff'] as const satisfies readonly Role[];
+
 export const SECURITY_ROLES = ['apartment_manager', 'management_company'] as const satisfies readonly Role[];
 
 /** Platform yoneticisinin acilis sayfasi. */

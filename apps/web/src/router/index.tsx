@@ -5,6 +5,8 @@ import { ResidentLayout } from '@/layouts/ResidentLayout';
 import { AnnouncementsPage } from '@/pages/admin/announcements/AnnouncementsPage';
 import { DashboardPage } from '@/pages/admin/DashboardPage';
 import { FinancePage } from '@/pages/admin/finance/FinancePage';
+import { MetersPage } from '@/pages/admin/meters/MetersPage';
+import { ReadingEntryPage } from '@/pages/admin/meters/ReadingEntryPage';
 import { ImportPage } from '@/pages/admin/import/ImportPage';
 import { AuditPage } from '@/pages/admin/audit/AuditPage';
 import { SecurityPage } from '@/pages/admin/security/SecurityPage';
@@ -22,11 +24,12 @@ import { PlatformInvoicesPage } from '@/pages/platform/payments/PlatformInvoices
 import { PlatformPaymentsPage } from '@/pages/platform/payments/PlatformPaymentsPage';
 import { PlatformPayoutsPage } from '@/pages/platform/payments/PlatformPayoutsPage';
 import { ResidentAnnouncementsPage } from '@/pages/resident/AnnouncementsPage';
+import { ConsumptionPage } from '@/pages/resident/ConsumptionPage';
 import { DuesPage } from '@/pages/resident/DuesPage';
 import { PaymentPage } from '@/pages/resident/payment/PaymentPage';
 import { PaymentResultPage } from '@/pages/resident/payment/PaymentResultPage';
 import { ResidentHomePage } from '@/pages/resident/ResidentHomePage';
-import { ADMIN_ROLES, APARTMENT_ADMIN_ROLES, AUDIT_ROLES, PLATFORM_ROLES, RESIDENT_ROLES, SECURITY_ROLES } from '@/types/roles';
+import { ADMIN_ROLES, APARTMENT_ADMIN_ROLES, AUDIT_ROLES, METER_READING_ROLES, METER_ROLES, PLATFORM_ROLES, RESIDENT_ROLES, SECURITY_ROLES } from '@/types/roles';
 import { RedirectIfAuthenticated, RequireRole, RequireSession, RootRedirect } from './guards';
 
 export const router = createBrowserRouter([
@@ -79,6 +82,15 @@ export const router = createBrowserRouter([
                 ],
               },
               {
+                // Sayac dagitimi (Finans 2.3): yonetici + denetci; hizli okuma: yonetici + bina gorevlisi.
+                element: <RequireRole roles={METER_ROLES} redirectHome />,
+                children: [{ path: 'meters', element: <MetersPage /> }],
+              },
+              {
+                element: <RequireRole roles={METER_READING_ROLES} redirectHome />,
+                children: [{ path: 'meter-readings', element: <ReadingEntryPage /> }],
+              },
+              {
                 // Denetim gunlugu: apartman rolleri kendi zinciri, platform yoneticisi platform zinciri.
                 element: <RequireRole roles={AUDIT_ROLES} redirectHome />,
                 children: [{ path: 'audit', element: <AuditPage /> }],
@@ -111,6 +123,7 @@ export const router = createBrowserRouter([
             children: [
               { index: true, element: <ResidentHomePage /> },
               { path: 'dues', element: <DuesPage /> },
+              { path: 'tuketim', element: <ConsumptionPage /> },
               { path: 'odeme', element: <PaymentPage /> },
               { path: 'odeme/sonuc', element: <PaymentResultPage /> },
               { path: 'announcements', element: <ResidentAnnouncementsPage /> },

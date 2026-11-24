@@ -9,6 +9,7 @@ import { setRequestActor } from '../modules/audit/context.js';
 import { CoreError } from '../modules/core/service.js';
 import { DocumentError } from '../modules/documents/errors.js';
 import { FinanceError } from '../modules/finance/service.js';
+import { MeterError } from '../modules/meters/errors.js';
 import { PaymentsError } from '../modules/payments/service.js';
 import { PortalError } from '../modules/portal/service.js';
 import type { TableKeys } from '../modules/core/types.js';
@@ -76,6 +77,9 @@ export function handleError(err: Error, c: Context) {
   }
   if (err instanceof FinanceError) {
     return c.json({ error: err.code, message: err.message }, err.httpStatus);
+  }
+  if (err instanceof MeterError) {
+    return c.json({ error: err.code, message: err.message, ...err.details }, err.httpStatus);
   }
   if (err instanceof PaymentsError) {
     if (err.httpStatus >= 500) console.error(err);

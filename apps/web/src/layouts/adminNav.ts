@@ -1,6 +1,6 @@
-import { ArrowLeftRight, Building, CreditCard, FileText, FileUp, LayoutDashboard, Megaphone, ScrollText, Settings, ShieldCheck, UserCog, Users, Wallet } from 'lucide-react';
+import { ArrowLeftRight, Building, ClipboardPen, CreditCard, Gauge, FileText, FileUp, LayoutDashboard, Megaphone, ScrollText, Settings, ShieldCheck, UserCog, Users, Wallet } from 'lucide-react';
 import type { ComponentType } from 'react';
-import { AUDIT_ROLES, type Role, SECURITY_ROLES, isPlatformRole } from '@/types/roles';
+import { AUDIT_ROLES, METER_READING_ROLES, METER_ROLES, type Role, SECURITY_ROLES, isPlatformRole } from '@/types/roles';
 
 export type NavItem = {
   to: string;
@@ -16,6 +16,8 @@ export const APARTMENT_NAV: readonly NavItem[] = [
   { to: '/admin', label: 'Genel Bakış', icon: LayoutDashboard, end: true },
   { to: '/admin/units', label: 'Daireler', icon: Users },
   { to: '/admin/finance', label: 'Finans', icon: Wallet },
+  { to: '/admin/meters', label: 'Sayaç Dağıtımı', icon: Gauge, roles: METER_ROLES },
+  { to: '/admin/meter-readings', label: 'Sayaç Okuma', icon: ClipboardPen, roles: METER_READING_ROLES },
   { to: '/admin/announcements', label: 'Duyurular', icon: Megaphone },
   { to: '/admin/import', label: 'Toplu Aktarım', icon: FileUp },
   { to: '/admin/settings', label: 'Ayarlar', icon: Settings },

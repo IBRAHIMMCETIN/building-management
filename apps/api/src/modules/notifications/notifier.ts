@@ -5,6 +5,7 @@
 export type NotificationTemplate =
   | 'due_generated'
   | 'dues_batch_summary'
+  | 'dues_reversed'
   | 'payment_received'
   | 'announcement_published'
   | 'late_fee_posted'

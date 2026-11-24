@@ -62,3 +62,18 @@ describe('platform apartman dizini', () => {
     expect(() => platformSiteSchema.parse({ ...site, type: 'villa' })).toThrow();
   });
 });
+
+describe('sayac dagitimi menusu (Finans 2.3)', () => {
+  it('yonetici iki ekrani; denetci yalnizca dagitimi; bina gorevlisi yalnizca hizli okumayi gorur', () => {
+    const paths = (role: Parameters<typeof navItemsFor>[0]) => navItemsFor(role).map((n) => n.to);
+    for (const role of ['apartment_manager', 'management_company'] as const) {
+      expect(paths(role)).toEqual(expect.arrayContaining(['/admin/meters', '/admin/meter-readings']));
+    }
+    expect(paths('observer')).toContain('/admin/meters');
+    expect(paths('observer')).not.toContain('/admin/meter-readings');
+    expect(paths('building_staff')).toContain('/admin/meter-readings');
+    expect(paths('building_staff')).not.toContain('/admin/meters');
+    expect(paths('security_guard')).not.toContain('/admin/meter-readings');
+    expect(paths('platform_admin')).not.toContain('/admin/meters');
+  });
+});

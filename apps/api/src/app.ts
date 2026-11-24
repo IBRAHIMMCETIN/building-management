@@ -50,6 +50,12 @@ import { portalRoutes } from './modules/portal/routes.js';
 import { residentRoutes } from './modules/residents/routes.js';
 import { type ResidentsService, createResidentsService } from './modules/residents/service.js';
 import { type PortalService, createPortalService } from './modules/portal/service.js';
+import { meterPortalRoutes, meterReadingRoutes, meterRoutes } from './modules/meters/routes.js';
+import { type MeterPortalService, createMeterPortalService } from './modules/meters/portalView.js';
+import { type MeterPostingService, createMeterPostingService } from './modules/meters/posting.js';
+import { type MeterReadingService, createMeterReadingService } from './modules/meters/readings.js';
+import { type MeterReversalService, createMeterReversalService } from './modules/meters/reversal.js';
+import { type MeterService, createMeterService } from './modules/meters/service.js';
 import { createOwnershipReader } from './modules/ownership/reader.js';
 import { ownershipRoutes } from './modules/ownership/routes.js';
 import { type OwnershipService, createOwnershipService } from './modules/ownership/service.js';
@@ -96,6 +102,15 @@ export type AppConfig = {
   planService?: PlanService;
   /** Finans 2.1: hisseli mulkiyet ve mulk/hisse devri (testlerde sahte depolarla). */
   ownershipService?: OwnershipService;
+  /** Finans 2.3: sayac / endeks dagitimi (testlerde sahte depolarla). */
+  meterService?: MeterService;
+  meterReadingService?: MeterReadingService;
+  /** Finans 2.3-3: hesap onizleme, onay ve toplu tahakkuk. */
+  meterPostingService?: MeterPostingService;
+  /** Finans 2.3-4: toplu geri alma ve duzeltilmis donem. */
+  meterReversalService?: MeterReversalService;
+  /** Finans 2.3-5a: sakin tuketim gecmisi ve dagitim dokumu PDF. */
+  meterPortalService?: MeterPortalService;
   portalService?: PortalService;
   documentsService?: DocumentsService;
   importsService?: ImportsService;
@@ -234,6 +249,19 @@ export function createApp(config: AppConfig) {
   const ownershipService = config.ownershipService ?? (config.financeService ? undefined : createOwnershipService({ finance: financeService }));
   if (ownershipService) app.route('/api/ownership', ownershipRoutes({ authenticate, service: ownershipService }));
   app.route('/api/memberships', membershipRoutes({ authenticate, service: membershipService }));
+  // Finans 2.3: sayac sicili / degisim / sablon / donem (yonetici) ve okuma girisi (+ bina gorevlisi).
+  const meterPortalService = config.meterPortalService ?? createMeterPortalService();
+  app.route(
+    '/api/metering',
+    meterRoutes({
+      portal: meterPortalService,
+      authenticate,
+      service: config.meterService ?? createMeterService(),
+      posting: config.meterPostingService ?? createMeterPostingService({ finance: financeService, ownership: ownershipReader }),
+      reversal: config.meterReversalService ?? createMeterReversalService({ finance: financeService }),
+    }),
+  );
+  app.route('/api/meter-readings', meterReadingRoutes({ authenticate, service: config.meterReadingService ?? createMeterReadingService() }));
   // Davet, uyelik kurallarini memberships servisinden alir (tek kaynak).
   const residentsService = config.residentsService ?? createResidentsService({ memberships: membershipService });
   app.route('/api/residents', residentRoutes({ authenticate, service: residentsService }));
@@ -267,6 +295,7 @@ export function createApp(config: AppConfig) {
 
 
   app.route('/api/portal/payments', paymentPortalRoutes({ authenticate, service: paymentsService }));
+  app.route('/api/portal/meters', meterPortalRoutes({ authenticate, service: meterPortalService }));
   app.route(
     '/api/portal',
     portalRoutes({

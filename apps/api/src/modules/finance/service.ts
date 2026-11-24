@@ -698,6 +698,13 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
       dueDate: IsoDate;
       description: string;
       batchId?: string;
+      /** Islem referansi (ornegin sayac donemi `METER_PERIOD:<periodId>`). */
+      reference?: string;
+      /**
+       * Finans 2.3: hedef alt cari (ornegin ayrilan sakin carisi `recv-<unit>-<taraf>-c<kapama>`).
+       * Verilirse paydas bolmesi yapilmaz; hesap yoksa bu kayitla olusturulur.
+       */
+      target?: Account;
       /** Bos daire kurali: `party` malik, istenen taraf sakin idi. */
       vacant?: boolean;
       /** Yazimla ayni atomik islemde outbox'a yazilacak olay (islem kimligi belli olunca uretilir). */
@@ -714,7 +721,7 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
 
     // Finans 2.1: `split` dairede malik tahakkuku sicil paylariyla paydas alt carilerine bolunur
     // (en buyuk kalan; kurus kaybi yok). Tek islem, paydas basina bir borc satiri.
-    const owners = p.party === 'owner' && deps.ownership ? await deps.ownership.ownerSplitOn(ctx.apartmentId, p.unitId, p.date) : undefined;
+    const owners = !p.target && p.party === 'owner' && deps.ownership ? await deps.ownership.ownerSplitOn(ctx.apartmentId, p.unitId, p.date) : undefined;
     let debitLines: TransactionLine[];
     let coOwnerParts: { userId: string; amount: Kurus }[] | undefined;
     if (owners && owners.length > 0) {
@@ -729,7 +736,10 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
         liableParty: 'owner' as const,
       }));
     } else {
-      const recv = receivable(ctx, p.unitId, p.party);
+      const recv = p.target ?? receivable(ctx, p.unitId, p.party);
+      if (recv.type !== 'receivable' || recv.unitId !== p.unitId || recv.liableParty !== p.party) {
+        throw new FinanceError('unprocessable', 'Hedef cari bu bolum / tarafla uyusmuyor');
+      }
       await repo.ensureAccounts([recv]);
       debitLines = [{ accountId: recv.accountId, side: 'debit', amount: p.amount, unitId: p.unitId, liableParty: p.party }];
     }
@@ -739,6 +749,7 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
       dueDate: p.dueDate,
       description: p.vacant ? `${p.description}${VACANT_SUFFIX}` : p.description,
       batchId: p.batchId,
+      ...(p.reference ? { reference: p.reference } : {}),
       ...(p.vacant ? { vacant: true as const } : {}),
       lines: [...debitLines, { accountId: SYSTEM_ACCOUNTS.incomeDues, side: 'credit', amount: p.amount }],
     });
@@ -914,6 +925,132 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
     };
   }
 
+  /**
+   * Toplu tahakkuk ozet olayi (DUES_BATCH_SUMMARY): kullanici basina tek bildirim. Kimlikler
+   * `batchId`'den deterministik: tekrar cagrilmasi ikinci olay uretmez (outbox kosullu yazim).
+   */
+  async function recordDuesBatchSummary(
+    ctx: FinanceContext,
+    p: {
+      batchId: string;
+      date: IsoDate;
+      dueDate: IsoDate;
+      description: string;
+      liableParty: LiableParty;
+      results: readonly { unitId: string; amount: Kurus; transactionId: string; liableParty: LiableParty; coOwnerParts?: { userId: string; amount: Kurus }[] }[];
+    },
+  ): Promise<number> {
+    const { batchId, results } = p;
+    if (results.length === 0) return 0;
+    const parts = Math.ceil(results.length / BATCH_SUMMARY_CHUNK);
+    const events: DomainEvent[] = [];
+    for (let part = 1; part <= parts; part++) {
+      const chunk = results.slice((part - 1) * BATCH_SUMMARY_CHUNK, part * BATCH_SUMMARY_CHUNK);
+      events.push(
+        toEvent({
+          eventId: parts === 1 ? `DUES_BATCH_SUMMARY:${batchId}` : `DUES_BATCH_SUMMARY:${batchId}:${part}`,
+          type: 'DUES_BATCH_SUMMARY',
+          apartmentId: ctx.apartmentId,
+          actorId: ctx.userId,
+          payload: {
+            batchId,
+            part,
+            parts,
+            date: p.date,
+            dueDate: p.dueDate,
+            description: p.description,
+            liableParty: p.liableParty,
+            totalAmount: toKurus(chunk.reduce((sum, r) => sum + r.amount, 0)),
+            // Finans 2.1: bolunmus kalem paydas basina (her paydas ozetinde kendi payini gorur).
+            items: chunk.flatMap(({ unitId, amount, transactionId, liableParty, coOwnerParts }) =>
+              coOwnerParts?.length
+                ? coOwnerParts.map((x) => ({ unitId, amount: x.amount, transactionId, liableParty, userId: x.userId }))
+                : [{ unitId, amount, transactionId, liableParty }],
+            ),
+          },
+        }),
+      );
+    }
+    return repo.recordEvents(ctx.apartmentId, events);
+  }
+
+  /**
+   * Finans 2.3: sayac / endeks donemi kalemi. Mevcut tahakkuk yolu (`postDues`): bos daire kurali,
+   * `split` paydas bolmesi ve outbox olayi ayni atomik yazimda. `former` verilirse kalem, donem
+   * sonundaki sorumlunun kapama ile acilan ayrilan carisine yazilir (yeni sakine degil).
+   * `idemId` (MDP_<periodId>_<unitId>) ile tekrar guvenli: yazilmis kalem yeniden yazilmaz.
+   */
+  async function chargeMeterLine(
+    ctx: FinanceContext,
+    p: {
+      idemId: string;
+      unitId: string;
+      party: LiableParty;
+      vacant: boolean;
+      amount: number;
+      date: IsoDate;
+      dueDate: IsoDate;
+      description: string;
+      batchId: string;
+      reference: string;
+      former?: { closureId: string; sourceAccountId: string; userIds: string[]; periodStart?: IsoDate; periodEnd: IsoDate; unitNumber: string };
+    },
+  ) {
+    if (!Number.isSafeInteger(p.amount) || p.amount < 1 || p.amount > MAX_AMOUNT) throw new ValidationError('Tutar gecersiz', 'amount');
+    await ensureSystemAccounts(ctx);
+    const target = p.former
+      ? newAccount(ctx, {
+          accountId: `${p.former.sourceAccountId}-c${p.former.closureId}`,
+          type: 'receivable',
+          name: `Daire ${p.former.unitNumber} - Ayrılan ${p.party === 'owner' ? 'malik' : 'sakin'} (${p.former.periodEnd.split('-').reverse().join('.')})`,
+          unitId: p.unitId,
+          liableParty: p.party,
+          closureId: p.former.closureId,
+          holder: { userIds: p.former.userIds, ...(p.former.periodStart ? { periodStart: p.former.periodStart } : {}), periodEnd: p.former.periodEnd },
+        })
+      : undefined;
+    const amount = toKurus(p.amount);
+    const r = await postDues(ctx, {
+      idemId: p.idemId,
+      fp: fingerprint({ op: 'meter', unitId: p.unitId, party: p.party, amount, date: p.date, dueDate: p.dueDate, description: p.description, batchId: p.batchId, reference: p.reference, target: target?.accountId ?? null }),
+      unitId: p.unitId,
+      party: p.party,
+      vacant: p.vacant,
+      amount,
+      date: p.date,
+      dueDate: p.dueDate,
+      description: p.description,
+      batchId: p.batchId,
+      reference: p.reference,
+      ...(target ? { target } : {}),
+      event: (tx) => ({
+        eventId: `DUE_GENERATED:${tx.transactionId}`,
+        type: 'DUE_GENERATED',
+        apartmentId: ctx.apartmentId,
+        actorId: ctx.userId,
+        groupKey: p.unitId,
+        payload: {
+          mode: 'bulk',
+          batchId: p.batchId,
+          date: p.date,
+          dueDate: p.dueDate,
+          description: p.description,
+          liableParty: p.party,
+          totalAmount: amount,
+          items: [{ unitId: p.unitId, amount, transactionId: tx.transactionId, liableParty: p.party }],
+        },
+      }),
+    });
+    return {
+      transactionId: r.transaction.transactionId,
+      replayed: r.replayed,
+      liableParty: r.liableParty,
+      vacant: r.vacant,
+      accountIds: r.transaction.lines.filter((l) => l.side === 'debit').map((l) => l.accountId),
+      ...(r.coOwnerParts ? { coOwnerParts: r.coOwnerParts } : {}),
+    };
+  }
+
   async function chargeBulk(ctx: FinanceContext, body: unknown) {
     const o = asObject(body);
     const key = reqKey(o);
@@ -988,38 +1125,7 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
     // Tek ozet olay (bildirim): tum kalemler yazildiktan SONRA. Istek yarida kesilirse ozet
     // yazilmaz; ayni anahtarla tamamlama (replay dahil) TUM kalemlerle ozeti yazar. Kimlik
     // deterministik oldugundan tekrar eden istek ikinci ozet uretmez.
-    if (results.length > 0) {
-      const parts = Math.ceil(results.length / BATCH_SUMMARY_CHUNK);
-      const events: DomainEvent[] = [];
-      for (let part = 1; part <= parts; part++) {
-        const chunk = results.slice((part - 1) * BATCH_SUMMARY_CHUNK, part * BATCH_SUMMARY_CHUNK);
-        events.push(
-          toEvent({
-            eventId: parts === 1 ? `DUES_BATCH_SUMMARY:${batchId}` : `DUES_BATCH_SUMMARY:${batchId}:${part}`,
-            type: 'DUES_BATCH_SUMMARY',
-            apartmentId: ctx.apartmentId,
-            actorId: ctx.userId,
-            payload: {
-              batchId,
-              part,
-              parts,
-              date,
-              dueDate,
-              description,
-              liableParty: party,
-              totalAmount: toKurus(chunk.reduce((sum, r) => sum + r.amount, 0)),
-              // Finans 2.1: bolunmus kalem paydas basina (her paydas ozetinde kendi payini gorur).
-              items: chunk.flatMap(({ unitId, amount, transactionId, liableParty, coOwnerParts }) =>
-                coOwnerParts?.length
-                  ? coOwnerParts.map((x) => ({ unitId, amount: x.amount, transactionId, liableParty, userId: x.userId }))
-                  : [{ unitId, amount, transactionId, liableParty }],
-              ),
-            },
-          }),
-        );
-      }
-      await repo.recordEvents(ctx.apartmentId, events);
-    }
+    await recordDuesBatchSummary(ctx, { batchId, date, dueDate, description, liableParty: party, results });
 
     return {
       batchId,
@@ -1543,30 +1649,25 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
   // Ters kayit (duzeltme)
   // -------------------------------------------------------------------------
 
-  async function reverseTransaction(ctx: FinanceContext, transactionId: string, body: unknown) {
-    assertId(transactionId, 'transactionId');
-    const o = asObject(body);
-    const reason = reqString(o, 'reason', 300);
-    const date = optDate(o, 'date') ?? today();
-
-    const original = await loadTx(ctx, transactionId);
-    if (original.kind === 'reversal') {
-      throw new FinanceError('unprocessable', 'Ters kayit tekrar ters cevrilemez');
-    }
-    if (original.kind === 'transfer') {
-      throw new FinanceError('unprocessable', 'Cari devri islemleri yalnizca kapamanin geri alinmasiyla cevrilebilir');
-    }
-    if (original.kind === 'offset') {
-      throw new FinanceError('unprocessable', 'Avans mahsubu yalnizca mahsup kaydindan geri alinabilir');
-    }
-    if (original.kind === 'restructure') {
-      throw new FinanceError('unprocessable', 'Yapilandirma islemleri yalnizca planin iptaliyle cevrilebilir');
-    }
+  /**
+   * Ters kayit engeli (yoksa undefined). `reverseTransaction` ve toplu geri alma onizlemesi ayni
+   * kurallari kullanir: ters kayit / devir / mahsup / yapilandirma islemi; hedefli mahsupla (plan,
+   * avans mahsubu) kapatilmis kalem; tasinma kapamasiyla kapatilmis doneme ait kayit.
+   */
+  async function reversalBlockOf(
+    ctx: FinanceContext,
+    original: Transaction,
+    preloaded?: { all: Transaction[]; cancelled: Set<string> },
+  ): Promise<{ code: string; message: string } | undefined> {
+    if (original.kind === 'reversal') return { code: 'is_reversal', message: 'Ters kayit tekrar ters cevrilemez' };
+    if (original.kind === 'transfer') return { code: 'transfer', message: 'Cari devri islemleri yalnizca kapamanin geri alinmasiyla cevrilebilir' };
+    if (original.kind === 'offset') return { code: 'offset', message: 'Avans mahsubu yalnizca mahsup kaydindan geri alinabilir' };
+    if (original.kind === 'restructure') return { code: 'restructure', message: 'Yapilandirma islemleri yalnizca planin iptaliyle cevrilebilir' };
     // Finans 2.2: hedefli mahsupla (yapilandirma / mahsup) kapatilmis bir kalemin islemi ters
     // cevrilemez; once ilgili plan veya mahsup geri alinmali.
     if (original.lines.some((l) => l.side === 'debit' && l.unitId && l.liableParty)) {
-      const all = (await repo.listTransactions(ctx.apartmentId)).items;
-      const cancelledIds = cancelledTransactions(all);
+      const all = preloaded?.all ?? (await repo.listTransactions(ctx.apartmentId)).items;
+      const cancelledIds = preloaded?.cancelled ?? cancelledTransactions(all);
       const prefix = original.transactionId;
       const settled = all.some(
         (t) =>
@@ -1574,19 +1675,73 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
           t.lines.some((l) => l.settles?.some((x) => x.chargeId === prefix || x.chargeId.startsWith(`${prefix}_`))),
       );
       if (settled) {
-        throw new FinanceError('unprocessable', 'Bu kalem bir yapılandırma planına veya avans mahsubuna bağlı; önce plan/mahsup geri alınmalı');
+        return { code: 'settled', message: 'Bu kalem bir yapılandırma planına veya avans mahsubuna bağlı; önce plan/mahsup geri alınmalı' };
       }
     }
     // Kapatilmis doneme ait kayit: kalemi devredildi; ters kayit kaynakta etkisiz kalir.
     for (const accountId of new Set(original.lines.filter((l) => l.unitId && l.liableParty).map((l) => l.accountId))) {
       const acc = await repo.getAccount(ctx.apartmentId, accountId);
       if (acc?.closedThrough && original.date <= acc.closedThrough) {
-        throw new FinanceError(
-          'unprocessable',
-          `Bu islem tasinma kapamasiyla ${acc.closedThrough} tarihinde kapatilan doneme ait; duzeltmeyi borcun devredildigi caride yapin`,
-        );
+        return {
+          code: 'closed_period',
+          message: `Bu islem tasinma kapamasiyla ${acc.closedThrough} tarihinde kapatilan doneme ait; duzeltmeyi borcun devredildigi caride yapin`,
+        };
       }
     }
+    return undefined;
+  }
+
+  /**
+   * Finans 2.3: toplu geri alma onizlemesi. Zaten ters kaydedilmis islemler `reversed` doner
+   * (yarida kalan geri almanin devami); diger islemler icin engel varsa nedeniyle.
+   */
+  async function reversalStatus(ctx: FinanceContext, transactionIds: readonly string[]) {
+    const all = (await repo.listTransactions(ctx.apartmentId)).items;
+    const cancelled = cancelledTransactions(all);
+    const byId = new Map(all.map((t) => [t.transactionId, t]));
+    const out: { transactionId: string; state: 'reversible' | 'reversed' | 'blocked' | 'missing'; code?: string; message?: string; lateFeeAfter?: string[] }[] = [];
+    for (const id of transactionIds) {
+      const t = byId.get(id);
+      if (!t) {
+        out.push({ transactionId: id, state: 'missing', message: 'Islem bulunamadi' });
+        continue;
+      }
+      if (cancelled.has(id)) {
+        out.push({ transactionId: id, state: 'reversed' });
+        continue;
+      }
+      const block = await reversalBlockOf(ctx, t, { all, cancelled });
+      // Karar 4: kalemin vadesinden sonra ayni caride kesinlesmis gecikme tazminati (uyari).
+      const accounts = new Set(t.lines.filter((l) => l.side === 'debit' && l.unitId).map((l) => l.accountId));
+      const lateFeeAfter = all
+        .filter(
+          (x) =>
+            x.kind === 'late_fee' &&
+            !cancelled.has(x.transactionId) &&
+            !!t.dueDate &&
+            x.date > t.dueDate &&
+            x.lines.some((l) => l.side === 'debit' && accounts.has(l.accountId)),
+        )
+        .map((x) => x.transactionId);
+      out.push({
+        transactionId: id,
+        state: block ? 'blocked' : 'reversible',
+        ...(block ? { code: block.code, message: block.message } : {}),
+        ...(lateFeeAfter.length ? { lateFeeAfter } : {}),
+      });
+    }
+    return out;
+  }
+
+  async function reverseTransaction(ctx: FinanceContext, transactionId: string, body: unknown) {
+    assertId(transactionId, 'transactionId');
+    const o = asObject(body);
+    const reason = reqString(o, 'reason', 300);
+    const date = optDate(o, 'date') ?? today();
+
+    const original = await loadTx(ctx, transactionId);
+    const blocked = await reversalBlockOf(ctx, original);
+    if (blocked) throw new FinanceError('unprocessable', blocked.message);
     const idemId = `REV_${transactionId}`;
     const fp = fingerprint({ op: 'reversal', transactionId, reason, date });
     const replay = await replayOf(ctx, idemId, fp).catch((err) => {
@@ -2531,6 +2686,9 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
     chargeUnit,
     chargeBulk,
     previewBulk,
+    /** Finans 2.3: sayac donemi kalemi (hedef cari destekli) ve toplu ozet olayi. */
+    chargeMeterLine,
+    recordDuesBatchSummary,
     recordPayment,
     recordOnlinePayment,
     /** Faz B2: banka satiri eslestirme ve geri alma. */
@@ -2544,6 +2702,8 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
     recordBankPayablePayment,
     recordExpense,
     reverseTransaction,
+    /** Finans 2.3: toplu geri alma onizlemesi (ayni engel kurallari). */
+    reversalStatus,
     getUnitBalance,
     /** Sistem hesaplari (kasa, banka, gelir...) yoksa olusturur (cari kapama servisi kullanir). */
     ensureSystemAccounts,
