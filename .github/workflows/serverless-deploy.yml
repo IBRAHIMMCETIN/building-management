@@ -225,6 +225,7 @@ jobs:
         if: steps.creds.outputs.mode != 'none'
         # Plan yalnizca okur; state kilidi alinmaz ki main'deki apply ile cakismasin.
         run: |
+          set -o pipefail
           terraform -chdir=$TF_DIR plan -lock=false -no-color -out=tfplan | tee plan.txt
           {
             echo "### Terraform plan (\`${{ needs.target.outputs.env }}\`, PR #${{ github.event.pull_request.number }})"
@@ -294,6 +295,7 @@ jobs:
       # Plan ve apply ayni iste: uygulanan, tam olarak incelenen plandir.
       - name: terraform plan
         run: |
+          set -o pipefail
           terraform -chdir=$TF_DIR plan -no-color -out=tfplan | tee plan.txt
           {
             echo "### Terraform plan (\`${{ needs.target.outputs.env }}\`)"
