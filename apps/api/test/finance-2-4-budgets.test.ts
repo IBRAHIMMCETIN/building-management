@@ -56,9 +56,7 @@ function createFakeBudgetRepo() {
     },
     async write(_apt, w) {
       for (const p of w.puts) if (versionOf(p.budget) !== p.expectedVersion) throw new BudgetConflictError();
-      if (w.remove && versionOf(w.remove.budget) !== w.remove.expectedVersion) throw new BudgetConflictError();
       for (const p of w.puts) docs.set(p.budget.SK, structuredClone(p.budget));
-      if (w.remove) docs.delete(w.remove.budget.SK);
       if (w.audit) audits.push(w.audit);
     },
   };
@@ -170,7 +168,13 @@ describe('butce yasam dongusu', () => {
     const w = world();
     const b = await w.service.create(ctx, { year: 2027 });
     await expect(w.service.approve(ctx, b.budgetId, { version: 1, decisionRef: 'K', decisionDate: '2026-11-01' })).rejects.toThrow(/Boş bütçe/);
+    await expect(w.service.remove(ctx, b.budgetId, { version: 9 })).rejects.toMatchObject({ code: 'conflict' });
     expect(await w.service.remove(ctx, b.budgetId, { version: 1 })).toEqual({ deleted: true });
+    // Kayit silinmez (DeleteItem yetkisi yok): `discarded` olarak kalir, listede ve okumada gorunmez;
+    // yeni taslak bir sonraki revizyonu alir.
+    expect([...w.budgets.docs.values()].map((d) => d.status)).toEqual(['discarded']);
+    expect((await w.service.list(ctx, { year: '2027' })).items).toEqual([]);
+    expect((await w.service.create(ctx, { year: 2027 })).budgetId).toBe('2027-r2');
     await expect(w.service.get(ctx, b.budgetId)).rejects.toMatchObject({ code: 'not_found' });
     await expect(w.service.get(ctx, 'garbage')).rejects.toBeInstanceOf(FinanceError);
   });

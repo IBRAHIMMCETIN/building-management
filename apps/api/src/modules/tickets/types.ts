@@ -3,13 +3,14 @@
  *
  *   TICKET#<ticketId>                         talep (surumlu)
  *   TKEV#<ticketId>#<ts>#<eventId>            zaman cizelgesi (append-only)
- *   TKASSIGN#<userId>#<ticketId>              gorevli indeksi (atama ile ayni yazimda)
- *   TKUNIT#<unitId>#<ticketId>                daire indeksi (sakin portali)
+ *   TKUNIT#<unitId>#<ticketId>                daire indeksi (sakin portali; yalnizca eklenir, konum
+ *                                             degisince eskisi kalir, okuma guncel konuma gore suzer)
  *   TKUSER#<userId>#<ticketId>                acan kisi indeksi (sakin portali)
  *   TKIDEM#<idempotencyKey>                   olusturma idempotency kaydi
  *   CTR#ticket                                okunur numara sayaci (T-000123)
  *
- * Talep hicbir zaman silinmez; iptal ve kapanis birer durumdur.
+ * Hicbir kayit silinmez (API ve zamanlayici Lambda'larinin DeleteItem yetkisi yok); iptal ve kapanis
+ * birer durumdur.
  */
 import type { AuditFields, IsoDateTime, TableKeys } from '../core/types.js';
 
@@ -165,8 +166,6 @@ export const ticketKeys = {
     SK: `TKEV#${ticketId}#${at}#${eventId}`,
   }),
   eventPrefix: (ticketId: string) => `TKEV#${ticketId}#`,
-  assignee: (apartmentId: string, userId: string, ticketId: string): TableKeys => ({ PK: `APT#${apartmentId}`, SK: `TKASSIGN#${userId}#${ticketId}` }),
-  assigneePrefix: (userId: string) => `TKASSIGN#${userId}#`,
   unit: (apartmentId: string, unitId: string, ticketId: string): TableKeys => ({ PK: `APT#${apartmentId}`, SK: `TKUNIT#${unitId}#${ticketId}` }),
   unitPrefix: (unitId: string) => `TKUNIT#${unitId}#`,
   user: (apartmentId: string, userId: string, ticketId: string): TableKeys => ({ PK: `APT#${apartmentId}`, SK: `TKUSER#${userId}#${ticketId}` }),

@@ -214,7 +214,6 @@ describe('akis', () => {
     const { ticket } = await w.open(ctxs.tenant);
     const id = ticket.ticketId;
     expect((await w.assign(ctxs.mgr, id, 'staff-1')).ticket).toMatchObject({ status: 'assigned', assigneeId: 'staff-1' });
-    expect([...w.fake.items.keys()].some((k) => k.endsWith(`TKASSIGN#staff-1#${id}`))).toBe(true);
     await expect(w.assign(ctxs.mgr, id, 'old-staff')).rejects.toMatchObject({ code: 'unprocessable' });
 
     expect((await w.act(ctxs.staff1, id, 'start')).ticket.status).toBe('in_progress');
@@ -231,8 +230,7 @@ describe('akis', () => {
     expect(tenantView.ticket.actions).toEqual(['confirm', 'reopen']);
     const closed = (await w.act(ctxs.tenant, id, 'confirm', { rating: 5, note: 'Teşekkürler' })).ticket;
     expect(closed).toMatchObject({ status: 'closed', closeKind: 'confirmed', rating: { score: 5, note: 'Teşekkürler' } });
-    // Biten isin gorevli indeksi kalkar; atanan kisi bilgisi talepte kalir.
-    expect([...w.fake.items.keys()].some((k) => k.includes('TKASSIGN#'))).toBe(false);
+    // Atanan kisi bilgisi kapanan talepte kalir.
     expect((await w.service.get(ctxs.mgr, id)).ticket).toMatchObject({ assigneeId: 'staff-1' });
 
     const kinds = (await w.service.get(ctxs.mgr, id)).events.map((e) => (e.kind === 'status_changed' ? `${e.from}>${e.to}` : e.kind));
@@ -296,7 +294,7 @@ describe('akis', () => {
     expect(u).toMatchObject({ priority: 'urgent', dueAt: '2026-11-25T13:00:00.000Z', version: 2 });
     const keys = [...w.fake.items.keys()];
     expect(keys.some((k) => k.includes(`TKUNIT#u2#${id}`))).toBe(true);
-    expect(keys.some((k) => k.includes(`TKUNIT#u1#${id}`))).toBe(false);
+    // Eski daire indeksi silinmez (DeleteItem yok); okuma guncel konuma gore suzer (asagida malik goremez).
     // Daire tasindi: eski dairenin maliki artik goremez, yeni daire maliki gorur; acan kisi gorur.
     await expect(w.service.get(ctxs.owner, id)).rejects.toMatchObject({ code: 'not_found' });
     expect((await w.service.get(ctxs.other, id)).ticket.ticketId).toBe(id);
@@ -400,10 +398,10 @@ describe('talep deposu (DynamoDB)', () => {
       counter: { expected: 4 },
       idempotency: { PK: `APT#${APT}`, SK: 'TKIDEM#k1', entityType: 'TICKET_IDEMPOTENCY', apartmentId: APT, ticketId: 't1', fingerprint: 'f', createdAt: T0 },
       putIndexes: [{ PK: `APT#${APT}`, SK: 'TKUSER#u#t1', entityType: 'TICKET_INDEX', apartmentId: APT, ticketId: 't1', createdAt: T0 }],
-      deleteIndexes: [{ PK: `APT#${APT}`, SK: 'TKASSIGN#s#t1' }],
     });
     const items = ddb.commandCalls(TransactWriteCommand)[0]!.args[0].input.TransactItems!;
-    expect(items.map((i) => Object.keys(i)[0])).toEqual(['Put', 'Put', 'Update', 'Put', 'Delete']);
+    // Delete yok: API'nin DeleteItem yetkisi yok.
+    expect(items.map((i) => Object.keys(i)[0])).toEqual(['Put', 'Put', 'Update', 'Put']);
     expect(items[2]?.Update).toMatchObject({ ConditionExpression: '#value = :expected', ExpressionAttributeValues: { ':next': 5, ':expected': 4 } });
 
     const failAt = (idx: number) =>

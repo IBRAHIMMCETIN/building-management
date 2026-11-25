@@ -435,19 +435,16 @@ export function createTicketService(overrides: Partial<TicketServiceDeps> = {}) 
 
     const ts = stamp();
     Object.assign(next, touch(ctx, ticket, ts));
+    // Indeksler yalnizca eklenir (API'nin DeleteItem yetkisi yok): eski dairenin indeksi kalir, okuma
+    // `canView` ile talebin guncel konumuna gore suzer.
     const putIndexes: TicketIndex[] = [];
-    const deleteIndexes = [];
-    if (changes.location) {
-      if (ticket.location.kind === 'unit') deleteIndexes.push(ticketKeys.unit(ctx.apartmentId, ticket.location.unitId, ticketId));
-      if (next.location.kind === 'unit') putIndexes.push(index(ticketKeys.unit(ctx.apartmentId, next.location.unitId, ticketId), next));
-    }
+    if (changes.location && next.location.kind === 'unit') putIndexes.push(index(ticketKeys.unit(ctx.apartmentId, next.location.unitId, ticketId), next));
     await write(ctx.apartmentId, {
       at: ts,
       ticket: next,
       expectedVersion: version,
       events: [newEvent(ctx, next, ts, { kind: 'field_changed', visibility: 'internal', changes })],
       putIndexes,
-      deleteIndexes,
       audit: { apartmentId: ctx.apartmentId, action: 'ticket.update', target: { type: 'ticket', id: ticketId }, details: { number: ticket.number, fields: Object.keys(changes) } },
     });
     return { ticket: ticketView(actor, next, settings) };
@@ -495,8 +492,6 @@ export function createTicketService(overrides: Partial<TicketServiceDeps> = {}) 
       ticket: next,
       expectedVersion: version,
       events,
-      putIndexes: assigneeId ? [index(ticketKeys.assignee(ctx.apartmentId, assigneeId, ticketId), next)] : [],
-      deleteIndexes: ticket.assigneeId ? [ticketKeys.assignee(ctx.apartmentId, ticket.assigneeId, ticketId)] : [],
       outbox: assigneeId ? [domainEvent('TICKET_ASSIGNED', ctx, actor, next)] : [],
       audit: { apartmentId: ctx.apartmentId, action: 'ticket.assign', target: { type: 'ticket', id: ticketId }, details: { number: ticket.number, from: ticket.assigneeId ?? null, to: assigneeId } },
     });
@@ -527,8 +522,6 @@ export function createTicketService(overrides: Partial<TicketServiceDeps> = {}) 
 
     const ts = now.toISOString();
     const next: Ticket = { ...ticket, status: check.to, photoCount: ticket.photoCount + photoKeys.length, ...touch(ctx, ticket, ts) };
-    const putIndexes: TicketIndex[] = [];
-    const deleteIndexes = [];
     switch (action) {
       case 'resolve':
         next.resolvedAt = ts;
@@ -553,8 +546,6 @@ export function createTicketService(overrides: Partial<TicketServiceDeps> = {}) 
         next.cancelKind = actor.kind === 'manager' && ticket.createdBy !== ctx.userId ? 'rejected' : 'withdrawn';
         break;
     }
-    // Biten taleplerin gorevli indeksi kaldirilir (Islerim listesi yalnizca acik isler).
-    if (TERMINAL_STATUSES.includes(next.status) && ticket.assigneeId) deleteIndexes.push(ticketKeys.assignee(ctx.apartmentId, ticket.assigneeId, ticketId));
 
     const events = [
       newEvent(ctx, next, ts, { kind: 'status_changed', visibility: 'public', from: ticket.status, to: next.status, ...(note ? { body: note } : {}), ...(photoKeys.length ? { photoKeys } : {}) }),
@@ -566,8 +557,6 @@ export function createTicketService(overrides: Partial<TicketServiceDeps> = {}) 
       ticket: next,
       expectedVersion: version,
       events,
-      putIndexes,
-      deleteIndexes,
       outbox: [
         domainEvent('TICKET_STATUS_CHANGED', ctx, actor, next, {
           action,

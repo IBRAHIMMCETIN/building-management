@@ -49,7 +49,6 @@ export function createFakeTicketRepo() {
       if (w.counter) items.set(`APT#${apt}|CTR#ticket`, { PK: `APT#${apt}`, SK: 'CTR#ticket', value: w.counter.expected + 1 });
       for (const e of w.events ?? []) items.set(k(e), structuredClone(e) as never);
       for (const i of w.putIndexes ?? []) items.set(k(i), structuredClone(i) as never);
-      for (const d of w.deleteIndexes ?? []) items.delete(k(d));
       if (w.audit) audits.push(w.audit);
       outbox.push(...(w.outbox ?? []));
     },

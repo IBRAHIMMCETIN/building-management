@@ -215,7 +215,7 @@ export const budgetSchema = z.object({
   budgetId: z.string(),
   year: z.number().int(),
   revision: z.number().int(),
-  status: z.enum(['draft', 'approved', 'superseded']),
+  status: z.enum(['draft', 'approved', 'superseded', 'discarded']),
   title: z.string().optional(),
   lines: z.array(budgetLineSchema),
   dues: z.object({ distributionKey: z.enum(DUES_KEYS), liableParty: z.enum(['owner', 'occupant']), incomeAccountId: z.string().optional() }).optional(),

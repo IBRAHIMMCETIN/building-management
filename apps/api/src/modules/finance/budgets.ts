@@ -72,7 +72,7 @@ export function createBudgetService(overrides: Partial<BudgetServiceDeps> & Pick
   async function load(ctx: BudgetContext, budgetId: string): Promise<Budget> {
     const { year, revision } = parseBudgetId(budgetId);
     const found = (await deps.repo.list(ctx.apartmentId, year)).find((b) => b.revision === revision);
-    if (!found) throw new FinanceError('not_found', 'Bütçe bulunamadı');
+    if (!found || found.status === 'discarded') throw new FinanceError('not_found', 'Bütçe bulunamadı');
     return found;
   }
 
@@ -143,7 +143,7 @@ export function createBudgetService(overrides: Partial<BudgetServiceDeps> & Pick
   async function list(ctx: BudgetContext, q: { year?: string } = {}) {
     let year: number | undefined;
     if (q.year !== undefined && q.year !== '') year = parseYear(Number(q.year));
-    return { items: (await deps.repo.list(ctx.apartmentId, year)).map(view) };
+    return { items: (await deps.repo.list(ctx.apartmentId, year)).filter((b) => b.status !== 'discarded').map(view) };
   }
 
   async function get(ctx: BudgetContext, budgetId: string) {
@@ -216,14 +216,19 @@ export function createBudgetService(overrides: Partial<BudgetServiceDeps> & Pick
     return view(updated);
   }
 
+  /**
+   * Taslagi siler. Kayit fiziksel olarak silinmez (API'nin DeleteItem yetkisi yok, proje kurali):
+   * `discarded` durumuna alinir; listelerde ve okumada gorunmez, revizyon numarasi tekrar kullanilmaz.
+   */
   async function remove(ctx: BudgetContext, budgetId: string, body: unknown) {
     const version = reqInt(asObject(body), 'version', 1, Number.MAX_SAFE_INTEGER);
     const current = await load(ctx, budgetId);
     if (current.status !== 'draft') throw new FinanceError('unprocessable', 'Yalnızca taslak bütçe silinebilir');
+    if (current.version !== version) throw new FinanceError('conflict', 'Bütçe başka bir işlemle değişti; sayfayı yenileyin');
+    const discarded: Budget = { ...current, status: 'discarded', updatedAt: ts(), updatedBy: ctx.userId, version: version + 1 };
     await write(() =>
       deps.repo.write(ctx.apartmentId, {
-        puts: [],
-        remove: { budget: current, expectedVersion: version },
+        puts: [{ budget: discarded, expectedVersion: version }],
         audit: { apartmentId: ctx.apartmentId, action: 'finance.budget_delete', target: { type: 'budget', id: budgetId }, actorId: ctx.userId },
       }),
     );

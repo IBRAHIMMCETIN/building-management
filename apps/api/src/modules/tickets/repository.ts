@@ -33,8 +33,8 @@ export type TicketWrite = {
   /** Zaman damgasi (outbox kayitlari icin). */
   at: string;
   events?: TicketEvent[];
+  /** Indeksler yalnizca eklenir: API ve zamanlayicinin DeleteItem yetkisi yok (proje kurali). */
   putIndexes?: TicketIndex[];
-  deleteIndexes?: TableKeys[];
   /** Yeni talepte numara sayaci: beklenen mevcut deger. */
   counter?: { expected: number };
   idempotency?: TicketIdempotency;
@@ -46,7 +46,7 @@ export type TicketRepository = {
   get(apartmentId: string, ticketId: string): Promise<Ticket | undefined>;
   list(apartmentId: string): Promise<Ticket[]>;
   getMany(apartmentId: string, ticketIds: readonly string[]): Promise<Ticket[]>;
-  /** Indeks on ekine gore talep kimlikleri (TKASSIGN#/TKUNIT#/TKUSER#). */
+  /** Indeks on ekine gore talep kimlikleri (TKUNIT#/TKUSER#). Okuyan, talebin guncel haliyle suzer. */
   listIndexed(apartmentId: string, prefix: string): Promise<string[]>;
   listEvents(apartmentId: string, ticketId: string): Promise<TicketEvent[]>;
   getIdempotency(apartmentId: string, key: string): Promise<TicketIdempotency | undefined>;
@@ -139,7 +139,6 @@ export function createTicketRepository(): TicketRepository {
       }
       for (const e of w.events ?? []) add('version', { Put: { TableName: tableName, Item: e, ConditionExpression: 'attribute_not_exists(PK)' } });
       for (const i of w.putIndexes ?? []) add('version', { Put: { TableName: tableName, Item: i } });
-      for (const k of w.deleteIndexes ?? []) add('version', { Delete: { TableName: tableName, Key: { PK: k.PK, SK: k.SK } } });
       for (const o of toOutboxItems(w.outbox ?? [], w.at, apartmentId)) {
         add('version', { Put: { TableName: tableName, Item: o, ConditionExpression: 'attribute_not_exists(PK)' } });
       }
