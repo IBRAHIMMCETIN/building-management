@@ -199,8 +199,13 @@ export function createTicketService(overrides: Partial<TicketServiceDeps> = {}) 
       canAssign: checkAssign(actor, t, actor.kind === 'staff' ? actor.userId : null, settings).ok,
       canEdit: canEditFields(actor),
     };
-    if (actor.kind !== 'resident' && actor.kind !== 'security') return base;
-    const { assigneeId, createdBy: _cb, updatedBy: _ub, ...safe } = base;
+    if (actor.kind !== 'resident' && actor.kind !== 'security') {
+      // O1-4: masraflar yalnizca yonetim ve denetciye.
+      if (actor.kind !== 'staff') return base;
+      const { costSummary: _cost, ...staffView } = base;
+      return staffView;
+    }
+    const { assigneeId, createdBy: _cb, updatedBy: _ub, costSummary: _cs, ...safe } = base;
     return { ...safe, assigned: !!assigneeId };
   }
 

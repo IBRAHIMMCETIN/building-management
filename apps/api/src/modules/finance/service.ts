@@ -29,6 +29,7 @@ import {
   type ReplaceRecord,
   financeKeys,
   financeRepository,
+  ledgerAuditDraft,
 } from './repository.js';
 import {
   cancelledTransactions,
@@ -45,6 +46,7 @@ import {
   type Account,
   type Expense,
   type ExpenseInvoice,
+  type ExpenseWorkLink,
   type Payment,
   PAYMENT_METHODS,
   type PaymentMethod,
@@ -152,7 +154,7 @@ export const DEFAULT_EXPENSE_ACCOUNTS = [
   { accountId: 'exp-staff', name: 'Personel / Kapıcı' },
   { accountId: 'exp-security', name: 'Güvenlik' },
   { accountId: 'exp-garden', name: 'Bahçe Bakımı' },
-  { accountId: 'exp-repair', name: 'Tamir / Onarım' },
+  { accountId: 'exp-repair', name: 'Bakım / Onarım' },
   { accountId: 'exp-management', name: 'Yönetim Giderleri' },
   { accountId: 'exp-other', name: 'Diğer Giderler' },
 ] as const;
@@ -165,7 +167,37 @@ export const DEFAULT_EXPENSE_ACCOUNTS = [
 export const DEFAULT_INCOME_ACCOUNTS = [
   { accountId: 'income-fixtures', name: 'Demirbaş Gelirleri' },
   { accountId: 'income-heating', name: 'Isınma / Yakıt Gelirleri' },
+  /** O1-4: sakin kusurlu daire ici onarim masrafinin daireye yansitilmasi. */
+  { accountId: 'income-repair-recharge', name: 'Onarım Yansıtma Gelirleri' },
 ] as const;
+
+/** O1-4: onarim yansitma gelir hesabi. */
+export const REPAIR_RECHARGE_INCOME = 'income-repair-recharge';
+
+/**
+ * O1-4: is (ariza talebi / bakim gorevi) baglantisi. Defter yazimiyla AYNI atomik islemde
+ * yazilacak surumlu belgeler (talep / gorev ozeti) ve yeni belgeler (EXPLINK kilidi, olay).
+ * `build` her denemede yeniden cagrilir: es zamanli degisiklikte guncel surumle kurulur.
+ */
+export type WorkLinkWrite = {
+  replaceRecords?: ReplaceRecord[];
+  newDocs?: (TableKeys & { entityType: string })[];
+  /** Denetim kaydina eklenecek ayrintilar (is baglantisi). */
+  auditDetails?: Record<string, unknown>;
+};
+export type WorkLinkHook = {
+  /** Idempotency parmak izine eklenir (ayni anahtar baska ise kullanilamaz). */
+  fp: Record<string, unknown>;
+  /** Gider belgesine yazilacak is baglantisi. */
+  expenseLink?: ExpenseWorkLink;
+  /** Islem referansi (tahakkuk): ornegin `TICKET:T-000123`. */
+  reference?: string;
+  build(r: { transaction: Transaction; expense?: Expense }): Promise<WorkLinkWrite>;
+};
+
+function withAuditDetails(draft: AuditDraft, extra?: Record<string, unknown>): AuditDraft {
+  return extra ? { ...draft, details: { ...(draft.details ?? {}), ...extra } } : draft;
+}
 
 /** Hesap plani kodu: harf, rakam, nokta, tire (1-20). */
 export const ACCOUNT_CODE_RE = /^[0-9A-Za-z][0-9A-Za-z.-]{0,19}$/;
@@ -778,6 +810,8 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
       incomeAccountId?: string;
       /** Yazimla ayni atomik islemde outbox'a yazilacak olay (islem kimligi belli olunca uretilir). */
       event?: (tx: Transaction) => NewEvent;
+      /** O1-4: ayni atomik yazimda is belgeleri (onarim yansitma). */
+      link?: WorkLinkHook;
     },
   ): Promise<DuesResult> {
     const replayed = async (transactionId: string): Promise<DuesResult> => {
@@ -823,20 +857,77 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
       ...(p.vacant ? { vacant: true as const } : {}),
       lines: [...debitLines, { accountId: p.incomeAccountId ?? SYSTEM_ACCOUNTS.incomeDues, side: 'credit', amount: p.amount }],
     });
-    try {
-      await repo.postTransaction({
-        transaction: tx,
-        idempotency: { id: p.idemId, fingerprint: p.fp },
-        ...(p.event ? { outbox: [toEvent(withCoOwnerItems(p.event(tx), p.unitId, coOwnerParts))] } : {}),
-      });
-      return { transaction: tx, replayed: false, liableParty: p.party, vacant: p.vacant === true, ...(coOwnerParts ? { coOwnerParts } : {}) };
-    } catch (err) {
-      if (err instanceof LedgerConflictError && err.reason === 'duplicate') {
-        const again = await replayOf(ctx, p.idemId, p.fp);
-        if (again) return replayed(again.transactionId);
+    const outbox = p.event ? [toEvent(withCoOwnerItems(p.event(tx), p.unitId, coOwnerParts))] : undefined;
+    for (let attempt = 1; ; attempt++) {
+      try {
+        if (p.link) {
+          const extra = await p.link.build({ transaction: tx });
+          const input = {
+            transactions: [tx],
+            idempotency: { id: p.idemId, fingerprint: p.fp },
+            ...(outbox ? { outbox } : {}),
+            ...(extra.replaceRecords?.length ? { replaceRecords: extra.replaceRecords } : {}),
+            ...(extra.newDocs?.length ? { newDocs: extra.newDocs } : {}),
+          };
+          await repo.postBatch({ ...input, audit: withAuditDetails(ledgerAuditDraft(input, ctx.apartmentId), extra.auditDetails) });
+        } else {
+          await repo.postTransaction({ transaction: tx, idempotency: { id: p.idemId, fingerprint: p.fp }, ...(outbox ? { outbox } : {}) });
+        }
+        return { transaction: tx, replayed: false, liableParty: p.party, vacant: p.vacant === true, ...(coOwnerParts ? { coOwnerParts } : {}) };
+      } catch (err) {
+        if (err instanceof LedgerConflictError && err.reason === 'duplicate') {
+          const again = await replayOf(ctx, p.idemId, p.fp);
+          if (again) return replayed(again.transactionId);
+        }
+        if (err instanceof LedgerConflictError && err.reason === 'precondition' && p.link && attempt < MAX_ATTEMPTS) continue;
+        throw mapConflict(err);
       }
-      throw mapConflict(err);
     }
+  }
+
+  /**
+   * O1-4: deftere yazim olmadan yalnizca is belgeleri (var olan masrafi baglama / bagi kaldirma).
+   * Idempotent: ayni anahtar + ayni icerik -> `replayed`. Es zamanli belge degisikliginde
+   * `build` guncel surumle yeniden cagrilir.
+   */
+  async function postWorkDocuments(
+    ctx: FinanceContext,
+    p: { idempotencyKey: string; fp: Record<string, unknown>; action: string; target: { type: string; id: string }; reason?: string; build: () => Promise<WorkLinkWrite> },
+  ): Promise<{ replayed: boolean }> {
+    assertId(p.idempotencyKey, 'idempotencyKey');
+    const fp = fingerprint(p.fp);
+    for (let attempt = 1; ; attempt++) {
+      if (await replayOf(ctx, p.idempotencyKey, fp)) return { replayed: true };
+      const w = await p.build();
+      if (!w.replaceRecords?.length && !w.newDocs?.length) throw new Error('Yazilacak belge yok');
+      try {
+        await repo.postBatch({
+          transactions: [],
+          idempotency: { id: p.idempotencyKey, fingerprint: fp },
+          ...(w.replaceRecords?.length ? { replaceRecords: w.replaceRecords } : {}),
+          ...(w.newDocs?.length ? { newDocs: w.newDocs } : {}),
+          audit: { apartmentId: ctx.apartmentId, action: p.action, target: p.target, actorId: ctx.userId, ...(p.reason ? { reason: p.reason } : {}), ...(w.auditDetails ? { details: w.auditDetails } : {}) },
+        });
+        return { replayed: false };
+      } catch (err) {
+        if (err instanceof LedgerConflictError && (err.reason === 'duplicate' || err.reason === 'precondition') && attempt < MAX_ATTEMPTS) continue;
+        throw mapConflict(err);
+      }
+    }
+  }
+
+  /** O1-4: gider kaydi, islemi ve ters kayitla iptal edilip edilmedigi (REV_ isareti). */
+  async function expenseInfo(ctx: FinanceContext, expenseId: string) {
+    assertId(expenseId, 'expenseId');
+    const expense = await repo.getExpense(ctx.apartmentId, expenseId);
+    if (!expense) throw new FinanceError('not_found', 'Gider kaydi bulunamadi');
+    const transaction = await loadTx(ctx, expense.transactionId);
+    return { expense, transaction, reversed: await isReversed(ctx, expense.transactionId) };
+  }
+
+  /** Islem ters kayitla iptal edildi mi (elle ve banka geri almasi `REV_<islem>` isaretini yazar). */
+  async function isReversed(ctx: FinanceContext, transactionId: string): Promise<boolean> {
+    return !!(await repo.getIdempotency(ctx.apartmentId, `REV_${transactionId}`));
   }
 
   async function loadTx(ctx: FinanceContext, transactionId: string): Promise<Transaction> {
@@ -846,7 +937,7 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
   }
 
   /** Tek bir bagimsiz bolume aidat/borc tahakkuku. */
-  async function chargeUnit(ctx: FinanceContext, body: unknown): Promise<DuesResult> {
+  async function chargeUnit(ctx: FinanceContext, body: unknown, link?: WorkLinkHook): Promise<DuesResult> {
     const o = asObject(body);
     const key = reqKey(o);
     const unitId = assertId(o.unitId, 'unitId');
@@ -867,9 +958,10 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
     const result = await postDues(ctx, {
       // Parmak izi istenen tarafla hesaplanir: ayni istek, doluluk degisse de ayni istektir.
       idemId: key,
-      fp: fingerprint({ op: 'dues', unitId, party, amount, date, dueDate, description, ...incomeFp }),
+      fp: fingerprint({ op: 'dues', unitId, party, amount, date, dueDate, description, ...incomeFp, ...(link ? { link: link.fp } : {}) }),
       unitId,
       unitNumber: unit.number,
+      ...(link ? { link, ...(link.reference ? { reference: link.reference } : {}) } : {}),
       incomeAccountId,
       party: target.party,
       vacant: target.vacant,
@@ -1616,7 +1708,7 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
   // Gider
   // -------------------------------------------------------------------------
 
-  async function recordExpense(ctx: FinanceContext, body: unknown) {
+  async function recordExpense(ctx: FinanceContext, body: unknown, link?: WorkLinkHook) {
     const o = asObject(body);
     const key = reqKey(o);
     const expenseAccountId = assertId(o.expenseAccountId, 'expenseAccountId');
@@ -1639,6 +1731,7 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
       supplier,
       invoiceNumber,
       ...(invoiceUpload ? { invoiceUploadId: invoiceUpload.uploadId } : {}),
+      ...(link ? { link: link.fp } : {}),
     });
     const replay = await replayOf(ctx, key, fp);
     if (replay) return expenseResult(ctx, replay, true);
@@ -1695,17 +1788,33 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
         invoiceNumber,
         invoice,
         transactionId: tx.transactionId,
+        ...(link?.expenseLink ? { link: link.expenseLink } : {}),
         createdAt: tx.createdAt,
         createdBy: ctx.userId,
       };
       try {
-        await repo.postTransaction({
-          transaction: tx,
-          idempotency: { id: key, fingerprint: fp, recordId: expenseId },
-          // Kasa/banka yetersiz bakiye kontrolu es zamanli islemlere karsi surumle korunur.
-          expectedVersions: isFunds ? { [creditAccountId]: credit.version } : undefined,
-          record: expense,
-        });
+        // Kasa/banka yetersiz bakiye kontrolu es zamanli islemlere karsi surumle korunur.
+        const expectedVersions = isFunds ? { [creditAccountId]: credit.version } : undefined;
+        if (link) {
+          // O1-4: gider + is ozeti + EXPLINK kilidi + olay TEK atomik yazim.
+          const extra = await link.build({ transaction: tx, expense });
+          const input = {
+            transactions: [tx],
+            idempotency: { id: key, fingerprint: fp, recordId: expenseId },
+            expectedVersions,
+            records: [expense],
+            ...(extra.replaceRecords?.length ? { replaceRecords: extra.replaceRecords } : {}),
+            ...(extra.newDocs?.length ? { newDocs: extra.newDocs } : {}),
+          };
+          await repo.postBatch({ ...input, audit: withAuditDetails(ledgerAuditDraft(input, ctx.apartmentId), extra.auditDetails) });
+        } else {
+          await repo.postTransaction({
+            transaction: tx,
+            idempotency: { id: key, fingerprint: fp, recordId: expenseId },
+            expectedVersions,
+            record: expense,
+          });
+        }
         return { expense, transaction: tx, replayed: false };
       } catch (err) {
         if (err instanceof LedgerConflictError) {
@@ -1714,6 +1823,8 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
             if (again) return expenseResult(ctx, again, true);
           }
           if (err.reason === 'version' && attempt < MAX_ATTEMPTS) continue;
+          // Is belgesi (talep / gorev) es zamanli degisti: guncel surumle yeniden kur.
+          if (err.reason === 'precondition' && link && attempt < MAX_ATTEMPTS) continue;
         }
         throw mapConflict(err);
       }
@@ -2787,6 +2898,10 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
     recordPayablePayment,
     recordBankPayablePayment,
     recordExpense,
+    /** O1-4: is masraf baglantisi. */
+    postWorkDocuments,
+    expenseInfo,
+    isReversed,
     reverseTransaction,
     /** Finans 2.3: toplu geri alma onizlemesi (ayni engel kurallari). */
     reversalStatus,

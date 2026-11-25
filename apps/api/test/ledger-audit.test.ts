@@ -282,8 +282,8 @@ describe('defter denetimi - DynamoDB kaynagi', () => {
     ddb.on(GetCommand).resolves({ Item: { value: 7 } });
     const snap = await createDynamoAuditSource().load(APT);
     const prefixes = ddb.commandCalls(QueryCommand).map((c) => c.args[0].input.ExpressionAttributeValues?.[':skp']);
-    // Finans 2.4: donem kilidi ve kapanan donemler islemlerden ONCE okunur.
-    expect(prefixes).toEqual(['PI#', 'CLOSURE#', 'BANKSTMT#', 'BANKTX#', 'BANKMATCH#', 'MPERIOD#', 'MDLINE#', 'FPERIOD#', 'TX#', 'LE#', 'ACCT#', 'PAY#']);
+    // Finans 2.4: donem kilidi ve kapanan donemler; O1-4: is ozetleri ve masraf kilitleri islemlerden ONCE okunur.
+    expect(prefixes).toEqual(['PI#', 'CLOSURE#', 'BANKSTMT#', 'BANKTX#', 'BANKMATCH#', 'MPERIOD#', 'MDLINE#', 'FPERIOD#', 'TICKET#', 'MTASK#', 'EXPLINK#', 'TX#', 'LE#', 'ACCT#', 'PAY#']);
     expect(ddb.commandCalls(QueryCommand).every((c) => c.args[0].input.ConsistentRead === true)).toBe(true);
     expect(ddb.commandCalls(GetCommand).map((c) => c.args[0].input.Key)).toEqual([
       { PK: 'APT#apt-1', SK: 'FINLOCK' },

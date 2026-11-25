@@ -296,9 +296,14 @@ export type Expense = TableKeys & {
   /** Fatura dosyasi (private S3: apartments/{apt}/invoices/...). */
   invoice?: ExpenseInvoice;
   transactionId: string;
+  /** O1-4: talep / bakim gorevinden kaydedildiyse is baglantisi (gosterim). */
+  link?: ExpenseWorkLink;
   createdAt: IsoDateTime;
   createdBy: string;
 };
+
+/** O1-4: masrafin bagli oldugu is (ariza talebi veya bakim gorevi). */
+export type ExpenseWorkLink = { type: 'ticket' | 'maintenance'; id: string; label: string };
 
 export type IdempotencyRecord = {
   transactionId: string;

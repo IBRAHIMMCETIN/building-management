@@ -12,6 +12,7 @@
  * Hicbir kayit silinmez (API ve zamanlayici Lambda'larinin DeleteItem yetkisi yok); iptal ve kapanis
  * birer durumdur.
  */
+import type { CostSummary } from '../workcosts/types.js';
 import type { AuditFields, IsoDateTime, TableKeys } from '../core/types.js';
 
 export const TICKET_CATEGORIES = [
@@ -103,8 +104,8 @@ export type Ticket = TableKeys &
     rating?: TicketRating;
     reopenCount: number;
     photoCount: number;
-    /** O1-4: bagli masraflar (Finans). */
-    costSummary?: { total: number; expenseIds: string[] };
+    /** O1-4: bagli masraflar ve daireye yansitmalar (Finans). */
+    costSummary?: CostSummary;
   };
 
 export const TICKET_EVENT_KINDS = [
@@ -116,6 +117,8 @@ export const TICKET_EVENT_KINDS = [
   'rated',
   'cost_linked',
   'cost_unlinked',
+  /** O1-4: masrafin daireye yansitilmasi (yonetici onayli tahakkuk). */
+  'cost_charged',
 ] as const;
 export type TicketEventKind = (typeof TICKET_EVENT_KINDS)[number];
 
@@ -139,6 +142,10 @@ export type TicketEvent = TableKeys & {
   changes?: Record<string, [unknown, unknown]>;
   photoKeys?: string[];
   rating?: number;
+  /** O1-4 masraf olaylari (kurus). */
+  amount?: number;
+  expenseId?: string;
+  transactionId?: string;
 };
 
 export type TicketIndex = TableKeys & { entityType: 'TICKET_INDEX'; apartmentId: string; ticketId: string; createdAt: IsoDateTime };

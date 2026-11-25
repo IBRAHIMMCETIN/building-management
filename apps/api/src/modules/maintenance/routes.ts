@@ -1,13 +1,15 @@
 import { type Context, Hono } from 'hono';
 import type { Authenticator, Role } from '../../auth/claims.js';
 import { type Env, authenticateWith, handleError, readJson, requireRole } from '../../http/helpers.js';
+import { mountWorkCostRoutes } from '../workcosts/routes.js';
+import type { WorkCostService } from '../workcosts/service.js';
 import type { MaintenanceContext, MaintenanceService } from './service.js';
 
 const READ_ROLES: readonly Role[] = ['apartment_manager', 'management_company', 'building_staff', 'observer'];
 const STAFF_ROLES: readonly Role[] = ['apartment_manager', 'management_company', 'building_staff'];
 const MANAGE_ROLES: readonly Role[] = ['apartment_manager', 'management_company'];
 
-export type MaintenanceRoutesDeps = { authenticate: Authenticator; service: MaintenanceService };
+export type MaintenanceRoutesDeps = { authenticate: Authenticator; service: MaintenanceService; costs?: WorkCostService };
 
 /**
  * `/api/maintenance` - Faz 3 (O1-3) periyodik bakim.
@@ -29,8 +31,9 @@ export type MaintenanceRoutesDeps = { authenticate: Authenticator; service: Main
  *   POST  /tasks/:id/ticket         { idempotencyKey, title?, description?, priority?, photos? }
  *   POST  /photos/upload-url        { contentType, size }
  *   GET   /tasks/:id/photos/:photoId
+ *   GET|POST /tasks/:id/costs, POST /tasks/:id/costs/:expenseId/unlink   (O1-4)
  */
-export function maintenanceRoutes({ authenticate, service }: MaintenanceRoutesDeps) {
+export function maintenanceRoutes({ authenticate, service, costs }: MaintenanceRoutesDeps) {
   const r = new Hono<Env>();
   r.onError(handleError);
   r.use('*', authenticateWith(authenticate));
@@ -64,6 +67,8 @@ export function maintenanceRoutes({ authenticate, service }: MaintenanceRoutesDe
   });
   r.post('/photos/upload-url', requireRole(STAFF_ROLES), async (c) => c.json(await service.photoUploadUrl(ctx(c), await readJson(c))));
   r.get('/tasks/:id/photos/:photoId', requireRole(READ_ROLES), async (c) => c.json(await service.photo(ctx(c), id(c), c.req.param('photoId') ?? '')));
+  // O1-4: gorev masraflari (bkz. workcosts/routes.ts).
+  if (costs) mountWorkCostRoutes(r, { kind: 'maintenance', base: '/tasks', service: costs, ctx });
 
   return r;
 }

@@ -286,6 +286,19 @@ describe('talep otomatik kapanisi ve SLA listesi', () => {
   });
 });
 
+describe('talep gorunumu: masraf ozeti (O1-4)', () => {
+  it('masraf ozetini yonetim ve denetci gorur, gorevli goremez', async () => {
+    const w = world();
+    const mgr = { apartmentId: APT, userId: 'mgr', role: 'apartment_manager' };
+    const t = (await w.tickets.create(mgr, { idempotencyKey: 'cost-view-1', title: 'Lamba', description: 'x', category: 'electrical', priority: 'normal', location: { kind: 'common', area: 'Lobi' } })).ticket;
+    const item = w.fakeTickets.items.get(`APT#${APT}|TICKET#${t.ticketId}`) as Record<string, unknown>;
+    item.costSummary = { total: 5000, expenseIds: ['e1'] };
+    expect((await w.tickets.get(mgr, t.ticketId)).ticket).toHaveProperty('costSummary.total', 5000);
+    expect((await w.tickets.get(ctxs.observer, t.ticketId)).ticket).toHaveProperty('costSummary');
+    expect((await w.tickets.get(ctxs.staff1, t.ticketId)).ticket).not.toHaveProperty('costSummary');
+  });
+});
+
 describe('gunluk operasyon ozeti', () => {
   const digest = (payload: Partial<DomainEvent<'OPERATIONS_DIGEST'>['payload']> = {}) =>
     buildEvent(

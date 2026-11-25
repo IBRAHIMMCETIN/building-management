@@ -9,6 +9,7 @@ import type { CariClosure } from './closures.js';
 import { cancelledIn, linesOfAccount, readSubledger } from './subledger.js';
 import { financeKeys } from './repository.js';
 import type { Account, LedgerEntry, Payment, Transaction } from './types.js';
+import { type CostSummary, EXPLINK_PREFIX, type ExpenseLinkRecord } from '../workcosts/types.js';
 
 /**
  * Gecelik defter denetimi (`ledger_audit`).
@@ -36,6 +37,9 @@ import type { Account, LedgerEntry, Payment, Transaction } from './types.js';
  *  - meter_period_mismatch    (Finans 2.3) onayli sayac doneminin satir toplami / tahakkuk toplami /
  *                             kalem sayisi fatura tutariyla uyusmuyor; geri alinmis donemde canli kalem var
  *  - meter_period_stuck       (Finans 2.3) donem `posting` / `reversing` ara durumunda 30 dakikadan uzun
+ *  - ticket_cost_mismatch     (O1-4) talep / bakim gorevi masraf ozeti, aktif EXPLINK kilitleri ve defterle
+ *                             uyusmuyor (masraf listesi, toplam, yansitma islemleri)
+ *  - explink_orphan           (O1-4) aktif EXPLINK kilidinin isi yok / isi onu listelemiyor / islemi defterde yok
  *
  * Bulgu OLMAYAN rapor alanlari:
  *  - bankRecon  (Faz B3) banka hesabi basina son ekstre kapanis bakiyesi <-> defter bakiyesi;
@@ -73,6 +77,10 @@ export const AUDIT_CODES = [
   'fiscal_closed_write',
   /** Finans 2.4: kilit kaydi kapanan donemlerle tutarsiz ya da kapanis yarida takili. */
   'fiscal_lock_mismatch',
+  /** O1-4: is (talep / bakim gorevi) masraf ozeti kilitler veya defterle tutarsiz. */
+  'ticket_cost_mismatch',
+  /** O1-4: aktif masraf kilidinin isi yok ya da isi onu listelemiyor; islemi defterde yok. */
+  'explink_orphan',
 ] as const;
 export type AuditCode = (typeof AUDIT_CODES)[number];
 
@@ -87,6 +95,9 @@ export type AuditFinding = {
   lineId?: string;
   /** Finans 2.3: sayac donemi. */
   periodId?: string;
+  /** O1-4: is (`ticket:<id>` / `maintenance:<id>`) ve masraf. */
+  workRef?: string;
+  expenseId?: string;
   expected?: number | string;
   actual?: number | string;
   detail?: string;
@@ -112,7 +123,13 @@ export type AuditSnapshot = {
   /** Finans 2.4: donem kilidi ve kapanan donemler (eski kaynaklarda yok). */
   financeLock?: FinanceLock;
   fiscalPeriods?: FiscalPeriod[];
+  /** O1-4: masrafi olan isler ve masraf kilitleri (eski kaynaklarda yok). */
+  workTargets?: WorkTargetSnapshot[];
+  expenseLinks?: ExpenseLinkRecord[];
 };
+
+/** O1-4: talep / bakim gorevinin masraf ozeti (denetim icin). */
+export type WorkTargetSnapshot = { ref: string; SK: string; version: number; costSummary?: CostSummary };
 
 /** Borc pozitif, alacak negatif (repository `ADD #balance :delta` ile ayni isaret). */
 const signed = (side: 'debit' | 'credit', amount: number) => (side === 'debit' ? amount : -amount);
@@ -260,6 +277,59 @@ export function checkMeterPeriods(s: Pick<AuditSnapshot, 'transactions' | 'meter
       if (live.length) {
         fail(p, 'geri alinmis donemde ters kaydedilmemis tahakkuk var', { actual: live.reduce((sum, t) => sum + t.totalAmount, 0), transactionId: live[0]?.transactionId });
       }
+    }
+  }
+  return out;
+}
+
+/**
+ * O1-4: is masraflari. Ozet (`costSummary`), kilit (EXPLINK#) ve gider islemi ayni atomik yazimda
+ * olustugundan birebir tutarli olmalidir. Ters kayit ozeti degistirmez (okuma aninda duser);
+ * bu yuzden toplam, kilitlerin yazim anindaki tutarlariyla karsilastirilir.
+ */
+export function checkWorkCosts(s: Pick<AuditSnapshot, 'transactions' | 'workTargets' | 'expenseLinks'>): AuditFinding[] {
+  const targets = s.workTargets ?? [];
+  const links = (s.expenseLinks ?? []).filter((l) => l.entityType === 'EXPENSE_LINK');
+  if (targets.length === 0 && links.length === 0) return [];
+  const out: AuditFinding[] = [];
+  const txs = new Map(s.transactions.map((t) => [t.transactionId, t]));
+  const active = links.filter((l) => l.status === 'active');
+  const byTarget = new Map<string, ExpenseLinkRecord[]>();
+  for (const l of active) {
+    const ref = `${l.target.type}:${l.target.id}`;
+    byTarget.set(ref, [...(byTarget.get(ref) ?? []), l]);
+  }
+  const targetMap = new Map(targets.map((t) => [t.ref, t]));
+
+  for (const t of targets) {
+    const sum = t.costSummary;
+    if (!sum) continue;
+    const own = byTarget.get(t.ref) ?? [];
+    const want = own.map((l) => l.expenseId).sort().join(',');
+    const have = [...sum.expenseIds].sort().join(',');
+    if (want !== have) out.push({ code: 'ticket_cost_mismatch', workRef: t.ref, expected: want, actual: have, detail: 'ozetteki masraflar aktif kilitlerle uyusmuyor' });
+    const lockTotal = own.reduce((a, l) => a + l.amount, 0);
+    const itemTotal = (sum.items ?? []).reduce((a, i) => a + i.amount, 0);
+    if (sum.total !== lockTotal || sum.total !== itemTotal) {
+      out.push({ code: 'ticket_cost_mismatch', workRef: t.ref, expected: lockTotal, actual: sum.total, detail: `toplam uyusmuyor (kalemler ${itemTotal})` });
+    }
+    for (const r of sum.recharges ?? []) {
+      const tx = txs.get(r.transactionId);
+      if (!tx || tx.kind !== 'dues_charge' || tx.totalAmount !== r.amount) {
+        out.push({ code: 'ticket_cost_mismatch', workRef: t.ref, transactionId: r.transactionId, expected: r.amount, actual: tx?.totalAmount ?? 'yok', detail: 'yansitma islemi defterde yok / tutarsiz' });
+      }
+    }
+  }
+
+  for (const l of active) {
+    const ref = `${l.target.type}:${l.target.id}`;
+    const t = targetMap.get(ref);
+    if (!t || !t.costSummary?.expenseIds.includes(l.expenseId)) {
+      out.push({ code: 'explink_orphan', workRef: ref, expenseId: l.expenseId, detail: t ? 'is bu masrafi listelemiyor' : 'is bulunamadi' });
+    }
+    const tx = txs.get(l.transactionId);
+    if (!tx || tx.totalAmount !== l.amount) {
+      out.push({ code: 'explink_orphan', workRef: ref, expenseId: l.expenseId, transactionId: l.transactionId, expected: l.amount, actual: tx?.totalAmount ?? 'yok', detail: 'gider islemi defterde yok / tutarsiz' });
     }
   }
   return out;
@@ -575,6 +645,8 @@ export type AuditSource = {
   listClosures(apartmentId: string): Promise<CariClosure[]>;
   /** Faz B2: banka bulgusunu raporlamadan once satirin guncel halini okur (eski kaynaklarda yok). */
   getBankLine?(apartmentId: string, sk: string): Promise<BankLine | undefined>;
+  /** O1-4: is / kilit belgesinin guncel surumu (bulguyu raporlamadan once). */
+  getVersion?(apartmentId: string, sk: string): Promise<number | undefined>;
 };
 
 export function createDynamoAuditSource(): AuditSource {
@@ -594,6 +666,15 @@ export function createDynamoAuditSource(): AuditSource {
       // Finans 2.4: kilit ve donemler islemlerden ONCE (kapanis sonrasi yazimlar sonradan gorulur).
       const financeLock = await getTenantItem<FinanceLock>(periodKeys.lock(apartmentId));
       const fiscalPeriods = (await all<FiscalPeriod>(apartmentId, FISCAL_PERIOD_PREFIX)).filter((p) => p.entityType === 'FISCAL_PERIOD');
+      // O1-4: is ozeti ve kilit gider islemiyle ayni atomik yazimda: islemlerden ONCE okunur.
+      type WorkDoc = { SK: string; entityType?: string; version: number; costSummary?: CostSummary; ticketId?: string; taskId?: string };
+      const tickets = (await all<WorkDoc>(apartmentId, 'TICKET#')).filter((t) => t.entityType === 'TICKET' && t.costSummary);
+      const tasks = (await all<WorkDoc>(apartmentId, 'MTASK#')).filter((t) => t.entityType === 'MAINT_TASK' && t.costSummary);
+      const workTargets: WorkTargetSnapshot[] = [
+        ...tickets.map((t) => ({ ref: `ticket:${t.ticketId}`, SK: t.SK, version: t.version, costSummary: t.costSummary })),
+        ...tasks.map((t) => ({ ref: `maintenance:${t.taskId}`, SK: t.SK, version: t.version, costSummary: t.costSummary })),
+      ];
+      const expenseLinks = (await all<ExpenseLinkRecord>(apartmentId, EXPLINK_PREFIX)).filter((l) => l.entityType === 'EXPENSE_LINK');
       const transactions = await all<Transaction>(apartmentId, 'TX#');
       const entries = await all<LedgerEntry>(apartmentId, 'LE#');
       const accounts = await all<Account>(apartmentId, 'ACCT#');
@@ -615,8 +696,11 @@ export function createDynamoAuditSource(): AuditSource {
         meterLines,
         ...(financeLock ? { financeLock } : {}),
         fiscalPeriods,
+        workTargets,
+        expenseLinks,
       };
     },
+    getVersion: async (apartmentId, sk) => (await getTenantItem<{ version?: number }>({ PK: `APT#${apartmentId}`, SK: sk }))?.version,
     getAccount: (apartmentId, accountId) => getTenantItem<Account>(financeKeys.account(apartmentId, accountId)),
     listAccountEntries: (apartmentId, accountId) => all<LedgerEntry>(apartmentId, `LE#${accountId}#`),
     getTransaction: (apartmentId, transactionId) => getTenantItem<Transaction>(financeKeys.transaction(apartmentId, transactionId)),
@@ -706,6 +790,22 @@ export function createLedgerAuditor(source: AuditSource, opts: { now?: () => Dat
     findings.push(...checkSettlements(s));
     findings.push(...checkMeterPeriods(s, now()));
     findings.push(...checkFiscalPeriods(s, now()));
+
+    // O1-4: is masraflari. Is ya da kilit okuma sirasinda degistiyse (es zamanli baglama) kararsiz.
+    for (const f of checkWorkCosts(s)) {
+      if (source.getVersion) {
+        const target = s.workTargets?.find((t) => t.ref === f.workRef);
+        const link = f.expenseId ? s.expenseLinks?.find((l) => l.expenseId === f.expenseId) : undefined;
+        const docs = [target && { SK: target.SK, version: target.version }, link && { SK: link.SK, version: link.version }].filter((d): d is { SK: string; version: number } => !!d);
+        let moved = false;
+        for (const d of docs) if ((await source.getVersion(apartmentId, d.SK)) !== d.version) moved = true;
+        if (moved) {
+          unstable.push(`work:${f.workRef}`);
+          continue;
+        }
+      }
+      findings.push(f);
+    }
 
     // Faz B2: banka eslestirmeleri. Satir okuma sirasinda degistiyse (es zamanli eslestirme / geri
     // alma) bulgu raporlanmaz, kararsiz sayilir.

@@ -8,6 +8,7 @@
  * Hicbir kayit silinmez (Lambda'larin DeleteItem yetkisi yok): sablon arsivlenir, artik istenmeyen
  * gelecek gorev `cancelled` olur.
  */
+import type { CostSummary } from '../workcosts/types.js';
 import type { AuditFields, IsoDate, IsoDateTime, TableKeys } from '../core/types.js';
 import type { TicketCategory } from '../tickets/types.js';
 
@@ -84,7 +85,7 @@ export type MaintenanceTask = TableKeys &
     /** Gorevden acilan arizalar. */
     ticketIds: string[];
     /** O1-4: bagli masraflar. */
-    costSummary?: { total: number; expenseIds: string[] };
+    costSummary?: CostSummary;
   };
 
 export const maintenanceKeys = {
