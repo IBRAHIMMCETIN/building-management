@@ -1,4 +1,4 @@
-import { Gauge, Home, Megaphone, Receipt } from 'lucide-react';
+import { Gauge, Home, Megaphone, Receipt, Wrench } from 'lucide-react';
 import type { ComponentType } from 'react';
 import { NavLink, Outlet } from 'react-router';
 import { PortalUnitProvider } from '@/context/PortalUnitContext';
@@ -10,6 +10,7 @@ type NavItem = { to: string; label: string; icon: ComponentType<{ className?: st
 const NAV: NavItem[] = [
   { to: '/app', label: 'Ana Sayfa', icon: Home, end: true },
   { to: '/app/dues', label: 'Borçlarım', icon: Receipt },
+  { to: '/app/talepler', label: 'Talepler', icon: Wrench },
   { to: '/app/tuketim', label: 'Tüketimim', icon: Gauge },
   { to: '/app/announcements', label: 'Duyurular', icon: Megaphone },
 ];
@@ -31,7 +32,7 @@ export function ResidentLayout() {
 
       <nav
         aria-label="Sakin menüsü"
-        className="fixed inset-x-0 bottom-0 z-10 grid grid-cols-4 border-t border-border bg-surface pb-[env(safe-area-inset-bottom)]"
+        className="fixed inset-x-0 bottom-0 z-10 grid grid-cols-5 border-t border-border bg-surface pb-[env(safe-area-inset-bottom)]"
       >
         {NAV.map(({ to, label, icon: Icon, end }) => (
           <NavLink
@@ -39,7 +40,7 @@ export function ResidentLayout() {
             to={to}
             end={end}
             className={({ isActive }) =>
-              cn('flex flex-col items-center gap-1 py-2 text-small text-muted', isActive && 'text-accent')
+              cn('flex flex-col items-center gap-1 py-2 text-xs text-muted sm:text-small', isActive && 'text-accent')
             }
           >
             <Icon className="size-5" aria-hidden="true" />

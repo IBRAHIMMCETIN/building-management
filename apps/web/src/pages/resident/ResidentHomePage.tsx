@@ -8,6 +8,7 @@ import { usePaymentQuote } from '@/hooks/usePayments';
 import { useMyAnnouncements, useMySummary } from '@/hooks/usePortal';
 import { formatDate, formatDateTime } from '@/lib/dates';
 import { formatTRY } from '@/lib/money';
+import { MyTicketsCard } from './tickets/MyTicketsCard';
 
 /** Online odeme aciksa buton; degilse elden/havale notu. */
 function OnlinePayHint() {
@@ -134,6 +135,7 @@ export function ResidentHomePage() {
     <div className="flex flex-col gap-6">
       <h1 className="text-title font-bold">Hoş geldiniz</h1>
       <DebtCard />
+      <MyTicketsCard />
       <LatestAnnouncementsCard />
     </div>
   );
