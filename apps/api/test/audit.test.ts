@@ -239,7 +239,7 @@ describe('atomik denetim yazimi', () => {
       details: { transactions: [{ id: '20261121-t1', kind: 'payment', total: 1000, reference: 'IYZICO:p1', accounts: ['cash', 'recv-u1-occupant'] }] },
     });
     // Defter ogeleri denetimden once, sirasi degismeden.
-    expect(items.slice(0, -1).every((i) => i.Put?.TableName === 'bm-main' || i.Update?.TableName === 'bm-main')).toBe(true);
+    expect(items.slice(0, -1).every((i) => i.Put?.TableName === 'bm-main' || i.Update?.TableName === 'bm-main' || i.ConditionCheck?.TableName === 'bm-main')).toBe(true);
   });
 
   it('uyelik ve tercih yazimlari da atomik denetlenir (apartman / PLATFORM zinciri)', async () => {

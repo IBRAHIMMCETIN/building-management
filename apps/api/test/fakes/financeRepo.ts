@@ -8,6 +8,7 @@ import {
 } from '../../src/modules/finance/repository.js';
 import type { Account, Expense, IdempotencyRecord, Payment, Transaction } from '../../src/modules/finance/types.js';
 import type { DomainEvent } from '../../src/events/publisher.js';
+import { PeriodClosedError } from '../../src/modules/finance/periodLock.js';
 
 /** DynamoDB semantigini taklit eden bellek ici defter: atomik, kosullu, surumlu. */
 export function createFakeFinanceRepo(defaultApartmentId = 'apt-1') {
@@ -69,6 +70,10 @@ export function createFakeFinanceRepo(defaultApartmentId = 'apt-1') {
       if (debit !== credit) throw new Error('dengesiz islem');
       if (tx.siteId !== apt) throw new Error('tenant');
     }
+    // Finans 2.4: mali donem kilidi (gercek depoda ayni TransactWriteItems icinde ConditionCheck).
+    const lockDoc = docs.get(`APT#${apt}|FINLOCK`) as { lockedThrough?: string } | undefined;
+    const earliest = input.transactions.reduce<string | undefined>((m, t) => (!m || t.date < m ? t.date : m), undefined);
+    if (lockDoc?.lockedThrough && earliest && earliest <= lockDoc.lockedThrough) throw new PeriodClosedError(lockDoc.lockedThrough);
     if (idemOf(apt, input.idempotency.id)) throw new LedgerConflictError('duplicate');
     for (const tx of input.transactions) {
       for (const l of tx.lines) {

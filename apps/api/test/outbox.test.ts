@@ -122,14 +122,15 @@ describe('outbox - postBatch atomik yazimi', () => {
 
   const items = () => ddb.commandCalls(TransactWriteCommand)[0]!.args[0].input.TransactItems!;
 
-  it('olay, defter kaydiyla AYNI TransactWriteItems icinde, en sonda ve kosullu yazilir', async () => {
+  it('olay, defter kaydiyla AYNI TransactWriteItems icinde, kayitlarin sonunda ve kosullu yazilir', async () => {
     ddb.on(TransactWriteCommand).resolves({});
     await repo.postTransaction({ transaction: tx(), idempotency, outbox: [event()] });
 
     expect(ddb.commandCalls(TransactWriteCommand)).toHaveLength(1);
     const list = items();
-    // idem + tx + 2 satir + 2 hesap + 1 olay
-    expect(list).toHaveLength(7);
+    // idem + tx + 2 satir + 2 hesap + 1 olay + donem kilidi kontrolu (veri ogelerinin sonu)
+    expect(list).toHaveLength(8);
+    expect(list[7]!.ConditionCheck).toBeDefined();
     const put = list[6]!.Put!;
     expect(put.TableName).toBe('bm-test-table');
     expect(put.ConditionExpression).toBe('attribute_not_exists(PK)');

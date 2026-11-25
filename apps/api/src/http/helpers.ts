@@ -9,6 +9,8 @@ import { setRequestActor } from '../modules/audit/context.js';
 import { CoreError } from '../modules/core/service.js';
 import { DocumentError } from '../modules/documents/errors.js';
 import { FinanceError } from '../modules/finance/service.js';
+import { PeriodClosedError } from '../modules/finance/periodLock.js';
+import { ClosingBlockedError, PeriodError } from '../modules/finance/periodLock.js';
 import { MeterError } from '../modules/meters/errors.js';
 import { PaymentsError } from '../modules/payments/service.js';
 import { PortalError } from '../modules/portal/service.js';
@@ -74,6 +76,15 @@ export function handleError(err: Error, c: Context) {
   }
   if (err instanceof CoreError) {
     return c.json({ error: err.code, message: err.message }, err.httpStatus);
+  }
+  if (err instanceof ClosingBlockedError) {
+    return c.json({ error: err.code, message: err.message, blockers: err.blockers, warnings: err.warnings }, 422);
+  }
+  if (err instanceof PeriodError) {
+    return c.json({ error: err.code, message: err.message }, err.httpStatus);
+  }
+  if (err instanceof PeriodClosedError) {
+    return c.json({ error: err.code, message: err.message, ...(err.lockedThrough ? { lockedThrough: err.lockedThrough } : {}) }, 409);
   }
   if (err instanceof FinanceError) {
     return c.json({ error: err.code, message: err.message }, err.httpStatus);

@@ -3,6 +3,7 @@ import type { Authenticator, Role } from '../../auth/claims.js';
 import { type Env, authenticateWith, handleError, publicView, readJson, requireRole } from '../../http/helpers.js';
 import type { CariClosure, ClosureService } from './closures.js';
 import type { OffsetService } from './offsets.js';
+import type { PeriodService } from './periods.js';
 import type { PlanService } from './plans.js';
 import type { FinanceContext, FinanceService } from './service.js';
 
@@ -17,6 +18,8 @@ export type FinanceRoutesDeps = {
   offsets?: OffsetService;
   /** Finans 2.2: borc yapilandirma / taksit planlari. */
   plans?: PlanService;
+  /** Finans 2.4: mali donem kapanisi. */
+  periods?: PeriodService;
 };
 
 /**
@@ -37,7 +40,7 @@ export type FinanceRoutesDeps = {
  * Tenant izolasyonu: `apartmentId` YALNIZCA JWT claim'inden gelir; URL/govde ile
  * degistirilemez. Claim'de apartmentId yoksa (ornegin apartman secilmemis) 403 doner.
  */
-export function financeRoutes({ authenticate, service, closures, offsets, plans }: FinanceRoutesDeps) {
+export function financeRoutes({ authenticate, service, closures, offsets, plans, periods }: FinanceRoutesDeps) {
   const r = new Hono<Env>();
   r.use('*', authenticateWith(authenticate));
   r.use('*', async (c, next) => {
@@ -222,6 +225,15 @@ export function financeRoutes({ authenticate, service, closures, offsets, plans 
     r.post('/plans/:planId/cancel', requireRole(WRITE_ROLES), async (c) =>
       c.json({ plan: await plans.cancel(ctx(c), c.req.param('planId'), await readJson(c)) }),
     );
+  }
+
+  // Finans 2.4: mali donem kapanisi (okuma: + denetci; kapatma / yeniden acma: yonetici + firma).
+  if (periods) {
+    r.get('/periods', requireRole(READ_ROLES), async (c) => c.json(await periods.status(ctx(c))));
+    r.get('/periods/:period/checklist', requireRole(READ_ROLES), async (c) => c.json(await periods.checklist(ctx(c), c.req.param('period'))));
+    r.get('/periods/:period', requireRole(READ_ROLES), async (c) => c.json(await periods.get(ctx(c), c.req.param('period'))));
+    r.post('/periods/:period/close', requireRole(WRITE_ROLES), async (c) => c.json(await periods.close(ctx(c), c.req.param('period'), await readJson(c))));
+    r.post('/periods/:period/reopen', requireRole(WRITE_ROLES), async (c) => c.json(await periods.reopen(ctx(c), c.req.param('period'), await readJson(c))));
   }
 
   return r;

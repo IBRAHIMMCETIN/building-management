@@ -170,8 +170,8 @@ describe('finance repository - postTransaction', () => {
 
     expect(ddbMock.commandCalls(TransactWriteCommand)).toHaveLength(1);
     const list = items();
-    // idem + tx + 2 satir + 2 hesap
-    expect(list).toHaveLength(6);
+    // idem + tx + 2 satir + 2 hesap + donem kilidi kontrolu (Finans 2.4, en sonda)
+    expect(list).toHaveLength(7);
 
     expect(list[0]!.Put!.Item!.SK).toBe('IDEM#key-12345');
     expect(list[0]!.Put!.ConditionExpression).toBe('attribute_not_exists(PK)');
@@ -179,6 +179,7 @@ describe('finance repository - postTransaction', () => {
     expect(list[2]!.Put!.Item!.SK).toBe('LE#recv-u1-owner#20261101-t1#1');
     expect(list[3]!.Put!.Item!.SK).toBe('LE#income-dues#20261101-t1#2');
     for (const i of list.slice(0, 4)) expect(i.Put!.Item!.PK).toBe('APT#apt-1');
+    expect(list[6]!.ConditionCheck).toMatchObject({ Key: { PK: 'APT#apt-1', SK: 'FINLOCK' }, ExpressionAttributeValues: { ':earliest': '2026-11-01' } });
 
     const recv = list[4]!.Update!;
     const income = list[5]!.Update!;
@@ -205,7 +206,8 @@ describe('finance repository - postTransaction', () => {
     const counter = list.find((i) => i.Update?.Key?.SK === 'CTR#receipt')!.Update!;
     expect(counter.ConditionExpression).toBe('#value = :expected');
     expect(counter.ExpressionAttributeValues![':next']).toBe(5);
-    expect(list.at(-1)!.Put!.Item!.SK).toBe('PAY#p1');
+    expect(list.at(-2)!.Put!.Item!.SK).toBe('PAY#p1');
+    expect(list.at(-1)!.ConditionCheck).toBeDefined();
   });
 
   it('ilk makbuz numarasinda sayac attribute_not_exists ile olusturulur', async () => {

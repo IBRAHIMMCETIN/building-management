@@ -22,6 +22,7 @@ import {
   toDataAccessError,
 } from '../../config/dynamodb.js';
 import { toOutboxItems } from '../../events/outbox.js';
+import { PeriodClosedError, earliestDate, periodKeys } from './periodLock.js';
 import { type AuditDraft, sendWithAudit } from '../audit/log.js';
 import type { DomainEvent } from '../../events/publisher.js';
 import type { IsoDate, TableKeys } from '../core/types.js';
@@ -242,7 +243,8 @@ type Label =
   | { kind: 'idem' | 'tx' | 'entry' | 'counter' | 'record' }
   | { kind: 'account'; accountId: string }
   | { kind: 'replace'; label: string }
-  | { kind: 'outbox'; eventId: string };
+  | { kind: 'outbox'; eventId: string }
+  | { kind: 'lock' };
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -439,6 +441,25 @@ export async function postBatch(input: PostBatchInput): Promise<void> {
     );
   }
 
+  // Finans 2.4: mali donem kilidi (veri ogelerinin SONUNDA; denetim kaydi her zaman en son). Islemlerin en erken tarihi kilit tarihinden sonra olmali;
+  // kayit yoksa (hic kapanis yapilmamis) kosul saglanir. Ayni atomik yazimda kontrol edilir.
+  const earliest = earliestDate(transactions);
+  if (earliest) {
+    add(
+      { kind: 'lock' },
+      {
+        ConditionCheck: {
+          TableName: tableName,
+          Key: periodKeys.lock(apartmentId),
+          ConditionExpression: 'attribute_not_exists(PK) OR attribute_not_exists(#lockedThrough) OR #lockedThrough < :earliest',
+          ExpressionAttributeNames: { '#lockedThrough': 'lockedThrough' },
+          ExpressionAttributeValues: { ':earliest': earliest },
+          ReturnValuesOnConditionCheckFailure: 'ALL_OLD',
+        },
+      },
+    );
+  }
+
   if (items.length > MAX_TRANSACT_ITEMS) {
     throw new Error(`Atomik yazim ${MAX_TRANSACT_ITEMS} ogeyi asamaz (${items.length})`);
   }
@@ -455,6 +476,11 @@ export async function postBatch(input: PostBatchInput): Promise<void> {
         const failed = reasons.findIndex((r) => r.Code === 'ConditionalCheckFailed');
         const label = failed >= 0 ? labels[failed] : undefined;
 
+        if (label?.kind === 'lock') {
+          // Ham (marshall edilmis) eski kayit: { lockedThrough: { S: 'YYYY-MM-DD' } }.
+          const old = reasons[failed]?.Item as Record<string, { S?: string }> | undefined;
+          throw new PeriodClosedError(old?.lockedThrough?.S);
+        }
         if (label?.kind === 'idem') throw new LedgerConflictError('duplicate');
         if (label?.kind === 'counter') throw new LedgerConflictError('counter');
         // Ayni olay zaten yazilmis: ayni islem daha once kaydedilmis demektir (deterministik kimlik).
