@@ -17,11 +17,11 @@
 import type { ApartmentRole } from '../apartment-roles/types.js';
 import type { IsoDate } from '../core/types.js';
 import type { DomainEvent, TicketEventPayload } from '../../events/publisher.js';
-import type { NotificationTemplate } from '../notifications/notifier.js';
+import type { NotificationData, NotificationTemplate } from '../notifications/notifier.js';
 import type { UnitMembership } from '../portal/types.js';
 import { OWNER_CATEGORIES, type TicketCategory } from './types.js';
 
-export type TicketRecipient = { userId: string; template: NotificationTemplate; data: Record<string, string | number | undefined> };
+export type TicketRecipient = { userId: string; template: NotificationTemplate; data: NotificationData };
 
 type TicketDomainEvent = Extract<DomainEvent, { type: 'TICKET_CREATED' | 'TICKET_ASSIGNED' | 'TICKET_STATUS_CHANGED' | 'TICKET_COMMENTED' }>;
 
@@ -100,4 +100,49 @@ export function ticketRecipients(event: TicketDomainEvent, memberships: readonly
   // Sakin tarafinda yonetim / gorevli olan kisi (ornegin yonetici kendi dairesi icin) yonetim baglantisi alir.
   for (const r of out.values()) if (r.data.link === 'portal' && !members.some((m) => m.userId === r.userId)) r.data.link = 'admin';
   return [...out.values()];
+}
+
+// ---------------------------------------------------------------------------
+// O1-3: gunluk operasyon ozeti
+// ---------------------------------------------------------------------------
+
+type DigestEvent = Extract<DomainEvent, { type: 'OPERATIONS_DIGEST' }>;
+
+const PRIORITY_TEXT: Record<string, string> = { low: 'düşük', normal: 'normal', high: 'yüksek', urgent: 'ACİL' };
+const trDate = (d: string) => d.slice(0, 10).split('-').reverse().join('.');
+
+/**
+ * Yonetim (yonetici + firma) tum kalemleri; bina gorevlisi SLA'si asilmis kendi taleplerini ve
+ * kendisine atanmis ya da atanmamis bakim gorevlerini alir. Kalemi olmayana bildirim gitmez.
+ */
+export function operationsDigestRecipients(event: DigestEvent, roles: readonly ApartmentRole[], day: IsoDate): TicketRecipient[] {
+  const p = event.payload;
+  const current = roles.filter((r) => r.apartmentId === event.apartmentId && activeOn(r, day));
+  const managers = [...new Set(current.filter((r) => r.role === 'apartment_manager' || r.role === 'management_company').map((r) => r.userId))];
+  const staff = [...new Set(current.filter((r) => r.role === 'building_staff').map((r) => r.userId))].filter((id) => !managers.includes(id));
+  const out: TicketRecipient[] = [];
+  const build = (userId: string, sla: typeof p.slaBreached, due: typeof p.maintenanceDue, overdue: typeof p.maintenanceOverdue, autoClosed: number) => {
+    if (!sla.length && !due.length && !overdue.length && !autoClosed) return;
+    out.push({
+      userId,
+      template: 'operations_digest',
+      data: {
+        date: p.date,
+        link: 'admin',
+        slaCount: sla.length,
+        dueCount: due.length,
+        overdueCount: overdue.length,
+        autoClosed,
+        sla: sla.map((t) => ({ label: `${t.number} ${t.title}`, detail: `${PRIORITY_TEXT[t.priority] ?? t.priority} · hedef ${trDate(t.dueAt)}` })),
+        due: due.map((t) => ({ label: t.name, detail: trDate(t.dueDate) })),
+        overdue: overdue.map((t) => ({ label: t.name, detail: `vade ${trDate(t.dueDate)}` })),
+      },
+    });
+  };
+  for (const m of managers) build(m, p.slaBreached, p.maintenanceDue, p.maintenanceOverdue, p.autoClosed);
+  for (const s of staff) {
+    const mine = <T extends { assigneeId?: string }>(xs: T[], includeUnassigned: boolean) => xs.filter((x) => x.assigneeId === s || (includeUnassigned && !x.assigneeId));
+    build(s, mine(p.slaBreached, false), mine(p.maintenanceDue, true), mine(p.maintenanceOverdue, true), 0);
+  }
+  return out;
 }

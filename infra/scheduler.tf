@@ -45,6 +45,16 @@ locals {
       cron        = "cron(30 9 * * ? *)"
       description = "Her gun 09:30 - taksit planlarinda temerrut tespiti, bildirim ve (plan ayarina gore) muacceliyet"
     }
+    # Faz 3 (O1-3): periyodik bakim gorevi uretimi (silme yok; gorev anahtari idempotent).
+    maintenance_tasks = {
+      cron        = "cron(10 4 * * ? *)"
+      description = "Her gun 04:10 - aktif bakim sablonlarinin yaklasan gorevlerini olustur"
+    }
+    # Faz 3 (O1-3): onaylanmayan cozumu otomatik kapat + gunluk ariza/bakim ozeti (OPERATIONS_DIGEST).
+    ticket_maintenance = {
+      cron        = "cron(30 7 * * ? *)"
+      description = "Her gun 07:30 - onaylanmayan cozulmus talepleri kapat, SLA ve bakim ozetini gonder"
+    }
   }
 
   # Suprucu bu yastan genc outbox kayitlarina dokunmaz (relay'e birakir).

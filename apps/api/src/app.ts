@@ -13,6 +13,8 @@ import { type SupportService, createSupportService, withSupportAccess } from './
 import { apartmentRoleRoutes } from './modules/apartment-roles/routes.js';
 import { type ApartmentRoleService, createApartmentRoleService } from './modules/apartment-roles/service.js';
 import { type AnnouncementService, createAnnouncementService } from './modules/announcements/service.js';
+import { maintenanceRoutes } from './modules/maintenance/routes.js';
+import { type MaintenanceService, createMaintenanceService } from './modules/maintenance/service.js';
 import { ticketPortalRoutes } from './modules/tickets/portalRoutes.js';
 import { ticketRoutes } from './modules/tickets/routes.js';
 import { type TicketService, createTicketService } from './modules/tickets/service.js';
@@ -133,6 +135,8 @@ export type AppConfig = {
   announcementService?: AnnouncementService;
   /** Faz 3 (O1): ariza / talep. */
   ticketService?: TicketService;
+  /** Faz 3 (O1-3): periyodik bakim. */
+  maintenanceService?: MaintenanceService;
   apartmentRoleService?: ApartmentRoleService;
   /**
    * Online odeme (Adim 8b). Verilmezse ortam degiskenlerinden (`loadPaymentsConfig`) kurulur;
@@ -323,6 +327,7 @@ export function createApp(config: AppConfig) {
   // Faz 3 (O1): ariza / talep (yonetim, gorevli, guvenlik, denetci).
   const ticketService = config.ticketService ?? createTicketService();
   app.route('/api/tickets', ticketRoutes({ authenticate, service: ticketService }));
+  app.route('/api/maintenance', maintenanceRoutes({ authenticate, service: config.maintenanceService ?? createMaintenanceService({ tickets: ticketService }) }));
 
 
   app.route('/api/portal/payments', paymentPortalRoutes({ authenticate, service: paymentsService }));

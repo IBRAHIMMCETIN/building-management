@@ -66,8 +66,17 @@ export function ticketPhotos(store: DocumentStore | undefined, now: () => Date) 
   }
 
   /** Gecici yuklemeleri talebe tasir; kalici anahtarlari dondurur. */
-  async function attach(apartmentId: string, userId: string, ticketId: string, uploadIds: readonly string[]): Promise<string[]> {
+  function attach(apartmentId: string, userId: string, ticketId: string, uploadIds: readonly string[]): Promise<string[]> {
+    return attachTo(apartmentId, userId, ticketPhotoKeys.prefix(apartmentId, ticketId), uploadIds);
+  }
+
+  /**
+   * Gecici yuklemeleri verilen kalici on eke tasir (O1-3: bakim gorevi
+   * `apartments/{apartmentId}/maintenance/{taskId}/`). On ek apartmanin altinda olmali.
+   */
+  async function attachTo(apartmentId: string, userId: string, prefix: string, uploadIds: readonly string[]): Promise<string[]> {
     if (!uploadIds.length) return [];
+    if (!prefix.startsWith(`apartments/${apartmentId}/`) || !prefix.endsWith('/') || prefix.includes('..')) throw new Error('Gecersiz fotograf on eki');
     const s = requireStore();
     const keys: string[] = [];
     for (const id of uploadIds) {
@@ -75,7 +84,7 @@ export function ticketPhotos(store: DocumentStore | undefined, now: () => Date) 
       const head = await s.head(from);
       if (!head) throw new TicketError('unprocessable', 'Fotoğraf yüklenmemiş veya süresi dolmuş; yeniden yükleyin');
       if (head.size > MAX_PHOTO_BYTES) throw new TicketError('unprocessable', 'Fotoğraf en fazla 10 MB olabilir');
-      const to = ticketPhotoKeys.final(apartmentId, ticketId, id);
+      const to = `${prefix}${id.replace('_', '.')}`;
       await s.copy(from, to);
       keys.push(to);
     }
@@ -89,7 +98,7 @@ export function ticketPhotos(store: DocumentStore | undefined, now: () => Date) 
     return { url, fileName: name, contentType, expiresAt: expiresAt() };
   }
 
-  return { presignUpload, attach, presignDownload };
+  return { presignUpload, attach, attachTo, presignDownload };
 }
 
 export type TicketPhotos = ReturnType<typeof ticketPhotos>;

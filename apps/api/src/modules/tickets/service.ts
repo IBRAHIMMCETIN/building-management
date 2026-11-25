@@ -67,6 +67,8 @@ export type TicketServiceDeps = {
 };
 
 const MAX_PAGE = 200;
+/** Zamanlayici aktoru (finance SYSTEM_ACTOR ile ayni deger). */
+const SYSTEM_USER = 'system-scheduler';
 const WRITE_RETRIES = 3;
 
 export function ticketSettingsOf(site: Pick<Site, 'settings'> | undefined): TicketSettings {
@@ -237,7 +239,8 @@ export function createTicketService(overrides: Partial<TicketServiceDeps> = {}) 
    * cevirmez: ayni icerikse mevcut talep `replayed: true` ile doner, farkli icerikse 409.
    * Sakin oncelik belirleyemez (normal); yonetici sonradan duzeltir.
    */
-  async function create(ctx: TicketContext, body: unknown) {
+  /** `opts.maintenanceTaskId`: bakim gorevinden acilan ariza (O1-3; kaynak `maintenance`). */
+  async function create(ctx: TicketContext, body: unknown, opts: { maintenanceTaskId?: string } = {}) {
     const [actor, settings] = await Promise.all([actorOf(ctx), settingsOf(ctx.apartmentId)]);
     const o = asObject(body);
     const key = assertId(o.idempotencyKey, 'idempotencyKey');
@@ -280,7 +283,8 @@ export function createTicketService(overrides: Partial<TicketServiceDeps> = {}) 
         priority,
         location,
         status: 'open',
-        source: sourceOf(actor.kind),
+        source: opts.maintenanceTaskId ? 'maintenance' : sourceOf(actor.kind),
+        ...(opts.maintenanceTaskId ? { maintenanceTaskId: opts.maintenanceTaskId } : {}),
         createdByRole: ctx.role,
         dueAt: dueAtFor(ts, priority, settings),
         reopenCount: 0,
@@ -665,7 +669,52 @@ export function createTicketService(overrides: Partial<TicketServiceDeps> = {}) 
     return { items };
   }
 
-  return { create, list, board, get, update, assignees, assign, transition, comment, photoUploadUrl, photo, similar, actorOf, settingsOf };
+  // -------------------------------------------------------------------------
+  // Gunluk is (O1-3, zamanlayici `ticket_maintenance`)
+  // -------------------------------------------------------------------------
+
+  /**
+   * 1) Cozuldu durumunda `autoCloseDays` gun bekleyip sakin onayi gelmeyen talepleri kapatir
+   *    (`closeKind: auto`, aktor sistem; talep tarafina bildirim outbox ile). Es zamanli degisiklikte
+   *    (surum) o talep atlanir, ertesi gun yeniden denenir.
+   * 2) SLA hedefini asmis cozum bekleyen talepleri gunluk ozet icin dondurur.
+   * Zamanlayicinin DeleteItem yetkisi yok; bu yol yalnizca Put / outbox yazar.
+   */
+  async function runDaily(apartmentId: string) {
+    const ctx: TicketContext = { apartmentId, userId: SYSTEM_USER, role: 'system' };
+    const actor: TicketActor = { apartmentId, userId: SYSTEM_USER, role: 'system', kind: 'manager', unitIds: [] };
+    const settings = await settingsOf(apartmentId);
+    const now = deps.now();
+    const ts = now.toISOString();
+    const limit = settings.autoCloseDays * 86_400_000;
+    const tickets = await repo.list(apartmentId);
+    let autoClosed = 0;
+    let conflicts = 0;
+    for (const t of tickets) {
+      if (t.status !== 'resolved' || !t.resolvedAt || now.getTime() - Date.parse(t.resolvedAt) < limit) continue;
+      const next: Ticket = { ...t, status: 'closed', closedAt: ts, closeKind: 'auto', updatedAt: ts, updatedBy: SYSTEM_USER, version: t.version + 1 };
+      try {
+        await repo.write(apartmentId, {
+          at: ts,
+          ticket: next,
+          expectedVersion: t.version,
+          events: [newEvent(ctx, next, ts, { kind: 'status_changed', visibility: 'public', from: 'resolved', to: 'closed', body: `Sakin onayı ${settings.autoCloseDays} gün içinde gelmediği için otomatik kapatıldı` })],
+          outbox: [domainEvent('TICKET_STATUS_CHANGED', ctx, actor, next, { action: 'close', from: 'resolved', to: 'closed', closeKind: 'auto', actorKind: 'system' })],
+        });
+        autoClosed++;
+      } catch (err) {
+        if (err instanceof TicketConflictError) conflicts++;
+        else throw err;
+      }
+    }
+    const breached = tickets
+      .filter((t) => isOverdue(t, now))
+      .sort((a, b) => a.dueAt.localeCompare(b.dueAt))
+      .map((t) => ({ ticketId: t.ticketId, number: t.number, title: t.title, priority: t.priority, dueAt: t.dueAt, ...(t.assigneeId ? { assigneeId: t.assigneeId } : {}) }));
+    return { autoClosed, conflicts, breached };
+  }
+
+  return { create, list, board, get, update, assignees, assign, transition, comment, photoUploadUrl, photo, similar, runDaily, actorOf, settingsOf };
 }
 
 export type TicketService = ReturnType<typeof createTicketService>;

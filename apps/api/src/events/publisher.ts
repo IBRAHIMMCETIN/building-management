@@ -35,6 +35,7 @@ export const EVENT_TYPES = [
   'TICKET_ASSIGNED',
   'TICKET_STATUS_CHANGED',
   'TICKET_COMMENTED',
+  'OPERATIONS_DIGEST',
 ] as const;
 export type EventType = (typeof EVENT_TYPES)[number];
 
@@ -153,6 +154,19 @@ export type TicketEventPayload = {
   cancelKind?: string;
 };
 
+/**
+ * Faz 3 (O1-3): gunluk operasyon ozeti (apartman basina gunde en fazla bir; `ticket_maintenance`
+ * isi). SLA'si asilmis talepler, yaklasan ve geciken bakim gorevleri, otomatik kapanan talep
+ * sayisi. Yonetim tumunu, gorevli yalnizca kendisine atanan ve atanmamis kalemleri alir.
+ */
+export type OperationsDigestPayload = {
+  date: IsoDate;
+  slaBreached: { ticketId: string; number: string; title: string; priority: string; dueAt: IsoDateTime; assigneeId?: string }[];
+  maintenanceDue: { taskId: string; name: string; dueDate: IsoDate; assigneeId?: string }[];
+  maintenanceOverdue: { taskId: string; name: string; dueDate: IsoDate; assigneeId?: string }[];
+  autoClosed: number;
+};
+
 type PayloadByType = {
   DUE_GENERATED: DueGeneratedPayload;
   PAYMENT_RECEIVED: PaymentReceivedPayload;
@@ -165,6 +179,7 @@ type PayloadByType = {
   TICKET_ASSIGNED: TicketEventPayload;
   TICKET_STATUS_CHANGED: TicketEventPayload;
   TICKET_COMMENTED: TicketEventPayload;
+  OPERATIONS_DIGEST: OperationsDigestPayload;
 };
 
 export type DomainEvent<T extends EventType = EventType> = {

@@ -8,7 +8,7 @@ import type { DeliveryResult, Notification, NotificationLine, NotificationTempla
 import { type UnitMembership, visibleParties } from '../modules/portal/types.js';
 import { type ApartmentRoleRepository, apartmentRoleRepository } from '../modules/apartment-roles/repository.js';
 import type { ApartmentRole } from '../modules/apartment-roles/types.js';
-import { isTicketEvent, ticketRecipients } from '../modules/tickets/notifications.js';
+import { isTicketEvent, operationsDigestRecipients, ticketRecipients } from '../modules/tickets/notifications.js';
 
 export type { DeliveryResult, Notification, NotificationTemplate, Notifier } from '../modules/notifications/notifier.js';
 export { createLogNotifier } from '../modules/notifications/notifier.js';
@@ -29,6 +29,7 @@ export { createLogNotifier } from '../modules/notifications/notifier.js';
  *       LATE_FEE_POSTED        -> tazminat yazilan alt cariyi goren uyeler
  *       DUES_REMINDER          -> hatirlatilan alt cariyi goren uyeler (ilk kalem)
  *       TICKET_*               -> yonetim / gorevli / talep tarafi (modules/tickets/notifications.ts)
+ *       OPERATIONS_DIGEST      -> gunluk ozet: yonetim tumu, gorevli kendi kalemleri
  *  4. Her aliciya `Notifier` ile bildirim gonderilir: NOTIFICATION_CHANNEL=log (yapilandirilmis
  *     log) veya ses (e-posta; tercih, adres ve alici bazli tekrar korumasi kanal icinde, bkz.
  *     modules/notifications/email.ts). SMS / WhatsApp ayni arayuzle eklenecek.
@@ -115,6 +116,9 @@ export function buildNotifications(
     }
   };
 
+  if (event.type === 'OPERATIONS_DIGEST') {
+    return operationsDigestRecipients(event, roles, day).map((r) => ({ eventId: event.eventId, apartmentId: event.apartmentId, userId: r.userId, template: r.template, data: r.data }));
+  }
   if (isTicketEvent(event)) {
     return ticketRecipients(event, memberships, roles, day).map((r) => ({
       eventId: event.eventId,
@@ -308,7 +312,7 @@ export function createNotificationWorker(overrides: Partial<WorkerDeps> = {}) {
         ? new Map((await deps.core.listUnits(event.apartmentId)).map((u) => [u.unitId, u.blockId]))
         : new Map<string, string>();
 
-    const roles = isTicketEvent(event) ? await deps.roles.list(event.apartmentId) : [];
+    const roles = isTicketEvent(event) || event.type === 'OPERATIONS_DIGEST' ? await deps.roles.list(event.apartmentId) : [];
     const notifications = buildNotifications(event, memberships, unitBlocks, today(), roles);
     let sent = 0;
     const skippedRecipients: Record<string, number> = {};

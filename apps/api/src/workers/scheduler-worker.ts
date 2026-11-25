@@ -18,6 +18,8 @@ import { type PaymentsService, createPaymentsService } from '../modules/payments
 import { portalRepository } from '../modules/portal/repository.js';
 import { createPortalService } from '../modules/portal/service.js';
 import { createOwnershipReader } from '../modules/ownership/reader.js';
+import { type MaintenanceService, createMaintenanceService } from '../modules/maintenance/service.js';
+import { type TicketService, createTicketService } from '../modules/tickets/service.js';
 import type { SqsBatchResponse, SqsEvent } from './notification-worker.js';
 
 /**
@@ -49,6 +51,13 @@ import type { SqsBatchResponse, SqsEvent } from './notification-worker.js';
  *   installment_plans her gun 09:30 (Finans 2.2): aktif taksit planlarinda temerrut (muacceliyet)
  *                  taramasi; yeni temerrutte sakine DUES_REMINDER `plan_default` (outbox) ve plan
  *                  `autoAccelerate` ise muaccel kilma, degilse yonetici onayi icin isaretleme.
+ *   maintenance_tasks her gun 04:10 (O1-3): aktif bakim sablonlarinin penceresindeki (bugun .. +on
+ *                  hazirlik + 30 gun) eksik gorevleri olusturur; gorev anahtari (vade + sablon)
+ *                  sayesinde tekrar calismasi zararsizdir. Silme yapmaz.
+ *   ticket_maintenance her gun 07:30 (O1-3): cozulup `autoCloseDays` gun onaylanmayan talepleri
+ *                  kapatir (closeKind auto, bildirim outbox ile) ve yonetim / gorevliye gunluk
+ *                  operasyon ozeti (`OPERATIONS_DIGEST`: SLA asimi, geciken ve yaklasan bakim) yayinlar.
+ *                  Olay kimligi gun bazli deterministiktir (tekrar teslimde bildirim bir kez).
  *   outbox_sweep   5 dakikada bir: esikten (varsayilan 2 dk) eski, hala bekleyen outbox
  *                  kayitlarini relay cekirdegiyle yeniden yayinlar (apartman dongusu yok; tek tur).
  *   ledger_audit   her gece 03:40: apartman basina SALT OKUNUR defter denetimi; sapma ->
@@ -76,6 +85,8 @@ export const JOBS = [
   'payout_returns',
   'platform_invoices',
   'installment_plans',
+  'maintenance_tasks',
+  'ticket_maintenance',
 ] as const;
 export type Job = (typeof JOBS)[number];
 
@@ -124,6 +135,9 @@ export type SchedulerDeps = {
   finance: Pick<FinanceService, 'autoChargeDues' | 'postLateFees' | 'dueReminders'>;
   /** Finans 2.2: taksit plani temerrut taramasi (verilmezse ilk kullanimda kurulur). */
   plans: Pick<PlanService, 'checkDefaults'>;
+  /** O1-3: talep otomatik kapanisi + SLA listesi ve bakim gorevi uretimi / ozet kalemleri. */
+  tickets: Pick<TicketService, 'runDaily'>;
+  maintenance: Pick<MaintenanceService, 'generate' | 'digestItems'>;
   /** null: online odeme kapali. Verilmezse ortam degiskenlerinden kurulur (ilk kullanimda). */
   payments: Pick<PaymentsService, 'reconcile' | 'reconcileRefunds'> | null;
   /** P4: platform transferi izleme (null: online odeme kapali). */
@@ -149,6 +163,8 @@ export function createSchedulerWorker(overrides: Partial<SchedulerDeps> = {}) {
     events?: EventPublisher;
     finance?: SchedulerDeps['finance'];
     plans?: SchedulerDeps['plans'];
+    tickets?: SchedulerDeps['tickets'];
+    maintenance?: SchedulerDeps['maintenance'];
     payments?: SchedulerDeps['payments'];
     payouts?: SchedulerDeps['payouts'];
     invoices?: SchedulerDeps['invoices'];
@@ -162,6 +178,10 @@ export function createSchedulerWorker(overrides: Partial<SchedulerDeps> = {}) {
     (lazy.plans ??=
       overrides.plans ??
       createPlanService({ finance: createFinanceService({ now, memberships: membershipRepository, ownership: createOwnershipReader() }), now }));
+  // O1-3: zamanlayicida fotograf deposu gerekmez (store: undefined).
+  const ticketService = () => createTicketService({ now, store: undefined });
+  const tickets = () => (lazy.tickets ??= overrides.tickets ?? ticketService());
+  const maintenance = () => (lazy.maintenance ??= overrides.maintenance ?? createMaintenanceService({ now, store: undefined, tickets: ticketService() }));
   /** Odeme servisleri tek yapilandirmadan, ilk kullanimda kurulur. */
   function paymentServices() {
     if (lazy.payments !== undefined && lazy.payouts !== undefined && lazy.invoices !== undefined) return;
@@ -367,6 +387,36 @@ export function createSchedulerWorker(overrides: Partial<SchedulerDeps> = {}) {
         // DUES_REMINDER `plan_default` olaylari plan yazimiyla ayni atomik islemde outbox'a girer.
         const r = await plans().checkDefaults(apartmentId, day);
         return { apartmentId, status: 'done', detail: { date: day, ...r } };
+      }
+
+      case 'maintenance_tasks': {
+        const r = await maintenance().generate(apartmentId, day);
+        return { apartmentId, status: 'done', detail: { date: day, ...r } };
+      }
+
+      case 'ticket_maintenance': {
+        const r = await tickets().runDaily(apartmentId);
+        const m = await maintenance().digestItems(apartmentId, day);
+        const hasItems = r.breached.length > 0 || m.dueSoon.length > 0 || m.overdue.length > 0 || r.autoClosed > 0;
+        if (hasItems) {
+          await events().publish(
+            buildEvent(
+              {
+                eventId: `OPS_DIGEST:${apartmentId}:${day}`,
+                type: 'OPERATIONS_DIGEST',
+                apartmentId,
+                actorId: SYSTEM_ACTOR,
+                payload: { date: day, slaBreached: r.breached, maintenanceDue: m.dueSoon, maintenanceOverdue: m.overdue, autoClosed: r.autoClosed },
+              },
+              now,
+            ),
+          );
+        }
+        return {
+          apartmentId,
+          status: 'done',
+          detail: { date: day, autoClosed: r.autoClosed, conflicts: r.conflicts, slaBreached: r.breached.length, maintenanceDue: m.dueSoon.length, maintenanceOverdue: m.overdue.length, digest: hasItems },
+        };
       }
 
       // Apartman dongusu disinda islenir (runJob); ledger_audit yukarida ayrilir.

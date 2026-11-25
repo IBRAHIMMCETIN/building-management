@@ -1,4 +1,4 @@
-import type { Notification, NotificationLine } from './notifier.js';
+import type { Notification, NotificationItem, NotificationLine } from './notifier.js';
 import { TICKET_CATEGORY_LABELS } from '../tickets/types.js';
 
 /**
@@ -218,6 +218,8 @@ function spec(n: Notification, ctx: EmailContext): Spec | undefined {
     case 'ticket_reopened':
     case 'ticket_comment':
       return ticketSpec(n, ctx);
+    case 'operations_digest':
+      return digestSpec(n);
     default:
       return undefined;
   }
@@ -233,6 +235,38 @@ const TICKET_STATUS_TEXT: Record<string, string> = {
   cancelled: 'İptal edildi',
 };
 const PRIORITY_TEXT: Record<string, string> = { low: 'Düşük', normal: 'Normal', high: 'Yüksek', urgent: 'Acil' };
+
+const items = (v: unknown): NotificationItem[] => (Array.isArray(v) ? (v as NotificationItem[]).filter((x) => x && typeof x.label === 'string') : []);
+
+/** O1-3: gunluk operasyon ozeti (yonetim / gorevli). */
+function digestSpec(n: Notification): Spec {
+  const d = n.data;
+  const sla = items(d.sla);
+  const due = items(d.due);
+  const overdue = items(d.overdue);
+  const autoClosed = num(d.autoClosed);
+  const parts = [
+    sla.length ? `${sla.length} talep SLA süresini aştı` : '',
+    overdue.length ? `${overdue.length} bakım gecikti` : '',
+    due.length ? `${due.length} bakım yaklaşıyor` : '',
+    autoClosed ? `${autoClosed} talep otomatik kapandı` : '',
+  ].filter(Boolean);
+  const table = (title: string, list: NotificationItem[]): Block[] =>
+    list.length ? [{ kind: 'table', head: [title, ''], rows: list.slice(0, 25).map((i) => [i.label, i.detail ?? '']) as [string, string][] }] : [];
+  return {
+    subject: `Günlük özet ${formatDate(d.date)}: ${parts.join(', ') || 'bekleyen iş yok'}`,
+    heading: 'Günlük arıza ve bakım özeti',
+    preheader: parts.join(' · '),
+    blocks: [
+      { kind: 'p', text: `${formatDate(d.date)} itibarıyla: ${parts.join(', ')}.` },
+      ...table('SLA süresi aşılan talepler', sla),
+      ...table('Geciken bakımlar', overdue),
+      ...table('Yaklaşan bakımlar (3 gün)', due),
+      ...(sla.length + due.length + overdue.length > 75 ? [{ kind: 'note', text: 'Listenin tamamı yönetim panelinde.' } as Block] : []),
+    ],
+    cta: { label: 'Arıza ve bakım ekranını aç', path: '../admin/tickets' },
+  };
+}
 
 function ticketSpec(n: Notification, ctx: EmailContext): Spec | undefined {
   const d = n.data;
