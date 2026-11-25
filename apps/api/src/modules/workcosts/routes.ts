@@ -11,6 +11,7 @@ const COST_WRITE_ROLES: readonly Role[] = ['apartment_manager', 'management_comp
 /**
  * O1-4 masraf uclari; talep (`/api/tickets`) ve bakim (`/api/maintenance/tasks`) yonlendiricilerine eklenir.
  *
+ *   GET   /costs/expense-options                   (yalnizca talep yonlendiricisinde) baglanabilir giderler ?from=
  *   GET   {base}/:id/costs                         bagli masraflar (iptal durumu okuma aninda), yansitmalar, oneriler
  *   POST  {base}/:id/costs                         { idempotencyKey, mode: 'expense', expenseAccountId?, creditAccountId?, amount, date?,
  *                                                    description?, supplier?, invoiceNumber?, invoiceUpload? }
@@ -25,6 +26,10 @@ export function mountWorkCostRoutes(
 ) {
   const { kind, base, service, ctx } = opts;
   const id = (c: Context<Env>) => c.req.param('id') ?? '';
+  // Iki parcali yol: `/:id` ile cakismaz.
+  if (kind === 'ticket') {
+    r.get('/costs/expense-options', requireRole(COST_WRITE_ROLES), async (c) => c.json(await service.expenseOptions(ctx(c), { from: c.req.query('from') })));
+  }
   r.get(`${base}/:id/costs`, requireRole(COST_READ_ROLES), async (c) => c.json(await service.costs(ctx(c), kind, id(c))));
   r.post(`${base}/:id/costs`, requireRole(COST_WRITE_ROLES), async (c) => {
     const result = await service.add(ctx(c), kind, id(c), await readJson(c));

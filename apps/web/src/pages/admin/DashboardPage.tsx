@@ -5,6 +5,7 @@ import { Alert, Card, CardTitle, Skeleton } from '@/components/ui';
 import { useAuth } from '@/hooks/useAuth';
 import { useFinancePermissions } from '@/hooks/useFinance';
 import { useFinanceDashboard } from '@/hooks/useFinancePeriods';
+import { useOperationsPending } from '@/hooks/useOperationsPending';
 import { errorMessage } from '@/lib/api/errors';
 import { type FinanceDashboard, formatPeriod, formatPeriodShort } from '@/lib/api/financePeriods';
 import { formatDate } from '@/lib/dates';
@@ -27,7 +28,14 @@ export function DashboardPage() {
   return (
     <div className="flex flex-col gap-6">
       <h1 className="text-title font-bold">Genel Bakış</h1>
-      {canRead ? <FinanceOverview /> : <ContextCard />}
+      {canRead ? (
+        <FinanceOverview />
+      ) : (
+        <div className="grid gap-4 lg:grid-cols-2">
+          <ContextCard />
+          <OperationsCard />
+        </div>
+      )}
     </div>
   );
 }
@@ -49,8 +57,40 @@ function ContextCard() {
   );
 }
 
+/** O1-5: finans rolu olmayan (gorevli) icin ariza / bakim bekleyen isleri. */
+function OperationsCard() {
+  const ops = useOperationsPending();
+  if (!ops.enabled) return null;
+  return (
+    <Card className="flex flex-col gap-3">
+      <CardTitle>Bekleyen işler</CardTitle>
+      {ops.isPending ? <Skeleton className="h-16" /> : ops.items.length === 0 ? <p className="text-small text-muted">Bekleyen iş yok.</p> : <PendingList items={ops.items.map((i) => ({ key: i.code, to: i.to, message: i.message, count: i.count }))} />}
+    </Card>
+  );
+}
+
+type PendingRow = { key: string; to: string; message: string; count?: number; urgent?: boolean };
+
+function PendingList({ items }: { items: PendingRow[] }) {
+  return (
+    <ul className="flex flex-col divide-y divide-border text-small">
+      {items.map((p) => (
+        <li key={p.key}>
+          <Link to={p.to} className="flex items-center gap-2 py-2 hover:text-accent">
+            <AlertTriangle className={`size-4 shrink-0 ${p.urgent ? 'text-danger' : 'text-warning'}`} aria-hidden="true" />
+            <span className="flex-1">{p.message}</span>
+            {p.count !== undefined && <span className="rounded-full bg-surface-muted px-2 text-xs tabular-nums">{p.count}</span>}
+            <ArrowRight className="size-3.5 text-muted" aria-hidden="true" />
+          </Link>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 function FinanceOverview() {
   const d = useFinanceDashboard();
+  const ops = useOperationsPending();
   if (d.isPending) {
     return (
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4" role="status" aria-label="Göstergeler yükleniyor">
@@ -96,21 +136,16 @@ function FinanceOverview() {
         </Card>
         <Card className="flex flex-col gap-3">
           <CardTitle>Bekleyen işler</CardTitle>
-          {x.pending.length === 0 ? (
+          {x.pending.length === 0 && ops.items.length === 0 ? (
             <p className="text-small text-muted">Bekleyen iş yok.</p>
           ) : (
-            <ul className="flex flex-col divide-y divide-border text-small">
-              {x.pending.map((p) => (
-                <li key={p.code}>
-                  <Link to={PENDING_LINKS[p.code] ?? '/admin/finance'} className="flex items-center gap-2 py-2 hover:text-accent">
-                    <AlertTriangle className="size-4 shrink-0 text-warning" aria-hidden="true" />
-                    <span className="flex-1">{p.message}</span>
-                    {p.code !== 'periods_never_closed' && <span className="rounded-full bg-surface-muted px-2 text-xs tabular-nums">{p.count}</span>}
-                    <ArrowRight className="size-3.5 text-muted" aria-hidden="true" />
-                  </Link>
-                </li>
-              ))}
-            </ul>
+            <PendingList
+              items={[
+                // O1-5: ariza ve bakim kalemleri once (acil / SLA).
+                ...ops.items.map((i) => ({ key: i.code, to: i.to, message: i.message, count: i.count, urgent: i.code !== 'maintenance_overdue' })),
+                ...x.pending.map((p) => ({ key: p.code, to: PENDING_LINKS[p.code] ?? '/admin/finance', message: p.message, ...(p.code !== 'periods_never_closed' ? { count: p.count } : {}) })),
+              ]}
+            />
           )}
           <p className="mt-auto flex items-center gap-1.5 text-xs text-muted">
             <Lock className="size-3.5" aria-hidden="true" />

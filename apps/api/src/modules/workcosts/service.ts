@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto';
-import { getTenantItem } from '../../config/dynamodb.js';
+import { getTenantItem, queryTenantAll } from '../../config/dynamodb.js';
 import type { IsoDateTime, LiableParty } from '../core/types.js';
 import { ValidationError, asObject, assertId, reqEnum, reqString } from '../core/validation.js';
-import type { ReplaceRecord } from '../finance/repository.js';
+import { type FinanceRepository, type ReplaceRecord, financeRepository } from '../finance/repository.js';
 import { FinanceError, type FinanceService, REPAIR_RECHARGE_INCOME, type WorkLinkWrite } from '../finance/service.js';
 import type { Transaction } from '../finance/types.js';
 import { type MaintenanceTask, type MaintenanceTemplate, maintenanceKeys, parseTaskId } from '../maintenance/types.js';
@@ -13,6 +13,7 @@ import {
   type CostRecharge,
   type CostSummary,
   type ExpenseLinkRecord,
+  EXPLINK_PREFIX,
   type WorkKind,
   expenseAccountFor,
   workCostKeys,
@@ -26,6 +27,7 @@ export type WorkCostSource = {
   getTask(apartmentId: string, taskId: string): Promise<MaintenanceTask | undefined>;
   getTemplate(apartmentId: string, templateId: string): Promise<MaintenanceTemplate | undefined>;
   getLink(apartmentId: string, expenseId: string): Promise<ExpenseLinkRecord | undefined>;
+  listLinks(apartmentId: string): Promise<ExpenseLinkRecord[]>;
 };
 
 export const dynamoWorkCostSource: WorkCostSource = {
@@ -36,11 +38,14 @@ export const dynamoWorkCostSource: WorkCostSource = {
   },
   getTemplate: (apt, id) => getTenantItem<MaintenanceTemplate>(maintenanceKeys.template(apt, id)),
   getLink: (apt, id) => getTenantItem<ExpenseLinkRecord>(workCostKeys.link(apt, id)),
+  listLinks: async (apt) => (await queryTenantAll<ExpenseLinkRecord>(apt, EXPLINK_PREFIX)).filter((l) => l.entityType === 'EXPENSE_LINK'),
 };
 
 export type WorkCostServiceDeps = {
   finance: Pick<FinanceService, 'recordExpense' | 'chargeUnit' | 'postWorkDocuments' | 'expenseInfo' | 'isReversed'>;
   source?: WorkCostSource;
+  /** Baglanabilir gider listesi (Finans gider kayitlari). */
+  expenses?: Pick<FinanceRepository, 'listExpenses'>;
   now?: () => Date;
   newId?: () => string;
 };
@@ -427,7 +432,34 @@ export function createWorkCostService(deps: WorkCostServiceDeps) {
     };
   }
 
-  return { costs, add, unlink, charge };
+  /**
+   * Baglanabilecek giderler (en yeni 200): baska ise bagli olanlar isaretlenir. Iptal durumu
+   * baglama aninda kontrol edilir (liste icin tek tek okunmaz).
+   */
+  async function expenseOptions(ctx: WorkCostContext, q: { from?: string } = {}) {
+    const from = q.from && /^\d{4}-\d{2}-\d{2}$/.test(q.from) ? q.from : undefined;
+    const repo = deps.expenses ?? financeRepository;
+    const [expenses, links] = await Promise.all([repo.listExpenses ? repo.listExpenses(ctx.apartmentId) : Promise.resolve([]), source.listLinks(ctx.apartmentId)]);
+    const linked = new Map(links.filter((l) => l.status === 'active').map((l) => [l.expenseId, l.target]));
+    return {
+      items: expenses
+        .filter((e) => !from || e.date >= from)
+        .sort((a, b) => b.date.localeCompare(a.date) || b.expenseId.localeCompare(a.expenseId))
+        .slice(0, 200)
+        .map((e) => ({
+          expenseId: e.expenseId,
+          date: e.date,
+          description: e.description,
+          amount: e.amount,
+          expenseAccountId: e.expenseAccountId,
+          ...(e.supplier ? { supplier: e.supplier } : {}),
+          ...(e.invoiceNumber ? { invoiceNumber: e.invoiceNumber } : {}),
+          ...(linked.has(e.expenseId) ? { linkedTo: linked.get(e.expenseId) } : {}),
+        })),
+    };
+  }
+
+  return { costs, add, unlink, charge, expenseOptions };
 }
 
 export type WorkCostService = ReturnType<typeof createWorkCostService>;

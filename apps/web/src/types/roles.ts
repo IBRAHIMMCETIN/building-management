@@ -51,6 +51,11 @@ export const TEAM_ROLES = ['apartment_manager', 'management_company', 'observer'
 
 export const SECURITY_ROLES = ['apartment_manager', 'management_company'] as const satisfies readonly Role[];
 
+/** Faz 3 (O1) Ariza & Bakim (/admin/tickets): guvenlik yalnizca kendi talepleri; denetci salt okur. */
+export const TICKET_ROLES = ['apartment_manager', 'management_company', 'building_staff', 'security_guard', 'observer'] as const satisfies readonly Role[];
+/** Gorevli "Islerim" (/admin/my-tasks). */
+export const MY_TASKS_ROLES = ['building_staff'] as const satisfies readonly Role[];
+
 /** Platform yoneticisinin acilis sayfasi. */
 export const PLATFORM_HOME = '/admin/apartments';
 

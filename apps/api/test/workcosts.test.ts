@@ -98,8 +98,9 @@ async function world() {
     getTask: async (_a, id) => doc<MaintenanceTask>(`MTASK#${id.slice(0, 10)}#${id.slice(11)}`),
     getTemplate: async () => template,
     getLink: async (_a, id) => doc<ExpenseLinkRecord>(`EXPLINK#${id}`),
+    listLinks: async () => [...fake.docs.values()].filter((d) => d.entityType === 'EXPENSE_LINK') as unknown as ExpenseLinkRecord[],
   };
-  const costs = createWorkCostService({ finance, source, now: () => NOW, newId: () => `ev-${String(++n).padStart(4, '0')}` });
+  const costs = createWorkCostService({ finance, source, expenses: fake.repo, now: () => NOW, newId: () => `ev-${String(++n).padStart(4, '0')}` });
   const events = (ticketId: string) => [...fake.docs.values()].filter((d) => String(d.SK).startsWith(`TKEV#${ticketId}#`)) as unknown as TicketEvent[];
   const summaryOf = (sk: string) => (doc<{ costSummary?: CostSummary }>(sk)?.costSummary ?? { total: 0, expenseIds: [] }) as CostSummary;
   const snapshot = () => ({
@@ -182,6 +183,9 @@ describe('var olan masrafi baglama', () => {
 
     const moved = await w.costs.add(mgr, 'maintenance', '2026-11-20_tpl1', { mode: 'link', idempotencyKey: 'link-0004', expenseId: e.expenseId });
     expect(moved.total).toBe(50000);
+    const options = await w.costs.expenseOptions(mgr);
+    expect(options.items.find((x) => x.expenseId === e.expenseId)).toMatchObject({ amount: 50000, supplier: 'Usta Ali', linkedTo: { type: 'maintenance', id: '2026-11-20_tpl1' } });
+    expect((await w.costs.expenseOptions(mgr, { from: '2026-12-01' })).items).toEqual([]);
     expect(w.doc<ExpenseLinkRecord>(`EXPLINK#${e.expenseId}`)).toMatchObject({ status: 'active', version: 3, target: { type: 'maintenance', id: '2026-11-20_tpl1' } });
 
     const own = await w.costs.add(mgr, 'ticket', 'tk1', { mode: 'expense', idempotencyKey: 'tk1-cost-0004', amount: 2000, creditAccountId: 'payable' });
