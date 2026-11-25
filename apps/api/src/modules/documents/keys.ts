@@ -103,3 +103,14 @@ export function contentDisposition(fileName: string, disposition: 'inline' | 'at
 export function meterStatementKey(apartmentId: string, endDate: IsoDate, periodId: string, unitId: string, dataHash: string): string {
   return `apartments/${apartmentId}/reports/${ym(endDate)}/meter-statement-${periodId}-${unitId}-${dataHash.slice(0, 16)}.pdf`;
 }
+
+/**
+ * Finans 2.4-3: finans raporu PDF'i (mizan, gelir-gider, butce-gerceklesen, kesin hesap, borclu
+ * listesi, hesap dokumu). `dataHash` rapor verisi + sablon surumu ozetidir: veri degismedikce ayni
+ * dosya yeniden kullanilir, degisince yeni dosya uretilir.
+ *   apartments/{apt}/reports/{yyyy}/{mm}/finance-{kind}-{slug}-{hash}.pdf
+ */
+export function financeReportKey(apartmentId: string, generatedOn: IsoDate, kind: string, slug: string, dataHash: string): string {
+  const safeSlug = slug.replace(/[^A-Za-z0-9_-]/g, '-').slice(0, 80);
+  return `apartments/${apartmentId}/reports/${ym(generatedOn)}/finance-${kind}-${safeSlug}-${dataHash.slice(0, 16)}.pdf`;
+}

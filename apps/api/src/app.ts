@@ -26,6 +26,7 @@ import { type ImportsService, createImportsService } from './modules/imports/ser
 import { type ClosureService, createClosureService } from './modules/finance/closures.js';
 import { type OffsetService, createOffsetService } from './modules/finance/offsets.js';
 import { type PeriodService, createPeriodService } from './modules/finance/periods.js';
+import { type ReportService, createReportService } from './modules/finance/reportService.js';
 import { type PlanService, createPlanService } from './modules/finance/plans.js';
 import { type FinanceService, createFinanceService } from './modules/finance/service.js';
 import { healthRoutes } from './modules/health/routes.js';
@@ -103,6 +104,7 @@ export type AppConfig = {
   planService?: PlanService;
   /** Finans 2.4: mali donem kapanisi. */
   periodService?: PeriodService;
+  reportService?: ReportService;
   /** Finans 2.1: hisseli mulkiyet ve mulk/hisse devri (testlerde sahte depolarla). */
   ownershipService?: OwnershipService;
   /** Finans 2.3: sayac / endeks dagitimi (testlerde sahte depolarla). */
@@ -230,6 +232,7 @@ export function createApp(config: AppConfig) {
   // Finans 2.2: sahte finans servisiyle kurulan testlerde (servis verilmemisse) baglanmaz.
   const offsetService = config.offsetService ?? (config.financeService ? undefined : createOffsetService({ portal: portalService }));
   const periodService = config.periodService ?? (config.financeService ? undefined : createPeriodService());
+  const reportService = config.reportService ?? (config.financeService ? undefined : createReportService({ ledger: financeService }));
   const planService = config.planService ?? (config.financeService ? undefined : createPlanService({ finance: financeService, portal: portalService }));
   app.route(
     '/api/finance',
@@ -240,6 +243,7 @@ export function createApp(config: AppConfig) {
       ...(offsetService ? { offsets: offsetService } : {}),
       ...(planService ? { plans: planService } : {}),
       ...(periodService ? { periods: periodService } : {}),
+      ...(reportService ? { reports: reportService } : {}),
     }),
   );
   // Faz B1: banka ekstresi aktarimi (ekstre yukleme, onizleme, satir aktarimi, sutun eslemesi).

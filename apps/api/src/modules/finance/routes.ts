@@ -4,6 +4,7 @@ import { type Env, authenticateWith, handleError, publicView, readJson, requireR
 import type { CariClosure, ClosureService } from './closures.js';
 import type { OffsetService } from './offsets.js';
 import type { PeriodService } from './periods.js';
+import type { ReportService } from './reportService.js';
 import type { PlanService } from './plans.js';
 import type { FinanceContext, FinanceService } from './service.js';
 
@@ -20,6 +21,8 @@ export type FinanceRoutesDeps = {
   plans?: PlanService;
   /** Finans 2.4: mali donem kapanisi. */
   periods?: PeriodService;
+  /** Finans 2.4-3: raporlar ve Genel Bakis. */
+  reports?: ReportService;
 };
 
 /**
@@ -40,7 +43,7 @@ export type FinanceRoutesDeps = {
  * Tenant izolasyonu: `apartmentId` YALNIZCA JWT claim'inden gelir; URL/govde ile
  * degistirilemez. Claim'de apartmentId yoksa (ornegin apartman secilmemis) 403 doner.
  */
-export function financeRoutes({ authenticate, service, closures, offsets, plans, periods }: FinanceRoutesDeps) {
+export function financeRoutes({ authenticate, service, closures, offsets, plans, periods, reports }: FinanceRoutesDeps) {
   const r = new Hono<Env>();
   r.use('*', authenticateWith(authenticate));
   r.use('*', async (c, next) => {
@@ -234,6 +237,31 @@ export function financeRoutes({ authenticate, service, closures, offsets, plans,
     r.get('/periods/:period', requireRole(READ_ROLES), async (c) => c.json(await periods.get(ctx(c), c.req.param('period'))));
     r.post('/periods/:period/close', requireRole(WRITE_ROLES), async (c) => c.json(await periods.close(ctx(c), c.req.param('period'), await readJson(c))));
     r.post('/periods/:period/reopen', requireRole(WRITE_ROLES), async (c) => c.json(await periods.reopen(ctx(c), c.req.param('period'), await readJson(c))));
+  }
+
+  // Finans 2.4-3: raporlar. `?format=pdf` -> sunucu tarafi PDF (S3 onbellek + 5 dk imzali link).
+  if (reports) {
+    const q = (c: { req: { query(k: string): string | undefined } }) => ({
+      from: c.req.query('from'),
+      to: c.req.query('to'),
+      year: c.req.query('year'),
+      accountId: c.req.query('accountId'),
+    });
+    const handlers = {
+      'trial-balance': (x: ReturnType<typeof ctx>, p: ReturnType<typeof q>) => reports.trialBalance(x, p),
+      'income-expense': (x: ReturnType<typeof ctx>, p: ReturnType<typeof q>) => reports.incomeExpense(x, p),
+      'budget-vs-actual': (x: ReturnType<typeof ctx>, p: ReturnType<typeof q>) => reports.budgetVsActual(x, p),
+      'annual-statement': (x: ReturnType<typeof ctx>, p: ReturnType<typeof q>) => reports.annualStatement(x, p),
+      debtors: (x: ReturnType<typeof ctx>) => reports.debtors(x),
+      'funds-ledger': (x: ReturnType<typeof ctx>, p: ReturnType<typeof q>) => reports.fundsLedger(x, p),
+    } as const;
+    for (const [kind, handler] of Object.entries(handlers)) {
+      r.get(`/reports/${kind}`, requireRole(READ_ROLES), async (c) => {
+        if (c.req.query('format') === 'pdf') return c.json(await reports.pdf(ctx(c), kind, q(c)));
+        return c.json(await handler(ctx(c), q(c)));
+      });
+    }
+    r.get('/dashboard', requireRole(READ_ROLES), async (c) => c.json(await reports.dashboard(ctx(c))));
   }
 
   return r;

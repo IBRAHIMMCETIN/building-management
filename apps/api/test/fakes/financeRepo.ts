@@ -172,6 +172,32 @@ export function createFakeFinanceRepo(defaultApartmentId = 'apt-1') {
     listExpenses: async (apt) => [...expenses.values()].filter((e) => e.siteId === apt),
     getIdempotency: async (apt, id) => idemOf(apt, id),
     getCounter: async (apt, name) => counters.get(k(apt, name)) ?? 0,
+    // Finans 2.4: LE# hesap okuyucusunun sahtesi (islem satirlarindan turetilir).
+    listAccountEntries: async (apt, accountId, range = {}) =>
+      [...transactions.values()]
+        .filter((t) => t.siteId === apt && t.date >= (range.from ?? '0000-00-00') && t.date <= (range.to ?? '9999-99-99'))
+        .sort((a, b) => a.transactionId.localeCompare(b.transactionId))
+        .flatMap((t) =>
+          t.lines
+            .map((l, lineNo) => ({ l, lineNo }))
+            .filter(({ l }) => l.accountId === accountId)
+            .map(({ l, lineNo }) => ({
+              PK: `APT#${apt}`,
+              SK: `LE#${accountId}#${t.transactionId}#${lineNo}`,
+              entityType: 'LEDGER_ENTRY' as const,
+              entryId: `${t.transactionId}#${lineNo}`,
+              transactionId: t.transactionId,
+              siteId: apt,
+              accountId,
+              side: l.side,
+              amount: l.amount,
+              date: t.date,
+              lineNo,
+              createdAt: t.createdAt,
+              createdBy: t.createdBy,
+            })),
+        ),
+    getTransactions: async (apt, ids) => ids.map((id) => transactions.get(k(apt, id))).filter((t): t is Transaction => t !== undefined),
     listTransactions: async (apt, q = {}) => {
       const lo = (q.from ?? '0000-00-00').replaceAll('-', '');
       const hi = (q.to ?? '9999-99-99').replaceAll('-', '') + '~';
