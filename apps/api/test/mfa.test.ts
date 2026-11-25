@@ -54,7 +54,7 @@ describe('MFA politikasi', () => {
   });
 
   it('warn: sure icinde grace, sure dolunca veya token zorunlu diyorsa required', () => {
-    const future = '2026-11-25T00:00:00.000Z';
+    const future = '2099-11-25T00:00:00.000Z';
     const past = '2026-11-20T00:00:00.000Z';
     expect(evaluateMfa({ role: 'observer', mfaEnabled: false, graceUntil: future }, WARN, NOW)).toEqual({ status: 'grace', graceUntil: future });
     expect(evaluateMfa({ role: 'observer', mfaEnabled: false, graceUntil: past }, WARN, NOW)).toEqual({ status: 'required', graceUntil: past });
@@ -288,9 +288,9 @@ describe('merkezi MFA ara katmani', () => {
 
   it('warn: sure icinde uyari basligi, sure dolunca veya token zorunlu derse 403', async () => {
     const w = world(WARN);
-    const ok = await w.call('GET', '/api/audit', { ...MANAGER, mfa_grace_until: '2026-11-25T00:00:00.000Z' });
+    const ok = await w.call('GET', '/api/audit', { ...MANAGER, mfa_grace_until: '2099-11-25T00:00:00.000Z' });
     expect(ok.status).toBe(200);
-    expect(ok.headers.get('x-mfa-warning')).toBe('grace; until=2026-11-25T00:00:00.000Z');
+    expect(ok.headers.get('x-mfa-warning')).toBe('grace; until=2099-11-25T00:00:00.000Z');
     const expired = await w.call('GET', '/api/audit', { ...MANAGER, mfa_grace_until: '2026-11-20T00:00:00.000Z' });
     expect(expired).toMatchObject({ status: 403, body: { error: 'MFA_REQUIRED', graceUntil: '2026-11-20T00:00:00.000Z' } });
     expect((await w.call('GET', '/api/audit', { ...MANAGER, mfa_required: 'true' })).status).toBe(403);
