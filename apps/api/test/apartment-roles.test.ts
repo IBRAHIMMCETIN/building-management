@@ -218,7 +218,9 @@ describe('apartment-roles -> pre token (uctan uca)', () => {
       apartmentId: APT,
     });
 
-    await call('DELETE', '/mgr-9/apartment_manager', undefined, company);
+    // Son yonetici korumasi (Faz 1): kaldirmadan once ikinci yonetici atanir.
+    await call('POST', '', { userId: 'mgr-8', role: 'apartment_manager' }, company);
+    expect((await call('DELETE', '/mgr-9/apartment_manager', undefined, company)).status).toBe(200);
     const revoked = await handler(event());
     expect(revoked.response.claimsOverrideDetails?.claimsToAddOrOverride).toEqual({});
   });

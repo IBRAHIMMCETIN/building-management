@@ -41,17 +41,19 @@ export type ApartmentRoleRepository = {
   get(apartmentId: string, userId: string, role: string): Promise<ApartmentRole | undefined>;
   list(apartmentId: string): Promise<ApartmentRole[]>;
   create(record: ApartmentRole): Promise<void>;
-  update(record: ApartmentRole, expectedVersion: number): Promise<void>;
+  /** `audit` verilirse denetim kaydi bu eylem adi / gerekceyle yazilir (varsayilan `apartment_role.update`). */
+  update(record: ApartmentRole, expectedVersion: number, audit?: { action?: string; reason?: string }): Promise<void>;
 };
 
-function roleAudit(r: ApartmentRole, action: string) {
+function roleAudit(r: ApartmentRole, action: string, reason?: string) {
   const rec = r as ApartmentRole & { updatedBy?: string; status?: string; version?: number };
   return {
     apartmentId: r.apartmentId,
     action,
     target: { type: 'apartment_role', id: `${r.userId}:${r.role}` },
     actorId: rec.updatedBy,
-    details: { userId: r.userId, role: r.role, status: rec.status, version: rec.version },
+    details: { userId: r.userId, role: r.role, status: rec.status, version: rec.version, ...(r.endDate ? { endDate: r.endDate } : {}) },
+    ...(reason ? { reason } : {}),
   };
 }
 
@@ -65,9 +67,13 @@ export function createApartmentRoleRepository(): ApartmentRoleRepository {
       assertKeys(record);
       await auditedPutNew({ ...stripIndex(record), ...apartmentRoleGsi1(record) }, roleAudit(record, 'apartment_role.create'));
     },
-    async update(record, expectedVersion) {
+    async update(record, expectedVersion, audit) {
       assertKeys(record);
-      await auditedPutVersioned({ ...stripIndex(record), ...apartmentRoleGsi1(record) }, expectedVersion, roleAudit(record, 'apartment_role.update'));
+      await auditedPutVersioned(
+        { ...stripIndex(record), ...apartmentRoleGsi1(record) },
+        expectedVersion,
+        roleAudit(record, audit?.action ?? 'apartment_role.update', audit?.reason),
+      );
     },
   };
 }

@@ -30,6 +30,11 @@ export type ApartmentRole = TableKeys &
     organizationId?: string;
     /** Listelerde gosterim icin (ornegin "Ahmet Yilmaz - Kapici"); kimlik dogrulamada kullanilmaz. */
     displayName?: string;
+    /** Faz 1 (Ekip): e-postayla davet edilen kisinin adi ve e-postasi (davet yenileme bunu kullanir). */
+    fullName?: string;
+    email?: string;
+    /** Rol bitirme gerekcesi (denetim kaydinda da tutulur). */
+    endReason?: string;
     status: EntityStatus;
     startDate: IsoDate;
     endDate?: IsoDate;
@@ -44,3 +49,6 @@ export const GRANTABLE_BY: Readonly<Partial<Record<string, readonly StaffRole[]>
   management_company: STAFF_ROLES,
   apartment_manager: ['apartment_manager', 'observer', 'building_staff', 'security_guard'],
 };
+
+/** Apartmani yoneten roller: en az biri guncel kalmali (son yonetici korumasi). */
+export const MANAGING_ROLES: readonly StaffRole[] = ['apartment_manager', 'management_company'];

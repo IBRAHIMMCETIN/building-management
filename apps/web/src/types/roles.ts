@@ -46,6 +46,9 @@ export const METER_ROLES = ['apartment_manager', 'management_company', 'observer
 /** Hizli sayac okuma girisi (bina gorevlisi dahil). */
 export const METER_READING_ROLES = ['apartment_manager', 'management_company', 'building_staff'] as const satisfies readonly Role[];
 
+/** Ekip (/admin/team): yonetici + yonetim firmasi yazar, denetci salt okur. */
+export const TEAM_ROLES = ['apartment_manager', 'management_company', 'observer'] as const satisfies readonly Role[];
+
 export const SECURITY_ROLES = ['apartment_manager', 'management_company'] as const satisfies readonly Role[];
 
 /** Platform yoneticisinin acilis sayfasi. */

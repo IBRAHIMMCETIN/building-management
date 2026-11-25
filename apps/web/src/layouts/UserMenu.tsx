@@ -1,10 +1,11 @@
-import { LogOut, ShieldCheck } from 'lucide-react';
+import { CircleUserRound, LogOut, ShieldCheck } from 'lucide-react';
 import { useNavigate } from 'react-router';
 import { ContextSwitcher } from '@/components/context/ContextSwitcher';
 import { Button } from '@/components/ui';
 import { useActiveApartmentName } from '@/hooks/useActiveContextLabel';
 import { useAuth } from '@/hooks/useAuth';
 import { MFA_SETUP_PATH } from '@/lib/auth/mfa';
+import { RESIDENT_ROLES } from '@/types/roles';
 import { ROLE_LABELS } from '@/types/roles';
 
 /**
@@ -39,6 +40,19 @@ export function UserMenu() {
         >
           <ShieldCheck className="size-4" aria-hidden="true" />
           <span className="hidden lg:inline">2FA</span>
+        </Button>
+      )}
+      {user.role && (
+        <Button
+          variant="ghost"
+          size="sm"
+          aria-label="Hesabım"
+          title="Hesabım"
+          className="shrink-0"
+          onClick={() => navigate((RESIDENT_ROLES as readonly string[]).includes(user.role ?? '') ? '/app/account' : '/admin/account')}
+        >
+          <CircleUserRound className="size-4" aria-hidden="true" />
+          <span className="hidden lg:inline">Hesabım</span>
         </Button>
       )}
       <Button

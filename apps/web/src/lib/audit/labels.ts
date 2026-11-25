@@ -41,6 +41,8 @@ const EXACT: Record<string, string> = {
   'membership.update': 'Üyelik güncellendi',
   'apartment_role.create': 'Rol atandı',
   'apartment_role.update': 'Rol güncellendi',
+  'apartment_role.invite': 'Ekibe yeniden davet edildi',
+  'apartment_role.end': 'Rol sona erdirildi',
   'person.create': 'Kişi eklendi / davet edildi',
   'person.update': 'Kişi güncellendi',
   'site.create': 'Site oluşturuldu',

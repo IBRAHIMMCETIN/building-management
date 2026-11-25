@@ -8,7 +8,9 @@ import { FinancePage } from '@/pages/admin/finance/FinancePage';
 import { MetersPage } from '@/pages/admin/meters/MetersPage';
 import { ReadingEntryPage } from '@/pages/admin/meters/ReadingEntryPage';
 import { ImportPage } from '@/pages/admin/import/ImportPage';
+import { AccountPage } from '@/pages/account/AccountPage';
 import { AuditPage } from '@/pages/admin/audit/AuditPage';
+import { TeamPage } from '@/pages/admin/team/TeamPage';
 import { SecurityPage } from '@/pages/admin/security/SecurityPage';
 import { SettingsPage } from '@/pages/admin/settings/SettingsPage';
 import { PlatformUsersPage } from '@/pages/platform/users/PlatformUsersPage';
@@ -29,7 +31,7 @@ import { DuesPage } from '@/pages/resident/DuesPage';
 import { PaymentPage } from '@/pages/resident/payment/PaymentPage';
 import { PaymentResultPage } from '@/pages/resident/payment/PaymentResultPage';
 import { ResidentHomePage } from '@/pages/resident/ResidentHomePage';
-import { ADMIN_ROLES, APARTMENT_ADMIN_ROLES, AUDIT_ROLES, METER_READING_ROLES, METER_ROLES, PLATFORM_ROLES, RESIDENT_ROLES, SECURITY_ROLES } from '@/types/roles';
+import { ADMIN_ROLES, APARTMENT_ADMIN_ROLES, AUDIT_ROLES, METER_READING_ROLES, METER_ROLES, PLATFORM_ROLES, RESIDENT_ROLES, SECURITY_ROLES, TEAM_ROLES } from '@/types/roles';
 import { RedirectIfAuthenticated, RequireRole, RequireSession, RootRedirect } from './guards';
 
 export const router = createBrowserRouter([
@@ -69,6 +71,8 @@ export const router = createBrowserRouter([
           {
             element: <AdminLayout />,
             children: [
+              // Hesabim: tum panel rolleri (platform yoneticisi dahil).
+              { path: 'account', element: <AccountPage /> },
               {
                 // Apartmana ozel ekranlar; platform yoneticisi kendi acilis sayfasina yonlenir.
                 element: <RequireRole roles={APARTMENT_ADMIN_ROLES} redirectHome />,
@@ -89,6 +93,11 @@ export const router = createBrowserRouter([
               {
                 element: <RequireRole roles={METER_READING_ROLES} redirectHome />,
                 children: [{ path: 'meter-readings', element: <ReadingEntryPage /> }],
+              },
+              {
+                // Ekip (Faz 1): yonetici + yonetim firmasi yazar, denetci salt okur.
+                element: <RequireRole roles={TEAM_ROLES} redirectHome />,
+                children: [{ path: 'team', element: <TeamPage /> }],
               },
               {
                 // Denetim gunlugu: apartman rolleri kendi zinciri, platform yoneticisi platform zinciri.
@@ -127,6 +136,7 @@ export const router = createBrowserRouter([
               { path: 'odeme', element: <PaymentPage /> },
               { path: 'odeme/sonuc', element: <PaymentResultPage /> },
               { path: 'announcements', element: <ResidentAnnouncementsPage /> },
+              { path: 'account', element: <AccountPage /> },
             ],
           },
         ],

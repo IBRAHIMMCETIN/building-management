@@ -60,7 +60,7 @@ export type ResidentsServiceDeps = {
 
 export type ResidentsService = ReturnType<typeof createResidentsService>;
 
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+export const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 
 /** Denetci (observer) kisilerin e-postasini maskeli gorur: ayse@site.com -> a***@site.com */
 export function maskEmail(email: string): string {
@@ -68,7 +68,8 @@ export function maskEmail(email: string): string {
   return `${local.slice(0, 1)}***@${domain}`;
 }
 
-function cognitoErrorToResidents(err: unknown): unknown {
+/** Cognito / dizin hatalarini anlamli HTTP hatalarina cevirir (sakin ve ekip daveti ortak). */
+export function cognitoErrorToResidents(err: unknown): unknown {
   if (err instanceof DirectoryUnavailableError) {
     return new ResidentsError('invitations_disabled', 'Davet servisi bu ortamda yapilandirilmamis');
   }

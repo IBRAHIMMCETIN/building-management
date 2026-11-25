@@ -96,6 +96,16 @@ export class FinanceError extends Error {
 /** Para tutari ust siniri: 999.999.999,99 TL (kurus). */
 export const MAX_AMOUNT = 99_999_999_999;
 export const MAX_BULK_UNITS = 500;
+
+/** Daire alt carisinin adi (Faz 1: UUID yerine daire numarasi). */
+export function receivableName(unitNumber: string, party: LiableParty): string {
+  return `Daire ${unitNumber} - ${party === 'owner' ? 'Kat Maliki' : 'Kiracı/Sakin'}`;
+}
+
+/** Finans 2.1 paydas alt carisinin adi. */
+export function coOwnerReceivableName(unitNumber: string): string {
+  return `Daire ${unitNumber} - Kat Maliki (paydaş)`;
+}
 const MAX_ATTEMPTS = 4;
 
 export const SYSTEM_ACCOUNTS = {
@@ -496,26 +506,37 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
     ensuredSystem.add(ctx.apartmentId);
   }
 
-  function receivable(ctx: FinanceContext, unitId: string, party: LiableParty): Account {
+  /**
+   * Faz 1: hesap adi ham daire kimligi yerine daire numarasini tasir (`Daire 5 - Kat Maliki`).
+   * Ad yalnizca hesap ilk kez acilirken yazilir (`ensureAccounts` var olani ezmez); eski
+   * kayitlar `scripts/fix-receivable-names.ts` ile duzeltilir.
+   */
+  function receivable(ctx: FinanceContext, unitId: string, party: LiableParty, unitNumber: string): Account {
     return newAccount(ctx, {
       accountId: receivableId(unitId, party),
       type: 'receivable',
-      name: `Daire ${unitId} - ${party === 'owner' ? 'Kat Maliki' : 'Kiraci/Sakin'}`,
+      name: receivableName(unitNumber, party),
       unitId,
       liableParty: party,
     });
   }
 
   /** Finans 2.1: `split` dairede paydasin malik alt carisi. */
-  function coOwnerReceivable(ctx: FinanceContext, unitId: string, userId: string): Account {
+  function coOwnerReceivable(ctx: FinanceContext, unitId: string, userId: string, unitNumber: string): Account {
     return newAccount(ctx, {
       accountId: coOwnerReceivableId(unitId, userId),
       type: 'receivable',
-      name: `Daire ${unitId} - Kat Maliki (paydaş)`,
+      name: coOwnerReceivableName(unitNumber),
       unitId,
       liableParty: 'owner',
       coOwner: { userId },
     });
+  }
+
+  /** Hesap adi icin daire numarasi (bilinmiyorsa tek okuma; daire yoksa kimlik). */
+  async function unitNumberOf(ctx: FinanceContext, unitId: string, known?: string): Promise<string> {
+    if (known) return known;
+    return (await deps.core.getUnit(ctx.apartmentId, unitId))?.number ?? unitId;
   }
 
   async function requireUnit(ctx: FinanceContext, unitId: string): Promise<Unit> {
@@ -707,6 +728,8 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
       target?: Account;
       /** Bos daire kurali: `party` malik, istenen taraf sakin idi. */
       vacant?: boolean;
+      /** Daire numarasi (hesap adi icin); verilmezse okunur. */
+      unitNumber?: string;
       /** Yazimla ayni atomik islemde outbox'a yazilacak olay (islem kimligi belli olunca uretilir). */
       event?: (tx: Transaction) => NewEvent;
     },
@@ -727,7 +750,8 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
     if (owners && owners.length > 0) {
       const parts = splitAmountByShares(p.amount, owners).filter((x) => x.amount > 0);
       coOwnerParts = parts.map((x) => ({ userId: x.userId, amount: toKurus(x.amount) }));
-      await repo.ensureAccounts(parts.map((x) => coOwnerReceivable(ctx, p.unitId, x.userId)));
+      const unitNo = await unitNumberOf(ctx, p.unitId, p.unitNumber);
+      await repo.ensureAccounts(parts.map((x) => coOwnerReceivable(ctx, p.unitId, x.userId, unitNo)));
       debitLines = parts.map((x) => ({
         accountId: coOwnerReceivableId(p.unitId, x.userId),
         side: 'debit' as const,
@@ -736,7 +760,7 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
         liableParty: 'owner' as const,
       }));
     } else {
-      const recv = p.target ?? receivable(ctx, p.unitId, p.party);
+      const recv = p.target ?? receivable(ctx, p.unitId, p.party, await unitNumberOf(ctx, p.unitId, p.unitNumber));
       if (recv.type !== 'receivable' || recv.unitId !== p.unitId || recv.liableParty !== p.party) {
         throw new FinanceError('unprocessable', 'Hedef cari bu bolum / tarafla uyusmuyor');
       }
@@ -796,6 +820,7 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
       idemId: key,
       fp: fingerprint({ op: 'dues', unitId, party, amount, date, dueDate, description }),
       unitId,
+      unitNumber: unit.number,
       party: target.party,
       vacant: target.vacant,
       amount,
@@ -1083,6 +1108,7 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
         idemId: `${key}_${unit.unitId}`,
         fp: fingerprint({ op: 'bulk', unitId: unit.unitId, party, amount, date, dueDate, description, distributionKey, totalAmount, ...plan.scopeFp }),
         unitId: unit.unitId,
+        unitNumber: unit.number,
         party: liable,
         vacant: plan.targets[i]?.vacant ?? false,
         amount: toKurus(amount),
@@ -1211,7 +1237,7 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
     if ((deposit.type !== 'cash' && deposit.type !== 'bank') || deposit.status !== 'active') {
       throw new FinanceError('unprocessable', 'Tahsilat hesabi aktif bir kasa/banka hesabi olmali');
     }
-    const recv = former ?? receivable(ctx, unitId, party);
+    const recv = former ?? receivable(ctx, unitId, party, unit.number);
     if (!former) await repo.ensureAccounts([recv]);
 
     for (let attempt = 1; ; attempt++) {
@@ -1400,7 +1426,7 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
           ]
         : []),
       // Paydas alt carisi tahakkukla acilmistir; yalnizca ana cariler burada garanti edilir.
-      ...p.allocations.filter((a) => !a.accountId || a.accountId === receivableId(p.unitId, a.liableParty)).map((a) => receivable(ctx, p.unitId, a.liableParty)),
+      ...p.allocations.filter((a) => !a.accountId || a.accountId === receivableId(p.unitId, a.liableParty)).map((a) => receivable(ctx, p.unitId, a.liableParty, unit.number)),
     ]);
 
     const ordered = [...p.allocations].sort((a, b) => a.liableParty.localeCompare(b.liableParty));
@@ -2069,7 +2095,7 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
       throw new ValidationError('Acilis bakiyesi sifirdan farkli gecerli bir kurus tutari olmalidir', 'amount');
     }
     await ensureSystemAccounts(ctx);
-    const recv = receivable(ctx, p.unitId, p.party);
+    const recv = receivable(ctx, p.unitId, p.party, await unitNumberOf(ctx, p.unitId));
     await repo.ensureAccounts([recv]);
     const abs = toKurus(Math.abs(p.amount));
     const debt = p.amount > 0;
