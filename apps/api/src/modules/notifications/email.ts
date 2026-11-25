@@ -5,6 +5,7 @@ import {
   SendEmailCommand,
 } from '@aws-sdk/client-sesv2';
 import { DataAccessError, getTenantItem, putNewItem, skKey, tenantPk } from '../../config/dynamodb.js';
+import { type ApartmentRoleRepository, apartmentRoleRepository } from '../apartment-roles/repository.js';
 import { type CoreRepository, coreRepository } from '../core/repository.js';
 import { type PersonRepository, personRepository } from '../residents/repository.js';
 import { type DeliveryResult, type Notification, type Notifier, createLogNotifier } from './notifier.js';
@@ -19,8 +20,11 @@ import { type EmailContext, renderEmail } from './templates.js';
  *     bir alicinin gecici hatasi yuzunden yeniden islendiginde onceki alicilara ikinci e-posta
  *     gitmez.)
  *  2. Kullanici tercihi: e-posta kapaliysa `skipped: opted_out`.
- *  3. Adres: apartmanin `PERSON#<userId>` kaydi. Yoksa / gecersizse `no_email`, `emailVerified
- *     === false` ise `email_unverified` (guvenli atlama, hata degil).
+ *  3. Adres: apartmanin `PERSON#<userId>` kaydi. Kisi kaydinda gecerli adres yoksa (ekip
+ *     davetiyle eklenen yonetici / gorevli / denetci / guvenlik; davet kisi kaydi olusturmaz)
+ *     kullanicinin o gun AKTIF ekip kaydindaki (`ROLE#`) davet e-postasi kullanilir; bitmis ekip
+ *     kaydina gonderilmez. Hicbiri yoksa `no_email`; kisi kaydinda `emailVerified === false` ise
+ *     `email_unverified` (guvenli atlama, hata degil).
  *  4. Sablon (HTML + duz metin) ve SES gonderimi. Kalici alici hatasi (MessageRejected /
  *     BadRequest: gecersiz adres, sandbox'ta dogrulanmamis alici) `skipped: rejected` olarak
  *     kaydedilir ve tekrar denenmez; gecici/yapilandirma hatalari (kisitlama, hesap duraklatma,
@@ -154,6 +158,8 @@ export type EmailNotifierDeps = {
   sender: EmailSender;
   preferences: Pick<PreferencesRepository, 'get'>;
   people: Pick<PersonRepository, 'get'>;
+  /** Kisi kaydi olmayan ekip uyeleri icin yedek adres (ekip kaydindaki davet e-postasi). */
+  roles?: Pick<ApartmentRoleRepository, 'list'>;
   core: Pick<CoreRepository, 'getSite' | 'listUnits' | 'listBlocks'>;
   sentLog: SentLog;
   /** Sakin portali kok adresi (WEB_APP_URL + /app). */
@@ -166,6 +172,28 @@ const CONTEXT_TTL_MS = 60_000;
 
 export function createEmailNotifier(deps: EmailNotifierDeps): Notifier {
   const contexts = new Map<string, { at: number; siteName: string; labels: Map<string, string> }>();
+  const teamCache = new Map<string, { at: number; byUser: Map<string, { email: string; name?: string }> }>();
+
+  /**
+   * Ekip kaydindan yedek iletisim: o gun aktif (durum + tarih araligi) ve gecerli e-postasi olan
+   * kayit. Ayni kisinin birden fazla rolu varsa en son baslayan kayit kullanilir.
+   */
+  async function teamContact(apartmentId: string, userId: string) {
+    if (!deps.roles) return undefined;
+    const cached = teamCache.get(apartmentId);
+    if (cached && deps.now().getTime() - cached.at < CONTEXT_TTL_MS) return cached.byUser.get(userId);
+    const day = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Istanbul' }).format(deps.now());
+    const byUser = new Map<string, { email: string; name?: string; startDate: string }>();
+    for (const r of await deps.roles.list(apartmentId)) {
+      const email = r.email?.trim();
+      if (r.apartmentId !== apartmentId || r.status !== 'active' || r.startDate > day || (r.endDate && r.endDate < day)) continue;
+      if (!email || !EMAIL.test(email)) continue;
+      const prev = byUser.get(r.userId);
+      if (!prev || r.startDate > prev.startDate) byUser.set(r.userId, { email, name: r.fullName ?? r.displayName, startDate: r.startDate });
+    }
+    teamCache.set(apartmentId, { at: deps.now().getTime(), byUser });
+    return byUser.get(userId);
+  }
 
   /** Site adi ve daire etiketleri (ayni olayin alicilari icin kisa sureli onbellek). */
   async function siteContext(apartmentId: string) {
@@ -197,14 +225,23 @@ export function createEmailNotifier(deps: EmailNotifierDeps): Notifier {
     if (n.template.startsWith('ticket_') && prefs.email.tickets === false) return { status: 'skipped', reason: 'opted_out' };
 
     const person = await deps.people.get(n.apartmentId, n.userId);
-    const to = person?.email?.trim();
-    if (!to || !EMAIL.test(to)) return { status: 'skipped', reason: 'no_email' };
-    if (person?.emailVerified === false) return { status: 'skipped', reason: 'email_unverified' };
+    const personEmail = person?.email?.trim();
+    let to: string | undefined;
+    let recipientName = person?.fullName;
+    if (personEmail && EMAIL.test(personEmail)) {
+      if (person?.emailVerified === false) return { status: 'skipped', reason: 'email_unverified' };
+      to = personEmail;
+    } else {
+      const team = await teamContact(n.apartmentId, n.userId);
+      to = team?.email;
+      recipientName ??= team?.name;
+    }
+    if (!to) return { status: 'skipped', reason: 'no_email' };
 
     const site = await siteContext(n.apartmentId);
     const ctx: EmailContext = {
       siteName: site.siteName,
-      recipientName: person?.fullName,
+      recipientName,
       unitLabel: (unitId) => site.labels.get(unitId) ?? 'Bağımsız bölüm',
       portalUrl: deps.portalUrl,
     };
@@ -258,6 +295,7 @@ export function createNotifierFromEnv(
       }),
     preferences: overrides.preferences ?? createDynamoPreferencesRepository(),
     people: overrides.people ?? personRepository,
+    roles: overrides.roles ?? apartmentRoleRepository,
     core: overrides.core ?? coreRepository,
     sentLog: overrides.sentLog ?? createDynamoSentLog(now),
     portalUrl: overrides.portalUrl ?? (webApp ? `${webApp}/app` : undefined),
