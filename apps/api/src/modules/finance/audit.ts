@@ -1,4 +1,5 @@
 import { getTenantItem, queryTenantAll } from '../../config/dynamodb.js';
+import { FISCAL_PERIOD_PREFIX, type FinanceLock, type FiscalPeriod, buildSnapshot, netByAccount, periodKeys, snapshotHash } from './periodLock.js';
 import type { Kurus } from '../core/types.js';
 import type { MeterLine, MeterPeriod } from '../meters/types.js';
 import type { PaymentIntent } from '../payments/types.js';
@@ -66,6 +67,12 @@ export const AUDIT_CODES = [
   'meter_period_mismatch',
   /** Finans 2.3: ara durumda takili kalan sayac donemi (onay / geri alma yarida). */
   'meter_period_stuck',
+  /** Finans 2.4: kapali donemin snapshot'i bozuk ya da defterden yeniden hesaplananla uyusmuyor. */
+  'fiscal_period_drift',
+  /** Finans 2.4: kapanistan SONRA kapali doneme tarihli islem yazilmis (kilit asilmis). */
+  'fiscal_closed_write',
+  /** Finans 2.4: kilit kaydi kapanan donemlerle tutarsiz ya da kapanis yarida takili. */
+  'fiscal_lock_mismatch',
 ] as const;
 export type AuditCode = (typeof AUDIT_CODES)[number];
 
@@ -102,6 +109,9 @@ export type AuditSnapshot = {
   /** Finans 2.3: sayac donemleri ve dagitim satirlari (eski kaynaklarda yok). */
   meterPeriods?: MeterPeriod[];
   meterLines?: MeterLine[];
+  /** Finans 2.4: donem kilidi ve kapanan donemler (eski kaynaklarda yok). */
+  financeLock?: FinanceLock;
+  fiscalPeriods?: FiscalPeriod[];
 };
 
 /** Borc pozitif, alacak negatif (repository `ADD #balance :delta` ile ayni isaret). */
@@ -492,6 +502,70 @@ export function checkBankMatches(s: Pick<AuditSnapshot, 'transactions' | 'bankLi
 // Veri kaynagi ve denetci
 // ---------------------------------------------------------------------------
 
+type AmountRow = { accountId: string; opening: number; debit: number; credit: number; closing: number };
+const nonZero = (r: AmountRow) => r.opening !== 0 || r.debit !== 0 || r.credit !== 0 || r.closing !== 0;
+const amountKey = (r: AmountRow) => `${r.accountId}|${r.opening}|${r.debit}|${r.credit}|${r.closing}`;
+function amountsOf(rows: readonly AmountRow[]): string {
+  return rows.filter(nonZero).map(amountKey).sort().join('\n');
+}
+function firstDifference(a: readonly AmountRow[], b: readonly AmountRow[]): string | undefined {
+  const bm = new Map(b.filter(nonZero).map((r) => [r.accountId, amountKey(r)]));
+  const am = new Map(a.filter(nonZero).map((r) => [r.accountId, amountKey(r)]));
+  for (const id of new Set([...am.keys(), ...bm.keys()])) if (am.get(id) !== bm.get(id)) return id;
+  return undefined;
+}
+
+/** Finans 2.4: yarida kalan kapanis bu sureden eskiyse bulgu. */
+export const FISCAL_CLOSE_STUCK_MINUTES = 30;
+
+/**
+ * Finans 2.4: mali donem butunlugu (salt okunur).
+ *  - Her kapali ayin snapshot'i defterden yeniden hesaplanir (acilis = onceki tum hareketler);
+ *    ozet (`snapshotHash`, yalnizca tutarlar) saklananla ayni olmali. Saklanan satirlarin ozeti de
+ *    kendi `hash`'ine esit olmali (kayit bozulmasi).
+ *  - Kapanistan sonra olusturulmus, kapali aya tarihli islem: kilit asilmis demektir.
+ *  - Kilit: son kapanan ay kapali olmali ve `lockedThrough` o ayin son gunu olmali; yarida kalan
+ *    kapanis 30 dakikadan eskiyse takili sayilir.
+ */
+export function checkFiscalPeriods(s: Pick<AuditSnapshot, 'accounts' | 'transactions' | 'financeLock' | 'fiscalPeriods'>, now: Date): AuditFinding[] {
+  const out: AuditFinding[] = [];
+  const closed = (s.fiscalPeriods ?? []).filter((p) => p.status === 'closed').sort((a, b) => a.period.localeCompare(b.period));
+  const lock = s.financeLock;
+  if (lock?.lastClosedPeriod) {
+    const last = closed.find((p) => p.period === lock.lastClosedPeriod);
+    if (!last) out.push({ code: 'fiscal_lock_mismatch', periodId: lock.lastClosedPeriod, detail: 'last_closed_missing' });
+    else if (!lock.closing && lock.lockedThrough !== last.periodEnd) {
+      out.push({ code: 'fiscal_lock_mismatch', periodId: last.period, expected: last.periodEnd, actual: lock.lockedThrough ?? '', detail: 'locked_through' });
+    }
+  }
+  if (lock?.closing && now.getTime() - Date.parse(lock.closing.startedAt) > FISCAL_CLOSE_STUCK_MINUTES * 60_000) {
+    out.push({ code: 'fiscal_lock_mismatch', periodId: lock.closing.period, actual: lock.closing.startedAt, detail: 'close_stuck' });
+  }
+  if (!closed.length) return out;
+
+  const txs = [...s.transactions].sort((a, b) => a.date.localeCompare(b.date));
+  for (const p of closed) {
+    if (snapshotHash(p.snapshot.rows) !== p.snapshot.hash) {
+      out.push({ code: 'fiscal_period_drift', periodId: p.period, expected: p.snapshot.hash, detail: 'snapshot_corrupt' });
+      continue;
+    }
+    const opening = netByAccount(txs.filter((t) => t.date < p.periodStart));
+    const inPeriod = txs.filter((t) => t.date >= p.periodStart && t.date <= p.periodEnd);
+    // Tutar karsilastirmasi: hesap ekleme, ad/kod degisikligi ve hareketsiz satirlar sonucu degistirmez.
+    const rebuilt = buildSnapshot({ accounts: s.accounts, opening, periodTransactions: inPeriod });
+    const want = amountsOf(p.snapshot.rows);
+    const have = amountsOf(rebuilt.rows);
+    if (want !== have) {
+      const diff = firstDifference(p.snapshot.rows, rebuilt.rows);
+      out.push({ code: 'fiscal_period_drift', periodId: p.period, ...(diff ? { accountId: diff } : {}), detail: 'ledger_changed' });
+    }
+    for (const t of inPeriod) {
+      if (t.createdAt > p.closedAt) out.push({ code: 'fiscal_closed_write', periodId: p.period, transactionId: t.transactionId, expected: `<= ${p.closedAt}`, actual: t.createdAt });
+    }
+  }
+  return out;
+}
+
 export type AuditSource = {
   /** Anlik goruntu; okuma sirasi snapshot alanlarinin sirasidir (bkz. modul aciklamasi). */
   load(apartmentId: string): Promise<AuditSnapshot>;
@@ -517,6 +591,9 @@ export function createDynamoAuditSource(): AuditSource {
       // Finans 2.3: donem -> satirlar -> islemler (donem durumu bagli kayitlardan ONCE okunur).
       const meterPeriods = (await all<MeterPeriod>(apartmentId, 'MPERIOD#')).filter((p) => p.entityType === 'METER_PERIOD');
       const meterLines = (await all<MeterLine>(apartmentId, 'MDLINE#')).filter((l) => l.entityType === 'METER_LINE');
+      // Finans 2.4: kilit ve donemler islemlerden ONCE (kapanis sonrasi yazimlar sonradan gorulur).
+      const financeLock = await getTenantItem<FinanceLock>(periodKeys.lock(apartmentId));
+      const fiscalPeriods = (await all<FiscalPeriod>(apartmentId, FISCAL_PERIOD_PREFIX)).filter((p) => p.entityType === 'FISCAL_PERIOD');
       const transactions = await all<Transaction>(apartmentId, 'TX#');
       const entries = await all<LedgerEntry>(apartmentId, 'LE#');
       const accounts = await all<Account>(apartmentId, 'ACCT#');
@@ -536,6 +613,8 @@ export function createDynamoAuditSource(): AuditSource {
         bankStatements,
         meterPeriods,
         meterLines,
+        ...(financeLock ? { financeLock } : {}),
+        fiscalPeriods,
       };
     },
     getAccount: (apartmentId, accountId) => getTenantItem<Account>(financeKeys.account(apartmentId, accountId)),
@@ -626,6 +705,7 @@ export function createLedgerAuditor(source: AuditSource, opts: { now?: () => Dat
     findings.push(...checkOnlinePayments(s));
     findings.push(...checkSettlements(s));
     findings.push(...checkMeterPeriods(s, now()));
+    findings.push(...checkFiscalPeriods(s, now()));
 
     // Faz B2: banka eslestirmeleri. Satir okuma sirasinda degistiyse (es zamanli eslestirme / geri
     // alma) bulgu raporlanmaz, kararsiz sayilir.

@@ -282,9 +282,13 @@ describe('defter denetimi - DynamoDB kaynagi', () => {
     ddb.on(GetCommand).resolves({ Item: { value: 7 } });
     const snap = await createDynamoAuditSource().load(APT);
     const prefixes = ddb.commandCalls(QueryCommand).map((c) => c.args[0].input.ExpressionAttributeValues?.[':skp']);
-    expect(prefixes).toEqual(['PI#', 'CLOSURE#', 'BANKSTMT#', 'BANKTX#', 'BANKMATCH#', 'MPERIOD#', 'MDLINE#', 'TX#', 'LE#', 'ACCT#', 'PAY#']);
+    // Finans 2.4: donem kilidi ve kapanan donemler islemlerden ONCE okunur.
+    expect(prefixes).toEqual(['PI#', 'CLOSURE#', 'BANKSTMT#', 'BANKTX#', 'BANKMATCH#', 'MPERIOD#', 'MDLINE#', 'FPERIOD#', 'TX#', 'LE#', 'ACCT#', 'PAY#']);
     expect(ddb.commandCalls(QueryCommand).every((c) => c.args[0].input.ConsistentRead === true)).toBe(true);
-    expect(ddb.commandCalls(GetCommand)[0]!.args[0].input.Key).toEqual({ PK: 'APT#apt-1', SK: 'CTR#receipt' });
+    expect(ddb.commandCalls(GetCommand).map((c) => c.args[0].input.Key)).toEqual([
+      { PK: 'APT#apt-1', SK: 'FINLOCK' },
+      { PK: 'APT#apt-1', SK: 'CTR#receipt' },
+    ]);
     expect(snap.receiptCounter).toBe(7);
     // Yazma komutu yok.
     expect(ddb.calls().every((c) => ['QueryCommand', 'GetCommand'].includes(c.args[0].constructor.name))).toBe(true);

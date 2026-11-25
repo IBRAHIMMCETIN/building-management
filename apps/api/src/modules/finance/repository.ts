@@ -600,6 +600,28 @@ const BATCH_GET_SIZE = 100;
 const MAX_BATCH_ROUNDS = 5;
 
 /** Islem basliklari, kimlikle (BatchGet; islenmeyen anahtarlar ustel bekleme ile yeniden). */
+/**
+ * Finans 2.4-6: verilen hesaplara satir yazan islemler (LE# hesap okuyucusu + BatchGet), tam TX#
+ * taramasi yerine. LE# kayitlari islemle ayni atomik yazimda olustugu icin kume tamdir (gece
+ * denetimi `tx_entries_mismatch` ile dogrular). Okuyucusu olmayan depoda tam taramaya duser.
+ * Sira: islem kimligi (tarih onekli) artan - `listTransactions` ile ayni.
+ */
+export async function accountTransactions(
+  repo: Pick<FinanceRepository, 'listTransactions'> & Partial<Pick<FinanceRepository, 'listAccountEntries' | 'getTransactions'>>,
+  apartmentId: string,
+  accountIds: readonly string[],
+): Promise<Transaction[]> {
+  const { listAccountEntries, getTransactions } = repo;
+  if (!listAccountEntries || !getTransactions) {
+    const wanted = new Set(accountIds);
+    return (await repo.listTransactions(apartmentId)).items.filter((t) => t.lines.some((l) => wanted.has(l.accountId)));
+  }
+  const entries = (await Promise.all(accountIds.map((id) => listAccountEntries(apartmentId, id)))).flat();
+  const ids = [...new Set(entries.map((e) => e.transactionId))];
+  const txs = ids.length ? await getTransactions(apartmentId, ids) : [];
+  return [...txs].sort((a, b) => a.transactionId.localeCompare(b.transactionId));
+}
+
 export async function batchGetTransactions(apartmentId: string, ids: readonly string[]): Promise<Transaction[]> {
   const { client, tableName } = getDynamo();
   const out: Transaction[] = [];

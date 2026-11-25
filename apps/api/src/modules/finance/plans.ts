@@ -33,7 +33,7 @@ import { type IsoDate, type IsoDateTime, type Kurus, type LiableParty, type Tabl
 import { ValidationError, asObject, assertId, isIsoDate, optString, reqString } from '../core/validation.js';
 import type { PortalContext, PortalService } from '../portal/service.js';
 import { feeLedgerFor, unpostedLateFee } from './lateFee.js';
-import { type FinanceRepository, LedgerConflictError, type ReplaceRecord, financeKeys, financeRepository } from './repository.js';
+import { type FinanceRepository, LedgerConflictError, accountTransactions, type ReplaceRecord, financeKeys, financeRepository } from './repository.js';
 import { DEFAULT_LATE_FEE_BASIS_POINTS, FinanceError, type FinanceService, SYSTEM_ACCOUNTS, SYSTEM_ACTOR } from './service.js';
 import { type AllocatedCharge, allocate, cancelledIn, linesOfAccount, openPlanIds, readSubledger, transferItemId } from './subledger.js';
 import type { Account, ChargeSettlement, PlanItem, Transaction } from './types.js';
@@ -617,7 +617,7 @@ export function createPlanService(overrides: Partial<PlanServiceDeps> & Pick<Pla
   ): Promise<InstallmentPlan> {
     if (plan.status !== 'active') throw new FinanceError('conflict', 'Yalnizca aktif plan muaccel kilinabilir / erken kapatilabilir');
     const day = today();
-    const [txPage, account] = await Promise.all([repo.listTransactions(ctx.apartmentId), repo.getAccount(ctx.apartmentId, plan.accountId)]);
+    const [txPage, account] = await Promise.all([accountTransactions(repo, ctx.apartmentId, [plan.accountId]).then((items) => ({ items })), repo.getAccount(ctx.apartmentId, plan.accountId)]);
     if (!account) throw new FinanceError('not_found', 'Hesap bulunamadi');
     const st = planState(plan, txPage.items, day);
     if (st.open.length === 0) throw new FinanceError('unprocessable', 'Planda odenmemis taksit yok');
@@ -697,7 +697,7 @@ export function createPlanService(overrides: Partial<PlanServiceDeps> & Pick<Pla
     const reason = reqReason(asObject(body));
     const plan = await requirePlan(ctx, planId);
     if (plan.status === 'cancelled') throw new FinanceError('conflict', 'Plan zaten iptal edilmis');
-    const [txPage, account] = await Promise.all([repo.listTransactions(ctx.apartmentId), repo.getAccount(ctx.apartmentId, plan.accountId)]);
+    const [txPage, account] = await Promise.all([accountTransactions(repo, ctx.apartmentId, [plan.accountId]).then((items) => ({ items })), repo.getAccount(ctx.apartmentId, plan.accountId)]);
     if (account?.closedThrough && account.closedThrough >= plan.date) {
       throw new FinanceError('unprocessable', 'Cari plandan sonra kapatilmis; plan iptal edilemez');
     }

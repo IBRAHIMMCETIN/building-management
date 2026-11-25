@@ -379,9 +379,20 @@ API Gateway sınırı istemci başına değil, rota başınadır: arka ucu ve ma
 - **Taşınmada cari kapama:** Çıkış tarihine kadarki açık kalemler ve o güne kadar işlemiş tazminat tek atomik yazımla ayrılan sakin carisine (`recv-<daire>-<taraf>-c<kapama>`), malik carisine veya satışta yeni malike devredilir; avans iade edilebilir. Kaynak cari çıkış tarihine kadar kilitlenir (`closedThrough`), yeni sakin temiz bir cariyle başlar. Kapama ters kayıtla geri alınabilir.
 - **Hisseli mülkiyet (Finans 2.1):** Pay kaynağı kesirdir (tapudaki gibi); mülkiyet sicilinde (`OWNERSHIP#<daire>#<geçerlilik>#<sıra>`, append-only) her kayıt toplamı **tam 1** olan pay tablosudur, `bps` yalnızca gösterimdir (en büyük kalanla toplam 10.000). Varsayılan `joint`: malik borcu tek ortak cariye yazılır. `split`: malik tahakkukları (boş daire kuralıyla malike düşenler dahil) tahakkuk tarihindeki paylarla paydaş alt carilerine (`recv-<daire>-owner-h<etiket>`) kuruş kaybı olmadan bölünür; portal, online ödeme, banka eşleştirmesi, gecikme tazminatı ve bildirimler paydaşa özeldir. Devir (tam satış / kısmi hisse / miras) sicil, üyelikler, gerekirse cari kapama ve denetimi tek atomik yazımda yapar; kısmi devirde geçmiş borç devredende kalır. Geri alma ters kayıtla.
 - **Avans mahsubu ve borç yapılandırma (Finans 2.2):** Mahsup ve yapılandırma hedefli kapamayla (`settles`) yapılır; seçilmeyen kalemlerde FIFO değişmez. Farklı kişiler arası mahsup yalnızca muvafakat beyanıyla. Yapılandırmada o güne kadarki tazminat dondurulur, taksitlere yalnızca anapara payı (`feeBase`) üzerinden tazminat işler, vade farkı yoktur; muacceliyet plan eşikleriyle (varsayılan 2 ardışık / 3 toplam, 7 gün ek süre) tespit edilir, uygulama varsayılan olarak yönetici onaylıdır.
+- **Mali dönem kapanışı (Finans 2.4):**
+  - Kapanan ayın defteri kilitlenir: `FINLOCK.lockedThrough`.
+  - Her defter yazımı (`postBatch`), en erken işlem tarihiyle kilide karşı `ConditionCheck` yapar. Kapalı döneme yazım `409 period_closed` döner.
+  - Kapanış iki fazlıdır: kilit, ardından kilit altında aylık mizan anlık görüntüsü (`FPERIOD#<ay>`, tutar özeti `sha256`) ve doğrulama. Yarıda kalırsa devam eder.
+  - Engeller: yarım sayaç onayı, inceleme bekleyen online ödeme, dengesiz mizan. Uyarılar (eşleşmemiş banka satırı, kesinleşmemiş tazminat, bekleyen mahsup, taslak sayaç dönemi) tek tek onaylanır.
+  - Yıl sonu yalnızca snapshot'tır; deftere devir kaydı yazılmaz. Yalnızca son kapanan ay, gerekçe ve denetim kaydıyla yeniden açılır.
+  - Raporlar kapalı ayları snapshot'tan, açık ayları tarih aralığı taramasıyla okur.
+- **Bütçe / işletme projesi (Finans 2.4):**
+  - Yıllık bütçe revizyonlarla tutulur (`BUDGET#<yıl>#v<n>`). Onay karar no ve tarihiyle yapılır; onaylı bütçe değişmez, yeni onay öncekinin yerini alır.
+  - Bütçedeki aidat gelir satırı, toplu tahakkuk kurallarıyla daire başına önizlenir ve aylık aidat planına (`budgetId`, `incomeAccountId`) uygulanır.
+  - Tahakkuklar seçilen gelir hesabına yazılır: aidat, demirbaş, ısınma.
 - **Dağıtım anahtarları:** Eşit, m², arsa payı.
 - **Atomiklik ve idempotency:** Çoklu kayıtlar `TransactWriteItems` ile yazılır; tekrar gelen istekler parmak izi + `attribute_not_exists` koşullu yazımla etkisiz kalır.
-- **Defter denetimi:** Her gece `ledger_audit` hesap bakiyelerini `LE#` toplamlarıyla, işlem dengesini, kapama kilidini, makbuz sayacını ve tamamlanmış online ödemelerin defter kaydını karşılaştırır. Sapma otomatik düzeltilmez; yalnızca platform alarmı üretir (düzeltme ters kayıtla).
+- **Defter denetimi:** Her gece `ledger_audit` hesap bakiyelerini `LE#` toplamlarıyla, işlem dengesini, kapama kilidini, makbuz sayacını ve tamamlanmış online ödemelerin defter kaydını karşılaştırır. Finans 2.4 ile kapalı her ayın snapshot'ını defterden yeniden hesaplar (`fiscal_period_drift`), kapanıştan sonra kapalı aya yazılmış işlemi (`fiscal_closed_write`), kilit/dönem tutarsızlığını ve 30 dakikadan uzun süren yarım kapanışı (`fiscal_lock_mismatch`) raporlar. Sapma otomatik düzeltilmez; yalnızca platform alarmı üretir (düzeltme ters kayıtla).
 - **Online tahsilat komisyonu (sakine yansıtılmaz):** Sakin borcunun tamamını öder, ek ücret ödemez (5464 s. Kanun m.17). Komisyonu apartman öder: ödeme anında her kalemin alt üye işyeri payı = tutar − platform ücreti (varsayılan %0,75, aşağı yuvarlanır) − POS tahmini (sözleşme oranı yukarı yuvarlanır; sabit ücret işlem başına bir kez, ilk kalemde). Tahsilatla aynı `TransactWriteItems` içinde "Online Tahsilat Komisyon Gideri" (`exp-online-collection-fee`, referans `ONLINE-FEE:<niyet>`) yazılır; böylece `online-collection` bakiyesi apartmana aktarılacak tutara eşittir. Sağlayıcının gerçek komisyonu ve tahminle farkı niyetin `settlement` kaydına yazılır, apartman defterini değiştirmez. Payı komisyonu karşılamayan çok küçük tutar online ödenemez (400).
 - **Transactional outbox:** Defter ve belge yazımından doğan olaylar (`DUE_GENERATED`, `PAYMENT_RECEIVED`, `LATE_FEE_POSTED`, `ANNOUNCEMENT_PUBLISHED`) doğrudan yayınlanmaz; aynı `TransactWriteItems` içinde `OUTBOX#<eventId>` kaydı olarak yazılır (`events/outbox.ts`). Yazım yoksa olay da yoktur; toplu tahakkukta her kalemin olayı kendi kaydıyla birlikte yazılır.
 
@@ -575,6 +586,27 @@ API Gateway sınırı istemci başına değil, rota başınadır: arka ucu ve ma
 - [x] Web: kuyrukta çıkan satırlar için tedarikçi önerisi ve **“Tedarikçi Ödemesi”** diyaloğu (açık borç, açık fatura, kalan borç, fazla ödeme uyarısı), Finans → **Tedarikçiler** sekmesi (bakiyeler, açık faturalar, elle ödeme), mutabakat kartında **“PDF indir”**
 - [x] Testler: `apps/api/test/bank-b3-5.test.ts`, web `lib/bank/payable.test.ts`, `lib/bank/formatMemory.test.ts`, `SettlePayableDialog.test.tsx`
 
+**Finans 2.4 — Dönem kapanışı, bütçe, raporlar (`feature/finance-period-close-budget`)**
+
+- [x] Hesap planı:
+  - Hesap kodu (`Account.code`) ve hazır gelir hesapları: Demirbaş Gelirleri, Isınma / Yakıt Gelirleri.
+  - Tahakkuk, aylık aidat planı ve sayaç şablonunda gelir hesabı seçimi.
+  - Ayarlar kaydedilirken aidat planı gelir hesabı doğrulanır.
+- [x] Dönem kilidi ve kapanış:
+  - `FINLOCK` kilidi ve `postBatch` `ConditionCheck`.
+  - Aylık snapshot, kontrol listesi, iki fazlı kapanış, gerekçeli yeniden açma.
+  - Uçlar: `GET/POST /api/finance/periods…`.
+- [x] Raporlar:
+  - Mizan, gelir-gider, bütçe–gerçekleşen, kesin hesap, borçlu listesi, kasa/banka dökümü: `GET /api/finance/reports/<rapor>`.
+  - `?format=pdf` ile sunucu tarafı PDF (S3 önbellek + 5 dk imzalı link).
+  - `GET /api/finance/dashboard`.
+- [x] Bütçe / işletme projesi: taslak, revizyon, karar referanslı onay, aidat önizlemesi ve aylık aidat planına uygulama (`/api/finance/budgets…`).
+- [x] Web:
+  - Finans → Raporlar, Bütçe, Dönem kapanışı sekmeleri.
+  - Ayarlar → Hesap planı.
+  - Genel Bakış göstergeleri ve 12 aylık gelir-gider grafiği.
+- [x] Gece denetimi: dönem snapshot'ı, kapalı aya yazım ve kilit bütünlüğü. Taksit planı işlemleri hesap kapsamlı `LE#` okumasıyla okunur.
+
 ### Veri düzeltme betikleri
 
 - `npm run fix:receivable-names -w @bm/api -- --dry-run` (Faz 1): adında ham daire kimliği olan eski alacak hesaplarını `Daire <no> - Kat Maliki / Kiracı/Sakin / Kat Maliki (paydaş)` biçimine çevirir. Yalnızca hesap adı (+ sürüm) değişir; defter ve geçmiş açıklamalar olduğu gibi kalır. Tekrar çalıştırılabilir, Scan yetkisi gerektirir (yönetici kimliği).
@@ -597,7 +629,6 @@ API Gateway sınırı istemci başına değil, rota başınadır: arka ucu ve ma
 
 - [ ] Sayaç/endeks dağıtımı ve sayaç görselleri
 - [ ] Finans 2.2 sonrası: sakin portalından yapılandırma talebi, tedarikçi avans mahsubu
-- [ ] Dönem kapama, bütçe / yıllık işletme projesi
 
 **Platform ve operasyon**
 
