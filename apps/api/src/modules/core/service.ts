@@ -360,6 +360,11 @@ export type CoreServiceDeps = {
   repository: CoreRepository;
   now: () => Date;
   newId: () => string;
+  /**
+   * Finans 2.4: aylik aidat planinda secilen gelir hesabinin aktif bir gelir hesabi oldugunu
+   * ayarlar kaydedilirken dogrular (yoksa yalnizca tahakkuk aninda dogrulanir).
+   */
+  validateIncomeAccount?: (apartmentId: string, actor: string, accountId: string) => Promise<void>;
 };
 
 export function toUnitView(unit: Unit): UnitView {
@@ -490,6 +495,10 @@ export function createCoreService(overrides: Partial<CoreServiceDeps> = {}) {
         o.settings === undefined ? current.settings : parseSettings(o.settings, current.settings),
       ...touch(actor, version),
     };
+    const planAccount = updated.settings.monthlyDuesPlan?.incomeAccountId;
+    if (o.settings !== undefined && planAccount && planAccount !== current.settings.monthlyDuesPlan?.incomeAccountId && deps.validateIncomeAccount) {
+      await deps.validateIncomeAccount(apartmentId, actor, planAccount);
+    }
 
     await repo.updateSite(updated, version);
     return updated;

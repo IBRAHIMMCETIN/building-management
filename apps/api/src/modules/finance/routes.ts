@@ -5,6 +5,7 @@ import type { CariClosure, ClosureService } from './closures.js';
 import type { OffsetService } from './offsets.js';
 import type { PeriodService } from './periods.js';
 import type { ReportService } from './reportService.js';
+import type { BudgetService } from './budgets.js';
 import type { PlanService } from './plans.js';
 import type { FinanceContext, FinanceService } from './service.js';
 
@@ -23,6 +24,8 @@ export type FinanceRoutesDeps = {
   periods?: PeriodService;
   /** Finans 2.4-3: raporlar ve Genel Bakis. */
   reports?: ReportService;
+  /** Finans 2.4-4: butce / isletme projesi. */
+  budgets?: BudgetService;
 };
 
 /**
@@ -43,7 +46,7 @@ export type FinanceRoutesDeps = {
  * Tenant izolasyonu: `apartmentId` YALNIZCA JWT claim'inden gelir; URL/govde ile
  * degistirilemez. Claim'de apartmentId yoksa (ornegin apartman secilmemis) 403 doner.
  */
-export function financeRoutes({ authenticate, service, closures, offsets, plans, periods, reports }: FinanceRoutesDeps) {
+export function financeRoutes({ authenticate, service, closures, offsets, plans, periods, reports, budgets }: FinanceRoutesDeps) {
   const r = new Hono<Env>();
   r.use('*', authenticateWith(authenticate));
   r.use('*', async (c, next) => {
@@ -262,6 +265,22 @@ export function financeRoutes({ authenticate, service, closures, offsets, plans,
       });
     }
     r.get('/dashboard', requireRole(READ_ROLES), async (c) => c.json(await reports.dashboard(ctx(c))));
+  }
+
+  // Finans 2.4-4: butce / isletme projesi.
+  if (budgets) {
+    r.get('/budgets', requireRole(READ_ROLES), async (c) => c.json(await budgets.list(ctx(c), { year: c.req.query('year') })));
+    r.post('/budgets', requireRole(WRITE_ROLES), async (c) => c.json(await budgets.create(ctx(c), await readJson(c)), 201));
+    r.get('/budgets/:budgetId', requireRole(READ_ROLES), async (c) => c.json(await budgets.get(ctx(c), c.req.param('budgetId'))));
+    r.put('/budgets/:budgetId', requireRole(WRITE_ROLES), async (c) => c.json(await budgets.update(ctx(c), c.req.param('budgetId'), await readJson(c))));
+    r.delete('/budgets/:budgetId', requireRole(WRITE_ROLES), async (c) => c.json(await budgets.remove(ctx(c), c.req.param('budgetId'), { version: Number(c.req.query('version')) })));
+    r.post('/budgets/:budgetId/approve', requireRole(WRITE_ROLES), async (c) => c.json(await budgets.approve(ctx(c), c.req.param('budgetId'), await readJson(c))));
+    r.get('/budgets/:budgetId/dues-preview', requireRole(READ_ROLES), async (c) =>
+      c.json(await budgets.duesPreview(ctx(c), c.req.param('budgetId'), { month: c.req.query('month') })),
+    );
+    r.post('/budgets/:budgetId/apply-dues-plan', requireRole(WRITE_ROLES), async (c) =>
+      c.json(await budgets.applyDuesPlan(ctx(c), c.req.param('budgetId'), await readJson(c))),
+    );
   }
 
   return r;

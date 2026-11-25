@@ -27,6 +27,7 @@ import { type ClosureService, createClosureService } from './modules/finance/clo
 import { type OffsetService, createOffsetService } from './modules/finance/offsets.js';
 import { type PeriodService, createPeriodService } from './modules/finance/periods.js';
 import { type ReportService, createReportService } from './modules/finance/reportService.js';
+import { type BudgetService, createBudgetService } from './modules/finance/budgets.js';
 import { type PlanService, createPlanService } from './modules/finance/plans.js';
 import { type FinanceService, createFinanceService } from './modules/finance/service.js';
 import { healthRoutes } from './modules/health/routes.js';
@@ -105,6 +106,7 @@ export type AppConfig = {
   /** Finans 2.4: mali donem kapanisi. */
   periodService?: PeriodService;
   reportService?: ReportService;
+  budgetService?: BudgetService;
   /** Finans 2.1: hisseli mulkiyet ve mulk/hisse devri (testlerde sahte depolarla). */
   ownershipService?: OwnershipService;
   /** Finans 2.3: sayac / endeks dagitimi (testlerde sahte depolarla). */
@@ -186,7 +188,15 @@ export function createApp(config: AppConfig) {
     }),
   );
   app.route('/api/mfa', mfaAdminRoutes({ authenticate, service: mfaService }));
-  const coreService = config.coreService ?? createCoreService();
+  // Finans 2.4: aidat plani gelir hesabi ayarlarda dogrulanir (finans servisi asagida kurulur).
+  let incomeAccountResolver: FinanceService['resolveIncomeAccount'] | undefined;
+  const coreService =
+    config.coreService ??
+    createCoreService({
+      validateIncomeAccount: async (apartmentId, actor, accountId) => {
+        await incomeAccountResolver?.({ apartmentId, userId: actor }, accountId, 'monthlyDuesPlan.incomeAccountId');
+      },
+    });
   app.route('/api/sites', coreRoutes({ authenticate, service: coreService }));
   app.route('/api/admin/apartments', coreAdminRoutes({ authenticate, service: coreService }));
 
@@ -205,6 +215,7 @@ export function createApp(config: AppConfig) {
       memberships: membershipRepository,
       ownership: ownershipReader,
     });
+  incomeAccountResolver = financeService.resolveIncomeAccount;
   // Online odeme (Adim 8b). Yonetici uclari finans rotalarindan, sakin uclari portal
   // rotalarindan ONCE baglanir (daha ozel yol); callback/webhook kimliksizdir.
   let paymentsService = config.paymentsService;
@@ -232,6 +243,7 @@ export function createApp(config: AppConfig) {
   // Finans 2.2: sahte finans servisiyle kurulan testlerde (servis verilmemisse) baglanmaz.
   const offsetService = config.offsetService ?? (config.financeService ? undefined : createOffsetService({ portal: portalService }));
   const periodService = config.periodService ?? (config.financeService ? undefined : createPeriodService());
+  const budgetService = config.budgetService ?? (config.financeService ? undefined : createBudgetService({ finance: financeService, core: coreService }));
   const reportService = config.reportService ?? (config.financeService ? undefined : createReportService({ ledger: financeService }));
   const planService = config.planService ?? (config.financeService ? undefined : createPlanService({ finance: financeService, portal: portalService }));
   app.route(
@@ -244,6 +256,7 @@ export function createApp(config: AppConfig) {
       ...(planService ? { plans: planService } : {}),
       ...(periodService ? { periods: periodService } : {}),
       ...(reportService ? { reports: reportService } : {}),
+      ...(budgetService ? { budgets: budgetService } : {}),
     }),
   );
   // Faz B1: banka ekstresi aktarimi (ekstre yukleme, onizleme, satir aktarimi, sutun eslemesi).

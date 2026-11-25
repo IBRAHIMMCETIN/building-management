@@ -2793,6 +2793,8 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
     getUnitBalance,
     /** Sistem hesaplari (kasa, banka, gelir...) yoksa olusturur (cari kapama servisi kullanir). */
     ensureSystemAccounts,
+    /** Finans 2.4: tahakkukta kullanilabilir aktif gelir hesabi dogrulamasi (bos -> income-dues). */
+    resolveIncomeAccount,
   };
 }
 
