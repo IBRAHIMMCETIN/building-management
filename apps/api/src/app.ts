@@ -13,6 +13,8 @@ import { type SupportService, createSupportService, withSupportAccess } from './
 import { apartmentRoleRoutes } from './modules/apartment-roles/routes.js';
 import { type ApartmentRoleService, createApartmentRoleService } from './modules/apartment-roles/service.js';
 import { type AnnouncementService, createAnnouncementService } from './modules/announcements/service.js';
+import { ticketRoutes } from './modules/tickets/routes.js';
+import { type TicketService, createTicketService } from './modules/tickets/service.js';
 import { coreAdminRoutes, coreRoutes } from './modules/core/routes.js';
 import { type CoreService, createCoreService } from './modules/core/service.js';
 import { documentRoutes } from './modules/documents/routes.js';
@@ -128,6 +130,8 @@ export type AppConfig = {
   membershipService?: MembershipService;
   residentsService?: ResidentsService;
   announcementService?: AnnouncementService;
+  /** Faz 3 (O1): ariza / talep. */
+  ticketService?: TicketService;
   apartmentRoleService?: ApartmentRoleService;
   /**
    * Online odeme (Adim 8b). Verilmezse ortam degiskenlerinden (`loadPaymentsConfig`) kurulur;
@@ -314,6 +318,9 @@ export function createApp(config: AppConfig) {
       service: config.announcementService ?? createAnnouncementService(),
     }),
   );
+
+  // Faz 3 (O1): ariza / talep (yonetim, gorevli, guvenlik, denetci).
+  app.route('/api/tickets', ticketRoutes({ authenticate, service: config.ticketService ?? createTicketService() }));
 
 
   app.route('/api/portal/payments', paymentPortalRoutes({ authenticate, service: paymentsService }));
