@@ -3,6 +3,8 @@ import {
   TransactionCanceledException,
 } from '@aws-sdk/client-dynamodb';
 import {
+  BatchGetCommand,
+  type BatchGetCommandOutput,
   PutCommand,
   QueryCommand,
   type QueryCommandOutput,
@@ -517,6 +519,14 @@ export type FinanceRepository = {
    */
   listTransactions(apartmentId: string, query?: TransactionQuery): Promise<{ items: Transaction[]; cursor?: string }>;
 
+  /**
+   * Finans 2.4: tek hesabin defter satirlari (`LE#<accountId>#<YYYYMMDD-…>#<satir>`), tarih
+   * araligiyla (dahil). Tam defter taramasi yerine hesap kapsamli okuma icin; kronolojik.
+   */
+  listAccountEntries?(apartmentId: string, accountId: string, range?: { from?: IsoDate; to?: IsoDate }): Promise<LedgerEntry[]>;
+  /** Finans 2.4: islem basliklarini kimlikle toplu okur (BatchGet, tutarli; sira garanti degil). */
+  getTransactions?(apartmentId: string, transactionIds: readonly string[]): Promise<Transaction[]>;
+
   postTransaction(input: PostInput): Promise<void>;
   postBatch(input: PostBatchInput): Promise<void>;
   /**
@@ -558,6 +568,65 @@ export class InvalidCursorError extends Error {
     super('Gecersiz sayfa imleci');
     this.name = 'InvalidCursorError';
   }
+}
+
+const BATCH_GET_SIZE = 100;
+const MAX_BATCH_ROUNDS = 5;
+
+/** Islem basliklari, kimlikle (BatchGet; islenmeyen anahtarlar ustel bekleme ile yeniden). */
+export async function batchGetTransactions(apartmentId: string, ids: readonly string[]): Promise<Transaction[]> {
+  const { client, tableName } = getDynamo();
+  const out: Transaction[] = [];
+  const unique = [...new Set(ids)];
+  for (let i = 0; i < unique.length; i += BATCH_GET_SIZE) {
+    let keys: Record<string, unknown>[] | undefined = unique.slice(i, i + BATCH_GET_SIZE).map((id) => financeKeys.transaction(apartmentId, id));
+    for (let round = 0; keys && keys.length > 0; round++) {
+      if (round >= MAX_BATCH_ROUNDS) throw toDataAccessError(new Error('BatchGet islenemeyen anahtarlar kaldi'));
+      if (round > 0) await sleep(50 * 2 ** round);
+      let res: BatchGetCommandOutput;
+      try {
+        res = await client.send(new BatchGetCommand({ RequestItems: { [tableName]: { Keys: keys, ConsistentRead: true } } }));
+      } catch (err) {
+        throw toDataAccessError(err);
+      }
+      out.push(...((res.Responses?.[tableName] ?? []) as Transaction[]));
+      keys = res.UnprocessedKeys?.[tableName]?.Keys;
+    }
+  }
+  // Savunma: baska tenant'a ait kayit asla donmez (anahtar zaten tenant'tan turetildi).
+  return out.filter((tx) => tx.siteId === apartmentId);
+}
+
+/**
+ * Hesap defter satirlari. SK = `LE#<accountId>#<transactionId>#<satir>`, `transactionId` gunle
+ * baslar (`YYYYMMDD-…`): tarih araligi SK uzerinde BETWEEN ile daraltilir ('~' > rakam/harf).
+ */
+export async function queryAccountEntries(apartmentId: string, accountId: string, range: { from?: IsoDate; to?: IsoDate } = {}): Promise<LedgerEntry[]> {
+  const { client, tableName } = getDynamo();
+  const base = `${skKey('LE', accountId)}${KEY_SEPARATOR}`;
+  const lower = `${base}${(range.from ?? '0000-00-00').replaceAll('-', '')}`;
+  const upper = `${base}${(range.to ?? '9999-99-99').replaceAll('-', '')}~`;
+  const items: LedgerEntry[] = [];
+  let startKey: Record<string, unknown> | undefined;
+  try {
+    do {
+      const out: QueryCommandOutput = await client.send(
+        new QueryCommand({
+          TableName: tableName,
+          KeyConditionExpression: '#pk = :pk AND #sk BETWEEN :lo AND :hi',
+          ExpressionAttributeNames: { '#pk': 'PK', '#sk': 'SK' },
+          ExpressionAttributeValues: { ':pk': tenantPk(apartmentId), ':lo': lower, ':hi': upper },
+          ConsistentRead: true,
+          ...(startKey ? { ExclusiveStartKey: startKey } : {}),
+        }),
+      );
+      items.push(...((out.Items ?? []) as LedgerEntry[]));
+      startKey = out.LastEvaluatedKey;
+    } while (startKey);
+  } catch (err) {
+    throw toDataAccessError(err);
+  }
+  return items.filter((e) => e.siteId === apartmentId && e.accountId === accountId);
 }
 
 async function queryTransactions(
@@ -625,8 +694,8 @@ export function createFinanceRepository(): FinanceRepository {
           new UpdateCommand({
             TableName: tableName,
             Key: financeKeys.account(account.siteId, account.accountId),
-            UpdateExpression:
-              'SET #name = :name, #status = :status, #updatedAt = :now, #updatedBy = :by ADD #version :one',
+            // Finans 2.4: hesap kodu (bos ise kaldirilir).
+            UpdateExpression: `SET #name = :name, #status = :status, #updatedAt = :now, #updatedBy = :by${account.code ? ', #code = :code' : ''} ADD #version :one${account.code ? '' : ' REMOVE #code'}`,
             ConditionExpression: 'attribute_exists(PK) AND #version = :expectedVersion',
             ExpressionAttributeNames: {
               '#name': 'name',
@@ -634,10 +703,12 @@ export function createFinanceRepository(): FinanceRepository {
               '#updatedAt': 'updatedAt',
               '#updatedBy': 'updatedBy',
               '#version': 'version',
+              '#code': 'code',
             },
             ExpressionAttributeValues: {
               ':name': account.name,
               ':status': account.status,
+              ...(account.code ? { ':code': account.code } : {}),
               ':now': account.updatedAt,
               ':by': account.updatedBy,
               ':one': 1,
@@ -670,6 +741,8 @@ export function createFinanceRepository(): FinanceRepository {
     },
 
     listTransactions: queryTransactions,
+    listAccountEntries: queryAccountEntries,
+    getTransactions: batchGetTransactions,
 
     postTransaction,
     postBatch,

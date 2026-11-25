@@ -1,13 +1,5 @@
-import { BatchGetCommand, type BatchGetCommandOutput } from '@aws-sdk/lib-dynamodb';
-import {
-  KEY_SEPARATOR,
-  getDynamo,
-  queryTenantAll,
-  skKey,
-  tenantPk,
-  toDataAccessError,
-} from '../../config/dynamodb.js';
-import { financeKeys } from '../finance/repository.js';
+import { KEY_SEPARATOR, queryTenantAll, skKey, tenantPk } from '../../config/dynamodb.js';
+import { batchGetTransactions } from '../finance/repository.js';
 import type { LedgerEntry, Payment, Transaction } from '../finance/types.js';
 import type { TableKeys } from '../core/types.js';
 import type { Announcement, UnitMembership } from './types.js';
@@ -31,43 +23,6 @@ export const portalKeys = {
     SK: skKey('MEMBER', userId, unitId),
   }),
 };
-
-const BATCH_SIZE = 100;
-const MAX_BATCH_ROUNDS = 5;
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-async function batchGetTransactions(apartmentId: string, ids: string[]): Promise<Transaction[]> {
-  const { client, tableName } = getDynamo();
-  const out: Transaction[] = [];
-  const unique = [...new Set(ids)];
-
-  for (let i = 0; i < unique.length; i += BATCH_SIZE) {
-    let keys: Record<string, unknown>[] | undefined = unique
-      .slice(i, i + BATCH_SIZE)
-      .map((id) => financeKeys.transaction(apartmentId, id));
-
-    for (let round = 0; keys && keys.length > 0; round++) {
-      if (round >= MAX_BATCH_ROUNDS) {
-        throw toDataAccessError(new Error('BatchGet islenemeyen anahtarlar kaldi'));
-      }
-      if (round > 0) await sleep(50 * 2 ** round);
-      let res: BatchGetCommandOutput;
-      try {
-        res = await client.send(
-          new BatchGetCommand({
-            RequestItems: { [tableName]: { Keys: keys, ConsistentRead: true } },
-          }),
-        );
-      } catch (err) {
-        throw toDataAccessError(err);
-      }
-      out.push(...((res.Responses?.[tableName] ?? []) as Transaction[]));
-      keys = res.UnprocessedKeys?.[tableName]?.Keys;
-    }
-  }
-  // Savunma: baska tenant'a ait kayit asla donmez (anahtar zaten tenant'tan turetildi).
-  return out.filter((tx) => tx.siteId === apartmentId);
-}
 
 export function createPortalRepository(): PortalRepository {
   return {

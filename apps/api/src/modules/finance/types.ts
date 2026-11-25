@@ -52,6 +52,8 @@ export type Account = TableKeys &
     status: EntityStatus;
     /** Sistem hesaplari pasife alinamaz. */
     system?: boolean;
+    /** Finans 2.4: hesap plani kodu (ornegin "600.01"); apartman icinde benzersiz, istege bagli. */
+    code?: string;
     /** Borc - alacak (kurus, negatif olabilir). Her defter yazimiyla atomik guncellenir. */
     balance: Kurus;
     unitId?: string;

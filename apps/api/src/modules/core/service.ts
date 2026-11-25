@@ -198,6 +198,9 @@ function parseMonthlyDuesPlan(value: unknown): MonthlyDuesPlan {
     totalAmount: toKurus(reqInt(o, 'totalAmount', 1, MAX_PLAN_AMOUNT)),
     distributionKey: reqEnum(o, 'distributionKey', METER_COMMON_KEYS),
     liableParty: reqEnum(o, 'liableParty', LIABLE_PARTIES),
+    // Finans 2.4: hesap varligi/turu tahakkuk aninda finans servisinde dogrulanir.
+    ...(o.incomeAccountId != null && o.incomeAccountId !== '' ? { incomeAccountId: assertId(o.incomeAccountId, 'monthlyDuesPlan.incomeAccountId') } : {}),
+    ...(o.budgetId != null && o.budgetId !== '' ? { budgetId: assertId(o.budgetId, 'monthlyDuesPlan.budgetId') } : {}),
   };
 }
 

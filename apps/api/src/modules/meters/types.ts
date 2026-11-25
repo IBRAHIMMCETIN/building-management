@@ -111,6 +111,8 @@ export type MeterTemplate = TableKeys &
     legalProfile: LegalProfile;
     decisionRef?: string;
     reason?: string;
+    /** Finans 2.4: dagitim tahakkukunun alacak yazilacagi gelir hesabi (varsayilan `income-dues`). */
+    incomeAccountId?: string;
     isDefault: boolean;
     status: 'active' | 'archived';
   };
@@ -118,7 +120,7 @@ export type MeterTemplate = TableKeys &
 /** Donemde dondurulan sablon (sonraki sablon degisiklikleri gecmisi etkilemez). */
 export type TemplateSnapshot = Pick<
   MeterTemplate,
-  'templateId' | 'name' | 'meterKind' | 'category' | 'commonShareBps' | 'commonKey' | 'liableParty' | 'scope' | 'legalProfile' | 'decisionRef' | 'reason' | 'version'
+  'templateId' | 'name' | 'meterKind' | 'category' | 'commonShareBps' | 'commonKey' | 'liableParty' | 'scope' | 'legalProfile' | 'decisionRef' | 'reason' | 'incomeAccountId' | 'version'
 >;
 
 export const PERIOD_STATUSES = ['draft', 'calculated', 'posting', 'posted', 'reversing', 'reversed', 'cancelled'] as const;

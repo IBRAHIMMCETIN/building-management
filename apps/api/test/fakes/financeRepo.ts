@@ -155,7 +155,8 @@ export function createFakeFinanceRepo(defaultApartmentId = 'apt-1') {
     updateAccount: async (a, expectedVersion) => {
       const cur = accounts.get(k(a.siteId, a.accountId));
       if (!cur || cur.version !== expectedVersion) throw new DataAccessError('conflict', 'surum');
-      accounts.set(k(a.siteId, a.accountId), { ...cur, name: a.name, status: a.status, version: cur.version + 1 });
+      const { code: _code, ...base } = cur;
+      accounts.set(k(a.siteId, a.accountId), { ...base, name: a.name, status: a.status, ...(a.code ? { code: a.code } : {}), version: cur.version + 1 });
     },
     ensureAccounts: async (list) => {
       for (const a of list) if (!accounts.has(k(a.siteId, a.accountId))) accounts.set(k(a.siteId, a.accountId), a);

@@ -157,6 +157,19 @@ export const DEFAULT_EXPENSE_ACCOUNTS = [
   { accountId: 'exp-other', name: 'Diğer Giderler' },
 ] as const;
 
+/**
+ * Finans 2.4: hazir gelir hesaplari (aidat ve gecikme sistem hesaplarina ek). Tahakkukta
+ * `incomeAccountId` ile secilir; demirbas (yatirim) ve isinma/yakit dagitimlari bütçe–gerceklesen
+ * raporunda ayri kalem olarak izlenir. Var olan apartmanlarda ilk finans isleminde acilir.
+ */
+export const DEFAULT_INCOME_ACCOUNTS = [
+  { accountId: 'income-fixtures', name: 'Demirbaş Gelirleri' },
+  { accountId: 'income-heating', name: 'Isınma / Yakıt Gelirleri' },
+] as const;
+
+/** Hesap plani kodu: harf, rakam, nokta, tire (1-20). */
+export const ACCOUNT_CODE_RE = /^[0-9A-Za-z][0-9A-Za-z.-]{0,19}$/;
+
 export const MAX_TRANSACTION_PAGE = 200;
 
 export const DUES_DISTRIBUTION_KEYS = ['equal', 'area', 'land_share'] as const;
@@ -502,6 +515,7 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
       }),
 
       ...DEFAULT_EXPENSE_ACCOUNTS.map((e) => newAccount(ctx, { ...e, type: 'expense' })),
+      ...DEFAULT_INCOME_ACCOUNTS.map((e) => newAccount(ctx, { ...e, type: 'income' })),
     ]);
     ensuredSystem.add(ctx.apartmentId);
   }
@@ -615,11 +629,39 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
     return type ? all.filter((a) => a.type === type) : all;
   }
 
+  /** Finans 2.4: hesap kodu dogrulamasi + apartman icinde benzersizlik. `null`/bos: kod yok. */
+  async function parseAccountCode(ctx: FinanceContext, o: Obj, exceptAccountId?: string): Promise<string | undefined> {
+    if (o.code === undefined || o.code === null || o.code === '') return undefined;
+    if (typeof o.code !== 'string' || !ACCOUNT_CODE_RE.test(o.code.trim())) {
+      throw new ValidationError('code 1-20 karakter; harf, rakam, nokta ve tire olabilir', 'code');
+    }
+    const code = o.code.trim();
+    const clash = (await repo.listAccounts(ctx.apartmentId)).find((a) => a.code === code && a.accountId !== exceptAccountId);
+    if (clash) throw new FinanceError('conflict', `Bu hesap kodu "${clash.name}" hesabinda kullaniliyor`);
+    return code;
+  }
+
+  /**
+   * Finans 2.4: tahakkukun alacak yazilacagi gelir hesabi. Verilmezse `income-dues`. Gecikme
+   * tazminati hesabi yalnizca kesinlestirme icindir; secilemez.
+   */
+  async function resolveIncomeAccount(ctx: FinanceContext, value: unknown, field = 'incomeAccountId'): Promise<string> {
+    if (value === undefined || value === null || value === '' || value === SYSTEM_ACCOUNTS.incomeDues) return SYSTEM_ACCOUNTS.incomeDues;
+    const id = assertId(value, field);
+    if (id === SYSTEM_ACCOUNTS.incomeLateFee) throw new ValidationError('Gecikme tazminati gelir hesabi tahakkukta secilemez', field);
+    await ensureSystemAccounts(ctx);
+    const acc = await repo.getAccount(ctx.apartmentId, id);
+    if (!acc || acc.type !== 'income') throw new ValidationError(`${field} aktif bir gelir hesabi olmalidir`, field);
+    if (acc.status !== 'active') throw new ValidationError(`${field} pasif bir gelir hesabi`, field);
+    return id;
+  }
+
   async function createAccount(ctx: FinanceContext, body: unknown): Promise<Account> {
     const o = asObject(body);
     const type = reqEnum(o, 'type', EDITABLE_ACCOUNT_TYPES);
     const accountId = o.accountId === undefined ? deps.newId() : assertId(o.accountId, 'accountId');
-    const account = newAccount(ctx, { accountId, type, name: reqString(o, 'name', 120) });
+    const code = await parseAccountCode(ctx, o);
+    const account = newAccount(ctx, { accountId, type, name: reqString(o, 'name', 120), ...(code ? { code } : {}) });
     try {
       await repo.createAccount(account);
     } catch (err) {
@@ -642,7 +684,9 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
     if (status === 'inactive' && existing.balance !== 0) {
       throw new FinanceError('unprocessable', 'Bakiyesi sifir olmayan hesap pasife alinamaz');
     }
-    const updated: Account = { ...existing, name, status, updatedAt: stamp(), updatedBy: ctx.userId };
+    const code = o.code === undefined ? existing.code : await parseAccountCode(ctx, o, accountId);
+    const { code: _old, ...rest } = existing;
+    const updated: Account = { ...rest, name, status, ...(code ? { code } : {}), updatedAt: stamp(), updatedBy: ctx.userId };
     try {
       await repo.updateAccount(updated, existing.version);
     } catch (err) {
@@ -730,6 +774,8 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
       vacant?: boolean;
       /** Daire numarasi (hesap adi icin); verilmezse okunur. */
       unitNumber?: string;
+      /** Finans 2.4: alacak yazilacak gelir hesabi (dogrulanmis); verilmezse `income-dues`. */
+      incomeAccountId?: string;
       /** Yazimla ayni atomik islemde outbox'a yazilacak olay (islem kimligi belli olunca uretilir). */
       event?: (tx: Transaction) => NewEvent;
     },
@@ -775,7 +821,7 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
       batchId: p.batchId,
       ...(p.reference ? { reference: p.reference } : {}),
       ...(p.vacant ? { vacant: true as const } : {}),
-      lines: [...debitLines, { accountId: SYSTEM_ACCOUNTS.incomeDues, side: 'credit', amount: p.amount }],
+      lines: [...debitLines, { accountId: p.incomeAccountId ?? SYSTEM_ACCOUNTS.incomeDues, side: 'credit', amount: p.amount }],
     });
     try {
       await repo.postTransaction({
@@ -813,14 +859,18 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
     const unit = await requireUnit(ctx, unitId);
     if (unit.status !== 'active') throw new FinanceError('unprocessable', 'Bagimsiz bolum aktif degil');
     await ensureSystemAccounts(ctx);
+    const incomeAccountId = await resolveIncomeAccount(ctx, o.incomeAccountId);
+    // Varsayilan gelir hesabi parmak izine girmez (eski isteklerle ayni kalir).
+    const incomeFp = incomeAccountId === SYSTEM_ACCOUNTS.incomeDues ? {} : { incomeAccountId };
     const target = party === 'occupant' ? liablePartyFor(party, (await occupancyResolver(ctx, unitId))(unitId, date)) : { party, vacant: false };
 
     const result = await postDues(ctx, {
       // Parmak izi istenen tarafla hesaplanir: ayni istek, doluluk degisse de ayni istektir.
       idemId: key,
-      fp: fingerprint({ op: 'dues', unitId, party, amount, date, dueDate, description }),
+      fp: fingerprint({ op: 'dues', unitId, party, amount, date, dueDate, description, ...incomeFp }),
       unitId,
       unitNumber: unit.number,
+      incomeAccountId,
       party: target.party,
       vacant: target.vacant,
       amount,
@@ -869,6 +919,7 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
     const unitIds = o.unitIds === undefined ? undefined : parseIdList(o.unitIds, 'unitIds');
     const blockIds = o.blockIds === undefined ? undefined : parseIdList(o.blockIds, 'blockIds');
     const expenseCategory = parseExpenseCategory(o.expenseCategory);
+    const incomeAccountId = await resolveIncomeAccount(ctx, o.incomeAccountId);
 
     const active = (await deps.core.listUnits(ctx.apartmentId))
       .filter((u) => u.status === 'active')
@@ -906,8 +957,10 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
     const scopeFp = {
       ...(blockIds ? { blockIds: [...blockIds].sort() } : {}),
       ...(expenseCategory ? { expenseCategory } : {}),
+      ...(incomeAccountId !== SYSTEM_ACCOUNTS.incomeDues ? { incomeAccountId } : {}),
     };
     return {
+      incomeAccountId,
       party,
       totalAmount,
       distributionKey,
@@ -938,6 +991,7 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
     return {
       distributionKey: plan.distributionKey,
       expenseCategory: plan.expenseCategory,
+      incomeAccountId: plan.incomeAccountId,
       totalAmount: toKurus(plan.totalAmount),
       distributedAmount: toKurus(items.reduce((s, i) => s + i.amount, 0)),
       count: items.length,
@@ -1019,10 +1073,13 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
       batchId: string;
       reference: string;
       former?: { closureId: string; sourceAccountId: string; userIds: string[]; periodStart?: IsoDate; periodEnd: IsoDate; unitNumber: string };
+      /** Finans 2.4: sablonda secilen gelir hesabi (ornegin `income-heating`). */
+      incomeAccountId?: string;
     },
   ) {
     if (!Number.isSafeInteger(p.amount) || p.amount < 1 || p.amount > MAX_AMOUNT) throw new ValidationError('Tutar gecersiz', 'amount');
     await ensureSystemAccounts(ctx);
+    const incomeAccountId = await resolveIncomeAccount(ctx, p.incomeAccountId);
     const target = p.former
       ? newAccount(ctx, {
           accountId: `${p.former.sourceAccountId}-c${p.former.closureId}`,
@@ -1037,8 +1094,9 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
     const amount = toKurus(p.amount);
     const r = await postDues(ctx, {
       idemId: p.idemId,
-      fp: fingerprint({ op: 'meter', unitId: p.unitId, party: p.party, amount, date: p.date, dueDate: p.dueDate, description: p.description, batchId: p.batchId, reference: p.reference, target: target?.accountId ?? null }),
+      fp: fingerprint({ op: 'meter', unitId: p.unitId, party: p.party, amount, date: p.date, dueDate: p.dueDate, description: p.description, batchId: p.batchId, reference: p.reference, target: target?.accountId ?? null, ...(incomeAccountId !== SYSTEM_ACCOUNTS.incomeDues ? { incomeAccountId } : {}) }),
       unitId: p.unitId,
+      incomeAccountId,
       party: p.party,
       vacant: p.vacant,
       amount,
@@ -1109,6 +1167,7 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
         fp: fingerprint({ op: 'bulk', unitId: unit.unitId, party, amount, date, dueDate, description, distributionKey, totalAmount, ...plan.scopeFp }),
         unitId: unit.unitId,
         unitNumber: unit.number,
+        incomeAccountId: plan.incomeAccountId,
         party: liable,
         vacant: plan.targets[i]?.vacant ?? false,
         amount: toKurus(amount),
@@ -1925,6 +1984,7 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
       date: first,
       dueDate: `${p.period}-${String(p.dueDayOfMonth).padStart(2, '0')}`,
       description: `${periodLabel(p.period)} aidatı`,
+      ...(p.plan.incomeAccountId ? { incomeAccountId: p.plan.incomeAccountId } : {}),
     });
     return { status: 'charged' as const, ...result };
   }

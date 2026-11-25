@@ -18,6 +18,7 @@ import type { IsoDate, LiableParty, Site, Unit } from '../core/types.js';
 import { type Obj, ValidationError, asObject, assertId, optBool, optString, reqEnum, reqInt, reqString } from '../core/validation.js';
 import { type DocumentStore, createDocumentStoreFromEnv } from '../documents/store.js';
 import { type FinanceRepository, financeRepository } from '../finance/repository.js';
+import { DEFAULT_INCOME_ACCOUNTS, SYSTEM_ACCOUNTS } from '../finance/service.js';
 import { MAX_EXPENSES_PER_PERIOD, planExpenseLocks } from './expenseLocks.js';
 import {
   type MeterContext,
@@ -62,7 +63,7 @@ export type MeterServiceDeps = {
   /** Yoksa (DOCUMENTS_BUCKET tanimsiz) fotograf uclari 503 doner. */
   store: DocumentStore | undefined;
   /** 2.3-5a: donemlere baglanan tedarikci faturalari (gider kayitlari). */
-  expenses: Pick<FinanceRepository, 'getExpense' | 'listExpenses'>;
+  expenses: Pick<FinanceRepository, 'getExpense' | 'listExpenses'> & Partial<Pick<FinanceRepository, 'getAccount'>>;
   now: () => Date;
   newId: () => string;
 };
@@ -87,7 +88,12 @@ type TemplateInput = {
   legalProfile: LegalProfile;
   decisionRef?: string;
   reason?: string;
+  /** Finans 2.4: gelir hesabi (varsayilan `income-dues`). */
+  incomeAccountId?: string;
 };
+
+/** Hazir gelir hesaplari: tahakkuk aninda finans servisi tarafindan acilir (var olmasi beklenmez). */
+const BUILT_IN_INCOME_IDS: readonly string[] = [SYSTEM_ACCOUNTS.incomeDues, ...DEFAULT_INCOME_ACCOUNTS.map((a) => a.accountId)];
 
 /** Yonetmelik uyarilari: merkezi isitmada %30 / m2 disi -> uyari + karar referansi zorunlu. */
 export function legalWarnings(t: Pick<TemplateInput, 'legalProfile' | 'commonShareBps' | 'commonKey'>) {
@@ -118,8 +124,20 @@ export function templatePresetsFor(site: Pick<Site, 'settings'> | undefined): (T
       liableParty: 'occupant',
       scope: {},
       legalProfile: 'central_heating',
+      incomeAccountId: 'income-heating',
     },
-    { preset: 'hot_water', name: 'Sıcak su — %100 tüketim', meterKind: 'hot_water', category: 'hot_water', commonShareBps: 0, commonKey: 'area', liableParty: 'occupant', scope: {}, legalProfile: 'none' },
+    {
+      preset: 'hot_water',
+      name: 'Sıcak su — %100 tüketim',
+      meterKind: 'hot_water',
+      category: 'hot_water',
+      commonShareBps: 0,
+      commonKey: 'area',
+      liableParty: 'occupant',
+      scope: {},
+      legalProfile: 'none',
+      incomeAccountId: 'income-heating',
+    },
     { preset: 'cold_water', name: 'Soğuk su — %100 tüketim', meterKind: 'cold_water', category: 'cold_water', commonShareBps: 0, commonKey: 'area', liableParty: 'occupant', scope: {}, legalProfile: 'none' },
   ];
 }
@@ -597,6 +615,16 @@ export function createMeterService(overrides: Partial<MeterServiceDeps> = {}) {
     return scope;
   }
 
+  /** Finans 2.4: sablonun gelir hesabi; hazir hesaplar dogrudan, digerleri aktif `income` olmali. */
+  async function parseIncomeAccount(ctx: MeterContext, value: unknown): Promise<string> {
+    const id = assertId(value, 'incomeAccountId');
+    if (id === SYSTEM_ACCOUNTS.incomeLateFee) throw new ValidationError('Gecikme tazminati gelir hesabi seçilemez', 'incomeAccountId');
+    if (BUILT_IN_INCOME_IDS.includes(id)) return id;
+    const acc = deps.expenses.getAccount ? await deps.expenses.getAccount(ctx.apartmentId, id) : undefined;
+    if (!acc || acc.type !== 'income' || acc.status !== 'active') throw new ValidationError('incomeAccountId aktif bir gelir hesabı olmalı', 'incomeAccountId');
+    return id;
+  }
+
   async function parseTemplate(ctx: MeterContext, o: Obj, base?: TemplateInput): Promise<TemplateInput> {
     function pick<T>(key: string, parse: () => T, fallback: T | undefined): T {
       if (o[key] !== undefined) return parse();
@@ -613,6 +641,8 @@ export function createMeterService(overrides: Partial<MeterServiceDeps> = {}) {
     const decisionRef = o.decisionRef === undefined ? base?.decisionRef : o.decisionRef === null ? undefined : reqString(o, 'decisionRef', 120);
     const reason = o.reason === undefined ? base?.reason : o.reason === null ? undefined : reqString(o, 'reason', REASON_MAX);
     const scope = o.scope === undefined ? (base?.scope ?? {}) : await parseScope(ctx, o.scope);
+    const incomeAccountId =
+      o.incomeAccountId === undefined ? base?.incomeAccountId : o.incomeAccountId === null || o.incomeAccountId === '' ? undefined : await parseIncomeAccount(ctx, o.incomeAccountId);
     if (commonKey === 'land_share') {
       const site = await deps.core.getSite(ctx.apartmentId);
       if (!site?.settings.landShareEnabled) throw new MeterError('unprocessable', 'Bu apartmanda arsa payı anahtarı kapalı (site ayarları)');
@@ -628,6 +658,7 @@ export function createMeterService(overrides: Partial<MeterServiceDeps> = {}) {
       legalProfile,
       ...(decisionRef ? { decisionRef } : {}),
       ...(reason ? { reason } : {}),
+      ...(incomeAccountId && incomeAccountId !== SYSTEM_ACCOUNTS.incomeDues ? { incomeAccountId } : {}),
     };
     const warnings = legalWarnings(input);
     if (warnings.length && (!input.decisionRef || !input.reason)) {
@@ -707,6 +738,7 @@ export function createMeterService(overrides: Partial<MeterServiceDeps> = {}) {
     const next = bumped(ctx, t, input);
     if (!input.decisionRef) delete next.decisionRef;
     if (!input.reason) delete next.reason;
+    if (!input.incomeAccountId) delete next.incomeAccountId;
     await repo.write(
       [replace(next, t.version)],
       [audit(ctx, 'meters.template_update', { type: 'meter_template', id: templateId }, { ...input, warnings: legalWarnings(input).map((w) => w.code) }, input.reason)],
@@ -753,6 +785,7 @@ export function createMeterService(overrides: Partial<MeterServiceDeps> = {}) {
     legalProfile: t.legalProfile,
     ...(t.decisionRef ? { decisionRef: t.decisionRef } : {}),
     ...(t.reason ? { reason: t.reason } : {}),
+    ...(t.incomeAccountId ? { incomeAccountId: t.incomeAccountId } : {}),
     version: t.version,
   });
 

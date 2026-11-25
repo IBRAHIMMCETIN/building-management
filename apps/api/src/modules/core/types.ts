@@ -165,6 +165,10 @@ export type MonthlyDuesPlan = {
   distributionKey: Exclude<DistributionKey, 'meter'>;
   /** Isletme gideri -> occupant (oturan), yatirim -> owner. */
   liableParty: LiableParty;
+  /** Finans 2.4: tahakkukun alacak yazilacagi gelir hesabi (varsayilan `income-dues`). */
+  incomeAccountId?: string;
+  /** Finans 2.4: plani olusturan onayli butce (isletme projesi). */
+  budgetId?: string;
 };
 
 export type SiteSettings = {

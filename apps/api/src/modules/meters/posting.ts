@@ -399,6 +399,7 @@ export function createMeterPostingService(overrides: Partial<MeterPostingService
           description,
           batchId,
           reference,
+          ...(period.template.incomeAccountId ? { incomeAccountId: period.template.incomeAccountId } : {}),
           ...(line.liability.kind === 'former' && f
             ? { former: { closureId: f.closureId, sourceAccountId: f.sourceAccountId, userIds: f.userIds, periodEnd: f.periodEnd, unitNumber: line.unitNumber ?? line.unitId } }
             : {}),
