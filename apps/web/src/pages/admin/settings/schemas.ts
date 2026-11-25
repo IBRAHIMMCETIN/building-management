@@ -1,6 +1,9 @@
 import { z } from 'zod';
-import type { DuesPlanKey, Site, UpdateSiteSettingsInput } from '@/lib/api/sites';
+import type { DuesPlanKey, MonthlyDuesPlan, Site, UpdateSiteSettingsInput } from '@/lib/api/sites';
 import { kurusToInput, parseTRYToKurus } from '@/lib/money';
+
+/** Aidat tahakkukunun varsayilan gelir hesabi (API SYSTEM_ACCOUNTS.incomeDues). */
+export const DEFAULT_INCOME_ACCOUNT = 'income-dues';
 
 /** KMK m.20: aylik %5. */
 export const STATUTORY_LATE_FEE_BP = 500;
@@ -32,6 +35,8 @@ export const settingsSchema = z
     planAmount: z.string().trim(),
     planKey: z.enum(['equal', 'area', 'land_share']),
     planParty: z.enum(['occupant', 'owner']),
+    /** Finans 2.4: gelir hesabi ('' = varsayilan aidat gelirleri). */
+    planIncomeAccountId: z.string(),
   })
   .transform((v, ctx) => {
     const day = /^\d{1,2}$/.test(v.dueDayOfMonth) ? Number(v.dueDayOfMonth) : Number.NaN;
@@ -53,7 +58,16 @@ export const settingsSchema = z
     return {
       dueDayOfMonth: day,
       lateFeeMonthlyBasisPoints: bp ?? 0,
-      plan: amount === null ? null : { enabled: v.planEnabled, totalAmount: amount, distributionKey: v.planKey, liableParty: v.planParty },
+      plan:
+        amount === null
+          ? null
+          : {
+              enabled: v.planEnabled,
+              totalAmount: amount,
+              distributionKey: v.planKey,
+              liableParty: v.planParty,
+              ...(v.planIncomeAccountId && v.planIncomeAccountId !== DEFAULT_INCOME_ACCOUNT ? { incomeAccountId: v.planIncomeAccountId } : {}),
+            },
     };
   });
 
@@ -69,6 +83,7 @@ export function formDefaults(site: Site): SettingsForm {
     planAmount: plan ? kurusToInput(plan.totalAmount) : '',
     planKey: (plan?.distributionKey ?? 'equal') as DuesPlanKey,
     planParty: plan?.liableParty ?? 'occupant',
+    planIncomeAccountId: plan?.incomeAccountId ?? DEFAULT_INCOME_ACCOUNT,
   };
 }
 
@@ -76,15 +91,28 @@ export function formDefaults(site: Site): SettingsForm {
  * Plan kapatildiginda girilen degerler `enabled: false` ile saklanir (tekrar acinca kaybolmaz);
  * tutar hic girilmemisse plan kaldirilir (`null`).
  */
-export function toUpdateInput(v: SettingsValues, version: number): UpdateSiteSettingsInput {
+export function toUpdateInput(v: SettingsValues, version: number, current?: MonthlyDuesPlan): UpdateSiteSettingsInput {
   return {
     version,
     settings: {
       dueDayOfMonth: v.dueDayOfMonth,
       lateFeeMonthlyBasisPoints: v.lateFeeMonthlyBasisPoints,
-      monthlyDuesPlan: v.plan,
+      monthlyDuesPlan: v.plan && current?.budgetId && samePlan(v.plan, current) ? { ...v.plan, budgetId: current.budgetId } : v.plan,
     },
   };
+}
+
+/**
+ * Finans 2.4: plan butceden uygulanmissa (budgetId) tutar, anahtar, taraf ve gelir hesabi
+ * degismedikce bag korunur; elle degistirilen plan artik butceye bagli sayilmaz.
+ */
+function samePlan(a: MonthlyDuesPlan, b: MonthlyDuesPlan): boolean {
+  return (
+    a.totalAmount === b.totalAmount &&
+    a.distributionKey === b.distributionKey &&
+    a.liableParty === b.liableParty &&
+    (a.incomeAccountId ?? DEFAULT_INCOME_ACCOUNT) === (b.incomeAccountId ?? DEFAULT_INCOME_ACCOUNT)
+  );
 }
 
 export const SETTINGS_FIELD_MAP = {
@@ -94,4 +122,5 @@ export const SETTINGS_FIELD_MAP = {
   totalAmount: 'planAmount',
   distributionKey: 'planKey',
   liableParty: 'planParty',
+  'monthlyDuesPlan.incomeAccountId': 'planIncomeAccountId',
 } as const;

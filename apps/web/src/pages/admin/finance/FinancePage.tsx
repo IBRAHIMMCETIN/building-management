@@ -16,6 +16,8 @@ import { PayablesPanel } from './PayablesPanel';
 import { PaymentDialog, type PaymentPreset } from './PaymentDialog';
 import { PeriodClosingPanel } from './PeriodClosingPanel';
 import { PlansPanel } from './PlansPanel';
+import { ReportsPanel } from './ReportsPanel';
+import { BudgetPanel } from './BudgetPanel';
 import { RestructureWizard } from './RestructureWizard';
 import { SummaryCards } from './SummaryCards';
 import { TransactionsPanel } from './TransactionsPanel';
@@ -29,7 +31,9 @@ const TABS = [
   { id: 'online', label: 'Online ödemeler' },
   { id: 'bank', label: 'Banka' },
   { id: 'payables', label: 'Tedarikçiler' },
-  // UX-07: Finans 2.4 giris noktasi (/admin/finance?tab=closing).
+  // Finans 2.4: raporlar, butce / isletme projesi, donem kapanisi (/admin/finance?tab=closing).
+  { id: 'reports', label: 'Raporlar' },
+  { id: 'budget', label: 'Bütçe' },
   { id: 'closing', label: 'Dönem kapanışı' },
 ] as const;
 type TabId = (typeof TABS)[number]['id'];
@@ -119,7 +123,9 @@ export function FinancePage() {
           {tab === 'online' && <OnlinePaymentsPanel />}
           {tab === 'bank' && <BankPanel canWrite={canWrite} />}
           {tab === 'payables' && <PayablesPanel canWrite={canWrite} />}
-          {tab === 'closing' && <PeriodClosingPanel />}
+          {tab === 'reports' && <ReportsPanel />}
+          {tab === 'budget' && <BudgetPanel canWrite={canWrite} />}
+          {tab === 'closing' && <PeriodClosingPanel canWrite={canWrite} />}
         </div>
       </div>
 

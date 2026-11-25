@@ -17,6 +17,10 @@ export const monthlyDuesPlanSchema = z.object({
   totalAmount: z.number().int(),
   distributionKey: z.enum(DUES_PLAN_KEYS),
   liableParty: z.enum(['occupant', 'owner']),
+  /** Finans 2.4: tahakkukun yazilacagi gelir hesabi (yoksa `income-dues`). */
+  incomeAccountId: z.string().optional(),
+  /** Finans 2.4: plani olusturan onayli butce. */
+  budgetId: z.string().optional(),
 });
 
 export const siteSchema = z.object({

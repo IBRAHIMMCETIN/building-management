@@ -3,6 +3,7 @@ import { CalendarClock, Save } from 'lucide-react';
 import { useEffect, useMemo } from 'react';
 import { useForm } from 'react-hook-form';
 import { Alert, Button, Card, CardTitle, FormField, Input, Select, Skeleton } from '@/components/ui';
+import { useFinanceAccounts } from '@/hooks/useFinance';
 import { useSite, useSitePermissions, useUpdateSiteSettings } from '@/hooks/useSite';
 import { useUnits } from '@/hooks/useUnits';
 import { ApiError, errorMessage } from '@/lib/api/errors';
@@ -26,7 +27,7 @@ const PARTY_LABELS = {
   owner: 'Kat maliki — demirbaş / yatırım gideri',
 } as const;
 
-const FIELDS = ['dueDayOfMonth', 'lateFeeRate', 'planAmount', 'planKey', 'planParty'] as const;
+const FIELDS = ['dueDayOfMonth', 'lateFeeRate', 'planAmount', 'planKey', 'planParty', 'planIncomeAccountId'] as const;
 
 export function SettingsPage() {
   const { canRead, canWrite } = useSitePermissions();
@@ -70,6 +71,7 @@ export function SettingsPage() {
 function SettingsFormView({ site, readOnly }: { site: Site; readOnly: boolean }) {
   const update = useUpdateSiteSettings();
   const units = useUnits();
+  const incomeAccounts = useFinanceAccounts('income');
   const form = useForm<SettingsForm, unknown, SettingsValues>({
     resolver: zodResolver(settingsSchema),
     defaultValues: formDefaults(site),
@@ -94,7 +96,7 @@ function SettingsFormView({ site, readOnly }: { site: Site; readOnly: boolean })
 
   const submit = form.handleSubmit(async (v) => {
     try {
-      await update.mutateAsync(toUpdateInput(v, site.version));
+      await update.mutateAsync(toUpdateInput(v, site.version, site.settings.monthlyDuesPlan));
     } catch (err) {
       applyApiFieldError(err, form.setError, FIELDS, SETTINGS_FIELD_MAP);
     }
@@ -164,6 +166,22 @@ function SettingsFormView({ site, readOnly }: { site: Site; readOnly: boolean })
               </Select>
             </FormField>
           </div>
+          <FormField
+            label="Gelir hesabı"
+            error={errors.planIncomeAccountId?.message}
+            hint={site.settings.monthlyDuesPlan?.budgetId ? `Plan ${site.settings.monthlyDuesPlan.budgetId} bütçesinden uygulandı.` : undefined}
+          >
+            <Select {...form.register('planIncomeAccountId')}>
+              {(incomeAccounts.data ?? [])
+                .filter((a) => a.accountId !== 'income-late-fee')
+                .map((a) => (
+                  <option key={a.accountId} value={a.accountId}>
+                    {a.name}
+                  </option>
+                ))}
+              {!incomeAccounts.data && <option value={form.getValues('planIncomeAccountId')}>Aidat Gelirleri</option>}
+            </Select>
+          </FormField>
           <FormField label="Borçlandırılan taraf" error={errors.planParty?.message}>
             <Select {...form.register('planParty')}>
               {(['occupant', 'owner'] as const).map((p) => (

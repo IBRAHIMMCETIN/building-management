@@ -9,7 +9,7 @@ const site = (over: Partial<Site['settings']> = {}): Site => ({
   settings: { landShareEnabled: false, dueDayOfMonth: 10, lateFeeMonthlyBasisPoints: 500, ...over },
 });
 
-const valid = { dueDayOfMonth: '10', lateFeeRate: '5', planEnabled: true, planAmount: '15.000,00', planKey: 'equal' as const, planParty: 'occupant' as const };
+const valid = { dueDayOfMonth: '10', lateFeeRate: '5', planEnabled: true, planAmount: '15.000,00', planKey: 'equal' as const, planParty: 'occupant' as const, planIncomeAccountId: 'income-dues' };
 
 describe('oran donusumleri (kayan nokta yok)', () => {
   it('yuzde metni -> baz puan', () => {
@@ -53,8 +53,17 @@ describe('ayarlar formu', () => {
     expect(r.error?.issues.map((i) => i.path[0])).toEqual(['dueDayOfMonth', 'lateFeeRate', 'planAmount']);
   });
 
+  it('Finans 2.4: gelir hesabi plana yazilir; butce bagi plan degismedikce korunur', () => {
+    const current = { enabled: true, totalAmount: 1_500_000, distributionKey: 'equal' as const, liableParty: 'occupant' as const, incomeAccountId: 'income-heating', budgetId: '2026-r1' };
+    const same = toUpdateInput(settingsSchema.parse({ ...valid, planIncomeAccountId: 'income-heating' }), 4, current).settings.monthlyDuesPlan;
+    expect(same).toEqual(current);
+    const changed = toUpdateInput(settingsSchema.parse({ ...valid, planAmount: '16.000,00', planIncomeAccountId: 'income-heating' }), 4, current).settings.monthlyDuesPlan;
+    expect(changed).toEqual({ enabled: true, totalAmount: 1_600_000, distributionKey: 'equal', liableParty: 'occupant', incomeAccountId: 'income-heating' });
+    expect(formDefaults(site({ monthlyDuesPlan: current })).planIncomeAccountId).toBe('income-heating');
+  });
+
   it('kayitli ayarlar forma dolar', () => {
-    expect(formDefaults(site())).toEqual({ dueDayOfMonth: '10', lateFeeRate: '5', planEnabled: false, planAmount: '', planKey: 'equal', planParty: 'occupant' });
+    expect(formDefaults(site())).toEqual({ dueDayOfMonth: '10', lateFeeRate: '5', planEnabled: false, planAmount: '', planKey: 'equal', planParty: 'occupant', planIncomeAccountId: 'income-dues' });
     expect(
       formDefaults(site({ lateFeeMonthlyBasisPoints: 250, monthlyDuesPlan: { enabled: true, totalAmount: 1_500_050, distributionKey: 'area', liableParty: 'owner' } })),
     ).toMatchObject({ lateFeeRate: '2,5', planEnabled: true, planAmount: '15000,50', planKey: 'area', planParty: 'owner' });
