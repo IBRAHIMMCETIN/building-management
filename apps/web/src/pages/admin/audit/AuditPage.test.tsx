@@ -14,6 +14,7 @@ vi.mock('@/lib/api/audit', () => ({ auditApi: api }));
 vi.mock('@/hooks/useUnits', () => ({
   usePeople: () => ({ data: [{ userId: 'mgr-1', fullName: 'Ayşe Yönetici', email: 'a@o.com' }] }),
 }));
+vi.mock('@/lib/api/apartmentRoles', () => ({ apartmentRolesApi: { listCurrent: vi.fn().mockResolvedValue({ items: [] }) } }));
 
 const flush = () => act(async () => new Promise((r) => setTimeout(r, 20)));
 

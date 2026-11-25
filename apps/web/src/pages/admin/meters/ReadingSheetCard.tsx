@@ -227,7 +227,15 @@ export function ReadingSheetCard({ period, unitLabel }: { period: MeterPeriod; u
               })}
             </tbody>
           </table>
-          {visible.length === 0 && <p className="py-3 text-small text-muted">Filtreye uyan sayaç yok.</p>}
+          {visible.length === 0 &&
+            (rows.length === 0 ? (
+              // UX-10: sayaclar donem bitisinden sonra kurulmussa liste bostur; genel filtre mesaji yaniltir.
+              <p className="py-3 text-small text-muted">
+                Bu dönem aralığında kurulu aktif sayaç bulunamadı. Sayaçlar sekmesinden kurulum tarihlerini kontrol edin.
+              </p>
+            ) : (
+              <p className="py-3 text-small text-muted">Filtreye uyan sayaç yok.</p>
+            ))}
         </div>
       )}
 

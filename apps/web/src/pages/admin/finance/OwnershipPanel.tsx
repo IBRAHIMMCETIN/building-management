@@ -134,8 +134,13 @@ export function OwnershipPanel({ canWrite, onCollect }: Props) {
                 <tr>
                   <th scope="col" className="px-3 py-2 font-medium">Daire</th>
                   <th scope="col" className="px-3 py-2 font-medium">Paydaş</th>
-                  <th scope="col" className="px-3 py-2 text-right font-medium">Bakiye</th>
-                  {canWrite && <th scope="col" className="px-3 py-2"><span className="sr-only">İşlem</span></th>}
+                  {/* UX-05: baslik ve tutarlar ayni sag eksende; Tahsilat sutunuyla arasinda 24px. */}
+                  <th scope="col" className="py-2 pr-6 pl-3 text-right font-medium">Bakiye</th>
+                  {canWrite && (
+                    <th scope="col" className="w-px px-3 py-2">
+                      <span className="sr-only">İşlem</span>
+                    </th>
+                  )}
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
@@ -143,11 +148,19 @@ export function OwnershipPanel({ canWrite, onCollect }: Props) {
                   <tr key={a.accountId}>
                     <td className="px-3 py-2">{label(a.unitId)}</td>
                     <td className="px-3 py-2">{names.get(a.coOwner.userId) ?? 'Paydaş'}</td>
-                    <td className="px-3 py-2 text-right tabular-nums">
-                      {a.balance > 0 ? formatTRY(a.balance) : a.balance < 0 ? <span className="text-success">{formatTRY(-a.balance)} avans</span> : <span className="text-muted">—</span>}
+                    <td className="py-2 pr-6 pl-3 text-right whitespace-nowrap tabular-nums">
+                      {a.balance > 0 ? (
+                        formatTRY(a.balance)
+                      ) : a.balance < 0 ? (
+                        <span className="text-success">
+                          {formatTRY(-a.balance)} <span className="text-xs">avans</span>
+                        </span>
+                      ) : (
+                        <span className="text-muted">—</span>
+                      )}
                     </td>
                     {canWrite && (
-                      <td className="px-3 py-2 text-right">
+                      <td className="w-px px-3 py-2 text-right whitespace-nowrap">
                         <Button
                           size="sm"
                           variant="ghost"

@@ -1,13 +1,16 @@
+import { useQuery } from '@tanstack/react-query';
 import { CircleAlert, CircleCheck, CircleHelp, Filter, Link2, ScrollText, ShieldCheck, ShieldQuestion } from 'lucide-react';
 import { type FormEvent, type ReactNode, useMemo, useState } from 'react';
 import { Alert, Badge, Button, Card, Dialog, FormField, Input, Select, Skeleton } from '@/components/ui';
 import { useAuth } from '@/hooks/useAuth';
 import { useAuditIntegrity, useAuditLog, useAuditScope, usePageVerification } from '@/hooks/useSecurity';
 import { usePeople } from '@/hooks/useUnits';
+import { apartmentRolesApi } from '@/lib/api/apartmentRoles';
 import type { AuditEntry, AuditFilters, AuditIntegrity } from '@/lib/api/audit';
 import { errorMessage } from '@/lib/api/errors';
+import { type ActorInfo, actorText, buildActorDirectory } from '@/lib/audit/actor';
 import type { EntryCheck, PageCheck } from '@/lib/audit/chain';
-import { AUDIT_CATEGORIES, actionLabel, roleLabel, shortHash } from '@/lib/audit/labels';
+import { AUDIT_CATEGORIES, actionLabel, shortHash } from '@/lib/audit/labels';
 import { formatDateTime } from '@/lib/dates';
 
 /** "2026-11-21" -> gun basi / sonu (Istanbul, UTC+03:00). */
@@ -92,7 +95,7 @@ function Row({ label, children }: { label: string; children: ReactNode }) {
   );
 }
 
-function EntryDetail({ entry, check, actorName }: { entry: AuditEntry; check?: EntryCheck; actorName?: string }) {
+function EntryDetail({ entry, check, actor }: { entry: AuditEntry; check?: EntryCheck; actor?: ActorInfo }) {
   return (
     <div className="flex flex-col gap-4">
       <dl className="flex flex-col gap-2">
@@ -102,8 +105,9 @@ function EntryDetail({ entry, check, actorName }: { entry: AuditEntry; check?: E
           {actionLabel(entry.action)} <span className="font-mono text-xs text-muted">({entry.action})</span>
         </Row>
         <Row label="Yapan">
-          {actorName ?? entry.actor.userId} · {roleLabel(entry.actor.role)}
+          {actorText(entry.actor, actor)}
           {entry.actor.supportSessionId && <Badge tone="warning" className="ml-2">Destek oturumu</Badge>}
+          <span className="block font-mono text-xs text-muted">Kullanıcı kimliği: {entry.actor.userId}</span>
         </Row>
         <Row label="Hedef">
           {entry.target.type} · <span className="font-mono text-xs">{entry.target.id}</span>
@@ -159,7 +163,7 @@ function EntryDetail({ entry, check, actorName }: { entry: AuditEntry; check?: E
  * yoneticisi platform zincirini gorur (apartman zincirine yalnizca destek oturumuyla).
  */
 export function AuditPage() {
-  const { support } = useAuth();
+  const { support, user } = useAuth();
   const scope = useAuditScope();
   const [draft, setDraft] = useState({ fromDay: '', toDay: '', action: '', actorId: '' });
   const [filters, setFilters] = useState<AuditFilters>({});
@@ -167,11 +171,22 @@ export function AuditPage() {
   const log = useAuditLog(filters);
   const integrity = useAuditIntegrity();
   const people = usePeople();
+  // Yonetici / gorevli aktorler sakin dizininde yok: gorev rolleri (gorunen ad) + oturumdaki kullanici.
+  const canReadRoles = scope === 'apartment' && !support && (user?.role === 'apartment_manager' || user?.role === 'management_company' || user?.role === 'observer');
+  const roles = useQuery({
+    queryKey: ['apartment-roles', 'current', user?.apartmentId],
+    queryFn: ({ signal }) => apartmentRolesApi.listCurrent(signal).then((r) => r.items),
+    enabled: !!user?.apartmentId && canReadRoles,
+    retry: false,
+    staleTime: 5 * 60_000,
+  });
 
   const entries = useMemo(() => log.data?.pages.flatMap((p) => p.items) ?? [], [log.data]);
   const page = usePageVerification(entries);
-  const names = useMemo(() => new Map((people.data ?? []).map((p) => [p.userId, p.fullName])), [people.data]);
-  const nameOf = (id: string) => names.get(id);
+  const directory = useMemo(
+    () => buildActorDirectory({ people: people.data, roles: roles.data, ...(user?.sub ? { self: { userId: user.sub, email: user.email } } : {}) }),
+    [people.data, roles.data, user?.sub, user?.email],
+  );
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
@@ -271,8 +286,8 @@ export function AuditPage() {
                 <span className="w-12 shrink-0 font-mono text-xs text-muted">#{e.seq}</span>
                 <span className="min-w-0 flex-1">
                   <span className="block truncate font-medium">{actionLabel(e.action)}</span>
-                  <span className="block truncate text-small text-muted">
-                    {nameOf(e.actor.userId) ?? e.actor.userId} · {roleLabel(e.actor.role)}
+                  <span className="block truncate text-small text-muted" title={`Kullanıcı kimliği: ${e.actor.userId}`}>
+                    {actorText(e.actor, directory.get(e.actor.userId))}
                     {e.actor.supportSessionId ? ' · destek' : ''}
                     {e.reason ? ` · ${e.reason}` : ''}
                   </span>
@@ -294,7 +309,7 @@ export function AuditPage() {
       )}
 
       <Dialog open={!!selected} onClose={() => setSelected(undefined)} title={selected ? `Kayıt #${selected.seq}` : 'Kayıt'}>
-        {selected && <EntryDetail entry={selected} check={page?.bySeq.get(selected.seq)} actorName={nameOf(selected.actor.userId)} />}
+        {selected && <EntryDetail entry={selected} check={page?.bySeq.get(selected.seq)} actor={directory.get(selected.actor.userId)} />}
       </Dialog>
     </div>
   );

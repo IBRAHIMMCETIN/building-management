@@ -31,7 +31,7 @@ export type MeterPortalServiceDeps = {
 };
 
 const CATEGORY_LABEL: Record<TemplateCategory, string> = { heating: 'Isınma', hot_water: 'Sıcak su', cold_water: 'Su' };
-const KEY_LABEL = { area: 'Kullanım alanı (m2)', equal: 'Eşit', land_share: 'Arsa payı' } as const;
+const KEY_LABEL = { area: 'Kullanım alanı (m²)', equal: 'Eşit', land_share: 'Arsa payı' } as const;
 /** Gecmis listesinde en fazla donem. */
 const MAX_HISTORY = 36;
 

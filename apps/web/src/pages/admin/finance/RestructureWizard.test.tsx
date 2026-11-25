@@ -39,6 +39,20 @@ vi.mock('@/hooks/useFinance', () => ({
     data: [{ accountId: MAIN, type: 'receivable', name: 'Daire 5 - Sakin', status: 'active', balance: 200000, unitId: 'u1', liableParty: 'occupant' }],
   }),
 }));
+vi.mock('@/hooks/useAccountLabels', async () => {
+  const { formatLedgerAccountLabel, sanitizeLedgerText } = await import('@/lib/finance/accountLabel');
+  const ctx = { unitLabel: (id: string) => (id === 'u1' ? 'A · 5' : undefined), personName: () => undefined };
+  return {
+    useAccountLabels: () => ({
+      ctx,
+      label: (a: Parameters<typeof formatLedgerAccountLabel>[0]) => formatLedgerAccountLabel(a, ctx),
+      labelOf: () => 'Cari',
+      unitLabel: (id?: string, fb?: string) => (id === 'u1' ? 'A · 5' : (fb ?? 'Daire')),
+      text: (t: string) => sanitizeLedgerText(t, ctx),
+      accountById: new Map(),
+    }),
+  };
+});
 vi.mock('@/hooks/useRestructure', () => ({
   usePlanOpenItems: () => ({ isPending: false, isError: false, data: openItems }),
   usePlanPreview: (input: PlanInput | null) => {

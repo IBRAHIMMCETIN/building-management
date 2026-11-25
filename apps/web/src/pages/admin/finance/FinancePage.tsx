@@ -1,5 +1,5 @@
-import { ArrowLeftRight, CalendarRange, FilePlus2, HandCoins, Receipt } from 'lucide-react';
-import { useState } from 'react';
+import { ArrowLeftRight, CalendarRange, ChevronRight, FilePlus2, HandCoins, Receipt } from 'lucide-react';
+import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router';
 import { Alert, Button } from '@/components/ui';
 import { useFinancePermissions } from '@/hooks/useFinance';
@@ -14,6 +14,7 @@ import { OnlinePaymentsPanel } from './OnlinePaymentsPanel';
 import { OwnershipPanel } from './OwnershipPanel';
 import { PayablesPanel } from './PayablesPanel';
 import { PaymentDialog, type PaymentPreset } from './PaymentDialog';
+import { PeriodClosingPanel } from './PeriodClosingPanel';
 import { PlansPanel } from './PlansPanel';
 import { RestructureWizard } from './RestructureWizard';
 import { SummaryCards } from './SummaryCards';
@@ -28,6 +29,8 @@ const TABS = [
   { id: 'online', label: 'Online ödemeler' },
   { id: 'bank', label: 'Banka' },
   { id: 'payables', label: 'Tedarikçiler' },
+  // UX-07: Finans 2.4 giris noktasi (/admin/finance?tab=closing).
+  { id: 'closing', label: 'Dönem kapanışı' },
 ] as const;
 type TabId = (typeof TABS)[number]['id'];
 
@@ -87,7 +90,7 @@ export function FinancePage() {
       <SummaryCards />
 
       <div className="flex flex-col gap-4">
-        <div role="tablist" aria-label="Finans görünümü" className="flex gap-1 border-b border-border">
+        <ScrollableTabs activeId={tab}>
           {TABS.map((t) => (
             <button
               key={t.id}
@@ -98,15 +101,15 @@ export function FinancePage() {
               aria-controls={`panel-${t.id}`}
               onClick={() => selectTab(t.id)}
               className={cn(
-                '-mb-px border-b-2 border-transparent px-4 py-2 text-small font-medium text-muted hover:text-text',
-                'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
+                'border-b-2 border-transparent px-4 py-2 text-small font-medium text-muted hover:text-text',
+                'shrink-0 whitespace-nowrap focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent',
                 tab === t.id && 'border-accent text-accent',
               )}
             >
               {t.label}
             </button>
           ))}
-        </div>
+        </ScrollableTabs>
         <div id={`panel-${tab}`} role="tabpanel" aria-labelledby={`tab-${tab}`}>
           {tab === 'transactions' && <TransactionsPanel />}
           {tab === 'dues' && <DuesPanel canWrite={canWrite} onCollect={(preset) => setModal({ kind: 'payment', preset })} />}
@@ -116,6 +119,7 @@ export function FinancePage() {
           {tab === 'online' && <OnlinePaymentsPanel />}
           {tab === 'bank' && <BankPanel canWrite={canWrite} />}
           {tab === 'payables' && <PayablesPanel canWrite={canWrite} />}
+          {tab === 'closing' && <PeriodClosingPanel />}
         </div>
       </div>
 
@@ -127,6 +131,66 @@ export function FinancePage() {
           <OffsetDialog open={modal?.kind === 'offset'} onClose={close} />
           <RestructureWizard open={modal?.kind === 'restructure'} onClose={close} />
         </>
+      )}
+    </div>
+  );
+}
+
+/**
+ * UX-11: dar ekranda saga tasan sekmeler icin yatay kaydirma + sag kenarda gradyan ve ok
+ * gostergesi (daha fazla sekme oldugunu belli eder). Aktif sekme gorunur alana kaydirilir.
+ */
+function ScrollableTabs({ activeId, children }: { activeId: string; children: ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [edges, setEdges] = useState({ left: false, right: false });
+
+  const measure = useCallback(() => {
+    const el = ref.current;
+    if (!el) return;
+    setEdges({ left: el.scrollLeft > 2, right: el.scrollLeft + el.clientWidth < el.scrollWidth - 2 });
+  }, []);
+
+  useEffect(() => {
+    measure();
+    const el = ref.current;
+    if (!el) return;
+    el.addEventListener('scroll', measure, { passive: true });
+    window.addEventListener('resize', measure);
+    return () => {
+      el.removeEventListener('scroll', measure);
+      window.removeEventListener('resize', measure);
+    };
+  }, [measure]);
+
+  useEffect(() => {
+    const active = ref.current?.querySelector<HTMLElement>(`#tab-${activeId}`);
+    active?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+    measure();
+  }, [activeId, measure]);
+
+  return (
+    <div className="relative">
+      {/* Alt cizgi kaydirilan kutunun ic golgesi: aktif sekmenin alt cizgisi uzerine biner, dikey kaydirma cikmaz. */}
+      <div
+        ref={ref}
+        role="tablist"
+        aria-label="Finans görünümü"
+        className="flex gap-1 overflow-x-auto overflow-y-hidden shadow-[inset_0_-1px_0_var(--color-border)] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+      >
+        {children}
+      </div>
+      {edges.left && <div aria-hidden="true" className="pointer-events-none absolute inset-y-0 left-0 w-8 bg-linear-to-r from-bg to-transparent" />}
+      {edges.right && (
+        <div className="absolute inset-y-0 right-0 flex items-center bg-linear-to-l from-bg via-bg/90 to-transparent pl-8">
+          <button
+            type="button"
+            aria-label="Diğer sekmeler"
+            onClick={() => ref.current?.scrollBy({ left: ref.current.clientWidth * 0.6, behavior: 'smooth' })}
+            className="rounded-full p-1 text-muted hover:bg-surface-muted hover:text-text"
+          >
+            <ChevronRight className="size-4" aria-hidden="true" />
+          </button>
+        </div>
       )}
     </div>
   );

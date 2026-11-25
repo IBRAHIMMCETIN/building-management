@@ -74,7 +74,7 @@ export function OffsetRequestCard() {
               </Select>
             </FormField>
           </div>
-          <FormField label="Tutar (TL)" error={amountError} hint={max > 0 ? `En fazla ${formatTRY(max)}` : undefined}>
+          <FormField label="Tutar (₺)" error={amountError} hint={max > 0 ? `En fazla ${formatTRY(max)}` : undefined}>
             <Input inputMode="decimal" value={amountText} onChange={(e) => setAmountText(e.target.value)} placeholder={max > 0 ? kurusToInput(max) : '0,00'} aria-label="Tutar" />
           </FormField>
           <FormField label="Not (isteğe bağlı)">

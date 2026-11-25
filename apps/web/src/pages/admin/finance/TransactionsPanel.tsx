@@ -1,13 +1,18 @@
 import { ArrowDownLeft, ArrowLeftRight, ArrowUpRight, FileText, Paperclip, ReceiptText, Undo2 } from 'lucide-react';
-import { type ComponentType, useMemo, useState } from 'react';
-import { Alert, Badge, Button, Card, FilterChips, Skeleton } from '@/components/ui';
-import { useTransactions } from '@/hooks/useFinance';
+import { type ComponentType, useEffect, useMemo, useState } from 'react';
+import { Alert, Badge, Button, Card, Dialog, FilterChips, FormField, Skeleton, Textarea } from '@/components/ui';
+import { useAccountLabels } from '@/hooks/useAccountLabels';
+import { useFinancePermissions, useTransactions } from '@/hooks/useFinance';
 import { useOpenDocument } from '@/hooks/useOpenDocument';
+import { useOffsets, useReverseOffset } from '@/hooks/useRestructure';
 import { documentsApi } from '@/lib/api/documents';
 import { errorMessage } from '@/lib/api/errors';
 import { CATEGORY_LABELS, type LedgerTransaction, type TransactionCategory } from '@/lib/api/finance';
+import type { AccountOffset } from '@/lib/api/restructure';
 import { cn } from '@/lib/cn';
+import { PARTY_LABELS } from '@/lib/finance/accountLabel';
 import { formatSignedTRY, formatTRY } from '@/lib/money';
+import { reasonError } from '@/lib/restructure/model';
 import { formatDate } from './format';
 
 type Filter = 'all' | 'income' | 'expense' | 'accrual';
@@ -30,9 +35,26 @@ function CategoryBadge({ category }: { category: TransactionCategory }) {
   );
 }
 
-function accountLabel(tx: LedgerTransaction): string {
-  if (tx.funds.length === 0) return tx.unitNumber ? `Daire ${tx.unitNumber} cari` : 'Cari hesap';
-  return [...new Set(tx.funds.map((f) => f.accountName))].join(' → ');
+type Labels = ReturnType<typeof useAccountLabels>;
+/** Islemle iliskili mahsup kaydi: mahsup islemi mi (`offset`), onun ters kaydi mi (`reversal`). */
+type OffsetLink = { offset: AccountOffset; role: 'offset' | 'reversal' };
+
+/** UX-01: "İlgili Hesap" sutunu; ham kimlik yerine "Blok · Daire Taraf". */
+function accountLabel(tx: LedgerTransaction, labels: Labels, link?: OffsetLink): string {
+  if (link) return `${labels.unitLabel(link.offset.sourceUnitId)} → ${labels.unitLabel(link.offset.targetUnitId)}`;
+  if (tx.funds.length === 0) {
+    if (!tx.unitId && !tx.unitNumber) return 'Cari hesap';
+    const unit = labels.unitLabel(tx.unitId, tx.unitNumber ? `Daire ${tx.unitNumber}` : undefined);
+    return tx.liableParty ? `${unit} ${PARTY_LABELS[tx.liableParty]}` : `${unit} cari`;
+  }
+  return [...new Set(tx.funds.map((f) => labels.text(f.accountName)))].join(' → ');
+}
+
+/** UX-01: aciklamadaki daire / kisi kimlikleri cozulur; mahsupta kaynak → hedef cari etiketiyle yeniden yazilir. */
+function describe(tx: LedgerTransaction, labels: Labels, link?: OffsetLink): string {
+  if (!link) return labels.text(tx.description);
+  const base = `Avans mahsubu: ${labels.labelOf(link.offset.sourceAccountId)} → ${labels.labelOf(link.offset.targetAccountId)}`;
+  return link.role === 'reversal' ? `Ters kayıt: ${base}` : base;
 }
 
 /** Kasa/banka etkisi olan islemde isaretli, tahakkukta isaretsiz tutar. */
@@ -45,13 +67,15 @@ function Amount({ tx }: { tx: LedgerTransaction }) {
   );
 }
 
-function Details({ tx }: { tx: LedgerTransaction }) {
+function Details({ tx, labels, link }: { tx: LedgerTransaction; labels: Labels; link?: OffsetLink }) {
   const bits = [
     // Tahsilat aciklamasi daireyi zaten icerir; digerlerinde (ters kayit vb.) goster.
-    tx.unitNumber && tx.funds.length > 0 && tx.kind !== 'payment' ? `Daire ${tx.unitNumber}` : undefined,
+    tx.unitNumber && tx.funds.length > 0 && tx.kind !== 'payment' ? labels.unitLabel(tx.unitId, `Daire ${tx.unitNumber}`) : undefined,
     tx.dueDate ? `Son ödeme ${formatDate(tx.dueDate)}` : undefined,
-    tx.reference ? `Fatura ${tx.reference}` : undefined,
-    tx.reason ? `Neden: ${tx.reason}` : undefined,
+    // Referans yalnizca giderde fatura numarasidir (mahsup / online tahsilat referanslari teknik).
+    tx.reference && (tx.kind === 'expense' || tx.kind === 'payable_payment') ? `Fatura ${tx.reference}` : undefined,
+    tx.reason ? `Neden: ${labels.text(tx.reason)}` : undefined,
+    link?.role === 'offset' && link.offset.status === 'reversed' ? 'Ters kayıtla geri alındı' : undefined,
   ].filter(Boolean);
   return bits.length ? <span className="block text-small text-muted">{bits.join(' · ')}</span> : null;
 }
@@ -91,12 +115,93 @@ function DocumentButtons({ tx, docs }: { tx: LedgerTransaction; docs: DocOpener 
   );
 }
 
+/**
+ * UX-03: mahsup satirindan dogrudan ters kayit. Sunucu (offsets.reverse) kaynak avansi ve hedef
+ * borcu / taksit kalanlarini eski haline getirir; kapanmis caride reddeder.
+ */
+function ReverseOffsetDialog({ offset, description, onClose }: { offset: AccountOffset | null; description: string; onClose: () => void }) {
+  const reverse = useReverseOffset();
+  const [reason, setReason] = useState('');
+  const [touched, setTouched] = useState(false);
+
+  useEffect(() => {
+    if (!offset) return;
+    setReason('');
+    setTouched(false);
+    reverse.reset();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- yalnizca acilista
+  }, [offset?.offsetId]);
+
+  const submit = async () => {
+    setTouched(true);
+    if (!offset || reasonError(reason)) return;
+    try {
+      await reverse.mutateAsync({ offsetId: offset.offsetId, reason: reason.trim() });
+      onClose();
+    } catch {
+      // asagida gosterilir
+    }
+  };
+
+  return (
+    <Dialog open={!!offset} onClose={() => !reverse.isPending && onClose()} title="Mahsubu ters kayıtla geri al" className="max-w-lg">
+      {offset && (
+        <div className="flex flex-col gap-3">
+          <p className="text-small">
+            {description} · <strong className="tabular-nums">{formatTRY(offset.amount)}</strong> ({formatDate(offset.date)})
+          </p>
+          <p className="text-small text-muted">
+            Mahsup kaydı silinmez; aynı tutarda ters kayıt yazılır. Kaynak carinin avansı ve hedef carinin açık borcu / taksit kalanları mahsup öncesi
+            tutarlarına döner.
+          </p>
+          <FormField label="Gerekçe" error={touched ? reasonError(reason) : undefined}>
+            <Textarea rows={2} maxLength={300} value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Örn. Yanlış cariye mahsup edildi" />
+          </FormField>
+          {reverse.isError && <Alert tone="danger">{errorMessage(reverse.error)}</Alert>}
+          <div className="flex justify-end gap-2">
+            <Button variant="ghost" onClick={onClose} disabled={reverse.isPending}>
+              Vazgeç
+            </Button>
+            <Button variant="danger" loading={reverse.isPending} onClick={() => void submit()}>
+              <Undo2 className="size-4" aria-hidden="true" />
+              Ters kaydı yaz
+            </Button>
+          </div>
+        </div>
+      )}
+    </Dialog>
+  );
+}
+
+function ReverseButton({ link, canWrite, onReverse }: { link?: OffsetLink; canWrite: boolean; onReverse: (o: AccountOffset) => void }) {
+  if (!canWrite || link?.role !== 'offset' || link.offset.status !== 'completed') return null;
+  return (
+    <Button size="xs" variant="ghost" onClick={() => onReverse(link.offset)}>
+      <Undo2 className="size-3.5" aria-hidden="true" />
+      Ters kayıt
+    </Button>
+  );
+}
+
 export function TransactionsPanel() {
   const [filter, setFilter] = useState<Filter>('all');
+  const { canWrite } = useFinancePermissions();
   const docs = useOpenDocument();
   const query = useTransactions();
+  const labels = useAccountLabels();
+  const offsets = useOffsets();
+  const [reversing, setReversing] = useState<AccountOffset | null>(null);
   const all = useMemo(() => query.data?.pages.flatMap((p) => p.items) ?? [], [query.data]);
   const visible = filter === 'all' ? all : all.filter((t) => t.category === filter);
+  const links = useMemo(() => {
+    const m = new Map<string, OffsetLink>();
+    for (const o of offsets.data ?? []) {
+      m.set(o.transactionId, { offset: o, role: 'offset' });
+      if (o.reversal) m.set(o.reversal.transactionId, { offset: o, role: 'reversal' });
+    }
+    return m;
+  }, [offsets.data]);
+  const linkOf = (tx: LedgerTransaction) => links.get(tx.transactionId);
 
   if (query.isPending) {
     return (
@@ -158,6 +263,11 @@ export function TransactionsPanel() {
                   <th scope="col" className="px-4 py-3 font-medium">İlgili Hesap</th>
                   <th scope="col" className="px-4 py-3 font-medium">Tür</th>
                   <th scope="col" className="px-4 py-3 text-right font-medium">Tutar</th>
+                  {canWrite && (
+                    <th scope="col" className="px-4 py-3">
+                      <span className="sr-only">İşlem</span>
+                    </th>
+                  )}
                 </tr>
               </thead>
               <tbody className="divide-y divide-border text-text-secondary [&>tr]:transition-colors [&>tr:hover]:bg-surface-muted/40">
@@ -165,17 +275,22 @@ export function TransactionsPanel() {
                   <tr key={tx.transactionId} className="align-top">
                     <td className="px-4 py-3 whitespace-nowrap tabular-nums">{formatDate(tx.date)}</td>
                     <td className="px-4 py-3">
-                      {tx.description}
-                      <Details tx={tx} />
+                      {describe(tx, labels, linkOf(tx))}
+                      <Details tx={tx} labels={labels} link={linkOf(tx)} />
                       <DocumentButtons tx={tx} docs={docs} />
                     </td>
-                    <td className="px-4 py-3">{accountLabel(tx)}</td>
+                    <td className="px-4 py-3">{accountLabel(tx, labels, linkOf(tx))}</td>
                     <td className="px-4 py-3">
                       <CategoryBadge category={tx.category} />
                     </td>
                     <td className="px-4 py-3 text-right whitespace-nowrap">
                       <Amount tx={tx} />
                     </td>
+                    {canWrite && (
+                      <td className="px-4 py-3 text-right whitespace-nowrap">
+                        <ReverseButton link={linkOf(tx)} canWrite={canWrite} onReverse={setReversing} />
+                      </td>
+                    )}
                   </tr>
                 ))}
               </tbody>
@@ -186,14 +301,15 @@ export function TransactionsPanel() {
             {visible.map((tx) => (
               <li key={tx.transactionId} className="flex items-start justify-between gap-3 rounded-xl border border-border bg-surface/60 p-4 shadow-sm backdrop-blur-sm transition-colors hover:border-border-strong">
                 <div className="min-w-0">
-                  <p className="truncate font-medium">{tx.description}</p>
+                  <p className="truncate font-medium">{describe(tx, labels, linkOf(tx))}</p>
                   <p className="text-small text-muted">
-                    {formatDate(tx.date)} · {accountLabel(tx)}
+                    {formatDate(tx.date)} · {accountLabel(tx, labels, linkOf(tx))}
                   </p>
                   <div className="mt-1.5">
                     <CategoryBadge category={tx.category} />
                   </div>
                   <DocumentButtons tx={tx} docs={docs} />
+                  <ReverseButton link={linkOf(tx)} canWrite={canWrite} onReverse={setReversing} />
                 </div>
                 <div className="shrink-0 text-right">
                   <Amount tx={tx} />
@@ -203,6 +319,12 @@ export function TransactionsPanel() {
           </ul>
         </>
       )}
+
+      <ReverseOffsetDialog
+        offset={reversing}
+        description={reversing ? `Avans mahsubu: ${labels.labelOf(reversing.sourceAccountId)} → ${labels.labelOf(reversing.targetAccountId)}` : ''}
+        onClose={() => setReversing(null)}
+      />
 
       {query.hasNextPage && (
         <Button variant="secondary" className="self-center" loading={query.isFetchingNextPage} onClick={() => void query.fetchNextPage()}>

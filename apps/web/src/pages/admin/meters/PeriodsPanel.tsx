@@ -13,13 +13,15 @@ import { formatTRY } from '@/lib/money';
 import { cn } from '@/lib/cn';
 import { type PeriodForm, type PeriodValues, periodSchema } from './schemas';
 
-type Filter = 'open' | 'all';
+type Filter = 'open' | 'all' | 'cancelled';
 
 /** Dagitim donemleri listesi; satira tiklayinca donem ayrintisi (okuma, hesap, onay, geri alma) acilir. */
 export function PeriodsPanel({ onOpen }: { onOpen: (periodId: string) => void }) {
   const { canManage } = useMeterPermissions();
   const [filter, setFilter] = useState<Filter>('all');
   const periods = usePeriods(filter);
+  // Silinen (iptal) taslaklar "Tümü"nde gizlenir; ayri filtrede gorunur (UX-09).
+  const items = filter === 'all' ? (periods.data ?? []).filter((p) => p.status !== 'cancelled') : periods.data;
   const [creating, setCreating] = useState(false);
 
   return (
@@ -32,6 +34,7 @@ export function PeriodsPanel({ onOpen }: { onOpen: (periodId: string) => void })
           options={[
             { value: 'all', label: 'Tümü' },
             { value: 'open', label: 'Okuma açık' },
+            { value: 'cancelled', label: 'Silinen taslaklar' },
           ]}
         />
         {canManage && (
@@ -44,10 +47,15 @@ export function PeriodsPanel({ onOpen }: { onOpen: (periodId: string) => void })
 
       {periods.isError && <Alert tone="danger">{errorMessage(periods.error)}</Alert>}
       {periods.isPending && <Skeleton className="h-24" />}
-      {periods.data?.length === 0 && <Alert>Dağıtım dönemi yok. Önce bir şablon oluşturun, sonra dönemi açın.</Alert>}
+      {items?.length === 0 &&
+        (filter === 'cancelled' ? (
+          <Alert>Silinen taslak dönem yok.</Alert>
+        ) : (
+          <Alert>Dağıtım dönemi yok. Önce bir şablon oluşturun, sonra dönemi açın.</Alert>
+        ))}
 
       <ul className="flex flex-col gap-2">
-        {periods.data?.map((p) => (
+        {items?.map((p) => (
           <li key={p.periodId}>
             <button
               type="button"

@@ -6,7 +6,8 @@ import { formatDateTR, formatTRY } from './receiptPdf.js';
 /**
  * Finans 2.3-5a - Sayac Dagitim Dokumu (daire basina, A4 dikey, tek sayfa). Saf: ayni girdi ayni
  * icerigi uretir (olusturma zamani girdiden gelir); S3'te veri ozetiyle onbelleklenir.
- * Yalnizca gomulu fontta bulunan karakterler kullanilir (m2 icin '²' yerine "m2", tire '-').
+ * Yalnizca gomulu fontta bulunan karakterler kullanilir (Noto Sans alt kumesi U+00A0-00FF'i icerir:
+ * '²' ve '·' guvenli; tire '-').
  */
 export type MeterStatementPdfData = {
   apartmentName: string;
@@ -18,7 +19,7 @@ export type MeterStatementPdfData = {
   /** Ornegin "Isınma". */
   categoryLabel: string;
   commonShareBps: number;
-  /** Ornegin "Kullanım alanı (m2)". */
+  /** Ornegin "Kullanım alanı (m²)". */
   commonKeyLabel: string;
   totalAmount: number;
   commonPool: number;
@@ -40,7 +41,7 @@ export type MeterStatementPdfData = {
 };
 
 /** Sablon surumu: duzen degisince artirilir (onbellek anahtarina girer). */
-export const METER_STATEMENT_TEMPLATE_VERSION = 1;
+export const METER_STATEMENT_TEMPLATE_VERSION = 2;
 
 const A4: [number, number] = [595.28, 841.89];
 const M = 40;
@@ -90,9 +91,11 @@ export async function renderMeterStatementPdf(data: MeterStatementPdfData, fonts
   };
 
   // Baslik
-  page.drawText(fit(data.apartmentName, fb, 15, contentW * 0.6), { x: M, y: y - 15, size: 15, font: fb, color: INK });
+  // Site adi (sol) ve belge basligi (sag) ayni taban cizgisinde (v2: baslik eskiden 3pt yukaridaydi).
+  const headerBaseline = y - 15;
+  page.drawText(fit(data.apartmentName, fb, 15, contentW * 0.6), { x: M, y: headerBaseline, size: 15, font: fb, color: INK });
   const title = 'SAYAÇ DAĞITIM DÖKÜMÜ';
-  page.drawText(title, { x: W - M - fb.widthOfTextAtSize(title, 10), y: y - 12, size: 10, font: fb, color: ACCENT });
+  page.drawText(title, { x: W - M - fb.widthOfTextAtSize(title, 10), y: headerBaseline, size: 10, font: fb, color: ACCENT });
   y -= 34;
   text(fit(`${data.categoryLabel} - ${data.periodName}`, fb, 11, contentW), M, 11, fb);
   y -= 15;

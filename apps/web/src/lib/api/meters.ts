@@ -167,6 +167,21 @@ export const periodSchema = z.object({
   version: z.number().int(),
 });
 
+/**
+ * `GET /api/meter-readings/periods` OZET dondurur (sablon, vade, faturalar yok; bkz.
+ * apps/api/src/modules/meters/readings.ts -> listOpenPeriods). Tam `periodSchema` ile
+ * dogrulamak 200 yanitini ZodError'a ceviriyordu (BUG-01: "Beklenmeyen bir hata olustu").
+ */
+export const readingPeriodSchema = z.object({
+  periodId: z.string(),
+  name: z.string(),
+  meterKind: z.enum(METER_KINDS),
+  startDate: isoDate,
+  endDate: isoDate,
+  status: z.enum(PERIOD_STATUSES),
+  version: z.number().int(),
+});
+
 export const expenseOptionSchema = z.object({
   expenseId: z.string(),
   date: isoDate,
@@ -382,6 +397,7 @@ export type SwapPreview = z.infer<typeof swapPreviewSchema>;
 export type MeterTemplate = z.infer<typeof templateSchema>;
 export type TemplatePreset = z.infer<typeof presetSchema>;
 export type MeterPeriod = z.infer<typeof periodSchema>;
+export type ReadingPeriod = z.infer<typeof readingPeriodSchema>;
 export type ExpenseOption = z.infer<typeof expenseOptionSchema>;
 export type ReadingSheet = z.infer<typeof sheetSchema>;
 export type SheetRow = z.infer<typeof sheetRowSchema>;
@@ -520,7 +536,7 @@ export const metersApi = {
     apiClient.get(`${M}/periods/${enc(periodId)}/lines/${enc(unitId)}/statement`, { schema: signedDownloadSchema }),
 
   // Okuma (yonetici + bina gorevlisi)
-  openReadingPeriods: (signal?: AbortSignal) => apiClient.get(`${R}/periods`, { signal, schema: z.object({ items: z.array(periodSchema) }) }),
+  openReadingPeriods: (signal?: AbortSignal) => apiClient.get(`${R}/periods`, { signal, schema: z.object({ items: z.array(readingPeriodSchema) }) }),
   sheet: (periodId: string, signal?: AbortSignal) => apiClient.get(`${R}/periods/${enc(periodId)}`, { signal, schema: sheetSchema }),
   saveReadings: (periodId: string, items: ReadingItemInput[]) => apiClient.put(`${R}/periods/${enc(periodId)}`, { items }, { schema: saveReadingsSchema }),
   importReadings: (periodId: string, rows: ImportRowInput[], dryRun: boolean) =>

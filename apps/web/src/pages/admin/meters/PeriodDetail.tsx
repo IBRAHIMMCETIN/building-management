@@ -1,9 +1,10 @@
-import { ArrowLeft, Calculator, CheckCheck, FileDown, RotateCcw, Undo2 } from 'lucide-react';
+import { ArrowLeft, Calculator, CheckCheck, FileDown, RotateCcw, Trash2, Undo2 } from 'lucide-react';
 import { useEffect, useState } from 'react';
-import { Alert, Badge, Button, Card, CardTitle, Skeleton } from '@/components/ui';
+import { Alert, Badge, Button, Card, CardTitle, Dialog, FormField, Skeleton, Textarea } from '@/components/ui';
 import {
   useApprovePeriod,
   useCalculatePeriod,
+  useCancelPeriod,
   useCreateCorrection,
   useMeterPermissions,
   usePeriod,
@@ -49,14 +50,23 @@ export function PeriodDetail({ periodId, onBack, onOpen }: { periodId: string; o
   const units = useMeterUnits();
   const unitLabel: UnitLabel = (unitId, fallback) => units.labelOf.get(unitId) ?? fallback ?? unitId;
   const p = period.data;
+  const { canManage } = useMeterPermissions();
+  const [deleting, setDeleting] = useState(false);
 
   return (
     <div className="flex flex-col gap-4">
-      <div>
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <Button variant="ghost" size="sm" onClick={onBack}>
           <ArrowLeft className="size-4" aria-hidden="true" />
           Dönemler
         </Button>
+        {/* UX-09: yalnizca deftere islenmemis (taslak / hesaplandi) donem silinir; onayli / geri alinan donemde kapali. */}
+        {p && canManage && isOpenPeriod(p.status) && (
+          <Button variant="danger" size="sm" onClick={() => setDeleting(true)}>
+            <Trash2 className="size-4" aria-hidden="true" />
+            Taslağı sil
+          </Button>
+        )}
       </div>
       {period.isError && <Alert tone="danger">{errorMessage(period.error)}</Alert>}
       {period.isPending && <Skeleton className="h-24" />}
@@ -82,9 +92,68 @@ export function PeriodDetail({ periodId, onBack, onOpen }: { periodId: string; o
           {p.status === 'posting' && <ResumePostingCard period={p} />}
           {(p.status === 'posted' || p.status === 'reversing' || p.status === 'reversed') && <PostedCard period={p} unitLabel={unitLabel} onOpen={onOpen} />}
           {p.status === 'cancelled' && <Alert>Bu dönem iptal edildi.</Alert>}
+          <DeleteDraftDialog period={deleting ? p : null} onClose={() => setDeleting(false)} onDeleted={onBack} />
         </>
       )}
     </div>
+  );
+}
+
+/**
+ * Taslak donemi siler (API: POST /periods/:id/cancel). Kayit fiziksel olarak silinmez; `cancelled`
+ * olur, bagli faturalarin dagitim kilidi birakilir ve denetim kaydi gerekceyle yazilir. Iptal
+ * edilen donem listede varsayilan olarak gizlenir.
+ */
+function DeleteDraftDialog({ period, onClose, onDeleted }: { period: MeterPeriod | null; onClose: () => void; onDeleted: () => void }) {
+  const cancel = useCancelPeriod();
+  const [reason, setReason] = useState('');
+  const [touched, setTouched] = useState(false);
+  const reasonError = reason.trim().length < 5 ? 'Gerekçe en az 5 karakter olmalı' : undefined;
+
+  useEffect(() => {
+    if (!period) return;
+    setReason('');
+    setTouched(false);
+    cancel.reset();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- yalnizca acilista
+  }, [period?.periodId]);
+
+  const submit = async () => {
+    setTouched(true);
+    if (!period || reasonError) return;
+    try {
+      await cancel.mutateAsync({ periodId: period.periodId, version: period.version, reason: reason.trim() });
+      onClose();
+      onDeleted();
+    } catch {
+      // asagida gosterilir
+    }
+  };
+
+  return (
+    <Dialog open={!!period} onClose={() => !cancel.isPending && onClose()} title="Taslak dönemi sil" className="max-w-lg">
+      {period && (
+        <div className="flex flex-col gap-3">
+          <p className="text-small">
+            <strong>{period.name}</strong> taslağı silinecek. Girilen okumalar bu dönemle birlikte kullanılmaz olur; bağlı faturalar başka bir dönemde
+            dağıtılabilir. Deftere yazılmış bir kayıt olmadığı için ters kayıt gerekmez.
+          </p>
+          <FormField label="Gerekçe" error={touched ? reasonError : undefined}>
+            <Textarea rows={2} maxLength={300} value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Örn. Dönem yanlış tarih aralığıyla açıldı" />
+          </FormField>
+          {cancel.isError && <Alert tone="danger">{errorMessage(cancel.error)}</Alert>}
+          <div className="flex justify-end gap-2">
+            <Button variant="ghost" onClick={onClose} disabled={cancel.isPending}>
+              Vazgeç
+            </Button>
+            <Button variant="danger" loading={cancel.isPending} onClick={() => void submit()}>
+              <Trash2 className="size-4" aria-hidden="true" />
+              Taslağı sil
+            </Button>
+          </div>
+        </div>
+      )}
+    </Dialog>
   );
 }
 

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Alert, Badge, Button, Dialog, FormField, Input, Select, Spinner, Textarea } from '@/components/ui';
+import { useAccountLabels } from '@/hooks/useAccountLabels';
 import { useFinanceAccounts } from '@/hooks/useFinance';
 import { useIdempotencyKey } from '@/hooks/useIdempotencyKey';
 import { useCreatePlan, usePlanOpenItems, usePlanPreview } from '@/hooks/useRestructure';
@@ -28,6 +29,7 @@ const istanbulToday = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe
  */
 export function RestructureWizard({ open, onClose, preset }: Props) {
   const accounts = useFinanceAccounts('receivable');
+  const labels = useAccountLabels();
   const create = useCreatePlan();
   const [key, renewKey] = useIdempotencyKey();
   const [step, setStep] = useState<Step>('account');
@@ -60,9 +62,11 @@ export function RestructureWizard({ open, onClose, preset }: Props) {
     () =>
       (accounts.data ?? [])
         .filter((a) => a.unitId && a.balance > 0 && (!preset?.unitId || a.unitId === preset.unitId))
-        .sort((a, b) => a.name.localeCompare(b.name, 'tr', { numeric: true })),
-    [accounts.data, preset?.unitId],
+        .map((a) => ({ account: a, label: labels.label(a) }))
+        .sort((a, b) => a.label.localeCompare(b.label, 'tr', { numeric: true })),
+    [accounts.data, preset?.unitId, labels],
   );
+  const selectedAccount = (accounts.data ?? []).find((a) => a.accountId === accountId);
   const open_ = usePlanOpenItems(open ? accountId : '');
   const data = open_.data;
   const today = data?.date ?? istanbulToday();
@@ -109,14 +113,20 @@ export function RestructureWizard({ open, onClose, preset }: Props) {
             <FormField label="Yapılandırılacak cari">
               <Select value={accountId} onChange={(e) => setAccountId(e.target.value)} aria-label="Cari">
                 <option value="">Seçin</option>
-                {options.map((a) => (
+                {options.map(({ account: a, label }) => (
                   <option key={a.accountId} value={a.accountId}>
-                    {a.name} · borç {formatTRY(a.balance)}
+                    {label} — borç {formatTRY(a.balance)}
                   </option>
                 ))}
               </Select>
             </FormField>
           </div>
+        )}
+
+        {step !== 'account' && selectedAccount && (
+          <p className="text-small">
+            Cari: <strong>{labels.label(selectedAccount)}</strong>
+          </p>
         )}
 
         {step === 'items' && (
@@ -145,7 +155,7 @@ export function RestructureWizard({ open, onClose, preset }: Props) {
                             onChange={(e) => setSelected((cur) => (e.target.checked ? [...cur, i.chargeId] : cur.filter((x) => x !== i.chargeId)))}
                           />
                           <span>
-                            {i.description}
+                            {labels.text(i.description)}
                             <span className="block text-xs text-muted">
                               Vade {formatDate(i.dueDate)}
                               {i.overdue ? ' · gecikmede' : ''}

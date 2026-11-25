@@ -27,9 +27,14 @@ export function ReadingEntryPage() {
   const [show, setShow] = useState<Show>('missing');
   const [focusNext, setFocusNext] = useState<string | null>(null);
 
+  // Secili donem listede yoksa (ilk acilis, iptal / onay sonrasi) en guncel acik doneme gecilir.
   useEffect(() => {
     const list = periods.data ?? [];
-    if (!periodId && list.length > 0) setPeriodId(list[0]?.periodId ?? '');
+    if (list.length === 0) {
+      if (periodId) setPeriodId('');
+      return;
+    }
+    if (!list.some((p) => p.periodId === periodId)) setPeriodId(list[0]?.periodId ?? '');
   }, [periods.data, periodId]);
 
   const rows = useMemo(() => (sheet.data?.rows ?? []).filter((r) => r.inScope), [sheet.data]);
@@ -42,6 +47,8 @@ export function ReadingEntryPage() {
       (!q || (r.unitNumber ?? '').toLocaleLowerCase('tr-TR').includes(q) || (r.serialNo ?? '').toLocaleLowerCase('tr-TR').includes(q)),
   );
   const s = sheet.data?.summary;
+  // Donemde (kapsamda) hic sayac yok: hata degil, yonlendirici bos durum.
+  const noMeters = !!sheet.data && rows.length === 0;
 
   if (!canWriteReadings) {
     return (
@@ -73,7 +80,7 @@ export function ReadingEntryPage() {
         </Select>
       )}
 
-      {s && (
+      {s && !noMeters && (
         <div className="flex flex-wrap gap-2 text-small" role="status">
           <Badge tone="success">
             {s.ok + s.auto}/{s.meters} okundu
@@ -83,7 +90,13 @@ export function ReadingEntryPage() {
         </div>
       )}
 
-      {sheet.data && (
+      {noMeters && (
+        <Alert>
+          Bu dönem aralığında kurulu aktif sayaç bulunamadı. Sayaçların kurulum tarihlerini yöneticinize kontrol ettirin (Sayaç Dağıtımı → Sayaçlar).
+        </Alert>
+      )}
+
+      {sheet.data && !noMeters && (
         <div className="sticky top-14 z-[5] flex flex-col gap-2 border-b border-border bg-surface/95 py-2 backdrop-blur">
           <div className="grid grid-cols-2 gap-2">
             {blocks.length > 1 ? (
@@ -117,7 +130,7 @@ export function ReadingEntryPage() {
 
       {sheet.isPending && !!periodId && <Skeleton className="h-40" />}
       {sheet.isError && <Alert tone="danger">{errorMessage(sheet.error)}</Alert>}
-      {sheet.data && visible.length === 0 && (
+      {sheet.data && !noMeters && visible.length === 0 && (
         <Alert tone="success">{show === 'missing' ? 'Bu filtrede okunmamış sayaç kalmadı.' : 'Filtreye uyan sayaç yok.'}</Alert>
       )}
 

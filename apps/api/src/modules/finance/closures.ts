@@ -516,7 +516,8 @@ export function createClosureService(overrides: Partial<ClosureServiceDeps> & Pi
       account(ctx, {
         accountId: sourceAccountId,
         type: 'receivable',
-        name: `Daire ${unit.unitId} - ${party === 'owner' ? 'Kat Maliki' : 'Kiraci/Sakin'}`,
+        // UX-01: ad ham daire kimligi yerine daire numarasini tasir (eski kayitlar arayuzde cozulur).
+        name: `Daire ${unit.number} - ${party === 'owner' ? 'Kat Maliki' : 'Kiracı/Sakin'}`,
         unitId: unit.unitId,
         liableParty: party,
       }),
@@ -536,7 +537,7 @@ export function createClosureService(overrides: Partial<ClosureServiceDeps> & Pi
       );
     }
     if (targetAccountId === ownerId) {
-      ensure.push(account(ctx, { accountId: ownerId, type: 'receivable', name: `Daire ${unit.unitId} - Kat Maliki`, unitId: unit.unitId, liableParty: 'owner' }));
+      ensure.push(account(ctx, { accountId: ownerId, type: 'receivable', name: `Daire ${unit.number} - Kat Maliki`, unitId: unit.unitId, liableParty: 'owner' }));
     }
     await repo.ensureAccounts(ensure);
 

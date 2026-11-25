@@ -1,20 +1,21 @@
 import { ArrowRight } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { Alert, Badge, Button, Dialog, FormField, Input, Select, Spinner, Textarea } from '@/components/ui';
+import { useAccountLabels } from '@/hooks/useAccountLabels';
 import { useFinanceAccounts } from '@/hooks/useFinance';
 import { useIdempotencyKey } from '@/hooks/useIdempotencyKey';
 import { useCreateOffset, useOffsetPreview } from '@/hooks/useRestructure';
 import { errorMessage } from '@/lib/api/errors';
 import type { FinanceAccount } from '@/lib/api/finance';
 import { formatDate } from '@/lib/dates';
+import { balanceSummary } from '@/lib/finance/accountLabel';
 import { formatTRY, kurusToInput, parseTRYToKurus } from '@/lib/money';
 import { offsetFormState } from '@/lib/restructure/model';
 
 export type OffsetPreset = { unitId?: string; sourceAccountId?: string; targetAccountId?: string };
 type Props = { open: boolean; onClose: () => void; preset?: OffsetPreset | null };
 
-const balanceText = (a: FinanceAccount) =>
-  a.balance < 0 ? `avans ${formatTRY(-a.balance)}` : a.balance > 0 ? `borç ${formatTRY(a.balance)}` : 'bakiye yok';
+const balanceText = (a: FinanceAccount) => balanceSummary(a.balance, formatTRY);
 
 /**
  * Finans 2.2 - Avans mahsubu: bir alt carideki serbest avansi baska bir alt carinin acik borcuna
@@ -22,6 +23,7 @@ const balanceText = (a: FinanceAccount) =>
  */
 export function OffsetDialog({ open, onClose, preset }: Props) {
   const accounts = useFinanceAccounts('receivable');
+  const labels = useAccountLabels();
   const create = useCreateOffset();
   const [key, renewKey] = useIdempotencyKey();
   const [source, setSource] = useState('');
@@ -54,9 +56,15 @@ export function OffsetDialog({ open, onClose, preset }: Props) {
     () =>
       (accounts.data ?? [])
         .filter((a) => a.unitId && (!preset?.unitId || a.unitId === preset.unitId))
-        .sort((a, b) => a.name.localeCompare(b.name, 'tr', { numeric: true })),
-    [accounts.data, preset?.unitId],
+        .map((a) => ({ account: a, label: labels.label(a) }))
+        .sort((a, b) => a.label.localeCompare(b.label, 'tr', { numeric: true })),
+    [accounts.data, preset?.unitId, labels],
   );
+  // UX-02: kaynakta yalnizca serbest avansi (alacak bakiyesi) olan, hedefte yalnizca acik borcu
+  // olan cariler. Secili deger (on ayar) listeden dusmez; sunucu yine dogrular.
+  const sources = options.filter((o) => o.account.balance < 0 || o.account.accountId === source);
+  const targets = options.filter((o) => (o.account.balance > 0 && o.account.accountId !== source) || o.account.accountId === target);
+  const loaded = accounts.isSuccess;
   const preview = useOffsetPreview(source, target);
   const p = preview.data;
   const state = offsetFormState({
@@ -100,27 +108,29 @@ export function OffsetDialog({ open, onClose, preset }: Props) {
         {accounts.isError && <Alert tone="danger">{errorMessage(accounts.error)}</Alert>}
         <div className="grid gap-3 sm:grid-cols-[1fr_auto_1fr] sm:items-end">
           <FormField label="Kaynak cari (avans)">
-            <Select value={source} onChange={(e) => setSource(e.target.value)} aria-label="Kaynak cari">
-              <option value="">Seçin</option>
-              {options.map((a) => (
+            <Select value={source} onChange={(e) => setSource(e.target.value)} aria-label="Kaynak cari" disabled={loaded && sources.length === 0}>
+              <option value="">{loaded && sources.length === 0 ? 'Serbest avansı bulunan cari yok' : 'Seçin'}</option>
+              {sources.map(({ account: a, label }) => (
                 <option key={a.accountId} value={a.accountId}>
-                  {a.name} · {balanceText(a)}
+                  {label} — {balanceText(a)}
                 </option>
               ))}
             </Select>
           </FormField>
           <ArrowRight className="hidden size-5 text-muted sm:mb-2.5 sm:block" aria-hidden="true" />
           <FormField label="Hedef cari (borç)">
-            <Select value={target} onChange={(e) => setTarget(e.target.value)} aria-label="Hedef cari">
-              <option value="">Seçin</option>
-              {options.map((a) => (
+            <Select value={target} onChange={(e) => setTarget(e.target.value)} aria-label="Hedef cari" disabled={loaded && targets.length === 0}>
+              <option value="">{loaded && targets.length === 0 ? 'Açık borcu bulunan cari yok' : 'Seçin'}</option>
+              {targets.map(({ account: a, label }) => (
                 <option key={a.accountId} value={a.accountId}>
-                  {a.name} · {balanceText(a)}
+                  {label} — {balanceText(a)}
                 </option>
               ))}
             </Select>
           </FormField>
         </div>
+        {loaded && sources.length === 0 && <Alert>Serbest avansı bulunan cari yok. Mahsup için önce bir caride fazla ödeme (avans) oluşmalıdır.</Alert>}
+        {loaded && sources.length > 0 && targets.length === 0 && <Alert>Açık borcu bulunan cari yok.</Alert>}
         {source && source === target && <Alert tone="danger">Kaynak ve hedef aynı cari olamaz.</Alert>}
 
         {preview.isFetching && !p && <Spinner />}
@@ -160,7 +170,7 @@ export function OffsetDialog({ open, onClose, preset }: Props) {
                           onChange={(e) => setSelected((cur) => (e.target.checked ? [...cur, i.chargeId] : cur.filter((x) => x !== i.chargeId)))}
                         />
                         <span>
-                          {i.description}
+                          {labels.text(i.description)}
                           <span className="block text-xs text-muted">
                             Vade {formatDate(i.dueDate)}
                             {i.overdue ? ' · gecikmede' : ''}
@@ -174,7 +184,7 @@ export function OffsetDialog({ open, onClose, preset }: Props) {
                 ))}
               </ul>
             ) : (
-              <FormField label="Tutar (TL)" error={show(state.errors.amount)}>
+              <FormField label="Tutar (₺)" error={show(state.errors.amount)}>
                 <Input inputMode="decimal" value={amountText} onChange={(e) => setAmountText(e.target.value)} placeholder="0,00" aria-label="Tutar" />
               </FormField>
             )}

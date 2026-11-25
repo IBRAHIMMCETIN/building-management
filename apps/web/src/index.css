@@ -14,6 +14,31 @@
     @apply font-mono;
   }
 
+  /*
+   * UX-06: etkilesimsiz metin ve butonlarda odak / tiklama sirasinda gorunen ince dikey imlec (|)
+   * artefaktini kaldir. Imlec yalnizca gercek yazi alanlarinda gorunur.
+   */
+  body {
+    caret-color: transparent;
+  }
+  input,
+  textarea,
+  select,
+  [contenteditable]:not([contenteditable='false']) {
+    caret-color: auto;
+  }
+  button,
+  [role='button'],
+  [role='tab'],
+  h1,
+  h2,
+  h3,
+  h4,
+  legend {
+    caret-color: transparent;
+    user-select: none;
+  }
+
   /* Modal/cekmece acikken arka sayfa kaymasin. */
   html:has(dialog[open]) {
     overflow: hidden;

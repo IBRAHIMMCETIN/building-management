@@ -1,6 +1,7 @@
 import { CalendarClock, Check, ChevronDown, ChevronUp, X } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { Alert, Badge, Button, Card, FormField, Input, Skeleton, Textarea } from '@/components/ui';
+import { useAccountLabels } from '@/hooks/useAccountLabels';
 import { useFinanceAccounts } from '@/hooks/useFinance';
 import { useApproveOffsetRequest, useOffsetRequests, usePlanAction, usePlans, useRejectOffsetRequest } from '@/hooks/useRestructure';
 import { errorMessage } from '@/lib/api/errors';
@@ -203,7 +204,7 @@ function RequestRow({ r, canWrite, nameOf }: { r: OffsetRequest; canWrite: boole
       {error && <Alert tone="danger">{errorMessage(error)}</Alert>}
       {mode === 'approve' && (
         <div className="flex flex-col gap-2 rounded-lg border border-border p-3">
-          <FormField label="Onaylanan tutar (TL)" error={amountError}>
+          <FormField label="Onaylanan tutar (₺)" error={amountError}>
             <Input inputMode="decimal" value={amountText} onChange={(e) => setAmountText(e.target.value)} aria-label="Onaylanan tutar" />
           </FormField>
           <label className="flex items-start gap-2">
@@ -289,8 +290,10 @@ export function PlansPanel({ canWrite }: { canWrite: boolean }) {
   const plans = usePlans(filter === 'all' ? {} : { status: filter });
   const requests = useOffsetRequests('pending');
   const accounts = useFinanceAccounts('receivable');
-  const names = useMemo(() => new Map((accounts.data ?? []).map((a) => [a.accountId, a.name])), [accounts.data]);
-  const nameOf: NameOf = (id) => names.get(id) ?? id;
+  const labels = useAccountLabels();
+  // UX-01: plan kart basligi ve talep satirlarinda ham kimlik yerine "Blok · Daire Kişi/Taraf".
+  const names = useMemo(() => new Map((accounts.data ?? []).map((a) => [a.accountId, labels.label(a)])), [accounts.data, labels]);
+  const nameOf: NameOf = (id) => names.get(id) ?? labels.labelOf(id);
   const pending = requests.data ?? [];
   const items = plans.data ?? [];
   const defaults = items.filter((p) => p.state.displayStatus === 'active' && (p.state.inDefault || p.default)).length;
