@@ -127,3 +127,27 @@ export function useChargeDues() {
   const invalidate = useInvalidateFinance();
   return useMutation({ mutationFn: (input: ChargeDuesInput) => financeApi.chargeDues(input), onSuccess: invalidate });
 }
+
+/** Finans 2.4: hesap plani - pasifler dahil tum hesaplar (yalnizca gelir/gider/kasa/banka). */
+export function useAccountChart() {
+  const { apt, enabled } = useApt();
+  return useQuery({
+    queryKey: [...financeKeys.all(apt), 'account-chart'] as const,
+    queryFn: ({ signal }) =>
+      financeApi.accounts(undefined, signal).then((r) => r.items.filter((a) => a.type === 'income' || a.type === 'expense' || a.type === 'cash' || a.type === 'bank')),
+    enabled,
+  });
+}
+
+export function useCreateAccount() {
+  const invalidate = useInvalidateFinance();
+  return useMutation({ mutationFn: financeApi.createAccount, onSuccess: invalidate });
+}
+
+export function useUpdateAccount() {
+  const invalidate = useInvalidateFinance();
+  return useMutation({
+    mutationFn: (v: { accountId: string; input: Parameters<typeof financeApi.updateAccount>[1] }) => financeApi.updateAccount(v.accountId, v.input),
+    onSettled: invalidate,
+  });
+}

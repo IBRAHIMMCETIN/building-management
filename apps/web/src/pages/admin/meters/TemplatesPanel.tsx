@@ -1,3 +1,4 @@
+import { useFinanceAccounts } from '@/hooks/useFinance';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { Archive, Droplets, Flame, Pencil, Plus, Star, TriangleAlert } from 'lucide-react';
 import { useEffect, useState } from 'react';
@@ -28,7 +29,7 @@ import { type TemplateForm, type TemplateValues, templateSchema } from './schema
 
 type Editing = { template?: MeterTemplate; preset?: TemplatePreset } | null;
 
-const FIELDS = ['name', 'meterKind', 'category', 'commonKey', 'liableParty', 'legalProfile', 'decisionRef', 'reason'] as const;
+const FIELDS = ['name', 'meterKind', 'category', 'commonKey', 'liableParty', 'legalProfile', 'decisionRef', 'reason', 'incomeAccountId'] as const;
 
 /** Dagitim sablonlari: hazir merkezi isitma (%30 m² + %70) ve su (%0 + %100) sablonlari, yonetmelik sapma uyarisi. */
 export function TemplatesPanel() {
@@ -155,11 +156,13 @@ function formValuesOf(e: NonNullable<Editing>): TemplateForm {
     decisionRef: e.template?.decisionRef ?? '',
     reason: e.template?.reason ?? '',
     isDefault: e.template?.isDefault ?? !e.template,
+    incomeAccountId: src?.incomeAccountId ?? '',
   };
 }
 
 export function TemplateDialog({ editing, onClose }: { editing: Editing; onClose: () => void }) {
   const save = useSaveTemplate();
+  const incomeAccounts = useFinanceAccounts('income');
   const form = useForm<TemplateForm, unknown, TemplateValues>({ resolver: zodResolver(templateSchema), defaultValues: editing ? formValuesOf(editing) : undefined });
   const { errors } = form.formState;
   const [percent, commonKey, legalProfile] = form.watch(['commonPercent', 'commonKey', 'legalProfile']);
@@ -184,6 +187,7 @@ export function TemplateDialog({ editing, onClose }: { editing: Editing; onClose
       legalProfile: v.legalProfile,
       ...(v.decisionRef ? { decisionRef: v.decisionRef } : {}),
       ...(v.reason ? { reason: v.reason } : {}),
+      incomeAccountId: v.incomeAccountId === '' ? null : v.incomeAccountId,
     };
     try {
       if (editing?.template) {
@@ -250,6 +254,18 @@ export function TemplateDialog({ editing, onClose }: { editing: Editing; onClose
                   {LIABLE_PARTY_LABELS[p]}
                 </option>
               ))}
+            </Select>
+          </FormField>
+          <FormField label="Gelir hesabı" error={errors.incomeAccountId?.message}>
+            <Select {...form.register('incomeAccountId')}>
+              <option value="">Aidat Gelirleri (varsayılan)</option>
+              {(incomeAccounts.data ?? [])
+                .filter((a) => a.accountId !== 'income-dues' && a.accountId !== 'income-late-fee')
+                .map((a) => (
+                  <option key={a.accountId} value={a.accountId}>
+                    {a.name}
+                  </option>
+                ))}
             </Select>
           </FormField>
           <FormField label="Mevzuat profili" error={errors.legalProfile?.message}>

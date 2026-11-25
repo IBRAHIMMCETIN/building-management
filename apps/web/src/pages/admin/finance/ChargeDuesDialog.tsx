@@ -3,7 +3,7 @@ import { CheckCircle2 } from 'lucide-react';
 import { useEffect, useMemo } from 'react';
 import { useForm } from 'react-hook-form';
 import { Alert, Button, Dialog, FormField, Input, Select } from '@/components/ui';
-import { useChargeDues, useDuesPreview } from '@/hooks/useFinance';
+import { useChargeDues, useDuesPreview, useFinanceAccounts } from '@/hooks/useFinance';
 import { useIdempotencyKey } from '@/hooks/useIdempotencyKey';
 import { ApiError, errorMessage } from '@/lib/api/errors';
 import { type DuesBulkInput, EXPENSE_CATEGORIES, PARTY_LABELS, expenseCategoryLabel } from '@/lib/api/finance';
@@ -22,7 +22,8 @@ const KEYS = [
   { value: 'land_share', label: 'Arsa payı', hint: 'Tapudaki pay oranında' },
 ] as const;
 
-const FIELDS = ['unitId', 'liableParty', 'amount', 'date', 'dueDate', 'description', 'distributionKey', 'expenseCategory'] as const;
+const FIELDS = ['unitId', 'liableParty', 'amount', 'date', 'dueDate', 'description', 'distributionKey', 'expenseCategory', 'incomeAccountId'] as const;
+const DEFAULT_INCOME = 'income-dues';
 
 /** Onizleme yalnizca kapsam ve muafiyeti olcer; tutar/aciklama degistikce istek atilmaz. */
 const PREVIEW_TOTAL = 100_000;
@@ -40,12 +41,14 @@ function initial(): ChargeForm {
     date: today,
     dueDate: defaultDueDate(today),
     description: defaultDuesDescription(today),
+    incomeAccountId: DEFAULT_INCOME,
   };
 }
 
 export function ChargeDuesDialog({ open, onClose }: Props) {
   const { options, activeCount, activeBlocks, blockName } = useUnitOptions();
   const charge = useChargeDues();
+  const incomeAccounts = useFinanceAccounts('income');
   const [idempotencyKey, renewKey] = useIdempotencyKey();
   const form = useForm<ChargeForm, unknown, ChargeValues>({ resolver: zodResolver(chargeSchema), defaultValues: initial() });
   const { errors } = form.formState;
@@ -107,7 +110,14 @@ export function ChargeDuesDialog({ open, onClose }: Props) {
   }, [form, charge.isError, renewKey]);
 
   const submit = form.handleSubmit(async (v) => {
-    const common = { idempotencyKey, liableParty: v.liableParty, date: v.date, dueDate: v.dueDate, description: v.description };
+    const common = {
+      idempotencyKey,
+      liableParty: v.liableParty,
+      date: v.date,
+      dueDate: v.dueDate,
+      description: v.description,
+      ...(v.incomeAccountId && v.incomeAccountId !== DEFAULT_INCOME ? { incomeAccountId: v.incomeAccountId } : {}),
+    };
     try {
       if (v.mode === 'single') {
         await charge.mutateAsync({ ...common, unitId: v.unitId, amount: v.amount });
@@ -326,6 +336,18 @@ export function ChargeDuesDialog({ open, onClose }: Props) {
             <Select {...form.register('liableParty')}>
               <option value="occupant">{PARTY_LABELS.occupant}</option>
               <option value="owner">{PARTY_LABELS.owner}</option>
+            </Select>
+          </FormField>
+
+          <FormField label="Gelir hesabı" error={errors.incomeAccountId?.message} hint="Demirbaş, ısınma gibi ayrı izlenen gelirler için hesabı değiştirin.">
+            <Select {...form.register('incomeAccountId')}>
+              {(incomeAccounts.data ?? [{ accountId: DEFAULT_INCOME, name: 'Aidat Gelirleri' }])
+                .filter((a) => a.accountId !== 'income-late-fee')
+                .map((a) => (
+                  <option key={a.accountId} value={a.accountId}>
+                    {a.name}
+                  </option>
+                ))}
             </Select>
           </FormField>
 

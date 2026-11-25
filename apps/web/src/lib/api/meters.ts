@@ -96,6 +96,8 @@ export const templateSchema = z.object({
   decisionRef: z.string().optional(),
   reason: z.string().optional(),
   isDefault: z.boolean().default(false),
+  /** Finans 2.4: tahakkukun yazilacagi gelir hesabi (yoksa aidat gelirleri). */
+  incomeAccountId: z.string().optional(),
   status: z.enum(['active', 'archived']),
   warnings: z.array(warning).default([]),
   version: z.number().int(),
@@ -110,6 +112,7 @@ export const presetSchema = z.object({
   commonKey: z.enum(COMMON_KEYS),
   liableParty: z.enum(LIABLE_PARTIES),
   legalProfile: z.enum(LEGAL_PROFILES),
+  incomeAccountId: z.string().optional(),
   warnings: z.array(warning).default([]),
 });
 
@@ -445,6 +448,8 @@ export type TemplateInput = {
   decisionRef?: string;
   reason?: string;
   isDefault?: boolean;
+  /** Finans 2.4: null/'' -> varsayilan aidat gelirleri. */
+  incomeAccountId?: string | null;
 };
 export type CreatePeriodInput = {
   templateId: string;

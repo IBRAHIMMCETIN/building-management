@@ -63,6 +63,8 @@ export const chargeSchema = z
     date,
     dueDate: date,
     description: z.string().trim().min(2, 'Açıklama gerekli.').max(200, 'En fazla 200 karakter.'),
+    /** Finans 2.4: gelir hesabi (aidat gelirleri varsayilan). */
+    incomeAccountId: z.string().default('income-dues'),
   })
   .superRefine((v, ctx) => {
     if (v.mode === 'single' && !v.unitId) ctx.addIssue({ code: 'custom', path: ['unitId'], message: 'Daire seçin.' });

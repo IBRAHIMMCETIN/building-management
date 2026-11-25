@@ -15,6 +15,7 @@ const tpl = (over: Record<string, unknown> = {}) => ({
   decisionRef: '',
   reason: '',
   isDefault: true,
+  incomeAccountId: '',
   ...over,
 });
 

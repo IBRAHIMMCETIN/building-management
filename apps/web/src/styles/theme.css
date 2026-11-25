@@ -33,6 +33,9 @@
   --color-danger: #dc2626;
   /* Modal/cekmece arka plan ortusu */
   --color-scrim: rgb(9 9 11 / 0.5);
+  /* Grafik serileri (kategorik; durum renklerinden ayri). Dogrulandi: CVD ΔE >= 26. */
+  --color-series-1: #257de0;
+  --color-series-2: #f47230;
 
   --font-sans: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -77,6 +80,8 @@
       --color-warning: #fbbf24; /* amber-400 */
       --color-danger: #f87171; /* red-400 */
       --color-scrim: rgb(0 0 0 / 0.65);
+      --color-series-1: #338ced;
+      --color-series-2: #e76624;
     }
   }
 }

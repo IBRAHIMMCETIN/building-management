@@ -93,6 +93,8 @@ export const templateSchema = z
     decisionRef: optionalText(120),
     reason: optionalText(300),
     isDefault: z.boolean(),
+    /** Finans 2.4: '' = varsayilan aidat gelirleri. */
+    incomeAccountId: z.string(),
   })
   .transform((v, ctx) => {
     const commonShareBps = percentToBps(v.commonPercent);

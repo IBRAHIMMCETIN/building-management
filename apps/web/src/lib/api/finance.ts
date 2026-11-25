@@ -111,6 +111,8 @@ export const accountSchema = z.object({
   status: z.enum(['active', 'inactive']),
   balance: kurus,
   system: z.boolean().optional(),
+  /** Finans 2.4: hesap plani kodu. */
+  code: z.string().optional(),
   /** Alt cari (receivable) ise daire ve taraf. */
   unitId: z.string().optional(),
   liableParty: party.optional(),
@@ -160,6 +162,8 @@ export type ChargeDuesInput =
       date: string;
       dueDate: string;
       description: string;
+      /** Finans 2.4: alacak yazilacak gelir hesabi (yoksa aidat gelirleri). */
+      incomeAccountId?: string;
     }
   | ({ idempotencyKey: string } & DuesBulkInput);
 
@@ -173,6 +177,8 @@ export type DuesBulkInput = {
   description: string;
   blockIds?: string[];
   expenseCategory?: string;
+  /** Finans 2.4: alacak yazilacak gelir hesabi (yoksa aidat gelirleri). */
+  incomeAccountId?: string;
 };
 
 /**
@@ -269,6 +275,11 @@ export const financeApi = {
       query: { type },
       schema: z.object({ items: z.array(accountSchema) }),
     }),
+  /** Finans 2.4: hesap plani (gelir/gider/kasa/banka hesabi ekleme ve duzenleme). */
+  createAccount: (input: { type: 'income' | 'expense' | 'bank' | 'cash'; name: string; code?: string }) =>
+    apiClient.post('/api/finance/accounts', input, { schema: accountSchema }),
+  updateAccount: (accountId: string, input: { name?: string; code?: string | null; status?: 'active' | 'inactive' }) =>
+    apiClient.patch(`/api/finance/accounts/${encodeURIComponent(accountId)}`, input, { schema: accountSchema }),
   recordPayment: (input: RecordPaymentInput) =>
     apiClient.post('/api/finance/payments', input, { schema: paymentResultSchema }),
   recordExpense: (input: RecordExpenseInput) =>
