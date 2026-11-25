@@ -8,8 +8,8 @@ type DialogProps = {
   title: string;
   /** Baslik ekran okuyucu icin kalsin ama gorunmesin (ornek: menu cekmecesi). */
   hideTitle?: boolean;
-  /** modal: ortada kutu. sheet: soldan kayan cekmece (mobil menu). */
-  variant?: 'modal' | 'sheet';
+  /** modal: ortada kutu. sheet: soldan kayan cekmece (mobil menu). panel: sagdan genis detay paneli. wide: genis modal. */
+  variant?: 'modal' | 'sheet' | 'panel' | 'wide';
   children: ReactNode;
   className?: string;
 };
@@ -17,6 +17,8 @@ type DialogProps = {
 const variants = {
   modal: 'm-auto w-[calc(100%-2rem)] max-w-md rounded-xl starting:open:scale-95 starting:open:opacity-0',
   sheet: 'my-0 mr-auto ml-0 h-dvh max-h-dvh w-72 max-w-[85vw] starting:open:-translate-x-full',
+  panel: 'my-0 mr-0 ml-auto h-dvh max-h-dvh w-[42rem] max-w-full starting:open:translate-x-full',
+  wide: 'm-auto max-h-[90dvh] w-[calc(100%-2rem)] max-w-2xl rounded-xl starting:open:scale-95 starting:open:opacity-0',
 } as const;
 
 /**

@@ -6,6 +6,7 @@ import { useActiveApartmentName } from '@/hooks/useActiveContextLabel';
 import { useAuth } from '@/hooks/useAuth';
 import { useNotificationPreferences, useSaveNotificationPreferences } from '@/hooks/useTeam';
 import { errorMessage } from '@/lib/api/errors';
+import { ticketEmailsEnabled } from '@/lib/api/notificationPreferences';
 import { type MfaStatus, fetchMfaStatus } from '@/lib/api/mfa';
 import { MFA_SETUP_PATH } from '@/lib/auth/mfa';
 import { formatDateTime } from '@/lib/dates';
@@ -75,6 +76,22 @@ export function AccountPage() {
             <span>
               <span className="font-medium">E-posta bildirimleri</span>
               <span className="block text-muted">Tahakkuk, tahsilat makbuzu, hatırlatma ve duyuru e-postaları. Güvenlik ve davet e-postaları her zaman gönderilir.</span>
+            </span>
+          </label>
+        )}
+        {prefs.data && (
+          <label className={`flex items-start gap-3 pl-6 text-small ${emailEnabled ? '' : 'opacity-60'}`}>
+            <input
+              type="checkbox"
+              className="mt-0.5"
+              checked={emailEnabled && ticketEmailsEnabled(prefs.data)}
+              disabled={save.isPending || !emailEnabled}
+              onChange={(e) => save.mutate({ email: { enabled: emailEnabled, tickets: e.target.checked } })}
+              aria-label="Arıza e-postaları"
+            />
+            <span>
+              <span className="font-medium">Arıza e-postaları</span>
+              <span className="block text-muted">Arıza / talep açılması, atanması, çözülmesi ve yorum bildirimleri ile günlük operasyon özeti.{!emailEnabled && ' E-posta bildirimleri kapalıyken gönderilmez.'}</span>
             </span>
           </label>
         )}

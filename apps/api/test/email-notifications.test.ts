@@ -33,6 +33,7 @@ import {
   parsePreferences,
 } from '../src/modules/notifications/preferences.js';
 import { cleanSubject, escapeHtml, formatDate, formatPeriod, formatTL, renderEmail, safeUrl } from '../src/modules/notifications/templates.js';
+import type { ApartmentRole } from '../src/modules/apartment-roles/types.js';
 import type { UnitMembership } from '../src/modules/portal/types.js';
 import type { Person } from '../src/modules/residents/repository.js';
 import { createNotificationWorker } from '../src/workers/notification-worker.js';
@@ -266,7 +267,7 @@ function person(userId: string, over: Partial<Person> = {}): Person {
 }
 
 function channel(
-  over: { people?: Person[]; prefs?: Record<string, boolean>; send?: (m: EmailMessage) => Promise<{ messageId?: string }> } = {},
+  over: { people?: Person[]; prefs?: Record<string, boolean>; send?: (m: EmailMessage) => Promise<{ messageId?: string }>; roles?: ApartmentRole[] } = {},
 ) {
   const sentMessages: EmailMessage[] = [];
   const sentRecords = new Map<string, string>();
@@ -284,17 +285,19 @@ function channel(
     listBlocks: vi.fn(async () => [{ blockId: 'A', name: 'A Blok' }, { blockId: 'B', name: 'B Blok' }] as Block[]),
   };
   const log = { info: vi.fn(), error: vi.fn() };
+  const rolesList = vi.fn(async () => over.roles ?? []);
   const notifier = createEmailNotifier({
     sender: { send: over.send ?? (async (m) => (sentMessages.push(m), { messageId: `m${sentMessages.length}` })) },
     preferences,
     people: { get: async (_a, u) => people.find((p) => p.userId === u) },
+    ...(over.roles ? { roles: { list: rolesList } } : {}),
     core,
     sentLog,
     portalUrl: 'https://site.example/app',
     now: () => NOW,
     log,
   });
-  return { notifier, sentMessages, sentRecords, core, log };
+  return { notifier, sentMessages, sentRecords, core, log, rolesList };
 }
 
 const pay = (userId = 'user-1'): Notification => ({
@@ -371,6 +374,74 @@ describe('e-posta kanali', () => {
     await c.notifier.send(pay('a'));
     await c.notifier.send(pay('b'));
     expect(c.core.getSite).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('e-posta kanali: ekip kaydindan yedek adres', () => {
+  const teamRole = (userId: string, over: Partial<ApartmentRole> = {}): ApartmentRole =>
+    ({
+      PK: `APT#${APT}`,
+      SK: `ROLE#${userId}#building_staff`,
+      entityType: 'APARTMENT_ROLE',
+      userId,
+      apartmentId: APT,
+      role: 'building_staff',
+      fullName: `Ekip ${userId}`,
+      email: `${userId}@ekip.example`,
+      status: 'active',
+      startDate: '2026-01-01',
+      ...audit,
+      ...over,
+    }) as ApartmentRole;
+  const ticketNote = (userId: string): Notification => ({
+    eventId: `ev-${userId}`,
+    apartmentId: APT,
+    userId,
+    template: 'ticket_assigned',
+    data: { ticketId: 't1', number: 'T-000001', title: 'Koridor lambası', category: 'electrical', area: 'A blok koridor', link: 'admin' },
+  });
+
+  it('kisi kaydi olmayan ekip uyesine aktif ekip kaydindaki davet e-postasiyla gonderir (ad da oradan)', async () => {
+    const c = channel({ people: [], roles: [teamRole('staff-1')] });
+    expect(await c.notifier.send(ticketNote('staff-1'))).toEqual({ status: 'sent' });
+    expect(c.sentMessages[0]?.to).toBe('staff-1@ekip.example');
+    expect(c.sentMessages[0]?.text).toContain('Ekip staff-1');
+  });
+
+  it('kisi kaydinda gecerli adres varsa o kullanilir; dogrulanmamis kisi adresi ekip adresine dusmez', async () => {
+    const c = channel({ people: [person('staff-1', { email: 'kisi@example.com' })], roles: [teamRole('staff-1')] });
+    await c.notifier.send(ticketNote('staff-1'));
+    expect(c.sentMessages[0]?.to).toBe('kisi@example.com');
+
+    const u = channel({ people: [person('staff-1', { emailVerified: false })], roles: [teamRole('staff-1')] });
+    expect(await u.notifier.send(ticketNote('staff-1'))).toEqual({ status: 'skipped', reason: 'email_unverified' });
+
+    // Kisi kaydi var ama adresi yok / gecersiz: ekip adresi kullanilir.
+    const e = channel({ people: [person('staff-1', { email: 'gecersiz' })], roles: [teamRole('staff-1')] });
+    await e.notifier.send(ticketNote('staff-1'));
+    expect(e.sentMessages[0]?.to).toBe('staff-1@ekip.example');
+  });
+
+  it('bitmis, pasif, henuz baslamamis veya e-postasiz ekip kaydina gonderilmez; birden cok rolde en son baslayan', async () => {
+    const roles = [
+      teamRole('ended', { endDate: '2026-11-01' }),
+      teamRole('inactive', { status: 'inactive' }),
+      teamRole('future', { startDate: '2026-12-01' }),
+      teamRole('noemail', { email: undefined }),
+      teamRole('multi', { email: 'eski@ekip.example', startDate: '2026-02-01' }),
+      teamRole('multi', { role: 'apartment_manager', email: 'yeni@ekip.example', startDate: '2026-06-01' }),
+    ];
+    const c = channel({ people: [], roles });
+    for (const u of ['ended', 'inactive', 'future', 'noemail']) expect(await c.notifier.send(ticketNote(u))).toEqual({ status: 'skipped', reason: 'no_email' });
+    await c.notifier.send(ticketNote('multi'));
+    expect(c.sentMessages.map((m) => m.to)).toEqual(['yeni@ekip.example']);
+    // Ekip listesi apartman basina kisa sureli onbellekten okunur.
+    expect(c.rolesList).toHaveBeenCalledTimes(1);
+  });
+
+  it('yedek kaynak verilmemisse eski davranis: no_email', async () => {
+    const c = channel({ people: [] });
+    expect(await c.notifier.send(ticketNote('staff-1'))).toEqual({ status: 'skipped', reason: 'no_email' });
   });
 });
 

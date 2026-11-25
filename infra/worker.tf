@@ -48,7 +48,8 @@ data "aws_iam_policy_document" "notification_worker" {
     resources = ["${aws_cloudwatch_log_group.notification_worker.arn}:*"]
   }
 
-  # Okuma: uyelikler, daireler, kisi (e-posta) ve kullanici tercihi. Yazma: yalnizca NOTIF#
+  # Okuma: uyelikler, daireler, kisi (e-posta), ekip kayitlari (talep bildirimi alicilari ve kisi
+  # kaydi olmayan ekip uyesinin yedek e-postasi) ve kullanici tercihi. Yazma: yalnizca NOTIF#
   # isleme kaydi ve NOTIFSENT# alici bazli gonderim kaydi.
   statement {
     sid       = "DynamoDb"

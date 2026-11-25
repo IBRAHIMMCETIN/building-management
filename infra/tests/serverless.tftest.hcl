@@ -338,6 +338,22 @@ run "prod_plan" {
   }
   assert {
     condition = (
+      aws_scheduler_schedule.jobs["maintenance_tasks"].schedule_expression == "cron(10 4 * * ? *)" &&
+      aws_scheduler_schedule.jobs["maintenance_tasks"].schedule_expression_timezone == "Europe/Istanbul" &&
+      jsondecode(aws_scheduler_schedule.jobs["maintenance_tasks"].target[0].input).job == "maintenance_tasks"
+    )
+    error_message = "maintenance_tasks her gun 04:10 (Istanbul) calismali (O1-3 bakim gorevi uretimi)"
+  }
+  assert {
+    condition = (
+      aws_scheduler_schedule.jobs["ticket_maintenance"].schedule_expression == "cron(30 7 * * ? *)" &&
+      aws_scheduler_schedule.jobs["ticket_maintenance"].schedule_expression_timezone == "Europe/Istanbul" &&
+      jsondecode(aws_scheduler_schedule.jobs["ticket_maintenance"].target[0].input).job == "ticket_maintenance"
+    )
+    error_message = "ticket_maintenance her gun 07:30 (Istanbul) calismali (O1-3 otomatik kapanis ve gunluk ozet)"
+  }
+  assert {
+    condition = (
       aws_lambda_function.scheduler_worker.environment[0].variables.METRICS_STACK == "building-management" &&
       aws_lambda_function.scheduler_worker.environment[0].variables.OUTBOX_SWEEP_MIN_AGE_SECONDS == "120"
     )

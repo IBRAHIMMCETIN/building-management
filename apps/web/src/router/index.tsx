@@ -6,6 +6,8 @@ import { AnnouncementsPage } from '@/pages/admin/announcements/AnnouncementsPage
 import { DashboardPage } from '@/pages/admin/DashboardPage';
 import { FinancePage } from '@/pages/admin/finance/FinancePage';
 import { MetersPage } from '@/pages/admin/meters/MetersPage';
+import { MyTasksPage } from '@/pages/admin/staff/MyTasksPage';
+import { TicketsPage } from '@/pages/admin/tickets/TicketsPage';
 import { ReadingEntryPage } from '@/pages/admin/meters/ReadingEntryPage';
 import { ImportPage } from '@/pages/admin/import/ImportPage';
 import { AccountPage } from '@/pages/account/AccountPage';
@@ -31,7 +33,10 @@ import { DuesPage } from '@/pages/resident/DuesPage';
 import { PaymentPage } from '@/pages/resident/payment/PaymentPage';
 import { PaymentResultPage } from '@/pages/resident/payment/PaymentResultPage';
 import { ResidentHomePage } from '@/pages/resident/ResidentHomePage';
-import { ADMIN_ROLES, APARTMENT_ADMIN_ROLES, AUDIT_ROLES, METER_READING_ROLES, METER_ROLES, PLATFORM_ROLES, RESIDENT_ROLES, SECURITY_ROLES, TEAM_ROLES } from '@/types/roles';
+import { MyTicketDetailPage } from '@/pages/resident/tickets/MyTicketDetailPage';
+import { MyTicketsPage } from '@/pages/resident/tickets/MyTicketsPage';
+import { NewTicketWizard } from '@/pages/resident/tickets/NewTicketWizard';
+import { ADMIN_ROLES, APARTMENT_ADMIN_ROLES, AUDIT_ROLES, METER_READING_ROLES, METER_ROLES, MY_TASKS_ROLES, PLATFORM_ROLES, RESIDENT_ROLES, SECURITY_ROLES, TEAM_ROLES, TICKET_ROLES } from '@/types/roles';
 import { RedirectIfAuthenticated, RequireRole, RequireSession, RootRedirect } from './guards';
 
 export const router = createBrowserRouter([
@@ -91,6 +96,15 @@ export const router = createBrowserRouter([
                 children: [{ path: 'meters', element: <MetersPage /> }],
               },
               {
+                // Faz 3 (O1): ariza & bakim; gorevlinin mobil is listesi.
+                element: <RequireRole roles={TICKET_ROLES} redirectHome />,
+                children: [{ path: 'tickets', element: <TicketsPage /> }],
+              },
+              {
+                element: <RequireRole roles={MY_TASKS_ROLES} redirectHome />,
+                children: [{ path: 'my-tasks', element: <MyTasksPage /> }],
+              },
+              {
                 element: <RequireRole roles={METER_READING_ROLES} redirectHome />,
                 children: [{ path: 'meter-readings', element: <ReadingEntryPage /> }],
               },
@@ -133,6 +147,10 @@ export const router = createBrowserRouter([
               { index: true, element: <ResidentHomePage /> },
               { path: 'dues', element: <DuesPage /> },
               { path: 'tuketim', element: <ConsumptionPage /> },
+              // Faz 3 (O1-6): ariza / talep.
+              { path: 'talepler', element: <MyTicketsPage /> },
+              { path: 'talepler/yeni', element: <NewTicketWizard /> },
+              { path: 'talepler/:ticketId', element: <MyTicketDetailPage /> },
               { path: 'odeme', element: <PaymentPage /> },
               { path: 'odeme/sonuc', element: <PaymentResultPage /> },
               { path: 'announcements', element: <ResidentAnnouncementsPage /> },

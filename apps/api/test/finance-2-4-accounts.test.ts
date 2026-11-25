@@ -62,7 +62,7 @@ describe('hesap plani: kod ve hazir gelir hesaplari', () => {
     for (const { accountId, name } of DEFAULT_INCOME_ACCOUNTS) {
       expect(fake.accounts.get(`${APT}|${accountId}`)).toMatchObject({ type: 'income', name, status: 'active' });
     }
-    expect(DEFAULT_INCOME_ACCOUNTS.map((a) => a.accountId)).toEqual(['income-fixtures', 'income-heating']);
+    expect(DEFAULT_INCOME_ACCOUNTS.map((a) => a.accountId)).toEqual(['income-fixtures', 'income-heating', 'income-repair-recharge']);
   });
 
   it('kod: bicim dogrulanir, apartman icinde benzersizdir, guncellenir ve kaldirilir', async () => {

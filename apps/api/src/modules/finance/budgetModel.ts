@@ -18,7 +18,8 @@ export type Budget = TableKeys & {
   budgetId: string;
   year: number;
   revision: number;
-  status: 'draft' | 'approved' | 'superseded';
+  /** `discarded`: silinen taslak (kayit silinmez; DeleteItem yetkisi yok, listede gizlenir). */
+  status: 'draft' | 'approved' | 'superseded' | 'discarded';
   title?: string;
   lines: BudgetLine[];
   dues?: { distributionKey: 'equal' | 'area' | 'land_share'; liableParty: LiableParty; incomeAccountId?: string };
@@ -68,8 +69,6 @@ export class BudgetConflictError extends Error {
 export type BudgetWrite = {
   /** Yazilacak kayitlar ve beklenen surumleri (0: yeni kayit). */
   puts: { budget: Budget; expectedVersion: number }[];
-  /** Silinecek taslak (surum kosullu). */
-  remove?: { budget: Budget; expectedVersion: number };
   audit?: AuditDraft;
 };
 
@@ -97,13 +96,9 @@ export const budgetRepository: BudgetRepository = {
     return items.filter((b) => b.apartmentId === apartmentId).sort((a, b) => b.year - a.year || b.revision - a.revision);
   },
   async write(apartmentId, w) {
-    const all = [...w.puts.map((p) => p.budget), ...(w.remove ? [w.remove.budget] : [])];
-    if (all.some((b) => b.apartmentId !== apartmentId)) throw new Error('Kiraci uyusmazligi');
+    if (w.puts.some((p) => p.budget.apartmentId !== apartmentId)) throw new Error('Kiraci uyusmazligi');
     const { client, tableName } = getDynamo();
     const items: TransactItem[] = w.puts.map((p) => ({ Put: { TableName: tableName, Item: p.budget, ...versionCondition(p.expectedVersion) } }));
-    if (w.remove) {
-      items.push({ Delete: { TableName: tableName, Key: { PK: w.remove.budget.PK, SK: w.remove.budget.SK }, ...versionCondition(w.remove.expectedVersion) } });
-    }
     try {
       await sendWithAudit(client, items, w.audit);
     } catch (err) {

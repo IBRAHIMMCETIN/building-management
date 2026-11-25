@@ -24,6 +24,7 @@ const STATUS: Record<Budget['status'], { label: string; tone: 'success' | 'warni
   approved: { label: 'Onaylı', tone: 'success' },
   draft: { label: 'Taslak', tone: 'warning' },
   superseded: { label: 'Yerine yenisi onaylandı', tone: 'neutral' },
+  discarded: { label: 'Silindi', tone: 'neutral' },
 };
 
 /**

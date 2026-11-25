@@ -13,6 +13,12 @@ import { type SupportService, createSupportService, withSupportAccess } from './
 import { apartmentRoleRoutes } from './modules/apartment-roles/routes.js';
 import { type ApartmentRoleService, createApartmentRoleService } from './modules/apartment-roles/service.js';
 import { type AnnouncementService, createAnnouncementService } from './modules/announcements/service.js';
+import { maintenanceRoutes } from './modules/maintenance/routes.js';
+import { type MaintenanceService, createMaintenanceService } from './modules/maintenance/service.js';
+import { type WorkCostService, createWorkCostService } from './modules/workcosts/service.js';
+import { ticketPortalRoutes } from './modules/tickets/portalRoutes.js';
+import { ticketRoutes } from './modules/tickets/routes.js';
+import { type TicketService, createTicketService } from './modules/tickets/service.js';
 import { coreAdminRoutes, coreRoutes } from './modules/core/routes.js';
 import { type CoreService, createCoreService } from './modules/core/service.js';
 import { documentRoutes } from './modules/documents/routes.js';
@@ -128,6 +134,11 @@ export type AppConfig = {
   membershipService?: MembershipService;
   residentsService?: ResidentsService;
   announcementService?: AnnouncementService;
+  /** Faz 3 (O1): ariza / talep. */
+  ticketService?: TicketService;
+  /** Faz 3 (O1-3): periyodik bakim. */
+  maintenanceService?: MaintenanceService;
+  workCostService?: WorkCostService;
   apartmentRoleService?: ApartmentRoleService;
   /**
    * Online odeme (Adim 8b). Verilmezse ortam degiskenlerinden (`loadPaymentsConfig`) kurulur;
@@ -315,9 +326,21 @@ export function createApp(config: AppConfig) {
     }),
   );
 
+  // Faz 3 (O1): ariza / talep (yonetim, gorevli, guvenlik, denetci).
+  const ticketService = config.ticketService ?? createTicketService();
+  // O1-4: talep ve bakim gorevi masraflari (Finans baglantisi).
+  const workCostService = config.workCostService ?? createWorkCostService({ finance: financeService });
+  app.route('/api/tickets', ticketRoutes({ authenticate, service: ticketService, costs: workCostService }));
+  app.route(
+    '/api/maintenance',
+    maintenanceRoutes({ authenticate, service: config.maintenanceService ?? createMaintenanceService({ tickets: ticketService }), costs: workCostService }),
+  );
+
 
   app.route('/api/portal/payments', paymentPortalRoutes({ authenticate, service: paymentsService }));
   app.route('/api/portal/meters', meterPortalRoutes({ authenticate, service: meterPortalService }));
+  // Faz 3 (O1-2): sakin ariza / talep (daha ozel yol, `/api/portal`'dan once).
+  app.route('/api/portal/tickets', ticketPortalRoutes({ authenticate, service: ticketService }));
   app.route(
     '/api/portal',
     portalRoutes({

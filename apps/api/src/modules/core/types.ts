@@ -1,3 +1,4 @@
+import type { TicketSettings } from '../tickets/types.js';
 /**
  * Faz 1 - Cekirdek modul veri modelleri.
  *
@@ -182,6 +183,8 @@ export type SiteSettings = {
   lateFeeMonthlyBasisPoints: number;
   /** Tanimsiz veya `enabled: false` ise otomatik tahakkuk yapilmaz. */
   monthlyDuesPlan?: MonthlyDuesPlan;
+  /** Faz 3 (O1): ariza / talep ayarlari (SLA, gorevli havuzu, otomatik kapanis). Yoksa varsayilanlar. */
+  tickets?: TicketSettings;
   timezone: 'Europe/Istanbul';
   currency: Currency;
 };

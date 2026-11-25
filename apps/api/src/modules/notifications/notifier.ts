@@ -9,12 +9,24 @@ export type NotificationTemplate =
   | 'payment_received'
   | 'announcement_published'
   | 'late_fee_posted'
+  /** Faz 3 (O1-2): ariza / talep. */
+  | 'ticket_created'
+  | 'ticket_assigned'
+  | 'ticket_status'
+  | 'ticket_resolved'
+  | 'ticket_reopened'
+  | 'ticket_comment'
+  /** Faz 3 (O1-3): gunluk operasyon ozeti (yonetim / gorevli). */
+  | 'operations_digest'
   | `dues_reminder_${'upcoming' | 'overdue_1' | 'overdue_7' | 'plan_default'}`;
 
 /** Ozet bildirimlerdeki kalem satiri (kisisel veri yok). */
 export type NotificationLine = { unitId: string; amount: number };
 
-export type NotificationData = Record<string, string | number | undefined | NotificationLine[]>;
+/** Metin satiri (ozet bildirimler; kisisel veri yok). */
+export type NotificationItem = { label: string; detail?: string };
+
+export type NotificationData = Record<string, string | number | undefined | NotificationLine[] | NotificationItem[]>;
 
 export type Notification = {
   eventId: string;

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { DEFAULT_TICKET_SETTINGS, TICKET_PRIORITIES, type TicketSettings } from '../tickets/types.js';
 import { type CoreRepository, coreKeys, coreRepository } from './repository.js';
 import {
   type Address,
@@ -204,6 +205,28 @@ function parseMonthlyDuesPlan(value: unknown): MonthlyDuesPlan {
   };
 }
 
+/**
+ * Faz 3 (O1): ariza / talep ayarlari. Kismi girdi mevcut (yoksa varsayilan) ayarin uzerine yazilir.
+ * SLA 1-720 saat, otomatik kapanis 1-60 gun.
+ */
+function parseTicketSettings(value: unknown, base: TicketSettings | undefined): TicketSettings {
+  const o = asObject(value, 'tickets');
+  const current = base ?? DEFAULT_TICKET_SETTINGS;
+  const slaHours = { ...DEFAULT_TICKET_SETTINGS.slaHours, ...current.slaHours };
+  if (o.slaHours !== undefined) {
+    const h = asObject(o.slaHours, 'tickets.slaHours');
+    for (const p of TICKET_PRIORITIES) {
+      const v = optInt(h, p, 1, 720);
+      if (v !== undefined) slaHours[p] = v;
+    }
+  }
+  return {
+    slaHours,
+    staffSelfAssign: optBool(o, 'staffSelfAssign') ?? current.staffSelfAssign,
+    autoCloseDays: optInt(o, 'autoCloseDays', 1, 60) ?? current.autoCloseDays,
+  };
+}
+
 /** `base` uzerine kismi `settings` girdisini uygular ve capraz kurallari dogrular. */
 function parseSettings(value: unknown, base: SiteSettings): SiteSettings {
   const o = asObject(value, 'settings');
@@ -216,6 +239,10 @@ function parseSettings(value: unknown, base: SiteSettings): SiteSettings {
   if (o.monthlyDuesPlan === null) monthlyDuesPlan = undefined;
   else if (o.monthlyDuesPlan !== undefined) monthlyDuesPlan = parseMonthlyDuesPlan(o.monthlyDuesPlan);
 
+  let tickets = base.tickets;
+  if (o.tickets === null) tickets = undefined;
+  else if (o.tickets !== undefined) tickets = parseTicketSettings(o.tickets, base.tickets);
+
   const settings: SiteSettings = {
     landShareEnabled: optBool(o, 'landShareEnabled') ?? base.landShareEnabled,
     expenseGroupRules:
@@ -227,6 +254,7 @@ function parseSettings(value: unknown, base: SiteSettings): SiteSettings {
     lateFeeMonthlyBasisPoints:
       optInt(o, 'lateFeeMonthlyBasisPoints', 0, 10_000) ?? base.lateFeeMonthlyBasisPoints,
     monthlyDuesPlan,
+    ...(tickets ? { tickets } : {}),
     timezone: 'Europe/Istanbul',
     currency: 'TRY',
   };

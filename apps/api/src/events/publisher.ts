@@ -31,6 +31,11 @@ export const EVENT_TYPES = [
   'DUES_REMINDER',
   'DUES_BATCH_SUMMARY',
   'METER_PERIOD_REVERSED',
+  'TICKET_CREATED',
+  'TICKET_ASSIGNED',
+  'TICKET_STATUS_CHANGED',
+  'TICKET_COMMENTED',
+  'OPERATIONS_DIGEST',
 ] as const;
 export type EventType = (typeof EVENT_TYPES)[number];
 
@@ -123,6 +128,45 @@ export type DuesReminderPayload = {
   items: { unitId: string; liableParty: LiableParty; kind: ReminderKind; dueDate: IsoDate; amount: Kurus; userId?: string }[];
 };
 
+/**
+ * Faz 3 (O1-2): ariza / talep olaylari. Govde (aciklama, yorum metni) tasinmaz; alicilar worker'da
+ * yetki kurallariyla cozulur (yonetim, gorevli, acan sakin ve dairenin guncel uyeleri). Ic notlar
+ * olay uretmez.
+ */
+export type TicketEventPayload = {
+  ticketId: string;
+  number: string;
+  title: string;
+  category: string;
+  priority: 'low' | 'normal' | 'high' | 'urgent';
+  location: { kind: 'unit' | 'common'; unitId?: string; blockId?: string; area?: string };
+  createdBy: string;
+  /** Acanin aktor turu (manager | staff | resident | security). */
+  createdByKind: string;
+  assigneeId?: string;
+  /** Olayi tetikleyenin aktor turu. */
+  actorKind: string;
+  /** TICKET_STATUS_CHANGED: gecis ve sonuc. */
+  action?: string;
+  from?: string;
+  to?: string;
+  closeKind?: string;
+  cancelKind?: string;
+};
+
+/**
+ * Faz 3 (O1-3): gunluk operasyon ozeti (apartman basina gunde en fazla bir; `ticket_maintenance`
+ * isi). SLA'si asilmis talepler, yaklasan ve geciken bakim gorevleri, otomatik kapanan talep
+ * sayisi. Yonetim tumunu, gorevli yalnizca kendisine atanan ve atanmamis kalemleri alir.
+ */
+export type OperationsDigestPayload = {
+  date: IsoDate;
+  slaBreached: { ticketId: string; number: string; title: string; priority: string; dueAt: IsoDateTime; assigneeId?: string }[];
+  maintenanceDue: { taskId: string; name: string; dueDate: IsoDate; assigneeId?: string }[];
+  maintenanceOverdue: { taskId: string; name: string; dueDate: IsoDate; assigneeId?: string }[];
+  autoClosed: number;
+};
+
 type PayloadByType = {
   DUE_GENERATED: DueGeneratedPayload;
   PAYMENT_RECEIVED: PaymentReceivedPayload;
@@ -131,6 +175,11 @@ type PayloadByType = {
   DUES_REMINDER: DuesReminderPayload;
   DUES_BATCH_SUMMARY: DuesBatchSummaryPayload;
   METER_PERIOD_REVERSED: MeterPeriodReversedPayload;
+  TICKET_CREATED: TicketEventPayload;
+  TICKET_ASSIGNED: TicketEventPayload;
+  TICKET_STATUS_CHANGED: TicketEventPayload;
+  TICKET_COMMENTED: TicketEventPayload;
+  OPERATIONS_DIGEST: OperationsDigestPayload;
 };
 
 export type DomainEvent<T extends EventType = EventType> = {
