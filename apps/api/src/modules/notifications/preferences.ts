@@ -14,7 +14,8 @@ import { ValidationError, asObject } from '../core/validation.js';
  */
 
 export type NotificationPreferences = {
-  email: { enabled: boolean };
+  /** `tickets`: ariza / talep e-postalari (O1-2; yoksa acik). Ana anahtar kapaliysa hicbiri gitmez. */
+  email: { enabled: boolean; tickets?: boolean };
   updatedAt?: string;
 };
 
@@ -26,6 +27,7 @@ type StoredPreferences = {
   entityType: 'NOTIFICATION_PREFERENCES';
   userId: string;
   emailEnabled: boolean;
+  ticketEmails?: boolean;
   updatedAt: string;
 };
 
@@ -50,7 +52,7 @@ export function createDynamoPreferencesRepository(): PreferencesRepository {
         const out = await client.send(new GetCommand({ TableName: tableName, Key: key }));
         const item = out.Item as StoredPreferences | undefined;
         if (!item) return structuredClone(DEFAULT_PREFERENCES);
-        return { email: { enabled: item.emailEnabled !== false }, updatedAt: item.updatedAt };
+        return { email: { enabled: item.emailEnabled !== false, ...(item.ticketEmails === undefined ? {} : { tickets: item.ticketEmails }) }, updatedAt: item.updatedAt };
       } catch (err) {
         throw toDataAccessError(err);
       }
@@ -61,6 +63,7 @@ export function createDynamoPreferencesRepository(): PreferencesRepository {
         entityType: 'NOTIFICATION_PREFERENCES',
         userId,
         emailEnabled: prefs.email.enabled,
+        ...(prefs.email.tickets === undefined ? {} : { ticketEmails: prefs.email.tickets }),
         updatedAt: prefs.updatedAt ?? new Date().toISOString(),
       };
       // Kullanici geneli tercih: PLATFORM zincirine denetlenir (apartmandan bagimsiz).
@@ -68,20 +71,23 @@ export function createDynamoPreferencesRepository(): PreferencesRepository {
         action: 'notification_preferences.update',
         target: { type: 'user', id: userId },
         actorId: userId,
-        details: { emailEnabled: prefs.email.enabled },
+        details: { emailEnabled: prefs.email.enabled, ...(prefs.email.tickets === undefined ? {} : { ticketEmails: prefs.email.tickets }) },
       });
     },
   };
 }
 
-/** PUT govdesi: `{ email: { enabled: boolean } }` (bilinmeyen alan reddedilir). */
+/** PUT govdesi: `{ email: { enabled: boolean, tickets?: boolean } }` (bilinmeyen alan reddedilir). */
 export function parsePreferences(body: unknown): NotificationPreferences {
   const o = asObject(body);
   const extra = Object.keys(o).filter((k) => k !== 'email');
   if (extra.length) throw new ValidationError(`Bilinmeyen alan: ${extra.join(', ')}`, extra[0]);
   const email = asObject(o.email, 'email');
   if (typeof email.enabled !== 'boolean') throw new ValidationError('email.enabled true veya false olmali', 'email.enabled');
-  return { email: { enabled: email.enabled } };
+  const extraEmail = Object.keys(email).filter((k) => k !== 'enabled' && k !== 'tickets');
+  if (extraEmail.length) throw new ValidationError(`Bilinmeyen alan: email.${extraEmail[0]}`, `email.${extraEmail[0]}`);
+  if (email.tickets !== undefined && typeof email.tickets !== 'boolean') throw new ValidationError('email.tickets true veya false olmali', 'email.tickets');
+  return { email: { enabled: email.enabled, ...(email.tickets === undefined ? {} : { tickets: email.tickets }) } };
 }
 
 export function createPreferencesService(deps: { repository?: PreferencesRepository; now?: () => Date } = {}) {
@@ -90,7 +96,13 @@ export function createPreferencesService(deps: { repository?: PreferencesReposit
   return {
     get: (userId: string) => repository.get(userId),
     async update(userId: string, body: unknown): Promise<NotificationPreferences> {
-      const prefs = { ...parsePreferences(body), updatedAt: now().toISOString() };
+      const parsed = parsePreferences(body);
+      // `tickets` verilmezse onceki secim korunur (eski istemciler alani gondermez).
+      if (parsed.email.tickets === undefined) {
+        const current = await repository.get(userId);
+        if (current.email.tickets !== undefined) parsed.email.tickets = current.email.tickets;
+      }
+      const prefs = { ...parsed, updatedAt: now().toISOString() };
       await repository.put(userId, prefs);
       return prefs;
     },

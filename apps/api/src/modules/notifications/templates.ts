@@ -1,4 +1,5 @@
 import type { Notification, NotificationLine } from './notifier.js';
+import { TICKET_CATEGORY_LABELS } from '../tickets/types.js';
 
 /**
  * Turkce e-posta sablonlari (HTML + duz metin).
@@ -209,6 +210,100 @@ function spec(n: Notification, ctx: EmailContext): Spec | undefined {
         ],
         cta: { label: 'Duyuruyu oku', path: 'announcements' },
       };
+    // Faz 3 (O1-2): ariza / talep. `link`: portal (sakin) veya admin (yonetim / gorevli).
+    case 'ticket_created':
+    case 'ticket_assigned':
+    case 'ticket_status':
+    case 'ticket_resolved':
+    case 'ticket_reopened':
+    case 'ticket_comment':
+      return ticketSpec(n, ctx);
+    default:
+      return undefined;
+  }
+}
+
+const TICKET_STATUS_TEXT: Record<string, string> = {
+  open: 'Açık',
+  assigned: 'Atandı',
+  in_progress: 'İşleme alındı',
+  on_hold: 'Beklemeye alındı',
+  resolved: 'Çözüldü',
+  closed: 'Kapandı',
+  cancelled: 'İptal edildi',
+};
+const PRIORITY_TEXT: Record<string, string> = { low: 'Düşük', normal: 'Normal', high: 'Yüksek', urgent: 'Acil' };
+
+function ticketSpec(n: Notification, ctx: EmailContext): Spec | undefined {
+  const d = n.data;
+  const number = str(d.number);
+  const title = str(d.title);
+  const where = d.unitId ? ctx.unitLabel(str(d.unitId)) : str(d.area) || 'Ortak alan';
+  const category = TICKET_CATEGORY_LABELS[str(d.category) as keyof typeof TICKET_CATEGORY_LABELS] ?? 'Diğer';
+  const admin = d.link === 'admin';
+  const cta = { label: 'Talebi görüntüle', path: admin ? `../admin/tickets/${str(d.ticketId)}` : `talepler/${str(d.ticketId)}` };
+  const rows: [string, string][] = [['Talep no', number], ['Konu', title], ['Yer', where], ['Kategori', category]];
+  switch (n.template) {
+    case 'ticket_created':
+      return {
+        subject: `${d.priority === 'urgent' ? 'ACİL - ' : ''}Yeni arıza / talep: ${number} ${title}`,
+        heading: 'Yeni arıza / talep',
+        preheader: `${where} - ${title}`,
+        blocks: [
+          { kind: 'p', text: admin ? 'Yeni bir arıza / talep bildirildi.' : `${where} için bir arıza / talep bildirildi. Kat maliki olarak bilginize sunulur.` },
+          { kind: 'rows', rows: [...rows, ['Öncelik', PRIORITY_TEXT[str(d.priority)] ?? 'Normal']] },
+        ],
+        cta,
+      };
+    case 'ticket_assigned':
+      return {
+        subject: `Size iş atandı: ${number} ${title}`,
+        heading: 'Size yeni bir iş atandı',
+        preheader: `${where} - ${title}`,
+        blocks: [{ kind: 'p', text: 'Aşağıdaki talep size atandı. Ayrıntıları ve fotoğrafları İşlerim ekranında görebilirsiniz.' }, { kind: 'rows', rows: [...rows, ['Öncelik', PRIORITY_TEXT[str(d.priority)] ?? 'Normal']] }],
+        cta,
+      };
+    case 'ticket_resolved':
+      return {
+        subject: `Talebiniz çözüldü: ${number}`,
+        heading: 'Talebiniz çözüldü',
+        preheader: `${title} - lütfen onaylayın`,
+        blocks: [
+          { kind: 'p', text: 'Bildirdiğiniz arıza / talep çözüldü olarak işaretlendi. Sorun giderildiyse lütfen onaylayın; devam ediyorsa yeniden açabilirsiniz.' },
+          { kind: 'rows', rows },
+          { kind: 'note', text: 'Onaylanmayan talepler belirlenen süre sonunda otomatik olarak kapanır.' },
+        ],
+        cta: { ...cta, label: 'Onayla veya yeniden aç' },
+      };
+    case 'ticket_reopened':
+      return {
+        subject: `Talep yeniden açıldı: ${number}`,
+        heading: 'Talep yeniden açıldı',
+        preheader: title,
+        blocks: [{ kind: 'p', text: 'Çözüldü olarak işaretlenen talep yeniden açıldı.' }, { kind: 'rows', rows }],
+        cta,
+      };
+    case 'ticket_comment':
+      return {
+        subject: `Talebe yeni mesaj: ${number}`,
+        heading: 'Talebe yeni mesaj',
+        preheader: title,
+        blocks: [{ kind: 'p', text: 'Aşağıdaki talebe yeni bir mesaj eklendi. Mesajı talep ekranında okuyabilirsiniz.' }, { kind: 'rows', rows }],
+        cta,
+      };
+    case 'ticket_status': {
+      const to = str(d.to);
+      let text = TICKET_STATUS_TEXT[to] ?? to;
+      if (to === 'cancelled') text = d.cancelKind === 'rejected' ? 'Yönetim tarafından reddedildi' : 'Geri çekildi';
+      if (to === 'closed') text = d.closeKind === 'auto' ? 'Süre dolduğu için kapandı' : d.closeKind === 'confirmed' ? 'Onaylanarak kapandı' : 'Yönetim tarafından kapatıldı';
+      return {
+        subject: `Talep durumu: ${number} - ${text}`,
+        heading: 'Talep durumu güncellendi',
+        preheader: `${title}: ${text}`,
+        blocks: [{ kind: 'p', text: `Talebin yeni durumu: ${text}.` }, { kind: 'rows', rows }],
+        cta,
+      };
+    }
     default:
       return undefined;
   }

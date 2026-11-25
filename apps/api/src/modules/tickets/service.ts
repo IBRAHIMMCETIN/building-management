@@ -6,11 +6,13 @@
  * (sakinde) guncel daire uyelikleridir. Istek govdesindeki kimlik bilgisi kullanilmaz.
  */
 import { createHash, randomUUID } from 'node:crypto';
+import { type DomainEvent, type EventType, type TicketEventPayload, buildEvent } from '../../events/publisher.js';
 import { type ApartmentRoleRepository, apartmentRoleRepository } from '../apartment-roles/repository.js';
 import type { CoreRepository } from '../core/repository.js';
 import { coreRepository } from '../core/repository.js';
 import type { IsoDate, IsoDateTime, Site } from '../core/types.js';
 import { type Obj, ValidationError, asObject, assertId, optString, reqEnum, reqInt, reqString } from '../core/validation.js';
+import { type DocumentStore, createDocumentStoreFromEnv } from '../documents/store.js';
 import { type PortalRepository, portalRepository } from '../portal/repository.js';
 import { TicketError } from './errors.js';
 import {
@@ -33,6 +35,7 @@ import {
   statusAfterAssign,
   visibleEvents,
 } from './model.js';
+import { MAX_PHOTOS_PER_TICKET, parseUploadIds, photoIdOf, ticketPhotos } from './photos.js';
 import { TicketConflictError, type TicketRepository, type TicketWrite, ticketRepository } from './repository.js';
 import {
   ACTIVE_STATUSES,
@@ -57,6 +60,8 @@ export type TicketServiceDeps = {
   core: Pick<CoreRepository, 'getSite' | 'getUnit' | 'getBlock'>;
   memberships: Pick<PortalRepository, 'listMemberships'>;
   roles: Pick<ApartmentRoleRepository, 'list'>;
+  /** O1-2: fotograf deposu (yoksa fotograf islemleri 503). */
+  store: DocumentStore | undefined;
   now: () => Date;
   newId: () => string;
 };
@@ -75,10 +80,12 @@ export function createTicketService(overrides: Partial<TicketServiceDeps> = {}) 
     core: coreRepository,
     memberships: portalRepository,
     roles: apartmentRoleRepository,
+    store: 'store' in overrides ? overrides.store : createDocumentStoreFromEnv(),
     now: () => new Date(),
     newId: () => randomUUID(),
     ...overrides,
   };
+  const photos = ticketPhotos(deps.store, () => deps.now());
   const repo = deps.repo;
   const stamp = () => deps.now().toISOString();
   const today = (): IsoDate => new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Istanbul' }).format(deps.now());
@@ -134,6 +141,28 @@ export function createTicketService(overrides: Partial<TicketServiceDeps> = {}) 
     ticketId: t.ticketId,
     createdAt: t.createdAt,
   });
+
+  /** O1-2: bildirim olayi (outbox). Govde tasinmaz; alicilar worker'da cozulur. */
+  function domainEvent(type: Extract<EventType, `TICKET_${string}`>, ctx: TicketContext, actor: TicketActor, t: Ticket, extra: Partial<TicketEventPayload> = {}): DomainEvent {
+    const payload: TicketEventPayload = {
+      ticketId: t.ticketId,
+      number: t.number,
+      title: t.title,
+      category: t.category,
+      priority: t.priority,
+      location: t.location.kind === 'unit' ? { kind: 'unit', unitId: t.location.unitId, ...(t.location.blockId ? { blockId: t.location.blockId } : {}) } : { kind: 'common', area: t.location.area, ...(t.location.blockId ? { blockId: t.location.blockId } : {}) },
+      createdBy: t.createdBy,
+      createdByKind: actorKindOf(t.createdByRole) ?? 'resident',
+      ...(t.assigneeId ? { assigneeId: t.assigneeId } : {}),
+      actorKind: actor.kind,
+      ...extra,
+    };
+    return buildEvent({ eventId: `tk-${deps.newId()}`, type, apartmentId: ctx.apartmentId, actorId: ctx.userId, groupKey: `${ctx.apartmentId}#${t.ticketId}`, payload } as never, deps.now);
+  }
+
+  function assertPhotoRoom(t: Ticket, adding: number) {
+    if (t.photoCount + adding > MAX_PHOTOS_PER_TICKET) throw new TicketError('unprocessable', `Bir talebe en fazla ${MAX_PHOTOS_PER_TICKET} fotoğraf eklenebilir`);
+  }
 
   async function write(apartmentId: string, w: TicketWrite) {
     try {
@@ -217,10 +246,11 @@ export function createTicketService(overrides: Partial<TicketServiceDeps> = {}) 
     const category = reqEnum(o, 'category', TICKET_CATEGORIES);
     const priority = actor.kind === 'resident' || o.priority === undefined ? 'normal' : reqEnum(o, 'priority', TICKET_PRIORITIES);
     const location = await parseLocation(ctx, o.location);
+    const uploadIds = parseUploadIds(o.photos);
     if (!canCreate(actor, location)) {
       throw new TicketError('forbidden', location.kind === 'unit' ? 'Yalnızca üyesi olduğunuz daire için talep açabilirsiniz' : 'Talep açma yetkiniz yok');
     }
-    const fp = createHash('sha256').update(JSON.stringify({ title, description, category, priority, location, by: ctx.userId })).digest('hex');
+    const fp = createHash('sha256').update(JSON.stringify({ title, description, category, priority, location, by: ctx.userId, photos: uploadIds })).digest('hex');
 
     const replay = async () => {
       const idem = await repo.getIdempotency(ctx.apartmentId, key);
@@ -233,10 +263,11 @@ export function createTicketService(overrides: Partial<TicketServiceDeps> = {}) 
     const prior = await replay();
     if (prior) return prior;
 
+    const ticketId = `${stamp().slice(0, 10).replaceAll('-', '')}-${deps.newId().replace(/[^A-Za-z0-9]/g, '').slice(0, 12)}`;
+    const photoKeys = await photos.attach(ctx.apartmentId, ctx.userId, ticketId, uploadIds);
     for (let attempt = 1; ; attempt++) {
       const ts = stamp();
       const counter = await repo.getCounter(ctx.apartmentId);
-      const ticketId = `${ts.slice(0, 10).replaceAll('-', '')}-${deps.newId().replace(/[^A-Za-z0-9]/g, '').slice(0, 12)}`;
       const ticket: Ticket = {
         ...ticketKeys.ticket(ctx.apartmentId, ticketId),
         entityType: 'TICKET',
@@ -253,7 +284,7 @@ export function createTicketService(overrides: Partial<TicketServiceDeps> = {}) 
         createdByRole: ctx.role,
         dueAt: dueAtFor(ts, priority, settings),
         reopenCount: 0,
-        photoCount: 0,
+        photoCount: photoKeys.length,
         createdAt: ts,
         createdBy: ctx.userId,
         updatedAt: ts,
@@ -267,8 +298,9 @@ export function createTicketService(overrides: Partial<TicketServiceDeps> = {}) 
           at: ts,
           ticket,
           expectedVersion: 0,
-          events: [newEvent(ctx, ticket, ts, { kind: 'created', visibility: 'public', to: 'open' })],
+          events: [newEvent(ctx, ticket, ts, { kind: 'created', visibility: 'public', to: 'open', ...(photoKeys.length ? { photoKeys } : {}) })],
           putIndexes,
+          outbox: [domainEvent('TICKET_CREATED', ctx, actor, ticket)],
           counter: { expected: counter },
           idempotency: { ...ticketKeys.idempotency(ctx.apartmentId, key), entityType: 'TICKET_IDEMPOTENCY', apartmentId: ctx.apartmentId, ticketId, fingerprint: fp, createdAt: ts },
           audit: { apartmentId: ctx.apartmentId, action: 'ticket.create', target: { type: 'ticket', id: ticketId }, details: { number: ticket.number, category, priority, location: location.kind } },
@@ -465,6 +497,7 @@ export function createTicketService(overrides: Partial<TicketServiceDeps> = {}) 
       events,
       putIndexes: assigneeId ? [index(ticketKeys.assignee(ctx.apartmentId, assigneeId, ticketId), next)] : [],
       deleteIndexes: ticket.assigneeId ? [ticketKeys.assignee(ctx.apartmentId, ticket.assigneeId, ticketId)] : [],
+      outbox: assigneeId ? [domainEvent('TICKET_ASSIGNED', ctx, actor, next)] : [],
       audit: { apartmentId: ctx.apartmentId, action: 'ticket.assign', target: { type: 'ticket', id: ticketId }, details: { number: ticket.number, from: ticket.assigneeId ?? null, to: assigneeId } },
     });
     return { ticket: ticketView(actor, next, settings) };
@@ -487,10 +520,13 @@ export function createTicketService(overrides: Partial<TicketServiceDeps> = {}) 
     if (check.noteRequired && (!note || note.length < 3)) throw new ValidationError('Bu işlem için açıklama gerekli (en az 3 karakter)', 'note');
     let rating: number | undefined;
     if (action === 'confirm' && o.rating !== undefined && o.rating !== null) rating = reqInt(o, 'rating', 1, 5);
+    const uploadIds = parseUploadIds(o.photos);
     assertVersion(ticket, version);
+    assertPhotoRoom(ticket, uploadIds.length);
+    const photoKeys = await photos.attach(ctx.apartmentId, ctx.userId, ticketId, uploadIds);
 
     const ts = now.toISOString();
-    const next: Ticket = { ...ticket, status: check.to, ...touch(ctx, ticket, ts) };
+    const next: Ticket = { ...ticket, status: check.to, photoCount: ticket.photoCount + photoKeys.length, ...touch(ctx, ticket, ts) };
     const putIndexes: TicketIndex[] = [];
     const deleteIndexes = [];
     switch (action) {
@@ -520,7 +556,9 @@ export function createTicketService(overrides: Partial<TicketServiceDeps> = {}) 
     // Biten taleplerin gorevli indeksi kaldirilir (Islerim listesi yalnizca acik isler).
     if (TERMINAL_STATUSES.includes(next.status) && ticket.assigneeId) deleteIndexes.push(ticketKeys.assignee(ctx.apartmentId, ticket.assigneeId, ticketId));
 
-    const events = [newEvent(ctx, next, ts, { kind: 'status_changed', visibility: 'public', from: ticket.status, to: next.status, ...(note ? { body: note } : {}) })];
+    const events = [
+      newEvent(ctx, next, ts, { kind: 'status_changed', visibility: 'public', from: ticket.status, to: next.status, ...(note ? { body: note } : {}), ...(photoKeys.length ? { photoKeys } : {}) }),
+    ];
     if (rating) events.push(newEvent(ctx, next, ts, { kind: 'rated', visibility: 'public', rating }, 1));
     const audited = actor.kind === 'manager' || action === 'cancel';
     await write(ctx.apartmentId, {
@@ -530,6 +568,15 @@ export function createTicketService(overrides: Partial<TicketServiceDeps> = {}) 
       events,
       putIndexes,
       deleteIndexes,
+      outbox: [
+        domainEvent('TICKET_STATUS_CHANGED', ctx, actor, next, {
+          action,
+          from: ticket.status,
+          to: next.status,
+          ...(next.closeKind && action !== 'reopen' ? { closeKind: next.closeKind } : {}),
+          ...(next.cancelKind ? { cancelKind: next.cancelKind } : {}),
+        }),
+      ],
       ...(audited
         ? { audit: { apartmentId: ctx.apartmentId, action: `ticket.${action}`, target: { type: 'ticket', id: ticketId }, ...(note ? { reason: note } : {}), details: { number: ticket.number, from: ticket.status, to: next.status } } }
         : {}),
@@ -537,24 +584,99 @@ export function createTicketService(overrides: Partial<TicketServiceDeps> = {}) 
     return { ticket: ticketView(actor, next, settings) };
   }
 
-  /** Yorum (herkese acik) veya ic not. Talep kaydini degistirmez: surum gerekmez. */
+  /**
+   * Yorum (herkese acik) veya ic not; istege bagli fotograf. Fotografsiz yorum talep kaydini
+   * degistirmez (surum gerekmez); fotografli yorumda sayac guncel surumle artirilir (bir kez yeniden
+   * denenir). Ic not bildirim uretmez.
+   */
   async function comment(ctx: TicketContext, ticketId: string, body: unknown) {
     const o = asObject(body);
     const text = reqString(o, 'body', 2000, 1).trim();
     if (!text) throw new ValidationError('Yorum boş olamaz', 'body');
     const visibility = o.visibility === undefined ? 'public' : reqEnum(o, 'visibility', ['public', 'internal'] as const);
-    const { actor, settings, ticket } = await load(ctx, ticketId);
+    const uploadIds = parseUploadIds(o.photos);
+    const loaded = await load(ctx, ticketId);
+    const { actor, settings } = loaded;
+    let ticket = loaded.ticket;
     if (!canComment(actor, ticket, visibility, settings)) {
       throw new TicketError('forbidden', visibility === 'internal' ? 'İç notu yalnızca yönetim ve görevli ekleyebilir' : 'Bu talebe yorum ekleyemezsiniz');
     }
     if (TERMINAL_STATUSES.includes(ticket.status) && actor.kind !== 'manager') throw new TicketError('invalid_state', 'Kapanmış talebe yorum eklenemez');
+    assertPhotoRoom(ticket, uploadIds.length);
+    const photoKeys = await photos.attach(ctx.apartmentId, ctx.userId, ticketId, uploadIds);
     const ts = stamp();
-    const event = newEvent(ctx, ticket, ts, { kind: 'comment', visibility, body: text });
-    await write(ctx.apartmentId, { at: ts, exists: ticketKeys.ticket(ctx.apartmentId, ticketId), events: [event] });
-    return { event: eventView(actor, event) };
+    const event = newEvent(ctx, ticket, ts, { kind: 'comment', visibility, body: text, ...(photoKeys.length ? { photoKeys } : {}) });
+    const outbox = visibility === 'public' ? [domainEvent('TICKET_COMMENTED', ctx, actor, ticket)] : [];
+    if (!photoKeys.length) {
+      await write(ctx.apartmentId, { at: ts, exists: ticketKeys.ticket(ctx.apartmentId, ticketId), events: [event], outbox });
+      return { event: eventView(actor, event) };
+    }
+    for (let attempt = 1; ; attempt++) {
+      try {
+        await repo.write(ctx.apartmentId, {
+          at: ts,
+          ticket: { ...ticket, photoCount: ticket.photoCount + photoKeys.length, ...touch(ctx, ticket, ts) },
+          expectedVersion: ticket.version,
+          events: [event],
+          outbox,
+        });
+        return { event: eventView(actor, event) };
+      } catch (err) {
+        if (!(err instanceof TicketConflictError) || attempt >= 2) throw err instanceof TicketConflictError ? new TicketError('conflict', err.message) : err;
+        const fresh = await repo.get(ctx.apartmentId, ticketId);
+        if (!fresh) throw new TicketError('not_found', 'Talep bulunamadı');
+        assertPhotoRoom(fresh, photoKeys.length);
+        ticket = fresh;
+      }
+    }
   }
 
-  return { create, list, board, get, update, assignees, assign, transition, comment, actorOf, settingsOf };
+  // -------------------------------------------------------------------------
+  // Fotograflar ve benzer talepler (O1-2)
+  // -------------------------------------------------------------------------
+
+  /** Yukleme linki: denetci disindaki roller (talep acabilen / yorum yazabilen herkes). */
+  async function photoUploadUrl(ctx: TicketContext, body: unknown) {
+    const actor = await actorOf(ctx);
+    if (actor.kind === 'observer') throw new TicketError('forbidden', 'Denetçi fotoğraf yükleyemez');
+    return photos.presignUpload(ctx.apartmentId, ctx.userId, body);
+  }
+
+  /** Fotograf goruntuleme: fotografi tasiyan olay aktore gorunur olmali. */
+  async function photo(ctx: TicketContext, ticketId: string, photoId: string) {
+    const { actor, ticket } = await load(ctx, ticketId);
+    const events = visibleEvents(actor, await repo.listEvents(ctx.apartmentId, ticketId));
+    const key = events.flatMap((e) => e.photoKeys ?? []).find((k) => photoIdOf(k) === photoId);
+    if (!key) throw new TicketError('not_found', 'Fotoğraf bulunamadı');
+    return photos.presignDownload(key, `${ticket.number}-foto`);
+  }
+
+  /**
+   * Ortak alanda benzer acik talepler (tekrar bildirimi azaltmak icin). Baskasinin talebinin
+   * metni ve kimligi donmez; yalnizca numara, kategori, alan ve durum.
+   */
+  async function similar(ctx: TicketContext, q: { category?: string; blockId?: string } = {}) {
+    await actorOf(ctx);
+    if (q.category && !(TICKET_CATEGORIES as readonly string[]).includes(q.category)) throw new ValidationError('category geçersiz', 'category');
+    const items = (await repo.list(ctx.apartmentId))
+      .filter((t) => ACTIVE_STATUSES.includes(t.status) && t.location.kind === 'common')
+      .filter((t) => !q.category || t.category === q.category)
+      .filter((t) => !q.blockId || t.location.blockId === q.blockId)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .slice(0, 5)
+      .map((t) => ({
+        number: t.number,
+        category: t.category,
+        area: t.location.kind === 'common' ? t.location.area : '',
+        ...(t.location.blockId ? { blockId: t.location.blockId } : {}),
+        status: t.status,
+        createdAt: t.createdAt,
+        mine: t.createdBy === ctx.userId,
+      }));
+    return { items };
+  }
+
+  return { create, list, board, get, update, assignees, assign, transition, comment, photoUploadUrl, photo, similar, actorOf, settingsOf };
 }
 
 export type TicketService = ReturnType<typeof createTicketService>;

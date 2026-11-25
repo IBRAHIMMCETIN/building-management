@@ -9,6 +9,13 @@ export type NotificationTemplate =
   | 'payment_received'
   | 'announcement_published'
   | 'late_fee_posted'
+  /** Faz 3 (O1-2): ariza / talep. */
+  | 'ticket_created'
+  | 'ticket_assigned'
+  | 'ticket_status'
+  | 'ticket_resolved'
+  | 'ticket_reopened'
+  | 'ticket_comment'
   | `dues_reminder_${'upcoming' | 'overdue_1' | 'overdue_7' | 'plan_default'}`;
 
 /** Ozet bildirimlerdeki kalem satiri (kisisel veri yok). */

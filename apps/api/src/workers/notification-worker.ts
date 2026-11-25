@@ -6,6 +6,9 @@ import { type MembershipRepository, membershipRepository } from '../modules/memb
 import { createNotifierFromEnv } from '../modules/notifications/email.js';
 import type { DeliveryResult, Notification, NotificationLine, NotificationTemplate, Notifier } from '../modules/notifications/notifier.js';
 import { type UnitMembership, visibleParties } from '../modules/portal/types.js';
+import { type ApartmentRoleRepository, apartmentRoleRepository } from '../modules/apartment-roles/repository.js';
+import type { ApartmentRole } from '../modules/apartment-roles/types.js';
+import { isTicketEvent, ticketRecipients } from '../modules/tickets/notifications.js';
 
 export type { DeliveryResult, Notification, NotificationTemplate, Notifier } from '../modules/notifications/notifier.js';
 export { createLogNotifier } from '../modules/notifications/notifier.js';
@@ -25,6 +28,7 @@ export { createLogNotifier } from '../modules/notifications/notifier.js';
  *       ANNOUNCEMENT_PUBLISHED -> apartmandaki (blok hedefliyse o bloklardaki) tum uyeler
  *       LATE_FEE_POSTED        -> tazminat yazilan alt cariyi goren uyeler
  *       DUES_REMINDER          -> hatirlatilan alt cariyi goren uyeler (ilk kalem)
+ *       TICKET_*               -> yonetim / gorevli / talep tarafi (modules/tickets/notifications.ts)
  *  4. Her aliciya `Notifier` ile bildirim gonderilir: NOTIFICATION_CHANNEL=log (yapilandirilmis
  *     log) veya ses (e-posta; tercih, adres ve alici bazli tekrar korumasi kanal icinde, bkz.
  *     modules/notifications/email.ts). SMS / WhatsApp ayni arayuzle eklenecek.
@@ -101,6 +105,7 @@ export function buildNotifications(
   memberships: UnitMembership[],
   unitBlocks: Map<string, string>,
   day: IsoDate,
+  roles: readonly ApartmentRole[] = [],
 ): Notification[] {
   const current = memberships.filter((m) => m.apartmentId === event.apartmentId && isCurrent(m, day));
   const out = new Map<string, Notification>();
@@ -109,6 +114,16 @@ export function buildNotifications(
       out.set(userId, { eventId: event.eventId, apartmentId: event.apartmentId, userId, template, data });
     }
   };
+
+  if (isTicketEvent(event)) {
+    return ticketRecipients(event, memberships, roles, day).map((r) => ({
+      eventId: event.eventId,
+      apartmentId: event.apartmentId,
+      userId: r.userId,
+      template: r.template,
+      data: r.data,
+    }));
+  }
 
   switch (event.type) {
     case 'PAYMENT_RECEIVED': {
@@ -233,6 +248,8 @@ const PROCESSED_TTL_SECONDS = 30 * 24 * 3600;
 export type WorkerDeps = {
   memberships: Pick<MembershipRepository, 'list'>;
   core: Pick<CoreRepository, 'listUnits'>;
+  /** O1-2: talep olaylarinda yonetim / gorevli alicilari. */
+  roles: Pick<ApartmentRoleRepository, 'list'>;
   notifier: Notifier;
   /** Olay daha once islendi mi? */
   isProcessed: (apartmentId: string, eventId: string) => Promise<boolean>;
@@ -251,6 +268,7 @@ export function createNotificationWorker(overrides: Partial<WorkerDeps> = {}) {
   const deps: WorkerDeps = {
     memberships: membershipRepository,
     core: coreRepository,
+    roles: apartmentRoleRepository,
     notifier: overrides.notifier ?? createNotifierFromEnv(),
     isProcessed: async (apt, id) => Boolean(await getTenantItem(processedKey(apt, id))),
     markProcessed: async (apt, id, info) => {
@@ -290,7 +308,8 @@ export function createNotificationWorker(overrides: Partial<WorkerDeps> = {}) {
         ? new Map((await deps.core.listUnits(event.apartmentId)).map((u) => [u.unitId, u.blockId]))
         : new Map<string, string>();
 
-    const notifications = buildNotifications(event, memberships, unitBlocks, today());
+    const roles = isTicketEvent(event) ? await deps.roles.list(event.apartmentId) : [];
+    const notifications = buildNotifications(event, memberships, unitBlocks, today(), roles);
     let sent = 0;
     const skippedRecipients: Record<string, number> = {};
     for (const n of notifications) {

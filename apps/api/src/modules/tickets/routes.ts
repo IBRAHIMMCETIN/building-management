@@ -22,8 +22,12 @@ export type TicketRoutesDeps = { authenticate: Authenticator; service: TicketSer
  *   PATCH /:id                   { version, title?, description?, category?, priority?, location? }   (yonetim)
  *   POST  /:id/assign            { version, assigneeId | null, note? }
  *   POST  /:id/status            { version, action, note?, rating? }
- *   POST  /:id/comments          { body, visibility? }
+ *   POST  /:id/comments          { body, visibility?, photos? }
+ *   POST  /photos/upload-url     { contentType, size } -> { uploadId, uploadUrl, headers }   (O1-2)
+ *   GET   /:id/photos/:photoId   imzali goruntuleme linki (5 dk)
+ *   GET   /similar               ?category=&blockId=   ortak alanda benzer acik talepler
  *
+ * `photos`: yukleme kimlikleri (olusturma, durum gecisi ve yorumda; en fazla 6).
  * Ince yetki kararlari (kimin hangi talebi gordugu, hangi gecisi yapabildigi) serviste.
  */
 export function ticketRoutes({ authenticate, service }: TicketRoutesDeps) {
@@ -44,6 +48,8 @@ export function ticketRoutes({ authenticate, service }: TicketRoutesDeps) {
   r.get('/', requireRole(READ_ROLES), async (c) => c.json(await service.list(ctx(c), c.req.query())));
   r.get('/board', requireRole([...STAFF_ROLES, 'observer']), async (c) => c.json(await service.board(ctx(c))));
   r.get('/assignees', requireRole([...STAFF_ROLES, 'observer']), async (c) => c.json(await service.assignees(ctx(c))));
+  r.get('/similar', requireRole(READ_ROLES), async (c) => c.json(await service.similar(ctx(c), { category: c.req.query('category'), blockId: c.req.query('blockId') })));
+  r.post('/photos/upload-url', requireRole(WRITE_ROLES), async (c) => c.json(await service.photoUploadUrl(ctx(c), await readJson(c))));
   r.post('/', requireRole(WRITE_ROLES), async (c) => {
     const result = await service.create(ctx(c), await readJson(c));
     return c.json(result, result.replayed ? 200 : 201);
@@ -53,6 +59,7 @@ export function ticketRoutes({ authenticate, service }: TicketRoutesDeps) {
   r.post('/:id/assign', requireRole(STAFF_ROLES), async (c) => c.json(await service.assign(ctx(c), id(c), await readJson(c))));
   r.post('/:id/status', requireRole(WRITE_ROLES), async (c) => c.json(await service.transition(ctx(c), id(c), await readJson(c))));
   r.post('/:id/comments', requireRole(WRITE_ROLES), async (c) => c.json(await service.comment(ctx(c), id(c), await readJson(c)), 201));
+  r.get('/:id/photos/:photoId', requireRole(READ_ROLES), async (c) => c.json(await service.photo(ctx(c), id(c), c.req.param('photoId') ?? '')));
 
   return r;
 }

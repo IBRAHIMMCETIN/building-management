@@ -194,6 +194,7 @@ export function createEmailNotifier(deps: EmailNotifierDeps): Notifier {
 
     const prefs = await deps.preferences.get(n.userId);
     if (!prefs.email.enabled) return { status: 'skipped', reason: 'opted_out' };
+    if (n.template.startsWith('ticket_') && prefs.email.tickets === false) return { status: 'skipped', reason: 'opted_out' };
 
     const person = await deps.people.get(n.apartmentId, n.userId);
     const to = person?.email?.trim();

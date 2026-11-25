@@ -30,6 +30,22 @@ export const TICKET_CATEGORIES = [
 ] as const;
 export type TicketCategory = (typeof TICKET_CATEGORIES)[number];
 
+export const TICKET_CATEGORY_LABELS: Record<TicketCategory, string> = {
+  elevator: 'Asansör',
+  plumbing: 'Su / tesisat',
+  electrical: 'Elektrik',
+  heating: 'Isınma',
+  water_pump: 'Hidrofor',
+  generator: 'Jeneratör',
+  cleaning: 'Temizlik',
+  garden: 'Bahçe',
+  pool: 'Havuz',
+  security: 'Güvenlik',
+  structural: 'Yapı / çatı / cephe',
+  parking: 'Otopark',
+  other: 'Diğer',
+};
+
 /** Yapisal / demirbas niteligindeki kategoriler: daire ici taleplerde kat malikine de bildirilir. */
 export const OWNER_CATEGORIES: readonly TicketCategory[] = ['structural', 'plumbing', 'heating'];
 

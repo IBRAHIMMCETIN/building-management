@@ -1,3 +1,4 @@
+import type { DomainEvent } from '../../src/events/publisher.js';
 import type { AuditDraft } from '../../src/modules/audit/log.js';
 import { TicketConflictError, type TicketIdempotency, type TicketRepository } from '../../src/modules/tickets/repository.js';
 import type { Ticket, TicketEvent, TicketIndex } from '../../src/modules/tickets/types.js';
@@ -6,6 +7,7 @@ import type { Ticket, TicketEvent, TicketIndex } from '../../src/modules/tickets
 export function createFakeTicketRepo() {
   const items = new Map<string, Record<string, unknown> & { PK: string; SK: string }>();
   const audits: AuditDraft[] = [];
+  const outbox: DomainEvent[] = [];
   const k = (o: { PK: string; SK: string }) => `${o.PK}|${o.SK}`;
   const byPrefix = <T>(apt: string, prefix: string) =>
     [...items.values()]
@@ -49,12 +51,14 @@ export function createFakeTicketRepo() {
       for (const i of w.putIndexes ?? []) items.set(k(i), structuredClone(i) as never);
       for (const d of w.deleteIndexes ?? []) items.delete(k(d));
       if (w.audit) audits.push(w.audit);
+      outbox.push(...(w.outbox ?? []));
     },
   };
   return {
     repo,
     items,
     audits,
+    outbox,
     /** Bir sonraki yazimi verilen catisma ile basarisiz kilar (yaris testi). */
     failNextWith: (e: TicketConflictError) => {
       failNext = e;

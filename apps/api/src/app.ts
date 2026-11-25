@@ -13,6 +13,7 @@ import { type SupportService, createSupportService, withSupportAccess } from './
 import { apartmentRoleRoutes } from './modules/apartment-roles/routes.js';
 import { type ApartmentRoleService, createApartmentRoleService } from './modules/apartment-roles/service.js';
 import { type AnnouncementService, createAnnouncementService } from './modules/announcements/service.js';
+import { ticketPortalRoutes } from './modules/tickets/portalRoutes.js';
 import { ticketRoutes } from './modules/tickets/routes.js';
 import { type TicketService, createTicketService } from './modules/tickets/service.js';
 import { coreAdminRoutes, coreRoutes } from './modules/core/routes.js';
@@ -320,11 +321,14 @@ export function createApp(config: AppConfig) {
   );
 
   // Faz 3 (O1): ariza / talep (yonetim, gorevli, guvenlik, denetci).
-  app.route('/api/tickets', ticketRoutes({ authenticate, service: config.ticketService ?? createTicketService() }));
+  const ticketService = config.ticketService ?? createTicketService();
+  app.route('/api/tickets', ticketRoutes({ authenticate, service: ticketService }));
 
 
   app.route('/api/portal/payments', paymentPortalRoutes({ authenticate, service: paymentsService }));
   app.route('/api/portal/meters', meterPortalRoutes({ authenticate, service: meterPortalService }));
+  // Faz 3 (O1-2): sakin ariza / talep (daha ozel yol, `/api/portal`'dan once).
+  app.route('/api/portal/tickets', ticketPortalRoutes({ authenticate, service: ticketService }));
   app.route(
     '/api/portal',
     portalRoutes({
