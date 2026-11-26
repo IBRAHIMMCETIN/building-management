@@ -17,6 +17,8 @@ export type BulkJobRepository = {
   /** Ayni `start` ile tekrar yazim ayni icerigi yazar (idempotent). */
   putResults(apartmentId: string, jobId: string, start: number, results: readonly BulkDuesLineResult[], ttl: number): Promise<void>;
   listResults(apartmentId: string, jobId: string): Promise<BulkDuesLineResult[]>;
+  /** P1-c: kimligi `jobIdPrefix` ile baslayan is kayitlari (satir / sonuc parcalari haric). */
+  listByPrefix?(apartmentId: string, jobIdPrefix: string): Promise<BulkJob[]>;
 };
 
 export const bulkJobKeys = {
@@ -39,6 +41,10 @@ export function createDynamoBulkJobRepository(): BulkJobRepository {
   return {
     async get(apartmentId, jobId) {
       return getTenantItem<BulkJob>(bulkJobKeys.job(apartmentId, jobId));
+    },
+    async listByPrefix(apartmentId, jobIdPrefix) {
+      const items = await queryTenantAll<BulkJob>(apartmentId, `BULKJOB#${jobIdPrefix}`, { ConsistentRead: true });
+      return items.filter((j) => j.entityType === 'BULK_JOB');
     },
     async create(job, lineChunks) {
       const { client, tableName } = getDynamo();
@@ -100,6 +106,9 @@ export function createMemoryBulkJobRepository() {
     async get(apartmentId, jobId) {
       const j = jobs.get(k(apartmentId, jobId));
       return j ? clone(j) : undefined;
+    },
+    async listByPrefix(apartmentId, jobIdPrefix) {
+      return [...jobs.values()].filter((j) => j.apartmentId === apartmentId && j.jobId.startsWith(jobIdPrefix)).map(clone);
     },
     async create(job, chunks) {
       if (jobs.has(k(job.apartmentId, job.jobId))) throw new DataAccessError('conflict', 'Toplu is zaten var');

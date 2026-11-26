@@ -916,8 +916,8 @@ describe('finans deposu - postBatch', () => {
       replaceRecords: [{ item: intent, expectedVersion: 2, label: 'intent' }],
     });
     const items = ddbMock.commandCalls(TransactWriteCommand)[0]!.args[0].input.TransactItems!;
-    // idem + donem kilidi kontrolu + 2x(tx + 2 satir) + 3 hesap + sayac + makbuz + niyet
-    expect(items).toHaveLength(1 + 1 + 6 + 3 + 1 + 1 + 1);
+    // idem + donem kilidi kontrolu + 2x(tx + 2 satir) + 3 hesap + sayac + makbuz + niyet + 3 hesap-ay ozeti (P1-c, ayni ay birlesik)
+    expect(items).toHaveLength(1 + 1 + 6 + 3 + 1 + 1 + 1 + 3);
     expect(items[0]!.Put!.Item).toMatchObject({ SK: 'IDEM#pay-x', transactionIds: ['20261106-a', '20261106-b'], recordIds: ['p1'] });
     const updates = items.filter((i) => i.Update?.Key?.SK?.toString().startsWith('ACCT#')).map((i) => [i.Update!.Key!.SK, i.Update!.ExpressionAttributeValues![':delta']]);
     expect(updates).toEqual([
@@ -927,9 +927,9 @@ describe('finans deposu - postBatch', () => {
     ]);
     const counter = items.find((i) => i.Update?.Key?.SK === 'CTR#receipt')!.Update!;
     expect(counter.ExpressionAttributeValues).toMatchObject({ ':next': 9, ':expected': 7 });
-    // Son veri ogesi donem kilidi kontrolu (Finans 2.4); niyet ondan once.
+    // Son veri ogesi donem kilidi kontrolu (Finans 2.4).
     expect(items.at(-1)!.ConditionCheck).toBeDefined();
-    const last = items.at(-2)!.Put!;
+    const last = items.find((i) => i.Put?.Item?.SK === 'PI#x')!.Put!;
     expect(last.Item).toEqual(intent);
     expect(last.ConditionExpression).toBe('attribute_exists(PK) AND #version = :expectedVersion');
     expect(last.ExpressionAttributeValues).toEqual({ ':expectedVersion': 2 });

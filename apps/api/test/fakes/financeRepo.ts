@@ -8,6 +8,7 @@ import {
 } from '../../src/modules/finance/repository.js';
 import type { Account, Expense, IdempotencyRecord, Payment, Transaction } from '../../src/modules/finance/types.js';
 import type { AccountSummaryItem } from '../../src/modules/finance/accountSummary.js';
+import { type MonthSummaryItem, type MonthSummaryState, monthDeltas } from '../../src/modules/finance/monthSummary.js';
 import type { DomainEvent } from '../../src/events/publisher.js';
 import { PeriodClosedError } from '../../src/modules/finance/periodLock.js';
 
@@ -30,6 +31,11 @@ export function createFakeFinanceRepo(defaultApartmentId = 'apt-1') {
   const outbox = new Map<string, DomainEvent>();
   /** P1-a: alt cari ozetleri (`apt|accountId`), turetilmis veri. */
   const summaries = new Map<string, AccountSummaryItem>();
+  /** P1-c: hesap-ay hareket ozetleri (`apt|YYYY-MM|accountId`) ve site durumu. */
+  const monthSummaries = new Map<string, MonthSummaryItem>();
+  const monthStates = new Map<string, MonthSummaryState>();
+  /** P1-c: ozete canli sayilan islemler (gercek depoda TX kaydindaki `ms: 1`). */
+  const msCounted = new Set<string>();
 
   /**
    * Gercek tabloda idempotency kaydi tek anahtardadir (`IDEM#<id>`): `postBatch.idempotency` ile
@@ -109,6 +115,24 @@ export function createFakeFinanceRepo(defaultApartmentId = 'apt-1') {
       if (e.apartmentId !== apt) throw new Error('olay tenant');
       if (outbox.has(k(apt, e.eventId))) throw new LedgerConflictError('duplicate', 'olay', `outbox:${e.eventId}`);
     }
+    // Gercek depodaki TransactWriteItems oge sayisi (P1-c ozet ogeleri ve denetim kaydi dahil) 100'u
+    // asamaz: buyuk akislarin (devir, toplu eslestirme) sinirda kalip kalmadigini testler de yakalasin.
+    {
+      const accountsTouched = new Set([...input.transactions.flatMap((t) => t.lines.map((l) => l.accountId)), ...Object.keys(patches)]);
+      const n =
+        1 +
+        input.transactions.reduce((sum, t) => sum + 1 + t.lines.length, 0) +
+        accountsTouched.size +
+        (input.counter ? 1 : 0) +
+        (input.records?.length ?? 0) +
+        (input.replaceRecords?.length ?? 0) +
+        newDocs.length +
+        (input.outbox?.length ?? 0) +
+        monthDeltas(input.transactions).size +
+        (input.transactions.length ? 1 : 0) +
+        1;
+      if (n > 100) throw new Error(`Atomik yazim 100 ogeyi asamaz (${n})`);
+    }
     // 2) Yazim
     idem.set(k(apt, input.idempotency.id), {
       transactionId: input.transactions[0]?.transactionId as string,
@@ -117,8 +141,25 @@ export function createFakeFinanceRepo(defaultApartmentId = 'apt-1') {
       recordIds: input.idempotency.recordIds,
       fingerprint: input.idempotency.fingerprint,
     });
+    for (const m of monthDeltas(input.transactions).values()) {
+      const mk = `${apt}|${m.month}|${m.accountId}`;
+      const cur = monthSummaries.get(mk);
+      monthSummaries.set(mk, {
+        PK: `APT#${apt}`,
+        SK: `MSUM#${m.month}#${m.accountId}`,
+        entityType: 'MONTH_SUMMARY',
+        siteId: apt,
+        accountId: m.accountId,
+        month: m.month,
+        ...(cur ?? {}),
+        d: (cur?.d ?? 0) + m.d,
+        c: (cur?.c ?? 0) + m.c,
+        p: (cur?.p ?? 0) + m.p,
+      });
+    }
     for (const tx of input.transactions) {
       transactions.set(k(apt, tx.transactionId), tx);
+      msCounted.add(k(apt, tx.transactionId));
       for (const l of tx.lines) {
         const acc = accounts.get(k(apt, l.accountId))!;
         accounts.set(k(apt, l.accountId), {
@@ -230,6 +271,33 @@ export function createFakeFinanceRepo(defaultApartmentId = 'apt-1') {
       summaries.set(k(item.siteId, item.accountId), structuredClone(item));
       return true;
     },
+    listMonthSummaries: async (apt, fromMonth, toMonth = '9999-12') =>
+      [...monthSummaries.values()]
+        .filter((x) => x.siteId === apt && x.month >= fromMonth && x.month <= toMonth)
+        .sort((a, b) => a.SK.localeCompare(b.SK))
+        .map((x) => structuredClone(x)),
+    setLegacyMonthSummary: async (apt, month, accountId, legacy) => {
+      const mk = `${apt}|${month}|${accountId}`;
+      const cur = monthSummaries.get(mk);
+      monthSummaries.set(mk, {
+        PK: `APT#${apt}`,
+        SK: `MSUM#${month}#${accountId}`,
+        entityType: 'MONTH_SUMMARY',
+        siteId: apt,
+        accountId,
+        month,
+        ...(cur ?? {}),
+        ld: legacy.d,
+        lc: legacy.c,
+        lp: legacy.p,
+      });
+    },
+    getMonthSummaryState: async (apt) => monthStates.get(apt),
+    markMonthSummaryReady: async (apt, source, opts = {}) => {
+      if (opts.onlyIfAbsent && monthStates.has(apt)) return false;
+      monthStates.set(apt, { PK: `APT#${apt}`, SK: 'MSUMSTATE', entityType: 'MONTH_SUMMARY_STATE', siteId: apt, ready: true, source, readyAt: new Date().toISOString() });
+      return true;
+    },
     postTransaction: async (input) => {
       await postBatch({
         transactions: [input.transaction],
@@ -274,6 +342,18 @@ export function createFakeFinanceRepo(defaultApartmentId = 'apt-1') {
     docs,
     outbox,
     summaries,
+    monthSummaries,
+    monthStates,
+    msCounted,
+    /** P1-c: P1-c oncesi yazilmis islem taklidi (ozete sayilmadan deftere; bakiye guncellenir). */
+    seedLegacy: (tx: Transaction) => {
+      transactions.set(k(tx.siteId, tx.transactionId), tx);
+      for (const l of tx.lines) {
+        const acc = accounts.get(k(tx.siteId, l.accountId));
+        if (!acc) throw new Error(`hesap yok: ${l.accountId}`);
+        accounts.set(k(tx.siteId, l.accountId), { ...acc, balance: toKurus(acc.balance + (l.side === 'debit' ? l.amount : -l.amount)), version: acc.version + 1 });
+      }
+    },
     /** Outbox'a yazilan olaylar (yazim sirasiyla); istege bagli tur filtresi. */
     events: <T extends DomainEvent['type']>(type?: T) =>
       [...outbox.values()].filter((e): e is Extract<DomainEvent, { type: T }> => !type || e.type === type),

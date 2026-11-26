@@ -565,8 +565,13 @@ export function createBulkJobService(deps: BulkJobDeps) {
   // P1-b: sayac doneminin toplu geri alinmasi
   // -------------------------------------------------------------------------
 
-  /** Is kimligi donem + geri alma anahtarindan (ayni anahtar = ayni is). */
-  const meterReversalJobId = (periodId: string, key: string) => `mr-${fingerprintOf({ periodId, key })}`;
+  /**
+   * Is kimligi donem + geri alma anahtarindan (ayni anahtar = ayni is). P1-c: donem kimligi onekte
+   * (`mr-<donem>-<ozet>`): worker baslamadan (donem henuz `posted`) sayfa yenilense de is donemden
+   * bulunur. P1-b ile acilmis eski bicim (`mr-<ozet>`) de okunur.
+   */
+  const meterReversalJobId = (periodId: string, key: string) => `mr-${periodId}-${fingerprintOf({ periodId, key }).slice(0, 16)}`;
+  const legacyReversalJobId = (periodId: string, key: string) => `mr-${fingerprintOf({ periodId, key })}`;
 
   /**
    * Buyuk donemin geri alinmasi (202). Engel kontrolu ve `reversing` gecisi worker'in ilk adiminda
@@ -584,7 +589,8 @@ export function createBulkJobService(deps: BulkJobDeps) {
     } else if (p.reason === undefined) {
       throw new ValidationError('reason zorunludur', 'reason');
     }
-    const jobId = meterReversalJobId(periodId, p.key);
+    const legacy = await repo.get(ctx.apartmentId, legacyReversalJobId(periodId, p.key));
+    const jobId = legacy ? legacy.jobId : meterReversalJobId(periodId, p.key);
     const params: MeterReversalJobParams = { periodId, key: p.key, ...(p.reason !== undefined ? { reason: p.reason } : {}), notify: p.notify, periodName: period.name };
     const fingerprint = fingerprintOf({ periodId, key: p.key });
     const existing = await repo.get(ctx.apartmentId, jobId);
@@ -654,7 +660,14 @@ export function createBulkJobService(deps: BulkJobDeps) {
     const ids: string[] = [];
     // `calculated`: is kuyrukta, worker henuz `prepare` adimini calistirmadi.
     if ((period.status === 'calculated' || period.status === 'posting' || period.status === 'posted') && period.calc?.hash) ids.push(`mp-${fingerprintOf({ periodId: period.periodId, calcHash: period.calc.hash })}`);
-    if ((period.status === 'reversing' || period.status === 'reversed') && period.reversal?.key) ids.unshift(meterReversalJobId(period.periodId, period.reversal.key));
+    if ((period.status === 'reversing' || period.status === 'reversed') && period.reversal?.key) {
+      ids.unshift(meterReversalJobId(period.periodId, period.reversal.key), legacyReversalJobId(period.periodId, period.reversal.key));
+    }
+    // P1-c: `posted` donemde baslatilmis ama worker'in henuz almadigi geri alma isi (anahtar donemde yok).
+    if (period.status === 'posted' && repo.listByPrefix) {
+      const pending = (await repo.listByPrefix(ctx.apartmentId, `mr-${period.periodId}-`)).filter((j) => !isTerminal(j.status)).sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+      if (pending) return pending;
+    }
     for (const id of ids) {
       const job = await repo.get(ctx.apartmentId, id);
       if (job) return job;

@@ -420,6 +420,10 @@ describe(`sayac donemi (${METER_UNITS} bolum): 202 onay ve toplu geri alma, ceki
     expect(rev.json).toMatchObject({ mode: 'job', job: { kind: 'meter_reversal', status: 'pending' } });
     // Ayni anahtarla tekrar tiklama ayni isi doner.
     expect((await call('POST', `/api/metering/periods/${period.periodId}/reverse`, reverseBody)).json.job.jobId).toBe(rev.json.job.jobId);
+    // P1-c: worker baslamadan (donem hala `posted`) sayfa yenilenirse bekleyen geri alma isi bulunur.
+    expect(rev.json.job.jobId.startsWith(`mr-${period.periodId}-`)).toBe(true);
+    const pendingRev = await call('GET', `/api/metering/periods/${period.periodId}/job`);
+    expect(pendingRev.json.job).toMatchObject({ jobId: rev.json.job.jobId, kind: 'meter_reversal', status: 'pending' });
     q.messages.push({ ...(q.messages[0] as (typeof q.messages)[number]) });
     await drain(service, q.messages);
 

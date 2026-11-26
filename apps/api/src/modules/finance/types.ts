@@ -224,6 +224,11 @@ export type Transaction = TableKeys & {
   offsetId?: string;
   /** Bos daire kurali: sakin gideri tahakkuk tarihinde dairede oturan olmadigi icin malike yazildi. */
   vacant?: true;
+  /**
+   * P1-c: islem, hesap-ay hareket ozetine (`MSUM#`) yazimla AYNI atomik islemde sayildi. Bu alan
+   * olmayan (P1-c oncesi) islemler ozete `backfill:month-summary` ile (`ld/lc/lp`) eklenir.
+   */
+  ms?: 1;
 };
 
 /**

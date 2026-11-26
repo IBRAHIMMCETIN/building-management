@@ -335,7 +335,7 @@ describe('gunluk operasyon ozeti', () => {
 
   it('e-posta: konu ozetleri, tablolar ve yonetim baglantisi', () => {
     const [mgr] = operationsDigestRecipients(digest(), roles, TODAY);
-    const mail = renderEmail({ eventId: 'e', apartmentId: APT, userId: 'mgr', template: 'operations_digest', data: mgr?.data ?? {} }, { siteName: 'Hamravat', unitLabel: () => '', portalUrl: 'https://site.example/app' });
+    const mail = renderEmail({ eventId: 'e', apartmentId: APT, userId: 'mgr', template: 'operations_digest', data: mgr?.data ?? {} }, { siteName: 'Örnek Site', unitLabel: () => '', portalUrl: 'https://site.example/app' });
     expect(mail?.subject).toMatch(/^Günlük özet 25\.11\.2026: 2 talep SLA süresini aştı, 1 bakım gecikti, 1 bakım yaklaşıyor, 2 talep otomatik kapandı/);
     expect(mail?.text).toContain('T-000001 Kaçak');
     expect(mail?.text).toContain('https://site.example/admin/tickets');

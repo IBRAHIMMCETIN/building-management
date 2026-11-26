@@ -74,7 +74,7 @@ function world() {
     status: 'active',
     siteId: APT,
     tenantId: 't1',
-    name: 'Hamravat',
+    name: 'Örnek Site',
     type: 'site',
     address: { line1: 'x', district: 'y', city: 'z' },
     fiscalYearStartMonth: 1,

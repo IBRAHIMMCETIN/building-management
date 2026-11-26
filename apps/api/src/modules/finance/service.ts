@@ -567,6 +567,9 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
 
   async function ensureSystemAccounts(ctx: FinanceContext): Promise<void> {
     if (ensuredSystem.has(ctx.apartmentId)) return;
+    // P1-c: kasa hesabi henuz yoksa site P1-c sonrasi aciliyor demektir: hic eski (ozete sayilmamis)
+    // islemi yoktur, ay ozeti dogrudan kullanilabilir. (Eski siteler `backfill:month-summary` ile.)
+    const fresh = repo.markMonthSummaryReady ? !(await repo.getAccount(ctx.apartmentId, SYSTEM_ACCOUNTS.cash)) : false;
     await repo.ensureAccounts([
       newAccount(ctx, { accountId: SYSTEM_ACCOUNTS.cash, type: 'cash', name: 'Kasa', system: true }),
       newAccount(ctx, { accountId: SYSTEM_ACCOUNTS.bank, type: 'bank', name: 'Banka', system: true }),
@@ -598,6 +601,7 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
       ...DEFAULT_EXPENSE_ACCOUNTS.map((e) => newAccount(ctx, { ...e, type: 'expense' })),
       ...DEFAULT_INCOME_ACCOUNTS.map((e) => newAccount(ctx, { ...e, type: 'income' })),
     ]);
+    if (fresh) await repo.markMonthSummaryReady?.(ctx.apartmentId, 'new_site', { onlyIfAbsent: true });
     ensuredSystem.add(ctx.apartmentId);
   }
 

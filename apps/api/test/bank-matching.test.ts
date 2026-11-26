@@ -404,10 +404,10 @@ describe('banka eslestirme (defter + API)', () => {
     role = 'apartment_manager';
     expect((await call('GET', '/api/portal/my-payment-reference')).status).toBe(403);
     expect((await call('PUT', '/api/bank/accounts/bank/profile', { iban: 'TR00 1234', accountHolderName: 'Site Yönetimi', residentVisible: true })).status).toBe(422);
-    const saved = await call('PUT', '/api/bank/accounts/bank/profile', { iban: SITE_IBAN, accountHolderName: 'Hamravat Evleri Site Yönetimi', bankName: 'Ziraat', residentVisible: true });
+    const saved = await call('PUT', '/api/bank/accounts/bank/profile', { iban: SITE_IBAN, accountHolderName: 'Örnek Site Yönetimi', bankName: 'Ziraat', residentVisible: true });
     expect(saved.status).toBe(200);
     role = 'resident';
-    expect((await call('GET', '/api/portal/my-payment-reference')).json.bank).toEqual({ iban: SITE_IBAN, accountHolderName: 'Hamravat Evleri Site Yönetimi', bankName: 'Ziraat' });
+    expect((await call('GET', '/api/portal/my-payment-reference')).json.bank).toEqual({ iban: SITE_IBAN, accountHolderName: 'Örnek Site Yönetimi', bankName: 'Ziraat' });
 
     role = 'apartment_manager';
     const l = seedLine('f'.repeat(24), { description: `EFT ${code} KASIM`, counterpartyName: 'MEHMET KAYA', amount: 99 as never });

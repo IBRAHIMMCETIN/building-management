@@ -170,8 +170,8 @@ describe('finance repository - postTransaction', () => {
 
     expect(ddbMock.commandCalls(TransactWriteCommand)).toHaveLength(1);
     const list = items();
-    // idem + tx + 2 satir + 2 hesap + donem kilidi kontrolu (Finans 2.4, en sonda)
-    expect(list).toHaveLength(7);
+    // idem + tx + 2 satir + 2 hesap + 2 hesap-ay ozeti (P1-c) + donem kilidi kontrolu (Finans 2.4, en sonda)
+    expect(list).toHaveLength(9);
 
     expect(list[0]!.Put!.Item!.SK).toBe('IDEM#key-12345');
     expect(list[0]!.Put!.ConditionExpression).toBe('attribute_not_exists(PK)');
@@ -179,7 +179,14 @@ describe('finance repository - postTransaction', () => {
     expect(list[2]!.Put!.Item!.SK).toBe('LE#recv-u1-owner#20261101-t1#1');
     expect(list[3]!.Put!.Item!.SK).toBe('LE#income-dues#20261101-t1#2');
     for (const i of list.slice(0, 4)) expect(i.Put!.Item!.PK).toBe('APT#apt-1');
-    expect(list[6]!.ConditionCheck).toMatchObject({ Key: { PK: 'APT#apt-1', SK: 'FINLOCK' }, ExpressionAttributeValues: { ':earliest': '2026-11-01' } });
+    // P1-c: her (ay, hesap) icin kosulsuz ADD; tx kaydi `ms: 1` ile isaretli (yeni yazim sayilmis).
+    expect(list[1]!.Put!.Item!.ms).toBe(1);
+    const msum = list.slice(6, 8).map((i) => [i.Update!.Key!.SK, i.Update!.ConditionExpression, i.Update!.ExpressionAttributeValues![':d'], i.Update!.ExpressionAttributeValues![':c']]);
+    expect(msum).toEqual([
+      ['MSUM#2026-11#recv-u1-owner', undefined, 150050, 0],
+      ['MSUM#2026-11#income-dues', undefined, 0, 150050],
+    ]);
+    expect(list[8]!.ConditionCheck).toMatchObject({ Key: { PK: 'APT#apt-1', SK: 'FINLOCK' }, ExpressionAttributeValues: { ':earliest': '2026-11-01' } });
 
     const recv = list[4]!.Update!;
     const income = list[5]!.Update!;
@@ -206,7 +213,7 @@ describe('finance repository - postTransaction', () => {
     const counter = list.find((i) => i.Update?.Key?.SK === 'CTR#receipt')!.Update!;
     expect(counter.ConditionExpression).toBe('#value = :expected');
     expect(counter.ExpressionAttributeValues![':next']).toBe(5);
-    expect(list.at(-2)!.Put!.Item!.SK).toBe('PAY#p1');
+    expect(list.some((i) => i.Put?.Item?.SK === 'PAY#p1')).toBe(true);
     expect(list.at(-1)!.ConditionCheck).toBeDefined();
   });
 

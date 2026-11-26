@@ -201,14 +201,15 @@ export function useApprovePeriod() {
  */
 /**
  * Donemin arka plan isi (buyuk donem onayi / geri almasi). Is 202 yanitiyla eklenir; donem
- * `posting` / `reversing` durumundaysa (sayfa yenilendi, baska sekmeden baslatildi) sunucudan
+ * `posting` / `reversing` / `posted` durumundaysa (sayfa yenilendi, baska sekmeden baslatildi) sunucudan
  * `GET /periods/:id/job` ile bulunur ve ilerleme kaldigi yerden izlenir.
  */
 export function usePeriodJob(periodId: string, status?: string) {
   const qc = useQueryClient();
   const { apartmentId, canRead } = useMeterPermissions();
   const key = ['bulk-job', 'meter-period', apartmentId, periodId] as const;
-  const active = status === 'posting' || status === 'reversing';
+  // `posted`: baslatilmis ama worker'in henuz almadigi geri alma isi de bulunur (P1-c).
+  const active = status === 'posting' || status === 'reversing' || status === 'posted';
   const { data } = useQuery<BulkJob | null>({
     queryKey: key,
     queryFn: async ({ signal }) => (await metersApi.periodJob(periodId, signal)).job,

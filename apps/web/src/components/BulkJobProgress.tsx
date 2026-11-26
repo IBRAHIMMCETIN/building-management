@@ -99,6 +99,13 @@ function ResultSummary({ job }: { job: BulkJob }) {
       </div>
     );
   }
+  if (job.kind === 'meter_reversal') {
+    return (
+      <p className="text-small text-muted">
+        {(r.reversed ?? 0).toLocaleString('tr-TR')} ters kayıt işlendi{r.replayed ? ' (dönem daha önce geri alınmıştı)' : ''}.
+      </p>
+    );
+  }
   return (
     <p className="text-small text-muted">
       {(r.posted ?? 0).toLocaleString('tr-TR')} bölüme tahakkuk yazıldı{r.replayed ? ' (dönem daha önce onaylanmıştı)' : ''}.

@@ -128,9 +128,10 @@ describe('outbox - postBatch atomik yazimi', () => {
 
     expect(ddb.commandCalls(TransactWriteCommand)).toHaveLength(1);
     const list = items();
-    // idem + tx + 2 satir + 2 hesap + 1 olay + donem kilidi kontrolu (veri ogelerinin sonu)
-    expect(list).toHaveLength(8);
-    expect(list[7]!.ConditionCheck).toBeDefined();
+    // idem + tx + 2 satir + 2 hesap + 1 olay + 2 hesap-ay ozeti (P1-c) + donem kilidi kontrolu (veri ogelerinin sonu)
+    expect(list).toHaveLength(10);
+    expect(list[9]!.ConditionCheck).toBeDefined();
+    expect(list.slice(7, 9).every((i) => String(i.Update?.Key?.SK).startsWith('MSUM#2026-11#'))).toBe(true);
     const put = list[6]!.Put!;
     expect(put.TableName).toBe('bm-test-table');
     expect(put.ConditionExpression).toBe('attribute_not_exists(PK)');

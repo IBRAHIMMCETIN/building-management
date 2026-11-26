@@ -24,7 +24,7 @@ function render() {
 const DATA = {
   unitId: 'u12',
   unitLabel: 'A Blok · 12',
-  bank: { iban: 'TR330006100519786457841326', accountHolderName: 'Hamravat Evleri Site Yönetimi', bankName: 'Ziraat' },
+  bank: { iban: 'TR330006100519786457841326', accountHolderName: 'Örnek Site Yönetimi', bankName: 'Ziraat' },
   references: [{ liableParty: 'occupant', label: 'Sakin (kiracı / oturan)', code: 'K7M2QA' }],
 };
 
@@ -36,7 +36,7 @@ describe('Havale / EFT karti', () => {
     render();
     expect(container.textContent).toContain('Havale / EFT ile Öde');
     expect(container.textContent).toContain('TR33 0006 1005 1978 6457 8413 26');
-    expect(container.textContent).toContain('Hamravat Evleri Site Yönetimi');
+    expect(container.textContent).toContain('Örnek Site Yönetimi');
     expect(container.textContent).toContain('K7M2QA');
 
     const copyCode = container.querySelector('button[aria-label="Ödeme referans kodu kopyala"]') as HTMLButtonElement;

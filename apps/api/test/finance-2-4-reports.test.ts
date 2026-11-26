@@ -100,7 +100,7 @@ function world(nowIso = '2026-11-25T09:00:00.000Z') {
     budgets: budgetReader,
     ledger: finance,
     core: {
-      getSite: async () => ({ siteId: APT, name: 'Hamravat Villaları' }) as Site,
+      getSite: async () => ({ siteId: APT, name: 'Örnek Villalar' }) as Site,
       listUnits: async () => units,
       listBlocks: async () => blocks,
     },
@@ -218,10 +218,10 @@ describe('rapor servisi', () => {
     expect(after.balanced).toBe(true);
     expect((await w.reports.incomeExpense(ctx, { year: '2026' })).totals).toEqual(ieBefore.totals);
 
-    // Ekim-Kasim: acilis Eylul kapanisindan, yalnizca acik Kasim taranir.
+    // Ekim-Kasim: acilis Eylul kapanisindan, acik Kasim hesap-ay ozetinden (P1-c) okunur; islem taramasi yok.
     w.listTransactions.mockClear();
     const late = await w.reports.trialBalance(ctx, { from: '2026-10', to: '2026-11' });
-    expect(w.listTransactions.mock.calls.map(([, q]) => q)).toEqual([{ from: '2026-11-01', to: '2026-11-30' }]);
+    expect(w.listTransactions).not.toHaveBeenCalled();
     expect(late.rows.find((r) => r.accountId === 'cash')).toMatchObject({ opening: 100000, debit: 150000, credit: 42000, closing: 208000 });
   });
 

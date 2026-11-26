@@ -32,6 +32,7 @@ import {
 } from './ledgerReports.js';
 import { nextPeriod, periodBounds, previousPeriod } from './lateFee.js';
 import { type FiscalPeriod, formatPeriodTr, netByAccount } from './periodLock.js';
+import { monthTotals } from './monthSummary.js';
 import { type FiscalRepository, fiscalRepository } from './periodRepository.js';
 import { type PeriodCheckSources, defaultPeriodSources } from './periods.js';
 import { type FinanceRepository, batchGetTransactions, financeRepository, queryAccountEntries } from './repository.js';
@@ -44,7 +45,8 @@ export const REPORT_KINDS = ['trial-balance', 'income-expense', 'budget-vs-actua
 export type ReportKind = (typeof REPORT_KINDS)[number];
 
 export type ReportServiceDeps = {
-  finance: Pick<FinanceRepository, 'listAccounts' | 'listTransactions'> & Partial<Pick<FinanceRepository, 'listAccountEntries' | 'getTransactions' | 'getAccount'>>;
+  finance: Pick<FinanceRepository, 'listAccounts' | 'listTransactions'> &
+    Partial<Pick<FinanceRepository, 'listAccountEntries' | 'getTransactions' | 'getAccount' | 'listMonthSummaries' | 'getMonthSummaryState'>>;
   fiscal: Pick<FiscalRepository, 'listPeriods' | 'getLock'>;
   budgets: BudgetReader;
   ledger: Pick<FinanceService, 'summary' | 'duesStatus'>;
@@ -92,15 +94,51 @@ export function createReportService(overrides: Partial<ReportServiceDeps> & Pick
   };
 
   /**
-   * P1-a: `fromStart` oncesi acilis = canli bakiye - (fromStart ve sonrasi net). Hesaplar, aradaki
-   * islemler (tutarli okuma) ve tekrar hesaplar okunur; surumler degismediyse aradaki yazim yoktur
-   * ve sonuc `net(fromStart oncesi tum islemler)` ile birebir aynidir. Es zamanli yazimda tekrar
-   * denenir; olmazsa eski yonteme (tam tarama) duser.
+   * P1-c: sitenin hesap-ay ozeti (`MSUM#`) kullanilabilir mi? Site `ready` isaretliyse (backfill
+   * dogrulandi veya P1-c sonrasi acildi) ozetler defterle birebirdir; degilse eski yol.
    */
-  async function openingFromBalances(apartmentId: string, fromStart: IsoDate): Promise<Map<string, number>> {
+  async function monthSummaryReady(apartmentId: string): Promise<boolean> {
+    if (!deps.finance.listMonthSummaries || !deps.finance.getMonthSummaryState) return false;
+    return (await deps.finance.getMonthSummaryState(apartmentId))?.ready === true;
+  }
+
+  /** (Ay -> hesap -> hareket) ve (ay -> hesap -> tahsilat girisi) ozetten; `toMonth` dahil. */
+  async function monthMovements(apartmentId: string, fromMonth: string, toMonth?: string) {
+    const items = await (deps.finance.listMonthSummaries as NonNullable<ReportServiceDeps['finance']['listMonthSummaries']>)(apartmentId, fromMonth, toMonth);
+    const moves = new Map<string, Map<string, Movement>>();
+    const payments = new Map<string, Map<string, number>>();
+    for (const item of items) {
+      const t = monthTotals(item);
+      if (t.d === 0 && t.c === 0 && t.p === 0) continue;
+      const bucket = moves.get(item.month) ?? new Map<string, Movement>();
+      bucket.set(item.accountId, { debit: t.d, credit: t.c });
+      moves.set(item.month, bucket);
+      if (t.p) {
+        const pb = payments.get(item.month) ?? new Map<string, number>();
+        pb.set(item.accountId, t.p);
+        payments.set(item.month, pb);
+      }
+    }
+    return { moves, payments };
+  }
+
+  /**
+   * P1-a: `fromStart` oncesi acilis = canli bakiye - (fromStart ve sonrasi net). Hesaplar, aradaki
+   * hareketler (tutarli okuma) ve tekrar hesaplar okunur; surumler degismediyse aradaki yazim yoktur
+   * ve sonuc `net(fromStart oncesi tum islemler)` ile birebir aynidir. Es zamanli yazimda tekrar
+   * denenir; olmazsa eski yonteme (tam tarama) duser. P1-c: `fromStart` ay basi oldugundan aradaki
+   * net hesap-ay ozetinden (ay sayisi kadar kayit) okunur; ozet yoksa islemlerden.
+   */
+  async function openingFromBalances(apartmentId: string, fromStart: IsoDate, useMsum: boolean): Promise<Map<string, number>> {
     for (let attempt = 0; attempt < 3; attempt++) {
       const accounts = await deps.finance.listAccounts(apartmentId);
-      const since = netByAccount((await deps.finance.listTransactions(apartmentId, { from: fromStart, consistent: true })).items);
+      let since: Map<string, number>;
+      if (useMsum) {
+        since = new Map();
+        for (const bucket of (await monthMovements(apartmentId, fromStart.slice(0, 7))).moves.values()) {
+          for (const [acc, mv] of bucket) since.set(acc, (since.get(acc) ?? 0) + mv.debit - mv.credit);
+        }
+      } else since = netByAccount((await deps.finance.listTransactions(apartmentId, { from: fromStart, consistent: true })).items);
       if (!sameVersions(accounts, await deps.finance.listAccounts(apartmentId))) continue;
       const opening = new Map<string, number>();
       for (const a of accounts) {
@@ -114,12 +152,18 @@ export function createReportService(overrides: Partial<ReportServiceDeps> & Pick
     return netByAccount((await deps.finance.listTransactions(apartmentId, { to: addDays(fromStart, -1) })).items);
   }
 
-  async function loadActivity(apartmentId: string, fromMonth: string, toMonth: string): Promise<ReportActivity & { openTransactions: Transaction[] }> {
+  /**
+   * Rapor verisi. Kapali aylar donem anlik goruntusunden; acik aylar P1-c ile hesap-ay ozetinden
+   * (site `ready` ise; yoksa donem islemlerinden - sonuc ayni). `paymentsIn`: ay -> kasa/banka
+   * hesaplarina `payment` turu islemlerin borc satirlari toplami (Genel Bakis "tahsilat").
+   */
+  async function loadActivity(apartmentId: string, fromMonth: string, toMonth: string): Promise<ReportActivity & { paymentsIn: Map<string, number> }> {
     const months = monthsBetween(fromMonth, toMonth);
-    const [accounts, periods] = await Promise.all([deps.finance.listAccounts(apartmentId), deps.fiscal.listPeriods(apartmentId)]);
+    const [accounts, periods, useMsum] = await Promise.all([deps.finance.listAccounts(apartmentId), deps.fiscal.listPeriods(apartmentId), monthSummaryReady(apartmentId)]);
     const closed = new Map(periods.filter((p) => p.status === 'closed').map((p) => [p.period, p]));
     const closingOf = (p: FiscalPeriod) => new Map(p.snapshot.rows.map((r) => [r.accountId, r.closing]));
     const fromStart = periodBounds(fromMonth).first;
+    const fundIds = new Set(accounts.filter((a) => a.type === 'cash' || a.type === 'bank').map((a) => a.accountId));
 
     // Acilis bakiyeleri
     let opening: Map<string, number>;
@@ -129,48 +173,71 @@ export function createReportService(overrides: Partial<ReportServiceDeps> & Pick
       const earlier = [...closed.keys()].filter((m) => m < fromMonth).sort().at(-1);
       if (earlier) {
         const base = closingOf(closed.get(earlier) as FiscalPeriod);
-        const gap = (await deps.finance.listTransactions(apartmentId, { from: addDays(periodBounds(earlier).last, 1), to: addDays(fromStart, -1) })).items;
-        for (const [acc, net] of netByAccount(gap)) base.set(acc, (base.get(acc) ?? 0) + net);
+        // Aradaki tam aylar (kapali aydan sonraki aydan rapor basindan onceki aya).
+        if (useMsum) {
+          for (const bucket of (await monthMovements(apartmentId, nextPeriod(earlier), previousPeriod(fromMonth))).moves.values()) {
+            for (const [acc, mv] of bucket) base.set(acc, (base.get(acc) ?? 0) + mv.debit - mv.credit);
+          }
+        } else {
+          const gap = (await deps.finance.listTransactions(apartmentId, { from: addDays(periodBounds(earlier).last, 1), to: addDays(fromStart, -1) })).items;
+          for (const [acc, net] of netByAccount(gap)) base.set(acc, (base.get(acc) ?? 0) + net);
+        }
         opening = base;
       } else {
-        // P1-a: hic kapali ay yoksa acilis = canli bakiye - (rapor basindan bugune net). Bakiye her
-        // defter yazimiyla ayni atomik islemde guncellenir (gece denetimi esitligi dogrular); boylece
-        // gecmis yillarin satirlari okunmaz, yalnizca rapor araligi ve sonrasi okunur.
-        opening = await openingFromBalances(apartmentId, fromStart);
+        // P1-a: hic kapali ay yoksa acilis = canli bakiye - (rapor basindan bugune net).
+        opening = await openingFromBalances(apartmentId, fromStart, useMsum);
       }
     }
 
     // Aylik hareketler
     const byMonth = new Map<string, Map<string, Movement>>();
+    const paymentsIn = new Map<string, number>();
     for (const m of months) {
       const p = closed.get(m);
       if (p) byMonth.set(m, new Map(p.snapshot.rows.map((r) => [r.accountId, { debit: r.debit, credit: r.credit }])));
     }
     const openMonths = months.filter((m) => !closed.has(m));
-    let openTransactions: Transaction[] = [];
     if (openMonths.length) {
-      // Ardisik acik ay dizileri ayri taranir: kapali aylar (anlik goruntu) yeniden okunmaz.
+      // Ardisik acik ay dizileri ayri okunur: kapali aylar (anlik goruntu) yeniden okunmaz.
       const runs: string[][] = [];
       for (const m of openMonths) {
         const run = runs.at(-1);
         if (run && nextPeriod(run.at(-1) as string) === m) run.push(m);
         else runs.push([m]);
       }
-      const pages = await Promise.all(
-        runs.map((run) => deps.finance.listTransactions(apartmentId, { from: periodBounds(run[0] as string).first, to: periodBounds(run.at(-1) as string).last })),
-      );
-      openTransactions = pages.flatMap((p) => p.items);
       for (const m of openMonths) byMonth.set(m, new Map());
-      for (const tx of openTransactions) {
-        const bucket = byMonth.get(tx.date.slice(0, 7));
-        if (!bucket) continue;
-        for (const l of tx.lines) {
-          const cur = bucket.get(l.accountId) ?? { debit: 0, credit: 0 };
-          bucket.set(l.accountId, l.side === 'debit' ? { ...cur, debit: cur.debit + l.amount } : { ...cur, credit: cur.credit + l.amount });
+      if (useMsum) {
+        // P1-c: acik ay basina hesap sayisi kadar ozet kaydi (islem sayisindan bagimsiz).
+        const parts = await Promise.all(runs.map((run) => monthMovements(apartmentId, run[0] as string, run.at(-1) as string)));
+        for (const part of parts) {
+          for (const [m, bucket] of part.moves) if (byMonth.has(m) && !closed.has(m)) byMonth.set(m, bucket);
+          for (const [m, pb] of part.payments) {
+            if (closed.has(m)) continue;
+            let sum = 0;
+            for (const [acc, v] of pb) if (fundIds.has(acc)) sum += v;
+            if (sum) paymentsIn.set(m, sum);
+          }
+        }
+      } else {
+        const pages = await Promise.all(
+          runs.map((run) => deps.finance.listTransactions(apartmentId, { from: periodBounds(run[0] as string).first, to: periodBounds(run.at(-1) as string).last })),
+        );
+        for (const tx of pages.flatMap((p) => p.items)) {
+          const m = tx.date.slice(0, 7);
+          const bucket = byMonth.get(m);
+          if (!bucket) continue;
+          for (const l of tx.lines) {
+            const cur = bucket.get(l.accountId) ?? { debit: 0, credit: 0 };
+            bucket.set(l.accountId, l.side === 'debit' ? { ...cur, debit: cur.debit + l.amount } : { ...cur, credit: cur.credit + l.amount });
+          }
+          if (tx.kind === 'payment') {
+            const add = tx.lines.filter((l) => l.side === 'debit' && fundIds.has(l.accountId)).reduce((a, l) => a + l.amount, 0);
+            if (add) paymentsIn.set(m, (paymentsIn.get(m) ?? 0) + add);
+          }
         }
       }
     }
-    return { accounts, months, opening, byMonth, closedMonths: months.filter((m) => closed.has(m)), openTransactions };
+    return { accounts, months, opening, byMonth, closedMonths: months.filter((m) => closed.has(m)), paymentsIn };
   }
 
   function parseMonth(value: string | undefined, field: string, fallback: string): string {
@@ -333,12 +400,8 @@ export function createReportService(overrides: Partial<ReportServiceDeps> & Pick
     const series = activity.months.map((m, i) => ({ period: m, income: ie.totals.income[i] ?? 0, expense: ie.totals.expense[i] ?? 0, result: ie.totals.result[i] ?? 0 }));
 
     // Bu ay: tahakkuk (gelir hesaplarina net alacak) ve tahsilat (tahsilat islemlerinin kasa/banka girisi).
-    const fundIds = new Set(activity.accounts.filter((a) => a.type === 'cash' || a.type === 'bank').map((a) => a.accountId));
-    const monthTx = activity.openTransactions.filter((x) => x.date.startsWith(current));
     const charged = series.at(-1)?.income ?? 0;
-    const collected = monthTx
-      .filter((x) => x.kind === 'payment')
-      .reduce((s, x) => s + x.lines.filter((l) => l.side === 'debit' && fundIds.has(l.accountId)).reduce((a, l) => a + l.amount, 0), 0);
+    const collected = activity.paymentsIn.get(current) ?? 0;
 
     // Butce kullanimi: yilbasindan bu aya kadar gider butcesi vs gerceklesen.
     let budgetInfo: { year: number; expenseBudgetYtd: number; expenseActualYtd: number; utilizationPct?: number } | null = null;

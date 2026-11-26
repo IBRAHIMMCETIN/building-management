@@ -231,7 +231,7 @@ describe('alici cozumleme', () => {
 
 describe('e-posta', () => {
   const note = (template: Notification['template'], data: Notification['data'], userId = 'tenant-u1'): Notification => ({ eventId: 'e1', apartmentId: APT, userId, template, data });
-  const ctx = { siteName: 'Hamravat', unitLabel: () => 'Daire U1', portalUrl: 'https://site.example/app' };
+  const ctx = { siteName: 'Örnek Site', unitLabel: () => 'Daire U1', portalUrl: 'https://site.example/app' };
 
   it('sablonlar: sakin portal baglantisi, yonetim paneli baglantisi, durum metni', () => {
     const resolved = renderEmail(note('ticket_resolved', { ticketId: 't1', number: 'T-000007', title: 'Kaçak', category: 'plumbing', unitId: 'u1', link: 'portal' }), ctx);

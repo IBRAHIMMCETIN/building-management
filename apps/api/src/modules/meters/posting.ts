@@ -199,7 +199,8 @@ export function createMeterPostingService(overrides: Partial<MeterPostingService
       blockers.push({ code: row.error?.code ?? row.status, message: row.error?.message ?? 'Okuma hatası', unitId: row.unitId, meterId: row.meterId });
     }
 
-    const units: Unit[] = (await deps.core.listUnits(ctx.apartmentId))
+    // P1-c: okuma cetveli bolumleri zaten okudu (1.200+ bolumde ikinci tam liste sorgusu yok).
+    const units: Unit[] = [...sheet.unitById.values()]
       .filter((u) => unitInScope(u, period.template.scope, period.endDate))
       .sort((a, b) => a.unitId.localeCompare(b.unitId));
     if (units.length > MAX_POSTING_UNITS) blockers.push({ code: 'too_many_units', message: `Tek dönemde en fazla ${MAX_POSTING_UNITS} bağımsız bölüm` });

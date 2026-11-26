@@ -28,6 +28,7 @@ import { type AuditDraft, contentionBackoffMs, sendWithAudit } from '../audit/lo
 import type { DomainEvent } from '../../events/publisher.js';
 import type { IsoDate, TableKeys } from '../core/types.js';
 import type { AccountSummaryItem } from './accountSummary.js';
+import { type MonthDelta, type MonthSummaryItem, type MonthSummaryState, monthDeltas } from './monthSummary.js';
 import type {
   Account,
   Expense,
@@ -83,6 +84,13 @@ export const financeKeys = {
     PK: tenantPk(apartmentId),
     SK: skKey('FSUM', accountId),
   }),
+};
+
+/** P1-c: hesap-ay hareket ozeti (`MSUM#<YYYY-MM>#<accountId>`) ve site durumu. */
+export const MONTH_SUMMARY_PREFIX = `MSUM${KEY_SEPARATOR}`;
+export const monthSummaryKeys = {
+  item: (apartmentId: string, month: string, accountId: string): TableKeys => ({ PK: tenantPk(apartmentId), SK: skKey('MSUM', month, accountId) }),
+  state: (apartmentId: string): TableKeys => ({ PK: tenantPk(apartmentId), SK: 'MSUMSTATE' }),
 };
 
 /** Ozet kayitlarinin SK oneki (`ACCT#` ile cakismaz: hesap listesi bunlari okumaz). */
@@ -269,6 +277,7 @@ type Label =
   | { kind: 'account'; accountId: string }
   | { kind: 'replace'; label: string }
   | { kind: 'outbox'; eventId: string }
+  | { kind: 'msum' }
   | { kind: 'lock' };
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -367,7 +376,8 @@ export async function postBatch(input: PostBatchInput): Promise<void> {
     },
   );
   for (const tx of transactions) {
-    add({ kind: 'tx' }, { Put: { TableName: tableName, Item: tx, ConditionExpression: notExists } });
+    // P1-c: `ms: 1` - islem hesap-ay ozetine bu atomik yazimda sayildi (backfill ayrimi).
+    add({ kind: 'tx' }, { Put: { TableName: tableName, Item: { ...tx, ms: 1 }, ConditionExpression: notExists } });
     for (const entry of toLedgerEntries(tx)) {
       add({ kind: 'entry' }, { Put: { TableName: tableName, Item: entry, ConditionExpression: notExists } });
     }
@@ -463,6 +473,22 @@ export async function postBatch(input: PostBatchInput): Promise<void> {
     add(
       { kind: 'outbox', eventId: item.eventId },
       { Put: { TableName: tableName, Item: item, ConditionExpression: 'attribute_not_exists(PK)' } },
+    );
+  }
+
+  // P1-c: hesap-ay hareket ozeti, bakiyeyle AYNI atomik yazimda (kosulsuz ADD; iptalde hic yazilmaz).
+  for (const m of monthDeltas(transactions).values()) {
+    add(
+      { kind: 'msum' },
+      {
+        Update: {
+          TableName: tableName,
+          Key: monthSummaryKeys.item(apartmentId, m.month, m.accountId),
+          UpdateExpression: 'SET #et = :et, #site = :site, #acc = :acc, #month = :month, #updatedAt = :now ADD #d :d, #c :c, #p :p',
+          ExpressionAttributeNames: { '#et': 'entityType', '#site': 'siteId', '#acc': 'accountId', '#month': 'month', '#updatedAt': 'updatedAt', '#d': 'd', '#c': 'c', '#p': 'p' },
+          ExpressionAttributeValues: { ':et': 'MONTH_SUMMARY', ':site': apartmentId, ':acc': m.accountId, ':month': m.month, ':now': createdAt, ':d': m.d, ':c': m.c, ':p': m.p },
+        },
+      },
     );
   }
 
@@ -609,6 +635,14 @@ export type FinanceRepository = {
    * Yazildiysa true; daha yeni bir ozet varsa veya ozet cok buyukse false.
    */
   putAccountSummary?(item: AccountSummaryItem): Promise<boolean>;
+
+  /** P1-c: hesap-ay hareket ozetleri, `fromMonth`..`toMonth` (dahil, YYYY-MM; tutarli okuma). */
+  listMonthSummaries?(apartmentId: string, fromMonth: string, toMonth?: string): Promise<MonthSummaryItem[]>;
+  /** P1-c: P1-c oncesi islemlerin toplamlari (`ld/lc/lp`, SET; tekrar calistirilabilir). */
+  setLegacyMonthSummary?(apartmentId: string, month: string, accountId: string, legacy: MonthDelta): Promise<void>;
+  getMonthSummaryState?(apartmentId: string): Promise<MonthSummaryState | undefined>;
+  /** Siteyi `ready` isaretler; `onlyIfAbsent` ile var olan isaret degismez. Yazildiysa true. */
+  markMonthSummaryReady?(apartmentId: string, source: MonthSummaryState['source'], opts?: { onlyIfAbsent?: boolean }): Promise<boolean>;
 
   postTransaction(input: PostInput): Promise<void>;
   postBatch(input: PostBatchInput): Promise<void>;
@@ -862,6 +896,32 @@ export async function queryAccountEntriesPage(apartmentId: string, accountId: st
   return { items: items.slice(0, limit), more: items.length > limit || Boolean(startKey) };
 }
 
+/** P1-c: `MSUM#<from>` .. `MSUM#<to>#~` (aylar kronolojik; tutarli okuma). */
+export async function queryMonthSummaries(apartmentId: string, fromMonth: string, toMonth = '9999-12'): Promise<MonthSummaryItem[]> {
+  const { client, tableName } = getDynamo();
+  const items: MonthSummaryItem[] = [];
+  let startKey: Record<string, unknown> | undefined;
+  try {
+    do {
+      const out: QueryCommandOutput = await client.send(
+        new QueryCommand({
+          TableName: tableName,
+          KeyConditionExpression: '#pk = :pk AND #sk BETWEEN :lo AND :hi',
+          ExpressionAttributeNames: { '#pk': 'PK', '#sk': 'SK' },
+          ExpressionAttributeValues: { ':pk': tenantPk(apartmentId), ':lo': `${MONTH_SUMMARY_PREFIX}${fromMonth}`, ':hi': `${MONTH_SUMMARY_PREFIX}${toMonth}${KEY_SEPARATOR}~` },
+          ConsistentRead: true,
+          ...(startKey ? { ExclusiveStartKey: startKey } : {}),
+        }),
+      );
+      for (const item of out.Items ?? []) if ((item as MonthSummaryItem).siteId === apartmentId) items.push(item as MonthSummaryItem);
+      startKey = out.LastEvaluatedKey;
+    } while (startKey);
+  } catch (err) {
+    throw toDataAccessError(err);
+  }
+  return items;
+}
+
 async function putAccount(account: Account, ignoreExisting: boolean): Promise<void> {
   const { client, tableName } = getDynamo();
   try {
@@ -975,6 +1035,35 @@ export function createFinanceRepository(): FinanceRepository {
     listExpensesByDate: queryExpensesByDate,
     getTransactions: batchGetTransactions,
     listAccountSummaries: (apartmentId) => queryTenantAll<AccountSummaryItem>(apartmentId, ACCOUNT_SUMMARY_PREFIX),
+    listMonthSummaries: queryMonthSummaries,
+    async setLegacyMonthSummary(apartmentId, month, accountId, legacy) {
+      const { client, tableName } = getDynamo();
+      try {
+        await client.send(
+          new UpdateCommand({
+            TableName: tableName,
+            Key: monthSummaryKeys.item(apartmentId, month, accountId),
+            UpdateExpression: 'SET #et = :et, #site = :site, #acc = :acc, #month = :month, #ld = :ld, #lc = :lc, #lp = :lp, #lat = :now',
+            ExpressionAttributeNames: { '#et': 'entityType', '#site': 'siteId', '#acc': 'accountId', '#month': 'month', '#ld': 'ld', '#lc': 'lc', '#lp': 'lp', '#lat': 'legacyAt' },
+            ExpressionAttributeValues: { ':et': 'MONTH_SUMMARY', ':site': apartmentId, ':acc': accountId, ':month': month, ':ld': legacy.d, ':lc': legacy.c, ':lp': legacy.p, ':now': new Date().toISOString() },
+          }),
+        );
+      } catch (err) {
+        throw toDataAccessError(err);
+      }
+    },
+    getMonthSummaryState: (apartmentId) => getTenantItem<MonthSummaryState>(monthSummaryKeys.state(apartmentId)),
+    async markMonthSummaryReady(apartmentId, source, opts = {}) {
+      const { client, tableName } = getDynamo();
+      const item: MonthSummaryState = { ...monthSummaryKeys.state(apartmentId), entityType: 'MONTH_SUMMARY_STATE', siteId: apartmentId, ready: true, source, readyAt: new Date().toISOString() };
+      try {
+        await client.send(new PutCommand({ TableName: tableName, Item: item, ...(opts.onlyIfAbsent ? { ConditionExpression: 'attribute_not_exists(PK)' } : {}) }));
+        return true;
+      } catch (err) {
+        if (err instanceof ConditionalCheckFailedException) return false;
+        throw toDataAccessError(err);
+      }
+    },
     async putAccountSummary(item) {
       const keys = financeKeys.accountSummary(item.siteId, item.accountId);
       if (item.PK !== keys.PK || item.SK !== keys.SK) throw new Error('Ozet anahtari tenant/hesapla uyusmuyor');
