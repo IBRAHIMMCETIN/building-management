@@ -187,12 +187,14 @@ export function TransactionsPanel() {
   const [filter, setFilter] = useState<Filter>('all');
   const { canWrite } = useFinancePermissions();
   const docs = useOpenDocument();
-  const query = useTransactions();
+  // P1-b: Gelir / Gider sunucuda suzulur (kasa/banka satirlari); Tahakkuk tum hareketlerden.
+  const serverCategory = filter === 'income' || filter === 'expense' ? filter : undefined;
+  const query = useTransactions(serverCategory ? { category: serverCategory } : {});
   const labels = useAccountLabels();
   const offsets = useOffsets();
   const [reversing, setReversing] = useState<AccountOffset | null>(null);
   const all = useMemo(() => query.data?.pages.flatMap((p) => p.items) ?? [], [query.data]);
-  const visible = filter === 'all' ? all : all.filter((t) => t.category === filter);
+  const visible = filter === 'all' || serverCategory ? all : all.filter((t) => t.category === filter);
   const links = useMemo(() => {
     const m = new Map<string, OffsetLink>();
     for (const o of offsets.data ?? []) {
@@ -222,7 +224,7 @@ export function TransactionsPanel() {
       </Card>
     );
   }
-  if (all.length === 0) {
+  if (all.length === 0 && !serverCategory && filter === 'all') {
     return (
       <Card className="flex flex-col items-center gap-2 py-12 text-center">
         <ReceiptText className="size-8 text-muted" aria-hidden="true" />
@@ -250,7 +252,9 @@ export function TransactionsPanel() {
       />
 
       {visible.length === 0 ? (
-        <p className="py-6 text-center text-small text-muted">Yüklenen hareketler arasında bu türde kayıt yok.</p>
+        <p className="py-6 text-center text-small text-muted">
+          {serverCategory ? 'Bu türde hareket yok.' : 'Yüklenen hareketler arasında bu türde kayıt yok.'}
+        </p>
       ) : (
         <>
           <div className="hidden overflow-x-auto rounded-xl border border-border bg-surface/60 shadow-sm backdrop-blur-sm md:block">

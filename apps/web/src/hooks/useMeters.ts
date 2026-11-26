@@ -199,11 +199,24 @@ export function useApprovePeriod() {
  * Buyuk donem onayinin arka plan isi: onay karti ile "tahakkuk suruyor" karti arasinda paylasilir
  * (donem `calculated` -> `posting` -> `posted` gecerken kart degisse de ilerleme kaybolmaz).
  */
-export function usePeriodJob(periodId: string) {
+/**
+ * Donemin arka plan isi (buyuk donem onayi / geri almasi). Is 202 yanitiyla eklenir; donem
+ * `posting` / `reversing` durumundaysa (sayfa yenilendi, baska sekmeden baslatildi) sunucudan
+ * `GET /periods/:id/job` ile bulunur ve ilerleme kaldigi yerden izlenir.
+ */
+export function usePeriodJob(periodId: string, status?: string) {
   const qc = useQueryClient();
-  const { apartmentId } = useMeterPermissions();
+  const { apartmentId, canRead } = useMeterPermissions();
   const key = ['bulk-job', 'meter-period', apartmentId, periodId] as const;
-  const { data } = useQuery<BulkJob | null>({ queryKey: key, queryFn: () => null, enabled: false, initialData: null, staleTime: Number.POSITIVE_INFINITY });
+  const active = status === 'posting' || status === 'reversing';
+  const { data } = useQuery<BulkJob | null>({
+    queryKey: key,
+    queryFn: async ({ signal }) => (await metersApi.periodJob(periodId, signal)).job,
+    enabled: active && !!apartmentId && !!periodId && canRead,
+    initialData: null,
+    initialDataUpdatedAt: 0,
+    staleTime: 30_000,
+  });
   const set = (job: BulkJob | null) => qc.setQueryData(key, job);
   return [data ?? null, set] as const;
 }

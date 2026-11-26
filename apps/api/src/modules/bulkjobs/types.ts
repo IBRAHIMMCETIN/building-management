@@ -12,7 +12,7 @@
 import type { Role } from '../../auth/claims.js';
 import type { BulkDuesLine, BulkDuesLineResult, BulkDuesSpec } from '../finance/service.js';
 
-export const BULK_JOB_KINDS = ['dues_bulk', 'meter_posting'] as const;
+export const BULK_JOB_KINDS = ['dues_bulk', 'meter_posting', 'meter_reversal'] as const;
 export type BulkJobKind = (typeof BULK_JOB_KINDS)[number];
 
 export const BULK_JOB_STATUSES = ['pending', 'running', 'completed', 'completed_with_errors', 'failed'] as const;
@@ -38,6 +38,8 @@ export type DuesJobParams = {
 };
 
 export type MeterJobParams = { periodId: string; calcHash: string; periodName?: string };
+/** P1-b: buyuk sayac doneminin toplu geri alinmasi (ters kayit). Neden / tarih donemde sabitlenir. */
+export type MeterReversalJobParams = { periodId: string; key: string; reason?: string; notify: boolean; periodName?: string };
 
 export type BulkJobResult = {
   batchId?: string;
@@ -48,6 +50,8 @@ export type BulkJobResult = {
   vacantCount?: number;
   /** Sayac: donemin tahakkuk kalemi sayisi. */
   posted?: number;
+  /** Sayac geri alma: ters kaydedilen kalem sayisi. */
+  reversed?: number;
   /** Bu isle yeni yazilan (replay olmayan) kalem sayisi. */
   written?: number;
   replayed?: boolean;
@@ -74,7 +78,7 @@ export type BulkJob = {
   failures: BulkJobFailure[];
   /** Aidat: sonraki islenecek satirin sirasi (dondurulmus satirlar uzerinde). */
   cursor: number;
-  params: DuesJobParams | MeterJobParams;
+  params: DuesJobParams | MeterJobParams | MeterReversalJobParams;
   /** Ayni anahtarla farkli icerikli is acilmasini engeller. */
   fingerprint: string;
   result?: BulkJobResult;

@@ -231,7 +231,33 @@ export class AuditChainBusyError extends DataAccessError {
   }
 }
 
-/** Yalnizca denetim kaydinin kosulu/cakismasi yuzunden mi iptal edildi? */
+/** Denetimsiz atomik yazim cekisme yuzunden tekrar tekrar iptal edildi (gecici; tekrar denenmeli). */
+export class WriteContentionError extends DataAccessError {
+  constructor() {
+    super('throttled', 'Kayit yogun cekisme altinda; islem tekrar denenmeli');
+    this.name = 'WriteContentionError';
+  }
+}
+
+/**
+ * P1-b: denetim kaydi OLMAYAN atomik yazim. Yalnizca `TransactionConflict` (eszamanli baska islem)
+ * ile iptal edilirse ustel bekleme + jitter ile tekrar denenir; `ConditionalCheckFailed` (is
+ * kurali) oldugu gibi firlatilir. Iptal edilen islem hicbir sey yazmadigi icin tekrar guvenlidir.
+ * (Sayac satiri / sayac imleci yazimlari gibi denetim taslagi olmayan cagiranlar.)
+ */
+async function sendPlain(client: DynamoDBDocumentClient, items: TransactItem[]): Promise<void> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await client.send(new TransactWriteCommand({ TransactItems: items }));
+      return;
+    } catch (err) {
+      if (!contentionOnly(err, items.length)) throw err;
+      if (attempt >= MAX_CHAIN_ATTEMPTS) throw new WriteContentionError();
+      await new Promise((r) => setTimeout(r, contentionBackoffMs(attempt)));
+    }
+  }
+}
+
 /**
  * Iptal yalnizca CEKISMEDEN mi? Gecici sayilan nedenler: herhangi bir ogede `TransactionConflict`
  * (sicak gelir hesabi, donem kilidi `ConditionCheck`'i gibi ayni anda baska islemin dokundugu
@@ -268,7 +294,7 @@ export async function sendWithAudit(
 ): Promise<AuditEntry | undefined> {
   const table = draft ? auditTable() : undefined;
   if (!draft || !table) {
-    await client.send(new TransactWriteCommand({ TransactItems: items }));
+    await sendPlain(client, items);
     return undefined;
   }
   if (items.length + 1 > 100) throw new Error('Atomik yazim 100 ogeyi asamaz (denetim kaydi dahil)');
@@ -303,7 +329,7 @@ export async function sendWithAudits(
 ): Promise<AuditEntry[]> {
   const table = drafts.length ? auditTable() : undefined;
   if (!table) {
-    await client.send(new TransactWriteCommand({ TransactItems: items }));
+    await sendPlain(client, items);
     return [];
   }
   if (drafts.length === 1) {

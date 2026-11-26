@@ -29,7 +29,7 @@ export const financeKeys = {
   all: (apt: string) => [...unitKeys.apartment(apt), 'finance'] as const,
   summary: (apt: string) => [...financeKeys.all(apt), 'summary'] as const,
   dues: (apt: string) => [...financeKeys.all(apt), 'dues-status'] as const,
-  transactions: (apt: string, filter: { from?: string; to?: string }) => [...financeKeys.all(apt), 'transactions', filter] as const,
+  transactions: (apt: string, filter: { from?: string; to?: string; category?: 'income' | 'expense' }) => [...financeKeys.all(apt), 'transactions', filter] as const,
   accounts: (apt: string, type?: string) => [...financeKeys.all(apt), 'accounts', type ?? 'all'] as const,
   duesPreview: (apt: string, input: DuesBulkInput | null) => [...financeKeys.all(apt), 'dues-preview', input] as const,
   payables: (apt: string) => [...financeKeys.all(apt), 'payables'] as const,
@@ -67,7 +67,11 @@ export function useDuesStatus() {
 }
 
 /** Defter hareketleri, en yeni once; "daha fazla" ile sonraki sayfa (imlec). */
-export function useTransactions(filter: { from?: string; to?: string } = {}, pageSize = 30) {
+/**
+ * Defter hareketleri (en yeni once, sayfali). `category` (P1-b): Gelir / Gider sekmesi sunucuda
+ * kasa/banka satirlarindan suzulur; buyuk sitede tahakkuk sayfalari arasinda kaybolmaz.
+ */
+export function useTransactions(filter: { from?: string; to?: string; category?: 'income' | 'expense' } = {}, pageSize = 30) {
   const { apt, enabled } = useApt();
   return useInfiniteQuery({
     queryKey: financeKeys.transactions(apt, filter),

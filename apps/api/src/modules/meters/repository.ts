@@ -87,9 +87,12 @@ export function createMeterRepository(): MeterRepository {
       try {
         await sendWithAudits(client, items, audits);
       } catch (err) {
+        // P1-b: yalnizca VERI kosulu (surum / varlik) is kurali catismasidir (409). Saf cekisme
+        // (`TransactionConflict`) `sendWithAudits` icinde ustel bekleme + jitter ile tekrar denenir;
+        // tukenirse gecici `DataAccessError('throttled')` olarak gelir (toplu is tekrar dener).
         if (err instanceof TransactionCanceledException) {
-          const codes = (err.CancellationReasons ?? []).map((r) => r.Code ?? 'None');
-          if (codes.some((c) => c === 'ConditionalCheckFailed' || c === 'TransactionConflict')) {
+          const codes = (err.CancellationReasons ?? []).slice(0, items.length).map((r) => r.Code ?? 'None');
+          if (codes.some((c) => c === 'ConditionalCheckFailed')) {
             throw new MeterError('conflict', CONFLICT_MESSAGE);
           }
         }

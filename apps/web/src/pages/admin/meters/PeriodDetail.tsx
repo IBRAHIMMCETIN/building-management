@@ -14,6 +14,7 @@ import {
   useReversePeriod,
 } from '@/hooks/useMeters';
 import { BulkJobProgress } from '@/components/BulkJobProgress';
+import { isTerminalJob } from '@/lib/api/bulkJobs';
 import { useOpenDocument } from '@/hooks/useOpenDocument';
 import { type CalculateResult, type DistributionLine, type MeterPeriod, blockersOf, isStaleCalc, metersApi } from '@/lib/api/meters';
 import { errorMessage } from '@/lib/api/errors';
@@ -389,7 +390,8 @@ function LinesTable({ lines, unitLabel, onStatement, pendingId }: { lines: Distr
 function ResumePostingCard({ period }: { period: MeterPeriod }) {
   const { canManage } = useMeterPermissions();
   const approve = useApprovePeriod();
-  const [job, setJob] = usePeriodJob(period.periodId);
+  // P1-b: sayfa yenilense de suren is sunucudan bulunur (donem `posting`).
+  const [job, setJob] = usePeriodJob(period.periodId, period.status);
   const refresh = useRefreshAfterPosting();
   if (job) {
     return (
@@ -438,6 +440,9 @@ function PostedCard({ period, unitLabel, onOpen }: { period: MeterPeriod; unitLa
   const resume = useReversePeriod();
   const correction = useCreateCorrection();
   const [reversing, setReversing] = useState(false);
+  // P1-b: buyuk donemin geri almasi arka plan isi; sayfa yenilense de ilerleme izlenir.
+  const [job, setJob] = usePeriodJob(period.periodId, period.status);
+  const refresh = useRefreshAfterPosting();
 
   const openCorrection = async () => {
     try {
@@ -466,7 +471,14 @@ function PostedCard({ period, unitLabel, onOpen }: { period: MeterPeriod; unitLa
         </p>
       )}
 
-      {period.status === 'reversing' && period.reversal && (
+      {job?.kind === 'meter_reversal' && (period.status === 'reversing' || !isTerminalJob(job) || job.status === 'failed') && (
+        <div className="flex flex-col gap-2">
+          <p className="text-small font-medium">Toplu geri alma</p>
+          <BulkJobProgress job={job} onSettled={refresh} canRetry={canManage} />
+        </div>
+      )}
+
+      {period.status === 'reversing' && period.reversal && job?.kind !== 'meter_reversal' && (
         <Alert tone="danger">
           <p>Geri alma yarıda kaldı. Aynı işlemle kaldığı yerden devam edilir (mükerrer ters kayıt oluşmaz).</p>
           {canManage && (
@@ -475,7 +487,10 @@ function PostedCard({ period, unitLabel, onOpen }: { period: MeterPeriod; unitLa
               size="sm"
               loading={resume.isPending}
               onClick={() =>
-                resume.mutate({ periodId: period.periodId, idempotencyKey: period.reversal?.key ?? '', reason: period.reversal?.reason ?? '', notify: period.reversal?.notify })
+                resume.mutate(
+                  { periodId: period.periodId, idempotencyKey: period.reversal?.key ?? '', reason: period.reversal?.reason ?? '', notify: period.reversal?.notify },
+                  { onSuccess: (r) => ('mode' in r && r.mode === 'job' ? setJob(r.job) : undefined) },
+                )
               }
             >
               Geri almayı tamamla
@@ -526,7 +541,16 @@ function PostedCard({ period, unitLabel, onOpen }: { period: MeterPeriod; unitLa
         />
       )}
 
-      <ReverseDialog period={reversing ? period : null} unitLabel={unitLabel} onClose={() => setReversing(false)} />
+      <ReverseDialog
+        period={reversing ? period : null}
+        unitLabel={unitLabel}
+        onClose={() => setReversing(false)}
+        onJob={(j) => {
+          // Buyuk donem: dialog kapanir, ilerleme bu kartta izlenir.
+          setJob(j);
+          setReversing(false);
+        }}
+      />
     </Card>
   );
 }

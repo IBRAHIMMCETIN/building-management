@@ -41,7 +41,7 @@ import {
   periodBounds,
   periodLabel,
 } from './lateFee.js';
-import { buildSummary, toTransactionView } from './reports.js';
+import { type TransactionView, buildSummary, toTransactionView } from './reports.js';
 import {
   ACCOUNT_TYPES,
   type Account,
@@ -2329,7 +2329,7 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
   /** Defter hareketleri (en yeni once), sayfali. */
   async function listTransactions(
     ctx: FinanceContext,
-    query: { from?: string; to?: string; limit?: string; cursor?: string } = {},
+    query: { from?: string; to?: string; limit?: string; cursor?: string; category?: string } = {},
   ) {
     const q: Obj = { ...query };
     const from = optDate(q, 'from');
@@ -2339,8 +2339,13 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
     if (!Number.isInteger(limit) || limit < 1 || limit > MAX_TRANSACTION_PAGE) {
       throw new ValidationError(`limit 1-${MAX_TRANSACTION_PAGE} arasinda olmali`, 'limit');
     }
+    const category = query.category === undefined || query.category === '' || query.category === 'all' ? undefined : query.category;
+    if (category !== undefined && category !== 'income' && category !== 'expense') {
+      throw new ValidationError('category income, expense veya all olmali', 'category');
+    }
     await ensureSystemAccounts(ctx);
     const [accounts, units] = await Promise.all([repo.listAccounts(ctx.apartmentId), deps.core.listUnits(ctx.apartmentId)]);
+    if (category) return listFundsTransactions(ctx, { from, to, limit, cursor: query.cursor, category }, accounts, units);
     let page: Awaited<ReturnType<FinanceRepository['listTransactions']>>;
     try {
       page = await repo.listTransactions(ctx.apartmentId, { from, to, limit, cursor: query.cursor, newestFirst: true });
@@ -2353,6 +2358,99 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
     return {
       items: page.items.map((tx) => toTransactionView(tx, accountMap, unitNumbers)),
       nextCursor: page.cursor,
+    };
+  }
+
+  /**
+   * P1-b: Hareketler'in Gelir / Gider sekmesi. Gelir/gider kategorisi kasa/banka satirindan
+   * turetildigi icin (`toTransactionView`) aday islemler YALNIZCA kasa/banka hesaplarinin ilgili
+   * taraftaki satirlarindan (gider: alacak, gelir: borc) en yeni once okunur; aidat tahakkuklari
+   * (buyuk sitede hareketlerin ezici cogunlugu) hic okunmaz. Kategori yine ayni siniflandirmayla
+   * kesinlesir (virman / ters kayit / devir disarida kalir). Imlec: son dondurulen islem kimligi.
+   */
+  async function listFundsTransactions(
+    ctx: FinanceContext,
+    q: { from?: IsoDate; to?: IsoDate; limit: number; cursor?: string; category: 'income' | 'expense' },
+    accounts: Account[],
+    units: Unit[],
+  ) {
+    let before: string | undefined;
+    if (q.cursor) {
+      try {
+        const c = JSON.parse(Buffer.from(q.cursor, 'base64url').toString('utf8')) as { b?: unknown; k?: unknown };
+        if (c.k !== q.category || typeof c.b !== 'string' || !/^\d{8}-[A-Za-z0-9_-]{1,80}$/.test(c.b)) throw new Error('cursor');
+        before = c.b;
+      } catch {
+        throw new ValidationError('Gecersiz sayfa imleci', 'cursor');
+      }
+    }
+    const side = q.category === 'expense' ? 'credit' : 'debit';
+    const funds = accounts.filter((a) => a.type === 'cash' || a.type === 'bank');
+    const accountMap = new Map(accounts.map((a) => [a.accountId, a]));
+    const unitNumbers = new Map(units.map((u) => [u.unitId, u.number]));
+    const pageOf = async (accountId: string, b: string | undefined) => {
+      if (repo.listAccountEntriesPage) return repo.listAccountEntriesPage(ctx.apartmentId, accountId, { from: q.from, to: q.to, before: b, side, limit: q.limit });
+      // Hesap sayfa okuyucusu olmayan depo (eski test sahteleri): hesap satirlari, ayni kural.
+      const all = repo.listAccountEntries ? await repo.listAccountEntries(ctx.apartmentId, accountId, { from: q.from, to: q.to }) : [];
+      const rows = all.filter((e) => e.side === side && (!b || e.transactionId < b)).sort((x, y) => y.transactionId.localeCompare(x.transactionId));
+      return { items: rows.slice(0, q.limit), more: rows.length > q.limit };
+    };
+    const items: TransactionView[] = [];
+    let more = false;
+    // Virman / ters kayit gibi kategorisi tutmayan adaylar sayfayi bosaltmasin: en fazla 5 tur.
+    for (let round = 0; round < 5 && items.length < q.limit; round++) {
+      const pages = await Promise.all(funds.map((a) => pageOf(a.accountId, before)));
+      const ids = [...new Set(pages.flatMap((p) => p.items.map((e) => e.transactionId)))].sort((a, b) => b.localeCompare(a));
+      const take = ids.slice(0, q.limit - items.length);
+      more = pages.some((p) => p.more) || ids.length > take.length;
+      if (take.length === 0) {
+        more = false;
+        break;
+      }
+      const txs = repo.getTransactions
+        ? await repo.getTransactions(ctx.apartmentId, take)
+        : (await Promise.all(take.map((id) => repo.getTransaction(ctx.apartmentId, id)))).filter((t): t is Transaction => !!t);
+      const byId = new Map(txs.map((t) => [t.transactionId, t]));
+      for (const id of take) {
+        const t = byId.get(id);
+        if (!t) continue;
+        const view = toTransactionView(t, accountMap, unitNumbers);
+        if (view.category === q.category) items.push(view);
+      }
+      before = take.at(-1);
+      if (!more) break;
+    }
+    return {
+      items,
+      ...(more && before ? { nextCursor: Buffer.from(JSON.stringify({ k: q.category, b: before })).toString('base64url') } : {}),
+    };
+  }
+
+  // -------------------------------------------------------------------------
+  // P1-b: gider kayitlari, tarih araliginda (GSI1 tarih dizini)
+  // -------------------------------------------------------------------------
+
+  async function listExpenses(ctx: FinanceContext, query: { from?: string; to?: string; limit?: string; cursor?: string; order?: string } = {}) {
+    const q: Obj = { ...query };
+    const from = optDate(q, 'from');
+    const to = optDate(q, 'to');
+    if (from && to && from > to) throw new ValidationError('from, to tarihinden sonra olamaz', 'from');
+    const limit = query.limit === undefined ? 50 : Number(query.limit);
+    if (!Number.isInteger(limit) || limit < 1 || limit > MAX_TRANSACTION_PAGE) throw new ValidationError(`limit 1-${MAX_TRANSACTION_PAGE} arasinda olmali`, 'limit');
+    if (query.order !== undefined && query.order !== 'asc' && query.order !== 'desc') throw new ValidationError('order asc veya desc olmali', 'order');
+    if (!repo.listExpensesByDate) throw new FinanceError('unprocessable', 'Gider tarih dizini bu depoda yok');
+    let page: { items: Expense[]; cursor?: string };
+    try {
+      page = await repo.listExpensesByDate(ctx.apartmentId, { from, to, limit, cursor: query.cursor, oldestFirst: query.order === 'asc' });
+    } catch (err) {
+      if (err instanceof InvalidCursorError) throw new ValidationError(err.message, 'cursor');
+      throw err;
+    }
+    return {
+      items: page.items.map(({ PK: _pk, SK: _sk, GSI1PK: _g1, GSI1SK: _g2, ...e }) => e),
+      ...(page.cursor ? { nextCursor: page.cursor } : {}),
+      // Sayfadaki giderlerin kurus toplami (rapor ekraninin tutarlilik kontrolu icin).
+      pageTotal: toKurus(page.items.reduce((s, e) => s + e.amount, 0)),
     };
   }
 
@@ -3004,6 +3102,8 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
     postOpeningBalance,
     postOpeningFunds,
     listTransactions,
+    /** P1-b: gider kayitlari tarih araliginda (GSI1). */
+    listExpenses,
     listAccounts,
     createAccount,
     updateAccount,

@@ -4,6 +4,7 @@ import { loadBulkJobQueueFromEnv, parseBulkJobMessage } from '../modules/bulkjob
 import { createFinanceService } from '../modules/finance/service.js';
 import { membershipRepository } from '../modules/memberships/repository.js';
 import { createMeterPostingService } from '../modules/meters/posting.js';
+import { createMeterReversalService } from '../modules/meters/reversal.js';
 import { createOwnershipReader } from '../modules/ownership/reader.js';
 import type { SqsBatchResponse, SqsEvent } from './notification-worker.js';
 
@@ -35,6 +36,7 @@ export function createBulkWorker(deps: { service?: BulkJobService; log?: Pick<Co
       queue,
       finance,
       meters: createMeterPostingService({ finance, ownership }),
+      meterReversal: createMeterReversalService({ finance }),
       options: {
         ...(process.env.BULK_JOB_CONCURRENCY ? { concurrency: Number(process.env.BULK_JOB_CONCURRENCY) } : {}),
         ...(process.env.BULK_JOB_BATCH_SIZE ? { batchSize: Number(process.env.BULK_JOB_BATCH_SIZE) } : {}),

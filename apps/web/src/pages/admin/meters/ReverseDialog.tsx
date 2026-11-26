@@ -5,18 +5,25 @@ import { useForm } from 'react-hook-form';
 import { Alert, Button, Dialog, FormField, Skeleton, Textarea } from '@/components/ui';
 import { useIdempotencyKey } from '@/hooks/useIdempotencyKey';
 import { useReversePeriod, useReversePreview } from '@/hooks/useMeters';
+import type { BulkJob } from '@/lib/api/bulkJobs';
 import { type MeterPeriod, blockersOf } from '@/lib/api/meters';
 import { errorMessage } from '@/lib/api/errors';
 import { formatTRY } from '@/lib/money';
 import { type ReverseForm, reverseSchema } from './schemas';
 
-type Props = { period: MeterPeriod | null; unitLabel: (unitId: string, fallback?: string) => string; onClose: () => void };
+type Props = {
+  period: MeterPeriod | null;
+  unitLabel: (unitId: string, fallback?: string) => string;
+  onClose: () => void;
+  /** P1-b: buyuk donem (202) arka plan isine alindi; ilerleme donem kartinda izlenir. */
+  onJob?: (job: BulkJob) => void;
+};
 
 /**
  * Onayli donemin toplu geri alinmasi (ters kayit). Varsayilan SESSIZ: sakinlere bildirim gitmez;
  * "Sakinleri bilgilendir" yalnizca acikca isaretlenirse. Gecikme tazminati otomatik geri alinmaz (uyari).
  */
-export function ReverseDialog({ period, unitLabel, onClose }: Props) {
+export function ReverseDialog({ period, unitLabel, onClose, onJob }: Props) {
   const preview = useReversePreview(period?.periodId ?? null, !!period);
   const reverse = useReversePeriod();
   const [idempotencyKey, renewKey] = useIdempotencyKey();
@@ -38,13 +45,15 @@ export function ReverseDialog({ period, unitLabel, onClose }: Props) {
 
   const submit = form.handleSubmit(async (v) => {
     try {
-      await reverse.mutateAsync({ periodId: period.periodId, idempotencyKey, reason: v.reason, notify: v.notify });
+      const r = await reverse.mutateAsync({ periodId: period.periodId, idempotencyKey, reason: v.reason, notify: v.notify });
+      if ('mode' in r && r.mode === 'job') onJob?.(r.job);
     } catch {
       /* asagida gosterilir; ag hatasinda ayni anahtarla tekrar denenir (devam) */
     }
   });
 
-  const done = reverse.data;
+  const result = reverse.data;
+  const done = result && !('mode' in result) ? result : undefined;
 
   return (
     <Dialog open={!!period} onClose={() => !reverse.isPending && onClose()} title={`Dönemi geri al — ${period.name}`} className="max-w-xl">

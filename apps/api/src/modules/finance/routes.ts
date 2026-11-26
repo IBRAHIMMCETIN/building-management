@@ -173,6 +173,20 @@ export function financeRoutes({ authenticate, service, closures, offsets, plans,
         to: c.req.query('to'),
         limit: c.req.query('limit'),
         cursor: c.req.query('cursor'),
+        category: c.req.query('category'),
+      }),
+    ),
+  );
+
+  // P1-b: gider kayitlari tarih araliginda (GSI1 tarih dizini; sayfali).
+  r.get('/expenses', requireRole(READ_ROLES), async (c) =>
+    c.json(
+      await service.listExpenses(ctx(c), {
+        from: c.req.query('from'),
+        to: c.req.query('to'),
+        limit: c.req.query('limit'),
+        cursor: c.req.query('cursor'),
+        order: c.req.query('order'),
       }),
     ),
   );

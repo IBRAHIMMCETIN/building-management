@@ -173,6 +173,16 @@ export function createFakeFinanceRepo(defaultApartmentId = 'apt-1') {
     getPayment: async (apt, id) => payments.get(k(apt, id)),
     getExpense: async (apt, id) => expenses.get(k(apt, id)),
     listExpenses: async (apt) => [...expenses.values()].filter((e) => e.siteId === apt),
+    // P1-b: GSI1 tarih dizininin sahtesi (`<tarih>#<gider>` sirali; imlec = konum).
+    listExpensesByDate: async (apt, q) => {
+      const sorted = [...expenses.values()]
+        .filter((e) => e.siteId === apt && e.date >= (q.from ?? '0000-00-00') && e.date <= (q.to ?? '9999-99-99'))
+        .sort((a, b) => `${a.date}#${a.expenseId}`.localeCompare(`${b.date}#${b.expenseId}`) * (q.oldestFirst ? 1 : -1));
+      const start = q.cursor ? Number(q.cursor) : 0;
+      const limit = Math.max(1, Math.min(500, Math.floor(q.limit)));
+      const items = sorted.slice(start, start + limit);
+      return { items, ...(start + limit < sorted.length ? { cursor: String(start + limit) } : {}) };
+    },
     getIdempotency: async (apt, id) => idemOf(apt, id),
     getCounter: async (apt, name) => counters.get(k(apt, name)) ?? 0,
     // Finans 2.4: LE# hesap okuyucusunun sahtesi (islem satirlarindan turetilir).

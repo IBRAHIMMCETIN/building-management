@@ -270,7 +270,7 @@ export type RecordPayablePaymentInput = {
 export const financeApi = {
   summary: (signal?: AbortSignal) => apiClient.get('/api/finance/summary', { signal, schema: summarySchema }),
   duesStatus: (signal?: AbortSignal) => apiClient.get('/api/finance/dues-status', { signal, schema: duesStatusSchema }),
-  transactions: (query: { cursor?: string; limit?: number; from?: string; to?: string }, signal?: AbortSignal) =>
+  transactions: (query: { cursor?: string; limit?: number; from?: string; to?: string; category?: 'income' | 'expense' }, signal?: AbortSignal) =>
     apiClient.get('/api/finance/transactions', { signal, query, schema: transactionPageSchema }),
   accounts: (type: FinanceAccount['type'] | undefined, signal?: AbortSignal) =>
     apiClient.get('/api/finance/accounts', {

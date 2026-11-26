@@ -241,11 +241,12 @@ export function createApp(config: AppConfig) {
   incomeAccountResolver = financeService.resolveIncomeAccount;
   // Sayac onayi hem senkron rotada hem arka plan isinde ayni servisle calisir.
   const meterPostingService = config.meterPostingService ?? createMeterPostingService({ finance: financeService, ownership: ownershipReader });
+  const meterReversalService = config.meterReversalService ?? createMeterReversalService({ finance: financeService });
   // Toplu isler: SQS (Lambda) veya yerelde ayni surecte parcali isleme.
   let bulkJobService: BulkJobService | undefined = config.bulkJobService;
   if (!bulkJobService) {
     const queue: BulkJobQueue = loadBulkJobQueueFromEnv() ?? createInlineBulkJobQueue(() => (m) => (bulkJobService as BulkJobService).handle(m).then(() => undefined));
-    bulkJobService = createBulkJobService({ repository: createDynamoBulkJobRepository(), queue, finance: financeService, meters: meterPostingService });
+    bulkJobService = createBulkJobService({ repository: createDynamoBulkJobRepository(), queue, finance: financeService, meters: meterPostingService, meterReversal: meterReversalService });
   }
   app.route('/api/jobs', bulkJobRoutes({ authenticate, service: bulkJobService }));
   // Online odeme (Adim 8b). Yonetici uclari finans rotalarindan, sakin uclari portal
@@ -314,7 +315,7 @@ export function createApp(config: AppConfig) {
       service: config.meterService ?? createMeterService(),
       posting: meterPostingService,
       jobs: bulkJobService,
-      reversal: config.meterReversalService ?? createMeterReversalService({ finance: financeService }),
+      reversal: meterReversalService,
     }),
   );
   app.route('/api/meter-readings', meterReadingRoutes({ authenticate, service: config.meterReadingService ?? createMeterReadingService() }));

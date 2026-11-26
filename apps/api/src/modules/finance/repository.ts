@@ -22,6 +22,7 @@ import {
   toDataAccessError,
 } from '../../config/dynamodb.js';
 import { toOutboxItems } from '../../events/outbox.js';
+import { mapLimit } from '../core/concurrency.js';
 import { PeriodClosedError, earliestDate, periodKeys } from './periodLock.js';
 import { type AuditDraft, contentionBackoffMs, sendWithAudit } from '../audit/log.js';
 import type { DomainEvent } from '../../events/publisher.js';
@@ -570,6 +571,11 @@ export type FinanceRepository = {
    * GSI1 tarih dizininden okunur: maliyet gider sayisindan bagimsiz, `limit` ile sinirli.
    */
   listRecentExpenses?(apartmentId: string, q: { limit: number; from?: string }): Promise<Expense[]>;
+  /**
+   * P1-b: giderler tarih araliginda (dahil), GSI1 tarih dizininden; sayfali (`cursor`). Varsayilan
+   * en yeni once. Maliyet gider sayisindan degil sayfa boyutundan bagimsizdir.
+   */
+  listExpensesByDate?(apartmentId: string, q: ExpenseDateQuery): Promise<{ items: Expense[]; cursor?: string }>;
   getIdempotency(apartmentId: string, id: string): Promise<IdempotencyRecord | undefined>;
   getCounter(apartmentId: string, name: string): Promise<number>;
 
@@ -584,6 +590,12 @@ export type FinanceRepository = {
    * araligiyla (dahil). Tam defter taramasi yerine hesap kapsamli okuma icin; kronolojik.
    */
   listAccountEntries?(apartmentId: string, accountId: string, range?: { from?: IsoDate; to?: IsoDate }): Promise<LedgerEntry[]>;
+  /**
+   * P1-b: tek hesabin satirlari EN YENI ONCE, en fazla `limit` (yalnizca `side` tarafi), `before`
+   * islem kimliginden (haric) eskiler. Hareketler'in Gelir / Gider sekmeleri kasa/banka hesaplarinin
+   * satirlarindan okunur: tum defter (tahakkuklar) taranmaz.
+   */
+  listAccountEntriesPage?(apartmentId: string, accountId: string, q: EntryPageQuery): Promise<{ items: LedgerEntry[]; more: boolean }>;
   /** Finans 2.4: islem basliklarini kimlikle toplu okur (BatchGet, tutarli; sira garanti degil). */
   getTransactions?(apartmentId: string, transactionIds: readonly string[]): Promise<Transaction[]>;
 
@@ -607,6 +619,9 @@ export type FinanceRepository = {
    */
   recordEvents(apartmentId: string, events: DomainEvent[]): Promise<number>;
 };
+
+export type ExpenseDateQuery = { from?: IsoDate; to?: IsoDate; limit: number; cursor?: string; oldestFirst?: boolean };
+export type EntryPageQuery = { from?: IsoDate; to?: IsoDate; before?: string; side?: 'debit' | 'credit'; limit: number };
 
 export type TransactionQuery = {
   /** Dahil, YYYY-MM-DD */
@@ -645,6 +660,9 @@ export class InvalidCursorError extends Error {
 
 const BATCH_GET_SIZE = 100;
 const MAX_BATCH_ROUNDS = 5;
+/** P1-b: eszamanli hesap satiri sorgusu / BatchGet parcasi (sirali okuma binlerce islemde saniyeler surer). */
+const ACCOUNT_READ_CONCURRENCY = 16;
+const BATCH_GET_CONCURRENCY = 8;
 
 /** Islem basliklari, kimlikle (BatchGet; islenmeyen anahtarlar ustel bekleme ile yeniden). */
 /**
@@ -663,7 +681,8 @@ export async function accountTransactions(
     const wanted = new Set(accountIds);
     return (await repo.listTransactions(apartmentId)).items.filter((t) => t.lines.some((l) => wanted.has(l.accountId)));
   }
-  const entries = (await Promise.all(accountIds.map((id) => listAccountEntries(apartmentId, id)))).flat();
+  // P1-b: buyuk kumelerde (or. 1.200 kalemlik sayac geri almasi onizlemesi) sinirli eszamanlilik.
+  const entries = (await mapLimit([...new Set(accountIds)], ACCOUNT_READ_CONCURRENCY, (id) => listAccountEntries(apartmentId, id))).flat();
   const ids = [...new Set(entries.map((e) => e.transactionId))];
   const txs = ids.length ? await getTransactions(apartmentId, ids) : [];
   return [...txs].sort((a, b) => a.transactionId.localeCompare(b.transactionId));
@@ -671,10 +690,12 @@ export async function accountTransactions(
 
 export async function batchGetTransactions(apartmentId: string, ids: readonly string[]): Promise<Transaction[]> {
   const { client, tableName } = getDynamo();
-  const out: Transaction[] = [];
   const unique = [...new Set(ids)];
-  for (let i = 0; i < unique.length; i += BATCH_GET_SIZE) {
-    let keys: Record<string, unknown>[] | undefined = unique.slice(i, i + BATCH_GET_SIZE).map((id) => financeKeys.transaction(apartmentId, id));
+  const chunks: string[][] = [];
+  for (let i = 0; i < unique.length; i += BATCH_GET_SIZE) chunks.push(unique.slice(i, i + BATCH_GET_SIZE));
+  const parts = await mapLimit(chunks, BATCH_GET_CONCURRENCY, async (chunk) => {
+    const out: Transaction[] = [];
+    let keys: Record<string, unknown>[] | undefined = chunk.map((id) => financeKeys.transaction(apartmentId, id));
     for (let round = 0; keys && keys.length > 0; round++) {
       if (round >= MAX_BATCH_ROUNDS) throw toDataAccessError(new Error('BatchGet islenemeyen anahtarlar kaldi'));
       if (round > 0) await sleep(50 * 2 ** round);
@@ -687,9 +708,10 @@ export async function batchGetTransactions(apartmentId: string, ids: readonly st
       out.push(...((res.Responses?.[tableName] ?? []) as Transaction[]));
       keys = res.UnprocessedKeys?.[tableName]?.Keys;
     }
-  }
+    return out;
+  });
   // Savunma: baska tenant'a ait kayit asla donmez (anahtar zaten tenant'tan turetildi).
-  return out.filter((tx) => tx.siteId === apartmentId);
+  return parts.flat().filter((tx) => tx.siteId === apartmentId);
 }
 
 /**
@@ -757,6 +779,87 @@ async function queryTransactions(
   } catch (err) {
     throw toDataAccessError(err);
   }
+}
+
+const encodeKey = (key: Record<string, unknown> | undefined) => (key ? Buffer.from(JSON.stringify(key)).toString('base64url') : undefined);
+
+/** P1-b: gider tarih dizini sorgusu (GSI1 `EXPDATE#<apartmentId>`, `GSI1SK = <tarih>#<giderId>`). */
+export async function queryExpensesByDate(apartmentId: string, q: ExpenseDateQuery): Promise<{ items: Expense[]; cursor?: string }> {
+  const limit = Math.max(1, Math.min(500, Math.floor(q.limit)));
+  const pk = financeKeys.expenseIndex(apartmentId, '', '').GSI1PK;
+  let startKey: Record<string, unknown> | undefined;
+  if (q.cursor) {
+    try {
+      const key = JSON.parse(Buffer.from(q.cursor, 'base64url').toString('utf8')) as Record<string, unknown>;
+      // Imlec istemciden gelir: baska apartmanin dizinine devam edilemez.
+      if (key.GSI1PK !== pk || key.PK !== tenantPk(apartmentId) || typeof key.SK !== 'string' || typeof key.GSI1SK !== 'string') throw new Error('tenant');
+      startKey = { PK: key.PK, SK: key.SK, GSI1PK: key.GSI1PK, GSI1SK: key.GSI1SK };
+    } catch {
+      throw new InvalidCursorError();
+    }
+  }
+  const lo = q.from ?? '0000-00-00';
+  const hi = `${q.to ?? '9999-99-99'}${KEY_SEPARATOR}~`;
+  const { client, tableName } = getDynamo();
+  const items: Expense[] = [];
+  try {
+    do {
+      const out: QueryCommandOutput = await client.send(
+        new QueryCommand({
+          TableName: tableName,
+          IndexName: 'GSI1',
+          KeyConditionExpression: 'GSI1PK = :pk AND GSI1SK BETWEEN :lo AND :hi',
+          ExpressionAttributeValues: { ':pk': pk, ':lo': lo, ':hi': hi },
+          ScanIndexForward: q.oldestFirst === true,
+          Limit: limit - items.length,
+          ...(startKey ? { ExclusiveStartKey: startKey } : {}),
+        }),
+      );
+      for (const item of out.Items ?? []) if ((item as Expense).siteId === apartmentId) items.push(item as Expense);
+      startKey = out.LastEvaluatedKey;
+    } while (startKey && items.length < limit);
+  } catch (err) {
+    throw toDataAccessError(err);
+  }
+  return { items, ...(startKey ? { cursor: encodeKey(startKey) } : {}) };
+}
+
+/** P1-b: tek hesabin satirlari en yeni once, tarafa gore suzulmus, sinirli. */
+export async function queryAccountEntriesPage(apartmentId: string, accountId: string, q: EntryPageQuery): Promise<{ items: LedgerEntry[]; more: boolean }> {
+  const limit = Math.max(1, Math.min(500, Math.floor(q.limit)));
+  const base = `${skKey('LE', accountId)}${KEY_SEPARATOR}`;
+  const lower = `${base}${(q.from ?? '0000-00-00').replaceAll('-', '')}`;
+  const hiTo = `${base}${(q.to ?? '9999-99-99').replaceAll('-', '')}~`;
+  // `LE#<hesap>#<islem>` kendi satirlarindan (`...#<islem>#<n>`) kucuktur: `before` haric.
+  const hiBefore = q.before ? `${base}${q.before}` : undefined;
+  const upper = hiBefore && hiBefore < hiTo ? hiBefore : hiTo;
+  const { client, tableName } = getDynamo();
+  const items: LedgerEntry[] = [];
+  let startKey: Record<string, unknown> | undefined;
+  try {
+    do {
+      const out: QueryCommandOutput = await client.send(
+        new QueryCommand({
+          TableName: tableName,
+          KeyConditionExpression: '#pk = :pk AND #sk BETWEEN :lo AND :hi',
+          ExpressionAttributeNames: { '#pk': 'PK', '#sk': 'SK', ...(q.side ? { '#side': 'side' } : {}) },
+          ExpressionAttributeValues: { ':pk': tenantPk(apartmentId), ':lo': lower, ':hi': upper, ...(q.side ? { ':side': q.side } : {}) },
+          ...(q.side ? { FilterExpression: '#side = :side' } : {}),
+          ScanIndexForward: false,
+          Limit: 200,
+          ...(startKey ? { ExclusiveStartKey: startKey } : {}),
+        }),
+      );
+      for (const item of out.Items ?? []) {
+        const e = item as LedgerEntry;
+        if (e.siteId === apartmentId && e.accountId === accountId) items.push(e);
+      }
+      startKey = out.LastEvaluatedKey;
+    } while (startKey && items.length <= limit);
+  } catch (err) {
+    throw toDataAccessError(err);
+  }
+  return { items: items.slice(0, limit), more: items.length > limit || Boolean(startKey) };
 }
 
 async function putAccount(account: Account, ignoreExisting: boolean): Promise<void> {
@@ -868,6 +971,8 @@ export function createFinanceRepository(): FinanceRepository {
 
     listTransactions: queryTransactions,
     listAccountEntries: queryAccountEntries,
+    listAccountEntriesPage: queryAccountEntriesPage,
+    listExpensesByDate: queryExpensesByDate,
     getTransactions: batchGetTransactions,
     listAccountSummaries: (apartmentId) => queryTenantAll<AccountSummaryItem>(apartmentId, ACCOUNT_SUMMARY_PREFIX),
     async putAccountSummary(item) {

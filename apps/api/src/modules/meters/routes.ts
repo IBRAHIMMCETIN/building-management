@@ -30,7 +30,7 @@ export type MeterRoutesDeps = {
   reversal?: MeterReversalService;
   portal?: MeterPortalService;
   /** Buyuk donem onayi arka plan isi (SQS). Verilmezse onay senkron calisir. */
-  jobs?: Pick<BulkJobService, 'startMeterPosting'>;
+  jobs?: Pick<BulkJobService, 'startMeterPosting'> & Partial<Pick<BulkJobService, 'startMeterReversal' | 'findMeterJob'>>;
 };
 
 /**
@@ -156,6 +156,13 @@ export function meterRoutes({ authenticate, service, posting, reversal, portal, 
       const out = await posting.approve(ctxOf(c), periodId, body);
       return c.json({ ...out, period: publicView(out.period) });
     });
+    // P1-b: donemin suren / son arka plan isi (onay veya geri alma); sayfa yenilense de izlenir.
+    r.get('/periods/:periodId/job', read, async (c) => {
+      if (!jobs?.findMeterJob) return c.json({ job: null });
+      const period = await posting.getPeriod(ctxOf(c), p(c, 'periodId'));
+      const job = await jobs.findMeterJob(ctxOf(c), period);
+      return c.json({ job: job ? jobView(job) : null });
+    });
     r.get('/periods/:periodId/lines', read, async (c) => {
       const out = await posting.listLines(ctxOf(c), p(c, 'periodId'));
       return c.json({ period: publicView(out.period), lines: strip(out.lines), total: out.total });
@@ -174,7 +181,19 @@ export function meterRoutes({ authenticate, service, posting, reversal, portal, 
       return c.json({ ...out, period: publicView(out.period) });
     });
     r.post('/periods/:periodId/reverse', manage, async (c) => {
-      const out = await reversal.reverse(ctxOf(c), p(c, 'periodId'), await readJson(c));
+      const body = await readJson(c);
+      const periodId = p(c, 'periodId');
+      // P1-b: buyuk donem (kalem sayisi > SYNC_POSTING_UNITS): arka plan isi + 202. Kalem basina
+      // ters kayit HTTP isteginde (30 sn) 1.200 bolumde bitmez; is parca parca ilerler.
+      if (jobs?.startMeterReversal) {
+        const period = await reversal.getPeriod(ctxOf(c), periodId);
+        const count = period.chargeCount ?? period.calc?.chargeCount ?? 0;
+        if (count > SYNC_POSTING_UNITS && period.status !== 'reversed') {
+          const { job, created } = await jobs.startMeterReversal(ctxOf(c), periodId, body);
+          return c.json({ mode: 'job', created, job: jobView(job) }, 202);
+        }
+      }
+      const out = await reversal.reverse(ctxOf(c), periodId, body);
       return c.json({ ...out, period: publicView(out.period) });
     });
     r.post('/periods/:periodId/correction', manage, async (c) => {

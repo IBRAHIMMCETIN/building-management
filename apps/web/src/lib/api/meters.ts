@@ -16,7 +16,7 @@ import {
 import { apiClient } from './client';
 import { signedDownloadSchema } from './documentModel';
 import { ApiError } from './errors';
-import { jobAcceptedSchema } from './bulkJobs';
+import { jobAcceptedSchema, periodJobSchema } from './bulkJobs';
 
 /*
  * Finans 2.3 sayac / endeks dagitimi (apps/api/src/modules/meters):
@@ -319,13 +319,16 @@ export const reversePreviewSchema = z.object({
   lateFeeWarnings: z.array(z.object({ unitId: z.string(), transactionIds: z.array(z.string()).optional() })).default([]),
 });
 
-export const reverseResultSchema = z.object({
+export const reverseSyncSchema = z.object({
   period: periodSchema,
   replayed: z.boolean().optional(),
   reversed: z.number().int().optional(),
   written: z.number().int().optional(),
   notified: z.boolean().optional(),
 });
+/** Buyuk donem (60+ kalem): 202 + arka plan isi; kucuk donem senkron sonuc. */
+export const reverseResultSchema = z.union([jobAcceptedSchema, reverseSyncSchema]);
+export type ReverseResult = z.infer<typeof reverseResultSchema>;
 
 const uploadSchema = z.object({
   photoKey: z.string(),
@@ -539,6 +542,8 @@ export const metersApi = {
     apiClient.get(`${M}/periods/${enc(periodId)}/reverse/preview`, { signal, schema: reversePreviewSchema }),
   reverse: (periodId: string, input: { idempotencyKey: string; reason: string; notify?: boolean }) =>
     apiClient.post(`${M}/periods/${enc(periodId)}/reverse`, input, { schema: reverseResultSchema }),
+  /** P1-b: donemin suren / son arka plan isi (onay veya geri alma). */
+  periodJob: (periodId: string, signal?: AbortSignal) => apiClient.get(`${M}/periods/${enc(periodId)}/job`, { signal, schema: periodJobSchema }),
   correction: (periodId: string, name?: string) =>
     apiClient.post(`${M}/periods/${enc(periodId)}/correction`, name ? { name } : {}, { schema: z.object({ period: periodSchema }).or(periodSchema) }),
   unitStatement: (periodId: string, unitId: string) =>

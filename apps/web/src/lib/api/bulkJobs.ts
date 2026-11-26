@@ -13,7 +13,7 @@ export const TERMINAL_JOB_STATUSES: readonly BulkJobStatus[] = ['completed', 'co
 
 export const bulkJobSchema = z.object({
   jobId: z.string(),
-  kind: z.enum(['dues_bulk', 'meter_posting']),
+  kind: z.enum(['dues_bulk', 'meter_posting', 'meter_reversal']),
   status: z.enum(BULK_JOB_STATUSES),
   phase: z.enum(['prepare', 'post', 'finalize']).optional(),
   total: z.number().int(),
@@ -31,6 +31,7 @@ export const bulkJobSchema = z.object({
       exemptCount: z.number().int().optional(),
       vacantCount: z.number().int().optional(),
       posted: z.number().int().optional(),
+      reversed: z.number().int().optional(),
       written: z.number().int().optional(),
       replayed: z.boolean().optional(),
     })
@@ -50,6 +51,9 @@ export const isTerminalJob = (job: Pick<BulkJob, 'status'> | undefined) => !!job
 
 const enc = encodeURIComponent;
 
+/** P1-b: donemin suren / son isi (sayfa yenilense de ilerleme izlenir). */
+export const periodJobSchema = z.object({ job: bulkJobSchema.nullable() });
+
 export const bulkJobsApi = {
   get: (jobId: string, signal?: AbortSignal) => apiClient.get(`/api/jobs/${enc(jobId)}`, { signal, schema: bulkJobSchema }),
   retry: (jobId: string) => apiClient.post(`/api/jobs/${enc(jobId)}/retry`, undefined, { schema: bulkJobSchema }),
@@ -60,6 +64,8 @@ export function progressText(job: Pick<BulkJob, 'processed' | 'total' | 'percent
   if (job.status === 'pending') return 'Sıraya alındı, birazdan başlayacak…';
   if (job.kind === 'meter_posting' && job.phase === 'prepare') return 'Dağıtım yeniden hesaplanıyor ve doğrulanıyor…';
   if (job.kind === 'meter_posting' && job.phase === 'finalize' && job.status === 'running') return 'Tahakkuk yazıldı; özet ve sayaç imleçleri güncelleniyor…';
+  if (job.kind === 'meter_reversal' && job.phase === 'prepare') return 'Geri alma engelleri kontrol ediliyor…';
+  if (job.kind === 'meter_reversal' && job.phase === 'finalize' && job.status === 'running') return 'Ters kayıtlar yazıldı; sayaç imleçleri geri yükleniyor…';
   const fmt = (n: number) => n.toLocaleString('tr-TR');
   return `İşleniyor: ${fmt(job.processed)} / ${fmt(job.total)} bölüm (%${job.percent})`;
 }

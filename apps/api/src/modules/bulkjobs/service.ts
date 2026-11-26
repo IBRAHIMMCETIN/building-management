@@ -27,6 +27,7 @@ import type { Role } from '../../auth/claims.js';
 import type { BulkDuesLine, BulkDuesLineResult, FinanceService } from '../finance/service.js';
 import { MeterError } from '../meters/errors.js';
 import type { MeterPostingService } from '../meters/posting.js';
+import type { MeterReversalService } from '../meters/reversal.js';
 import { BulkJobError } from './errors.js';
 import type { BulkJobQueue } from './queue.js';
 import type { BulkJobRepository } from './repository.js';
@@ -38,6 +39,7 @@ import {
   LINE_CHUNK,
   MAX_FAILURE_SAMPLES,
   type MeterJobParams,
+  type MeterReversalJobParams,
   isTerminal,
 } from './types.js';
 
@@ -85,6 +87,8 @@ export type BulkJobDeps = {
   finance: Pick<FinanceService, 'planBulkJob' | 'postBulkLine' | 'prepareBulkPosting' | 'recordDuesBatchSummary'> &
     Partial<Pick<FinanceService, 'refreshSummaries'>>;
   meters?: Pick<MeterPostingService, 'prepareApproval' | 'postStep' | 'finalizePosting' | 'getPeriod'>;
+  /** P1-b: buyuk sayac doneminin toplu geri alinmasi. */
+  meterReversal?: Pick<MeterReversalService, 'beginReversal' | 'reverseStep' | 'finalizeReversal' | 'getPeriod' | 'parseReverseBody'>;
   now?: () => Date;
   newToken?: () => string;
   options?: Partial<BulkJobOptions>;
@@ -131,7 +135,7 @@ export function jobView(job: BulkJob) {
           return { batchId: d.spec.batchId, description: d.spec.description, date: d.spec.date, dueDate: d.spec.dueDate, totalAmount: d.spec.totalAmount, unitCount: d.unitCount, exemptCount: d.exemptCount, vacantCount: d.vacantCount };
         })()
       : (() => {
-          const m = params as MeterJobParams;
+          const m = params as MeterJobParams | MeterReversalJobParams;
           return { periodId: m.periodId, ...(m.periodName ? { periodName: m.periodName } : {}) };
         })();
   return { ...rest, params: p, percent };
@@ -159,7 +163,7 @@ export function createBulkJobService(deps: BulkJobDeps) {
       jobId,
       kind,
       status: 'pending',
-      ...(kind === 'meter_posting' ? { phase: 'prepare' as const } : {}),
+      ...(kind !== 'dues_bulk' ? { phase: 'prepare' as const } : {}),
       total,
       processed: 0,
       succeeded: 0,
@@ -274,7 +278,7 @@ export function createBulkJobService(deps: BulkJobDeps) {
       failed: 0,
       failures: [],
       cursor: 0,
-      ...(job.kind === 'meter_posting' ? { phase: 'prepare' as const } : {}),
+      ...(job.kind !== 'dues_bulk' ? { phase: 'prepare' as const } : {}),
       updatedAt: stamp(),
       version: job.version + 1,
     };
@@ -374,7 +378,8 @@ export function createBulkJobService(deps: BulkJobDeps) {
     const shouldStop = () => handled >= opt.maxUnitsPerInvocation || budget.remainingMs() < opt.safetyMs;
 
     try {
-      const done = job.kind === 'dues_bulk' ? await runDues(() => job, save, finish, shouldStop, (n) => (handled += n)) : await runMeter(() => job, save, finish, shouldStop, (n) => (handled += n));
+      const run = job.kind === 'dues_bulk' ? runDues : job.kind === 'meter_reversal' ? runMeterReversal : runMeter;
+      const done = await run(() => job, save, finish, shouldStop, (n) => (handled += n));
       if (done) {
         log.info(JSON.stringify({ msg: 'bulk_job_done', jobId: job.jobId, apartmentId: job.apartmentId, kind: job.kind, status: job.status, total: job.total, failed: job.failed, invocations: job.invocations }));
         // P1-a: toplu tahakkuk tum alt carilerin surumunu artirdi; ozetleri worker'da tazele ki
@@ -556,7 +561,108 @@ export function createBulkJobService(deps: BulkJobDeps) {
     return true;
   }
 
-  return { startDues, startMeterPosting, get, retry, handle };
+  // -------------------------------------------------------------------------
+  // P1-b: sayac doneminin toplu geri alinmasi
+  // -------------------------------------------------------------------------
+
+  /** Is kimligi donem + geri alma anahtarindan (ayni anahtar = ayni is). */
+  const meterReversalJobId = (periodId: string, key: string) => `mr-${fingerprintOf({ periodId, key })}`;
+
+  /**
+   * Buyuk donemin geri alinmasi (202). Engel kontrolu ve `reversing` gecisi worker'in ilk adiminda
+   * (`beginReversal`) yapilir; engel varsa is `failed` olur ve engeller `error.details.blockers`'ta.
+   */
+  async function startMeterReversal(ctx: BulkJobContext & { role: Role }, periodId: string, body: unknown) {
+    const reversal = deps.meterReversal;
+    if (!reversal) throw new BulkJobError('unprocessable', 'Sayac geri alma bu ortamda acik degil');
+    const p = reversal.parseReverseBody(body);
+    const period = await reversal.getPeriod(ctx, periodId);
+    if (period.status === 'reversing' || period.status === 'reversed') {
+      if (period.reversal?.key !== p.key) throw new MeterError('conflict', 'Bu dönem başka bir geri alma anahtarıyla geri alınıyor / alınmış');
+    } else if (period.status !== 'posted') {
+      throw new MeterError('unprocessable', 'Yalnızca onaylı dönem geri alınabilir');
+    } else if (p.reason === undefined) {
+      throw new ValidationError('reason zorunludur', 'reason');
+    }
+    const jobId = meterReversalJobId(periodId, p.key);
+    const params: MeterReversalJobParams = { periodId, key: p.key, ...(p.reason !== undefined ? { reason: p.reason } : {}), notify: p.notify, periodName: period.name };
+    const fingerprint = fingerprintOf({ periodId, key: p.key });
+    const existing = await repo.get(ctx.apartmentId, jobId);
+    if (existing) return reuse(existing, fingerprint, 'Bu geri alma anahtarıyla farklı bir iş var');
+    const job = baseJob(ctx, jobId, 'meter_reversal', params, period.chargeCount ?? 0, fingerprint);
+    try {
+      await repo.create(job, []);
+    } catch (err) {
+      if (err instanceof DataAccessError && err.code === 'conflict') {
+        const raced = await repo.get(ctx.apartmentId, jobId);
+        if (raced) return reuse(raced, fingerprint, 'Bu geri alma anahtarıyla farklı bir iş var');
+      }
+      throw err;
+    }
+    await enqueue(job);
+    return { job, created: true };
+  }
+
+  async function runMeterReversal(job: Get, save: Save, finish: Save, shouldStop: () => boolean, count: (n: number) => void): Promise<boolean> {
+    const reversal = deps.meterReversal;
+    if (!reversal) throw new BulkJobError('unprocessable', 'Sayac geri alma bu ortamda acik degil');
+    const j = job();
+    const params = j.params as MeterReversalJobParams;
+    const ctx = { apartmentId: j.apartmentId, userId: j.createdBy, role: j.createdByRole ?? ('apartment_manager' as Role) };
+    const body = { idempotencyKey: params.key, ...(params.reason !== undefined ? { reason: params.reason } : {}), notify: params.notify };
+
+    if (!j.phase || j.phase === 'prepare') {
+      const begun = await reversal.beginReversal(ctx, params.periodId, body);
+      if (begun.kind === 'reversed') {
+        const n = begun.period.reversal?.reversedCount ?? 0;
+        await finish({ status: 'completed', phase: 'finalize', total: n, processed: n, succeeded: n, result: { reversed: n, written: 0, replayed: true } });
+        return true;
+      }
+      await save({ phase: 'post', total: begun.period.chargeCount ?? j.total });
+    }
+
+    if (job().phase === 'post') {
+      for (;;) {
+        if (shouldStop()) return false;
+        const period = await reversal.getPeriod(ctx, params.periodId);
+        if (period.status === 'reversed') break;
+        const step = await reversal.reverseStep(ctx, period, { maxUnits: opt.batchSize * 4, batchSize: opt.batchSize, concurrency: opt.concurrency, shouldStop });
+        count(step.processed);
+        const cur = job();
+        await save({ total: step.total, processed: step.reversed, succeeded: step.reversed, cursor: step.reversed, written: cur.written + step.written });
+        if (step.pending === 0) break;
+        if (step.processed === 0) return false; // sure doldu
+      }
+      await save({ phase: 'finalize' });
+    }
+
+    const period = await reversal.getPeriod(ctx, params.periodId);
+    const done = await reversal.finalizeReversal(ctx, period, { written: job().written });
+    await finish({ status: 'completed', processed: done.reversed, succeeded: done.reversed, total: done.reversed, result: { reversed: done.reversed, written: job().written, replayed: false } });
+    return true;
+  }
+
+  /**
+   * P1-b: sayac doneminin suren (veya son) arka plan isi. Sayfa yenilendiginde istemci donemin
+   * durumundan isi bulur ve ilerlemeyi kaldigi yerden izler. Is kimligi deterministik oldugu icin
+   * ek kayit gerekmez: onay `mp-<donem+calcHash>`, geri alma `mr-<donem+anahtar>`.
+   */
+  async function findMeterJob(
+    ctx: BulkJobContext,
+    period: { periodId: string; status: string; calc?: { hash: string }; reversal?: { key: string } },
+  ): Promise<BulkJob | undefined> {
+    const ids: string[] = [];
+    // `calculated`: is kuyrukta, worker henuz `prepare` adimini calistirmadi.
+    if ((period.status === 'calculated' || period.status === 'posting' || period.status === 'posted') && period.calc?.hash) ids.push(`mp-${fingerprintOf({ periodId: period.periodId, calcHash: period.calc.hash })}`);
+    if ((period.status === 'reversing' || period.status === 'reversed') && period.reversal?.key) ids.unshift(meterReversalJobId(period.periodId, period.reversal.key));
+    for (const id of ids) {
+      const job = await repo.get(ctx.apartmentId, id);
+      if (job) return job;
+    }
+    return undefined;
+  }
+
+  return { startDues, startMeterPosting, startMeterReversal, findMeterJob, get, retry, handle };
 }
 
 export type BulkJobService = ReturnType<typeof createBulkJobService>;

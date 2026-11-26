@@ -13,7 +13,8 @@
  *     son onayli endeks / tuketim imleci ve donem `posted`.
  *  4. Kurus mutabakat kilidi: yazimdan once (ve her devamda) satir toplami = fatura tutari.
  */
-import type { AuditDraft } from '../audit/log.js';
+import { type AuditDraft, contentionBackoffMs } from '../audit/log.js';
+import { DataAccessError } from '../../config/dynamodb.js';
 import { mapLimit } from '../core/concurrency.js';
 import { type CoreRepository, coreRepository } from '../core/repository.js';
 import { type LiableParty, type Unit, toKurus } from '../core/types.js';
@@ -40,8 +41,8 @@ export type MeterPostingServiceDeps = {
   core: Pick<CoreRepository, 'listUnits'>;
   memberships: Pick<MembershipRepository, 'list'>;
   closures: Pick<ClosureRepository, 'list'>;
-  financeRepo: Pick<FinanceRepository, 'getAccount'>;
-  ownership?: Pick<OwnershipReader, 'ownerSplitOn'>;
+  financeRepo: Pick<FinanceRepository, 'getAccount'> & Partial<Pick<FinanceRepository, 'listAccounts'>>;
+  ownership?: Pick<OwnershipReader, 'ownerSplitOn'> & Partial<Pick<OwnershipReader, 'splitUnits'>>;
   finance: Pick<FinanceService, 'chargeMeterLine' | 'recordDuesBatchSummary'>;
   now: () => Date;
 };
@@ -57,6 +58,23 @@ export const MAX_POSTING_UNITS = 5000;
 export const SYNC_POSTING_UNITS = 60;
 /** Borclu cozumleme ve kalem yazimindaki eszamanlilik (sicak gelir hesabi icin sinirli). */
 const RESOLVE_CONCURRENCY = 16;
+/** Kalem basina gecici hata (cekisme / kisitlama) denemesi; is mantigi hatasi tekrar denenmez. */
+const LINE_ATTEMPTS = 4;
+
+/** Gecici depo hatasi mi? (kisitlama, cekisme, ag) Is kurali catismasi (409) degil. */
+const isTransient = (err: unknown) => err instanceof DataAccessError && err.code !== 'conflict' && err.code !== 'not_found';
+
+/** Gecici hatada ustel bekleme + jitter ile tekrar dener (eszamanli kalemler ayni anda carpismasin). */
+export async function withTransientRetry<T>(fn: () => Promise<T>, attempts = LINE_ATTEMPTS): Promise<T> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      if (!isTransient(err) || attempt >= attempts) throw err;
+      await new Promise((r) => setTimeout(r, contentionBackoffMs(attempt)));
+    }
+  }
+}
 
 const CATEGORY_LABEL: Record<TemplateCategory, string> = { heating: 'Isınma', hot_water: 'Sıcak su', cold_water: 'Su' };
 
@@ -121,7 +139,16 @@ export function createMeterPostingService(overrides: Partial<MeterPostingService
   // -------------------------------------------------------------------------
 
   async function liabilityResolver(ctx: MeterContext, period: MeterPeriod) {
-    const [members, closures] = await Promise.all([deps.memberships.list(ctx.apartmentId), deps.closures.list(ctx.apartmentId)]);
+    // P1-b: bolum basina okumalar (cari + hisseli mulkiyet sicili) yerine bir kez: hesaplar tek
+    // tutarli sorguyla, `split` faturalamali bolumler tek dizin sorgusuyla. `ownerSplitOn` yalnizca
+    // guncel faturalamasi `split` olan bolumde pay doner (ayni kosul), bu yuzden sonuc birebir aynidir.
+    const [members, closures, accountList, splitSet] = await Promise.all([
+      deps.memberships.list(ctx.apartmentId),
+      deps.closures.list(ctx.apartmentId),
+      deps.financeRepo.listAccounts ? deps.financeRepo.listAccounts(ctx.apartmentId) : Promise.resolve(undefined),
+      deps.ownership?.splitUnits ? deps.ownership.splitUnits(ctx.apartmentId) : Promise.resolve(undefined),
+    ]);
+    const accountById = accountList ? new Map(accountList.map((a) => [a.accountId, a])) : undefined;
     const mine = members.filter((m) => m.apartmentId === ctx.apartmentId);
     const date = period.accrualDate;
     const requested = period.template.liableParty;
@@ -129,7 +156,7 @@ export function createMeterPostingService(overrides: Partial<MeterPostingService
     return async (unitId: string): Promise<LineLiability | Blocker> => {
       const target = requested === 'occupant' ? liablePartyFor('occupant', occupancyOn(mine, unitId, date)) : { party: 'owner' as LiableParty, vacant: false };
       const mainId = mainReceivableId(unitId, target.party);
-      const main = await deps.financeRepo.getAccount(ctx.apartmentId, mainId);
+      const main = accountById ? accountById.get(mainId) : await deps.financeRepo.getAccount(ctx.apartmentId, mainId);
       if (main?.closedThrough && main.closedThrough >= date) {
         // Donem sonundaki sorumlunun carisi tasinma kapamasiyla kapatilmis: o kapamanin ayrilan carisi.
         const closure = closures
@@ -146,7 +173,7 @@ export function createMeterPostingService(overrides: Partial<MeterPostingService
           former: { closureId: closure.closureId, sourceAccountId: mainId, userIds: closure.userIds, periodEnd: closure.moveOutDate },
         };
       }
-      if (target.party === 'owner' && deps.ownership) {
+      if (target.party === 'owner' && deps.ownership && (!splitSet || splitSet.has(unitId))) {
         const owners = await deps.ownership.ownerSplitOn(ctx.apartmentId, unitId, date);
         if (owners?.length) return { party: 'owner', vacant: target.vacant, kind: 'split' };
       }
@@ -429,7 +456,9 @@ export function createMeterPostingService(overrides: Partial<MeterPostingService
       const slice = todo.slice(i, i + batchSize);
       const updated = await mapLimit(slice, opts.concurrency ?? 1, async (line): Promise<MeterWrite> => {
         const f = line.liability.former;
-        const r = await deps.finance.chargeMeterLine(
+        // P1-b: kalem yazimi idempotent (`MDP_<donem>_<bolum>`); gecici cekismede kalem duzeyinde
+        // tekrar denenir, parca (ve toplu is) bastan oynatilmaz.
+        const r = await withTransientRetry(() => deps.finance.chargeMeterLine(
           { apartmentId: ctx.apartmentId, userId: ctx.userId },
           {
             idemId: `MDP_${period.periodId}_${line.unitId}`,
@@ -447,7 +476,7 @@ export function createMeterPostingService(overrides: Partial<MeterPostingService
               ? { former: { closureId: f.closureId, sourceAccountId: f.sourceAccountId, userIds: f.userIds, periodEnd: f.periodEnd, unitNumber: line.unitNumber ?? line.unitId } }
               : {}),
           },
-        );
+        ));
         if (!r.replayed) written++;
         const next: MeterLine = {
           ...line,
