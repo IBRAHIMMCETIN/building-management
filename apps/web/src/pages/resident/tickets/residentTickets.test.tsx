@@ -135,4 +135,28 @@ describe('yeni talep sihirbazi', () => {
     expect(create.mutateAsync).toHaveBeenCalledWith(expect.objectContaining({ title: 'Asansör katta durmuyor', category: 'elevator', location: { kind: 'common', area: 'B blok asansörü' } }));
     expect(navigate).toHaveBeenCalledWith('/app/talepler/new-1', { replace: true });
   });
+
+  it('daire ici: yalnizca daireye uygun kategoriler; ortak alan kategorileri listelenmez', async () => {
+    similar = [];
+    await render(<NewTicketWizard />);
+    await click(byText('Daire içi'));
+    await click(byText('Devam'));
+    const labels = [...container.querySelectorAll('[role="radiogroup"][aria-label="Kategori"] button')].map((b) => b.textContent);
+    expect(labels).toEqual(['Su / tesisat', 'Elektrik', 'Isınma', 'Yapı / kapı / pencere', 'Güvenlik / diyafon', 'Diğer']);
+    for (const common of ['Asansör', 'Havuz', 'Otopark', 'Bahçe', 'Hidrofor', 'Jeneratör']) expect(labels).not.toContain(common);
+  });
+
+  it('ortak alanda secilen kategori daire icine donulunce temizlenir', async () => {
+    similar = [];
+    await render(<NewTicketWizard />);
+    await click(byText('Ortak alan'));
+    await type(container.querySelector('input'), 'Otopark girişi');
+    await click(byText('Devam'));
+    await click(byText('Otopark'));
+    await click(byText('Geri'));
+    await click(byText('Daire içi'));
+    await click(byText('Devam'));
+    expect(container.querySelector('[role="radio"][aria-checked="true"]')).toBeNull();
+    expect(byText('Devam')?.disabled).toBe(true);
+  });
 });

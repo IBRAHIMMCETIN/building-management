@@ -81,3 +81,21 @@ describe('sayac dagitimi menusu (Finans 2.3)', () => {
     expect(paths('platform_admin')).not.toContain('/admin/meters');
   });
 });
+
+describe('bina gorevlisi ve guvenlik menu izolasyonu', () => {
+  it('bina gorevlisi yalnizca Genel Bakis, Islerim, Ariza & Bakim ve Sayac Okuma gorur', () => {
+    expect(navItemsFor('building_staff').map((n) => n.label)).toEqual(['Genel Bakış', 'İşlerim', 'Arıza & Bakım', 'Sayaç Okuma']);
+  });
+
+  it('guvenlik yalnizca Genel Bakis ve Ariza & Bakim gorur', () => {
+    expect(navItemsFor('security_guard').map((n) => n.to)).toEqual(['/admin', '/admin/tickets']);
+  });
+
+  it('ofis ekranlari yonetici, yonetim firmasi ve denetciye acik kalir', () => {
+    for (const role of ['apartment_manager', 'management_company', 'observer'] as const) {
+      expect(navItemsFor(role).map((n) => n.to)).toEqual(
+        expect.arrayContaining(['/admin/units', '/admin/finance', '/admin/announcements', '/admin/import', '/admin/settings']),
+      );
+    }
+  });
+});

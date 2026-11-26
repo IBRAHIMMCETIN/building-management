@@ -36,6 +36,27 @@ export const CATEGORY_LABELS: Record<TicketCategory, string> = {
   other: 'Diğer',
 };
 
+/**
+ * Daire ici talepte anlamli kategoriler (sakin sihirbazi). Asansor, havuz, otopark, bahce,
+ * hidrofor, jenerator ve temizlik yalnizca ortak alan icindir. `security` daire icinde
+ * diyafon / kapi guvenligi demektir.
+ */
+export const UNIT_CATEGORIES = ['plumbing', 'electrical', 'heating', 'structural', 'security', 'other'] as const satisfies readonly TicketCategory[];
+
+export type TicketLocationKind = 'unit' | 'common';
+
+/** Konuma gore secilebilir kategoriler: daire ici kisitli liste, ortak alan tum liste. */
+export function categoriesForLocation(kind: TicketLocationKind): readonly TicketCategory[] {
+  return kind === 'unit' ? UNIT_CATEGORIES : TICKET_CATEGORIES;
+}
+
+/** Konuma ozel etiket: daire icinde "Guvenlik / diyafon", "Yapi / kapi / pencere". */
+export function categoryLabelFor(category: TicketCategory, kind: TicketLocationKind): string {
+  if (kind === 'unit' && category === 'security') return 'Güvenlik / diyafon';
+  if (kind === 'unit' && category === 'structural') return 'Yapı / kapı / pencere';
+  return CATEGORY_LABELS[category];
+}
+
 export const TICKET_PRIORITIES = ['low', 'normal', 'high', 'urgent'] as const;
 export type TicketPriority = (typeof TICKET_PRIORITIES)[number];
 export const PRIORITY_LABELS: Record<TicketPriority, string> = { low: 'Düşük', normal: 'Normal', high: 'Yüksek', urgent: 'Acil' };

@@ -96,7 +96,9 @@ export type AppConfig = {
   /** Denetim gunlugu okuyucu (`GET /api/audit`). */
   auditReader?: AuditReader;
   /** Gecelik zincir dogrulamasinin kontrol noktalari (`GET /api/audit/integrity`). */
-  auditCheckpoints?: Pick<CheckpointStore, 'get'>;
+  auditCheckpoints?: Pick<CheckpointStore, 'get'> & Partial<Pick<CheckpointStore, 'put'>>;
+  /** Denetim uclarinin saati (test). */
+  auditNow?: () => Date;
   /** EMF metrikleri (Lambda: `createEmfEmitterFromEnv`); verilmezse yayinlanmaz. */
   metrics?: MetricsEmitter;
   /** Kullanici bildirim tercihleri (`/api/me/notification-preferences`). */
@@ -186,6 +188,7 @@ export function createApp(config: AppConfig) {
       authenticate,
       ...(config.auditReader ? { reader: config.auditReader } : {}),
       ...(config.auditCheckpoints ? { checkpoints: config.auditCheckpoints } : {}),
+      ...(config.auditNow ? { now: config.auditNow } : {}),
     }),
   );
   app.route('/api/support/sessions', supportRoutes({ authenticate, service: supportService }));

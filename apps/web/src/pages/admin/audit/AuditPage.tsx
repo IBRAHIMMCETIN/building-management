@@ -1,9 +1,9 @@
 import { useQuery } from '@tanstack/react-query';
-import { CircleAlert, CircleCheck, CircleHelp, Filter, Link2, ScrollText, ShieldCheck, ShieldQuestion } from 'lucide-react';
+import { CircleAlert, CircleCheck, CircleHelp, Filter, Link2, RefreshCw, ScrollText, ShieldCheck, ShieldQuestion } from 'lucide-react';
 import { type FormEvent, type ReactNode, useMemo, useState } from 'react';
 import { Alert, Badge, Button, Card, Dialog, FormField, Input, Select, Skeleton } from '@/components/ui';
 import { useAuth } from '@/hooks/useAuth';
-import { useAuditIntegrity, useAuditLog, useAuditScope, usePageVerification } from '@/hooks/useSecurity';
+import { useAuditIntegrity, useAuditLog, useAuditScope, usePageVerification, useVerifyAuditChain } from '@/hooks/useSecurity';
 import { usePeople } from '@/hooks/useUnits';
 import { apartmentRolesApi } from '@/lib/api/apartmentRoles';
 import type { AuditEntry, AuditFilters, AuditIntegrity } from '@/lib/api/audit';
@@ -26,21 +26,51 @@ export function dayRangeToFilters(input: { fromDay: string; toDay: string; actio
 const INTEGRITY_TEXT: Record<AuditIntegrity['status'], { tone: 'success' | 'warning' | 'danger' | 'neutral'; label: string }> = {
   verified: { tone: 'success', label: 'Zincir doğrulandı' },
   pending: { tone: 'neutral', label: 'Gece doğrulaması bekleniyor' },
-  stale: { tone: 'danger', label: 'Doğrulama güncel değil' },
+  stale: { tone: 'warning', label: 'Doğrulama güncel değil' },
   empty: { tone: 'neutral', label: 'Henüz kayıt yok' },
 };
 
-function IntegrityPanel({ integrity, page }: { integrity?: AuditIntegrity; page?: PageCheck }) {
+type VerifyState = { checked: number; findings: number; skipped?: string } | { error: string } | undefined;
+
+function VerifyResult({ state }: { state: VerifyState }) {
+  if (!state) return null;
+  if ('error' in state) return <p className="text-small text-danger">{state.error}</p>;
+  if (state.findings > 0) {
+    return (
+      <p className="text-small text-danger">
+        Doğrulamada {state.findings} tutarsızlık tespit edildi. Kayıtlar değiştirilemez; inceleme için destek ekibimizle iletişime
+        geçebilirsiniz.
+      </p>
+    );
+  }
+  if (state.skipped === 'recently_verified') return <p className="text-small text-success">Zincir az önce doğrulandı; kayıtlar güncel.</p>;
+  return (
+    <p className="text-small text-success">
+      Doğrulama tamamlandı{state.checked > 0 ? ` (${state.checked} yeni kayıt kontrol edildi)` : ''}; tutarsızlık bulunmadı.
+    </p>
+  );
+}
+
+export function IntegrityPanel({ integrity, page, canVerify = false }: { integrity?: AuditIntegrity; page?: PageCheck; canVerify?: boolean }) {
   const s = integrity ? INTEGRITY_TEXT[integrity.status] : undefined;
+  const verify = useVerifyAuditChain();
+  const [result, setResult] = useState<VerifyState>();
+  const runVerify = () => {
+    setResult(undefined);
+    verify.mutate(undefined, {
+      onSuccess: (r) => setResult({ checked: r.checked, findings: r.findings, ...(r.skipped ? { skipped: r.skipped } : {}) }),
+      onError: (err) => setResult({ error: errorMessage(err) }),
+    });
+  };
   return (
     <Card className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-      <div className="flex items-start gap-3">
+      <div className="flex min-w-0 items-start gap-3">
         {integrity?.status === 'stale' ? (
-          <ShieldQuestion className="mt-0.5 size-5 shrink-0 text-danger" aria-hidden="true" />
+          <ShieldQuestion className="mt-0.5 size-5 shrink-0 text-warning" aria-hidden="true" />
         ) : (
           <ShieldCheck className="mt-0.5 size-5 shrink-0 text-accent" aria-hidden="true" />
         )}
-        <div className="flex flex-col gap-1">
+        <div className="flex min-w-0 flex-col gap-1">
           <div className="flex flex-wrap items-center gap-2">
             <span className="font-medium">SHA-256 hash zinciri</span>
             {s && <Badge tone={s.tone}>{s.label}</Badge>}
@@ -49,32 +79,41 @@ function IntegrityPanel({ integrity, page }: { integrity?: AuditIntegrity; page?
             <p className="text-small text-muted">
               Son kayıt #{integrity.latestSeq}
               {integrity.verifiedAt
-                ? ` · gece doğrulaması #${integrity.verifiedSeq} kaydına kadar, ${formatDateTime(integrity.verifiedAt)}`
-                : ' · henüz gece doğrulaması yapılmadı'}
+                ? ` · otomatik doğrulama #${integrity.verifiedSeq} kaydına kadar, ${formatDateTime(integrity.verifiedAt)}`
+                : ' · henüz otomatik doğrulama yapılmadı'}
             </p>
           )}
           {integrity?.status === 'stale' && (
-            <p className="text-small text-danger">
-              Son başarılı doğrulama {integrity.staleAfterHours} saatten eski. Gece denetimi çalışmıyor olabilir veya zincirde
-              bulgu vardır; platform ekibi alarmı inceliyor.
+            <p className="text-small text-text-secondary" data-testid="stale-note">
+              Zincirin otomatik doğrulaması son {integrity.staleAfterHours} saat içinde tamamlanmadı. Görüntülenen kayıtlar tarayıcınızda
+              ayrıca doğrulanır{canVerify ? '; dilerseniz zinciri şimdi doğrulatabilirsiniz.' : '.'}
             </p>
           )}
+          <VerifyResult state={result} />
         </div>
       </div>
-      <div className="text-small" aria-live="polite" data-testid="page-check">
-        {page ? (
-          page.ok ? (
-            <span className="inline-flex items-center gap-1 text-success">
-              <CircleCheck className="size-4" aria-hidden="true" />
-              Görüntülenen {page.checked} kayıt tarayıcıda doğrulandı
-            </span>
-          ) : (
-            <span className="inline-flex items-center gap-1 text-danger">
-              <CircleAlert className="size-4" aria-hidden="true" />
-              {page.failures} kayıt doğrulanamadı
-            </span>
-          )
-        ) : null}
+      <div className="flex shrink-0 flex-col items-start gap-2 text-small sm:items-end">
+        <div aria-live="polite" data-testid="page-check">
+          {page ? (
+            page.ok ? (
+              <span className="inline-flex items-center gap-1 text-success">
+                <CircleCheck className="size-4" aria-hidden="true" />
+                Görüntülenen {page.checked} kayıt tarayıcıda doğrulandı
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1 text-danger">
+                <CircleAlert className="size-4" aria-hidden="true" />
+                {page.failures} kayıt doğrulanamadı
+              </span>
+            )
+          ) : null}
+        </div>
+        {canVerify && integrity && integrity.status !== 'empty' && (
+          <Button variant="secondary" size="sm" onClick={runVerify} loading={verify.isPending}>
+            {!verify.isPending && <RefreshCw className="size-4" aria-hidden="true" />}
+            Zinciri şimdi doğrula
+          </Button>
+        )}
       </div>
     </Card>
   );
@@ -172,6 +211,10 @@ export function AuditPage() {
   const integrity = useAuditIntegrity();
   const people = usePeople();
   // Yonetici / gorevli aktorler sakin dizininde yok: gorev rolleri (gorunen ad) + oturumdaki kullanici.
+  // Zinciri elle dogrulatma: apartman yoneticisi / yonetim firmasi (kendi zinciri) veya dogrudan platform yoneticisi.
+  const canVerify =
+    !support &&
+    (scope === 'platform' ? user?.role === 'platform_admin' : user?.role === 'apartment_manager' || user?.role === 'management_company');
   const canReadRoles = scope === 'apartment' && !support && (user?.role === 'apartment_manager' || user?.role === 'management_company' || user?.role === 'observer');
   const roles = useQuery({
     queryKey: ['apartment-roles', 'current', user?.apartmentId],
@@ -209,7 +252,7 @@ export function AuditPage() {
         </p>
       </div>
 
-      <IntegrityPanel integrity={integrity.data} page={page} />
+      <IntegrityPanel integrity={integrity.data} page={page} canVerify={canVerify} />
       {integrity.isError && <Alert tone="danger">{errorMessage(integrity.error)}</Alert>}
 
       <Card>

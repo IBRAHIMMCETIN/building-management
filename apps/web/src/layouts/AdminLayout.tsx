@@ -88,8 +88,12 @@ export function AdminLayout() {
         <AdminNav />
       </aside>
 
-      <div className="flex min-w-0 flex-1 flex-col">
-        <header className="sticky top-0 z-10 flex h-16 items-center justify-between gap-2 border-b border-border bg-surface px-2 sm:px-4 md:justify-end md:px-8">
+      {/*
+        Icerik sutunu: min-w-0 + overflow-x-clip -> genis tablo / cekmece icerigi sutunu ve ust bari
+        genisletemez (clip, hidden'in aksine kaydirma kutusu acmaz; sticky header calismaya devam eder).
+      */}
+      <div className="flex min-w-0 flex-1 flex-col overflow-x-clip">
+        <header className="sticky top-0 z-10 flex h-16 w-full min-w-0 items-center justify-between gap-2 overflow-x-hidden border-b border-border bg-surface px-2 sm:px-4 md:justify-end md:px-6 lg:px-8">
           <div className="flex min-w-0 shrink items-center gap-1 md:hidden">
             <button
               type="button"
@@ -103,11 +107,11 @@ export function AdminLayout() {
             </button>
             <span className="truncate font-semibold">{panelTitleFor(user?.role)}</span>
           </div>
-          <UserMenu />
+          <UserMenu sidebar />
         </header>
         <SupportBanner />
         <MfaGraceBanner />
-        <main className="mx-auto w-full max-w-page flex-1 px-4 py-8 md:px-8">
+        <main className="mx-auto w-full min-w-0 max-w-page flex-1 px-4 py-8 md:px-8">
           <Outlet />
         </main>
       </div>

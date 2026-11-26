@@ -5,7 +5,15 @@ import { type Env, authenticateWith, handleError } from '../../http/helpers.js';
 import { ValidationError } from '../core/validation.js';
 import { maskIp, runWithRequestContext, truncateUserAgent } from './context.js';
 import { type AuditEntry, PLATFORM_SCOPE, auditScope } from './log.js';
-import { type AuditReader, type CheckpointStore, createAuditReader, createDynamoCheckpointStore, readIntegrity } from './repository.js';
+import {
+  type AuditReader,
+  type ChainVerification,
+  type CheckpointStore,
+  createAuditReader,
+  createDynamoCheckpointStore,
+  readIntegrity,
+  verifyAuditScope,
+} from './repository.js';
 
 /** Denetim gunlugunu okuyabilen roller (yalnizca kendi apartmani; platform: destek oturumuyla). */
 export const AUDIT_READ_ROLES: readonly Role[] = ['apartment_manager', 'management_company', 'observer'];
@@ -33,6 +41,12 @@ function resolveScope(c: Context<Env>): { scope: string } | { error: Response } 
   if (!claims.apartmentId) return { error: c.json({ error: 'forbidden', message: 'Apartman baglami gerekli' }, 403) };
   return { scope: auditScope(claims.apartmentId) };
 }
+
+/** Zinciri elle dogrulatabilen roller (gozlemci salt okunur oldugundan haric). */
+export const AUDIT_VERIFY_ROLES: readonly Role[] = ['apartment_manager', 'management_company'];
+
+/** Ayni kapsam icin art arda elle dogrulama arasindaki en kisa sure (kontrol noktasi tazeyse tekrar calismaz). */
+export const MANUAL_VERIFY_COOLDOWN_SECONDS = 60;
 
 const ISO_DATETIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,3})?)?(Z|[+-]\d{2}:\d{2})$/;
 const ACTION = /^[a-z_]+(\.[a-z_+]+)*\.?$/;
@@ -66,12 +80,23 @@ export function auditRoutes({
   reader = createAuditReader(),
   checkpoints = createDynamoCheckpointStore(),
   now = () => new Date(),
+  verify,
 }: {
   authenticate: Authenticator;
   reader?: AuditReader;
-  checkpoints?: Pick<CheckpointStore, 'get'>;
+  checkpoints?: Pick<CheckpointStore, 'get'> & Partial<Pick<CheckpointStore, 'put'>>;
   now?: () => Date;
+  /** Elle dogrulama (varsayilan: gecelik isle ayni artimli `verifyAuditScope`). */
+  verify?: (scope: string) => Promise<ChainVerification>;
 }) {
+  const runVerify =
+    verify ??
+    ((scope: string) => {
+      const store: CheckpointStore = checkpoints.put
+        ? { get: checkpoints.get.bind(checkpoints), put: checkpoints.put.bind(checkpoints) }
+        : createDynamoCheckpointStore();
+      return verifyAuditScope(scope, { reader, checkpoints: store, now });
+    });
   const r = new Hono<Env>();
   r.onError(handleError);
   r.use('*', authenticateWith(authenticate));
@@ -81,6 +106,42 @@ export function auditRoutes({
     if ('error' in resolved) return resolved.error;
     c.header('cache-control', 'no-store');
     return c.json(await readIntegrity(resolved.scope, { reader, checkpoints, now }));
+  });
+
+  /**
+   * `POST /api/audit/verify?scope=` - zinciri gece isini beklemeden dogrular (artimli, kontrol
+   * noktasindan sonrasi). Bulgu yoksa kontrol noktasi ilerler; bulguda ilerlemez ve sonuc
+   * `findings > 0` doner (ayrinti yalnizca loglarda / platform alarminda).
+   * Yalnizca yonetici rolleri; destek oturumu (salt okunur) ve gozlemci cagiramaz.
+   */
+  r.post('/verify', async (c) => {
+    const resolved = resolveScope(c);
+    if ('error' in resolved) return resolved.error;
+    const claims: AuthClaims = c.get('claims');
+    if (claims.supportSessionId) return c.json({ error: 'forbidden', message: 'Destek oturumu salt okunurdur' }, 403);
+    if (resolved.scope !== PLATFORM_SCOPE && !AUDIT_VERIFY_ROLES.includes(claims.role)) {
+      return c.json({ error: 'forbidden', message: 'Zinciri doğrulatma yetkiniz yok' }, 403);
+    }
+    c.header('cache-control', 'no-store');
+    const current = await checkpoints.get(resolved.scope);
+    const fresh = current && now().getTime() - Date.parse(current.verifiedAt) < MANUAL_VERIFY_COOLDOWN_SECONDS * 1000;
+    if (fresh) {
+      const integrity = await readIntegrity(resolved.scope, { reader, checkpoints, now });
+      if (integrity.status === 'verified') return c.json({ checked: 0, findings: 0, skipped: 'recently_verified', integrity });
+    }
+    const result = await runVerify(resolved.scope);
+    const line = {
+      level: result.findings.length > 0 ? 'error' : 'info',
+      msg: 'audit_chain_manual_verify',
+      scope: resolved.scope,
+      actorId: claims.userId,
+      checked: result.checked,
+      findings: result.findings,
+    };
+    if (result.findings.length > 0) console.error(JSON.stringify(line));
+    else console.info(JSON.stringify(line));
+    const integrity = await readIntegrity(resolved.scope, { reader, checkpoints, now });
+    return c.json({ checked: result.checked, findings: result.findings.length, integrity });
   });
 
   r.get('/', async (c) => {

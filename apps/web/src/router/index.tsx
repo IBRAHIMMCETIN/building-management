@@ -36,7 +36,7 @@ import { ResidentHomePage } from '@/pages/resident/ResidentHomePage';
 import { MyTicketDetailPage } from '@/pages/resident/tickets/MyTicketDetailPage';
 import { MyTicketsPage } from '@/pages/resident/tickets/MyTicketsPage';
 import { NewTicketWizard } from '@/pages/resident/tickets/NewTicketWizard';
-import { ADMIN_ROLES, APARTMENT_ADMIN_ROLES, AUDIT_ROLES, METER_READING_ROLES, METER_ROLES, MY_TASKS_ROLES, PLATFORM_ROLES, RESIDENT_ROLES, SECURITY_ROLES, TEAM_ROLES, TICKET_ROLES } from '@/types/roles';
+import { ADMIN_ROLES, APARTMENT_ADMIN_ROLES, AUDIT_ROLES, METER_READING_ROLES, METER_ROLES, MY_TASKS_ROLES, OFFICE_ROLES, PLATFORM_ROLES, RESIDENT_ROLES, SECURITY_ROLES, TEAM_ROLES, TICKET_ROLES } from '@/types/roles';
 import { RedirectIfAuthenticated, RequireRole, RequireSession, RootRedirect } from './guards';
 
 export const router = createBrowserRouter([
@@ -81,8 +81,12 @@ export const router = createBrowserRouter([
               {
                 // Apartmana ozel ekranlar; platform yoneticisi kendi acilis sayfasina yonlenir.
                 element: <RequireRole roles={APARTMENT_ADMIN_ROLES} redirectHome />,
+                children: [{ index: true, element: <DashboardPage /> }],
+              },
+              {
+                // Ofis ekranlari: bina gorevlisi / guvenlik dogrudan URL ile girerse Genel Bakis'a doner.
+                element: <RequireRole roles={OFFICE_ROLES} redirectHome />,
                 children: [
-                  { index: true, element: <DashboardPage /> },
                   { path: 'units', element: <UnitsPage /> },
                   { path: 'finance', element: <FinancePage /> },
                   { path: 'announcements', element: <AnnouncementsPage /> },

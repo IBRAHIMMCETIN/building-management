@@ -1,7 +1,9 @@
-import { Gauge, Home, Megaphone, Receipt, Wrench } from 'lucide-react';
+import { Building2, Gauge, Home, Megaphone, Receipt, Wrench } from 'lucide-react';
 import type { ComponentType } from 'react';
 import { NavLink, Outlet } from 'react-router';
 import { PortalUnitProvider } from '@/context/PortalUnitContext';
+import { useActiveApartmentName } from '@/hooks/useActiveContextLabel';
+import { BRAND_NAME } from '@/lib/brand';
 import { cn } from '@/lib/cn';
 import { UserMenu } from './UserMenu';
 
@@ -15,12 +17,26 @@ const NAV: NavItem[] = [
   { to: '/app/announcements', label: 'Duyurular', icon: Megaphone },
 ];
 
+/**
+ * Sol ust marka: aktif sitenin adi (baglam listesi yuklenince), yoksa urun markasi. Uzun site
+ * adlari kesilir; UserMenu dugmeleri daralmaz.
+ */
+export function PortalBrand() {
+  const siteName = useActiveApartmentName();
+  return (
+    <div className="flex min-w-0 items-center gap-2" title={siteName ? `${siteName} · ${BRAND_NAME}` : BRAND_NAME}>
+      <Building2 className="size-5 shrink-0 text-accent" aria-hidden="true" />
+      <span className="truncate font-semibold">{siteName ?? BRAND_NAME}</span>
+    </div>
+  );
+}
+
 /** Mobil oncelikli: ust bar + altta sekme cubugu (PWA'da ana ekrandan acilinca da rahat). */
 export function ResidentLayout() {
   return (
     <div className="flex min-h-dvh flex-col">
-      <header className="sticky top-0 z-10 flex h-14 items-center justify-between border-b border-border bg-surface px-4">
-        <span className="font-semibold">Aidat Yönetim</span>
+      <header className="sticky top-0 z-10 flex h-14 min-w-0 items-center justify-between gap-3 border-b border-border bg-surface px-4">
+        <PortalBrand />
         <UserMenu />
       </header>
 

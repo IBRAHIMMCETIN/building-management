@@ -242,6 +242,18 @@ export function createWorkCostService(deps: WorkCostServiceDeps) {
   // Masraf ekleme / baglama
   // -------------------------------------------------------------------------
 
+  /** `add` icin `recharge: { liableParty, dueDate }` - yalnizca daire ici talepte. */
+  function parseInlineRecharge(kind: WorkKind, t: Target, raw: unknown): { liableParty: LiableParty; dueDate: string } {
+    if (kind !== 'ticket' || !t.unitId) throw new FinanceError('unprocessable', 'Yalnizca daire ici talebin masrafi daireye yansitilabilir');
+    const r = asObject(raw);
+    const liableParty = reqEnum(r, 'liableParty', ['owner', 'occupant'] as const) as LiableParty;
+    const dueDate = r.dueDate;
+    if (typeof dueDate !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(dueDate) || Number.isNaN(Date.parse(`${dueDate}T00:00:00Z`))) {
+      throw new ValidationError('recharge.dueDate YYYY-AA-GG olmali', 'recharge.dueDate');
+    }
+    return { liableParty, dueDate };
+  }
+
   async function add(ctx: WorkCostContext, kind: WorkKind, id: string, body: unknown) {
     const o = asObject(body);
     const mode = reqEnum(o, 'mode', ['expense', 'link'] as const) as CostMode;
@@ -251,7 +263,9 @@ export function createWorkCostService(deps: WorkCostServiceDeps) {
     const work = { type: kind, id, label: t.label };
 
     if (mode === 'expense') {
-      const { mode: _m, ...rest } = o;
+      const { mode: _m, recharge: rawRecharge, ...rest } = o;
+      // Istege bagli tek adimda daireye yansitma: gider kaydindan ONCE dogrulanir (yarim is kalmasin).
+      const recharge = rawRecharge === undefined || rawRecharge === null ? undefined : parseInlineRecharge(kind, t, rawRecharge);
       const r = await finance.recordExpense(
         ctx,
         {
@@ -286,7 +300,33 @@ export function createWorkCostService(deps: WorkCostServiceDeps) {
           },
         },
       );
-      return { ...(await costs(ctx, kind, id)), expenseId: r.expense.expenseId, transactionId: r.transaction.transactionId, replayed: r.replayed };
+      const result = { ...(await costs(ctx, kind, id)), expenseId: r.expense.expenseId, transactionId: r.transaction.transactionId, replayed: r.replayed };
+      if (!recharge) return result;
+      // Gider defterde; ardindan ayni tutar daireye yansitilir. Turetilmis idempotency anahtari
+      // sayesinde ayni istegin tekrari ikisini de yeniden oynatir (cift gider / cift borc olmaz);
+      // yansitma basarisizsa gider kalir, yanit hatayi tasir ve "Daireye yansit" ile tamamlanabilir.
+      try {
+        const charged = await charge(ctx, id, {
+          confirm: true,
+          idempotencyKey: `${idempotencyKey.slice(0, 61)}-RC`,
+          liableParty: recharge.liableParty,
+          amount: r.expense.amount,
+          dueDate: recharge.dueDate,
+          ...(typeof o.description === 'string' && o.description.trim() ? { description: `Onarım yansıtma: ${o.description.trim()}`.slice(0, 200) } : {}),
+        });
+        return {
+          ...charged,
+          expenseId: r.expense.expenseId,
+          transactionId: r.transaction.transactionId,
+          replayed: r.replayed && charged.replayed,
+          recharge: { transactionId: charged.transactionId, liableParty: charged.liableParty, vacant: charged.vacant },
+        };
+      } catch (err) {
+        if (err instanceof FinanceError || err instanceof ValidationError) {
+          return { ...(await costs(ctx, kind, id)), expenseId: r.expense.expenseId, transactionId: r.transaction.transactionId, replayed: r.replayed, rechargeError: err.message };
+        }
+        throw err;
+      }
     }
 
     const expenseId = assertId(o.expenseId, 'expenseId');

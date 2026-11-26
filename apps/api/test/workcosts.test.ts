@@ -242,6 +242,45 @@ describe('daireye yansitma (karar 4)', () => {
   });
 });
 
+describe('tek adimda gider + daireye yansitma', () => {
+  it('gider ve yansitma tek istekte; tekrar ikisini de yeniden oynatir; denetim temiz', async () => {
+    const w = await world();
+    const body = {
+      mode: 'expense',
+      idempotencyKey: 'tk1-cost-inline-0001',
+      amount: 45000,
+      creditAccountId: 'payable',
+      recharge: { liableParty: 'owner', dueDate: '2026-12-20' },
+    };
+    const r = await w.costs.add(mgr, 'ticket', 'tk1', body);
+    expect(r).toMatchObject({
+      replayed: false,
+      total: 45000,
+      rechargedTotal: 45000,
+      rechargeable: 0,
+      recharge: { liableParty: 'owner' },
+      recharges: [{ amount: 45000, unitId: 'u1', requestedParty: 'owner', dueDate: '2026-12-20' }],
+    });
+    expect(r).not.toHaveProperty('rechargeError');
+    expect(w.fake.events('DUE_GENERATED')).toHaveLength(1);
+
+    const again = await w.costs.add(mgr, 'ticket', 'tk1', body);
+    expect(again.replayed).toBe(true);
+    expect(w.summaryOf('TICKET#tk1').items).toHaveLength(1);
+    expect(w.summaryOf('TICKET#tk1').recharges).toHaveLength(1);
+    expect(checkWorkCosts(w.snapshot())).toEqual([]);
+  });
+
+  it('gecersiz yansitma bilgisi ve ortak alan talebi gider yazilmadan reddedilir', async () => {
+    const w = await world();
+    const base = { mode: 'expense', amount: 1000, creditAccountId: 'payable' };
+    await expect(w.costs.add(mgr, 'ticket', 'tk1', { ...base, idempotencyKey: 'tk1-inline-bad-1', recharge: { liableParty: 'neighbor', dueDate: '2026-12-20' } })).rejects.toBeInstanceOf(ValidationError);
+    await expect(w.costs.add(mgr, 'ticket', 'tk1', { ...base, idempotencyKey: 'tk1-inline-bad-2', recharge: { liableParty: 'owner', dueDate: '20.12.2026' } })).rejects.toBeInstanceOf(ValidationError);
+    await expect(w.costs.add(mgr, 'ticket', 'tk2', { ...base, idempotencyKey: 'tk2-inline-bad-3', recharge: { liableParty: 'owner', dueDate: '2026-12-20' } })).rejects.toThrow(/daire ici/);
+    expect((await w.costs.costs(mgr, 'ticket', 'tk1')).items).toHaveLength(0);
+  });
+});
+
 describe('gece denetimi', () => {
   it('ozet / kilit / defter tutarsizliklari', async () => {
     const w = await world();

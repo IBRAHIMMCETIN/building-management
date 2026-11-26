@@ -274,9 +274,21 @@ export function createSchedulerWorker(overrides: Partial<SchedulerDeps> = {}) {
 
   /** Salt okunur denetim: sapma bulgudur, is hatasi degildir (tekrar denemek sonucu degistirmez). */
   async function runAudit(apartmentId: string): Promise<SiteOutcome> {
-    const report = await auditor().run(apartmentId);
     // Denetim gunlugu zinciri (kurcalama / silme tespiti); bulgular defter sapmasina eklenir.
-    const chain = await auditChain().verify(auditScope(apartmentId));
+    // Zincir dogrulamasi defter denetiminden ONCE ve ondan bagimsiz calisir: defter denetimi
+    // (veya tersi) hata verse bile diger tarafin kontrol noktasi/metrigi uretilir. Aksi halde tek
+    // bir defter hatasi zinciri hic dogrulatmaz ve arayuz "dogrulama guncel degil" gosterir.
+    const scope = auditScope(apartmentId);
+    let chain: ChainVerification;
+    let chainError: string | undefined;
+    try {
+      chain = await auditChain().verify(scope);
+    } catch (err) {
+      chainError = errorText(err);
+      chain = { scope, checked: 0, findings: [] };
+      log.error(JSON.stringify({ level: 'error', msg: 'audit_chain_verify_failed', apartmentId, error: chainError }));
+    }
+    const report = await auditor().run(apartmentId);
     const drift = report.findings.length + chain.findings.length;
     metrics().emit(
       { LedgerDrift: drift, LedgerAuditUnstable: report.unstable.length, AuditChainBroken: chain.findings.length },
@@ -300,6 +312,7 @@ export function createSchedulerWorker(overrides: Partial<SchedulerDeps> = {}) {
     };
     if (drift > 0) log.error(JSON.stringify(entry));
     else log.info(JSON.stringify(entry));
+    if (chainError) return { apartmentId, status: 'failed', error: `audit_chain: ${chainError}` };
     return { apartmentId, status: 'done', detail: { findings: drift, unstable: report.unstable.length, auditEntriesChecked: chain.checked } };
   }
 

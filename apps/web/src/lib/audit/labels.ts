@@ -16,6 +16,9 @@ export const AUDIT_CATEGORIES = [
   { prefix: 'support.', label: 'Platform destek erişimi' },
   { prefix: 'mfa.', label: 'İki adımlı doğrulama' },
   { prefix: 'notification_preferences.', label: 'Bildirim tercihleri' },
+  { prefix: 'ticket.', label: 'Arıza talepleri' },
+  { prefix: 'maintenance.', label: 'Periyodik bakım' },
+  { prefix: 'meters.', label: 'Sayaç ve endeks dağıtımı' },
 ] as const;
 
 const EXACT: Record<string, string> = {
@@ -81,7 +84,90 @@ const EXACT: Record<string, string> = {
   'bank.line.expense': 'Banka satırından gider oluşturuldu',
   'bank.statement.auto_match': 'Banka satırları toplu onaylandı',
   'bank.line.payable': 'Banka satırından tedarikçi ödemesi yapıldı',
+  'finance.period_close': 'Mali dönem kapatıldı',
+  'finance.period_reopen': 'Mali dönem yeniden açıldı',
+  'finance.budget_create': 'Bütçe / işletme projesi oluşturuldu',
+  'finance.budget_approve': 'Bütçe / işletme projesi onaylandı',
+  'finance.budget_delete': 'Bütçe taslağı silindi',
+  // O1 arıza talepleri (apps/api/src/modules/tickets: create / update / assign / TRANSITIONS)
+  'ticket.create': 'Arıza talebi oluşturuldu',
+  'ticket.update': 'Arıza talebi güncellendi',
+  'ticket.assign': 'Arıza talebi atandı',
+  'ticket.start': 'Arıza talebinde çalışma başlatıldı',
+  'ticket.hold': 'Arıza talebi beklemeye alındı',
+  'ticket.resume': 'Arıza talebinde çalışmaya devam edildi',
+  'ticket.resolve': 'Arıza talebi çözüldü',
+  'ticket.confirm': 'Arıza çözümü sakin tarafından onaylandı',
+  'ticket.close': 'Arıza talebi kapatıldı',
+  'ticket.reopen': 'Arıza talebi yeniden açıldı',
+  'ticket.cancel': 'Arıza talebi iptal edildi',
+  'ticket.cost_link': 'Arıza talebine gider bağlandı',
+  'ticket.cost_unlink': 'Arıza talebinden gider bağı kaldırıldı',
+  // O1 periyodik bakım
+  'maintenance.template_create': 'Bakım planı oluşturuldu',
+  'maintenance.template_update': 'Bakım planı güncellendi',
+  'maintenance.template_archive': 'Bakım planı arşivlendi',
+  'maintenance.task_assign': 'Bakım görevi atandı',
+  'maintenance.task_start': 'Bakım görevi başlatıldı',
+  'maintenance.task_complete': 'Bakım görevi tamamlandı',
+  'maintenance.task_skip': 'Bakım görevi atlandı',
+  'maintenance.cost_link': 'Bakım görevine gider bağlandı',
+  'maintenance.cost_unlink': 'Bakım görevinden gider bağı kaldırıldı',
+  // Finans 2.3 sayaç / endeks
+  'meters.meter_create': 'Sayaç eklendi',
+  'meters.meter_update': 'Sayaç güncellendi',
+  'meters.meter_retire': 'Sayaç kullanımdan kaldırıldı',
+  'meters.swap_create': 'Sayaç değişimi kaydedildi',
+  'meters.swap_reverse': 'Sayaç değişimi geri alındı',
+  'meters.template_create': 'Dağıtım şablonu oluşturuldu',
+  'meters.template_update': 'Dağıtım şablonu güncellendi',
+  'meters.template_archive': 'Dağıtım şablonu arşivlendi',
+  'meters.template_default': 'Varsayılan dağıtım şablonu değişti',
+  'meters.readings_save': 'Sayaç okumaları kaydedildi',
+  'meters.readings_import': 'Sayaç okumaları toplu içe aktarıldı',
+  'meters.period_create': 'Sayaç dönemi oluşturuldu',
+  'meters.period_update': 'Sayaç dönemi güncellendi',
+  'meters.period_cancel': 'Sayaç dönemi iptal edildi',
+  'meters.period_approve': 'Sayaç dönemi onaylandı',
+  'meters.period_posted': 'Sayaç dönemi tahakkukları işlendi',
+  'meters.period_reverse': 'Sayaç dönemi geri alma başlatıldı',
+  'meters.period_reversed': 'Sayaç dönemi geri alındı',
+  'meters.period_correction': 'Düzeltme dönemi açıldı',
 };
+
+/** Sözlükte olmayan anahtarlar için alan adı (ilk parça) karşılıkları. */
+const DOMAIN_LABELS: Record<string, string> = {
+  ticket: 'Arıza talebi',
+  maintenance: 'Bakım',
+  meters: 'Sayaç',
+  finance: 'Finans',
+  bank: 'Banka',
+  payment: 'Online ödeme',
+  membership: 'Üyelik',
+  ownership: 'Mülkiyet',
+  apartment_role: 'Rol',
+  person: 'Kişi',
+  site: 'Site',
+  support: 'Destek',
+  mfa: 'İki adımlı doğrulama',
+  closure: 'Cari kapama',
+  import: 'Toplu aktarım',
+  notification_preferences: 'Bildirim tercihi',
+};
+
+const humanize = (s: string) => s.replace(/[._]+/g, ' ').trim();
+
+/**
+ * Tanımsız anahtar için okunabilir yedek: `ticket.foo_bar` -> "Arıza talebi: foo bar".
+ * Alan adı da bilinmiyorsa anahtarın kendisi (`yeni.islem`) korunur; böylece yeni olay tipleri
+ * kaybolmaz, sözlüğe eklenmesi gerektiği görünür kalır.
+ */
+function fallbackLabel(action: string): string {
+  const dot = action.indexOf('.');
+  if (dot <= 0) return action;
+  const domain = DOMAIN_LABELS[action.slice(0, dot)];
+  return domain ? `${domain}: ${humanize(action.slice(dot + 1))}` : action;
+}
 
 const LEDGER_KINDS: Record<string, string> = {
   dues_charge: 'tahakkuk',
@@ -112,6 +198,13 @@ export const LEDGER_FINDING_LABELS: Record<string, string> = {
   online_payment_unposted: 'Deftere yazılmamış online ödeme',
   bank_match_mismatch: 'Banka eşleştirmesi defterle uyuşmuyor',
   settlement_invalid: 'Hedefli mahsup tutarsız (avans mahsubu / yapılandırma)',
+  meter_period_mismatch: 'Sayaç dönemi tutar mutabakatı tutmuyor',
+  meter_period_stuck: 'Sayaç dönemi yarıda kalmış (onay / geri alma)',
+  fiscal_period_drift: 'Kapalı dönem özeti defterle uyuşmuyor',
+  fiscal_closed_write: 'Kapanıştan sonra kapalı döneme kayıt',
+  fiscal_lock_mismatch: 'Dönem kilidi tutarsız',
+  ticket_cost_mismatch: 'Talep / bakım gideri özeti defterle uyuşmuyor',
+  explink_orphan: 'Sahipsiz gider bağlantısı',
 };
 
 export function findingLabel(code: string): string {
@@ -128,7 +221,7 @@ export function actionLabel(action: string): string {
   }
   if (action.startsWith('payment.intent.')) return `Online ödeme: ${action.slice('payment.intent.'.length).replace(/_/g, ' ')}`;
   if (action.startsWith('import.')) return `Toplu aktarım: ${action.slice('import.'.length).replace(/_/g, ' ')}`;
-  return action;
+  return fallbackLabel(action);
 }
 
 export function roleLabel(role: string): string {

@@ -5,7 +5,7 @@ import { RouterProvider, createMemoryRouter, useLocation } from 'react-router';
 import { afterEach, describe, expect, it } from 'vitest';
 import { AuthContext, type AuthContextValue } from '@/context/AuthContext';
 import type { Role } from '@/types/roles';
-import { APARTMENT_ADMIN_ROLES, PLATFORM_ROLES } from '@/types/roles';
+import { APARTMENT_ADMIN_ROLES, OFFICE_ROLES, PLATFORM_ROLES } from '@/types/roles';
 import { RequireRole } from './guards';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -27,9 +27,13 @@ async function landOn(path: string, role: Role | undefined, apartmentId?: string
         children: [
           {
             element: <RequireRole roles={APARTMENT_ADMIN_ROLES} redirectHome />,
+            children: [{ index: true, element: <Where /> }],
+          },
+          {
+            element: <RequireRole roles={OFFICE_ROLES} redirectHome />,
             children: [
-              { index: true, element: <Where /> },
               { path: 'finance', element: <Where /> },
+              { path: 'settings', element: <Where /> },
             ],
           },
           {
@@ -78,6 +82,14 @@ describe('yonetim paneli yonlendirmesi', () => {
     expect(await landOn('/admin/apartments', 'apartment_manager', 'apt-1')).toBe('/admin');
     expect(await landOn('/admin/payments', 'observer', 'apt-1')).toBe('/admin');
     expect(await landOn('/admin/finance', 'apartment_manager', 'apt-1')).toBe('/admin/finance');
+  });
+
+  it('bina gorevlisi ve guvenlik ofis ekranlarina URL ile giremez, Genel Bakis\'a doner', async () => {
+    expect(await landOn('/admin/finance', 'building_staff', 'apt-1')).toBe('/admin');
+    expect(await landOn('/admin/settings', 'building_staff', 'apt-1')).toBe('/admin');
+    expect(await landOn('/admin/finance', 'security_guard', 'apt-1')).toBe('/admin');
+    expect(await landOn('/admin', 'building_staff', 'apt-1')).toBe('/admin');
+    expect(await landOn('/admin/settings', 'observer', 'apt-1')).toBe('/admin/settings');
   });
 
   it('rol secilmemisse baglam secimine gider', async () => {

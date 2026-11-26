@@ -9,7 +9,7 @@ import { AuditPage } from './AuditPage';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-const api = vi.hoisted(() => ({ page: vi.fn(), integrity: vi.fn() }));
+const api = vi.hoisted(() => ({ page: vi.fn(), integrity: vi.fn(), verify: vi.fn() }));
 vi.mock('@/lib/api/audit', () => ({ auditApi: api }));
 vi.mock('@/hooks/useUnits', () => ({
   usePeople: () => ({ data: [{ userId: 'mgr-1', fullName: 'Ayşe Yönetici', email: 'a@o.com' }] }),
@@ -70,6 +70,27 @@ describe('AuditPage', () => {
     const view = await render({ sub: 'o-1', role: 'observer', apartmentId: 'apt-1', exp: 0 });
     expect(view.host.querySelector('[data-testid="page-check"]')?.textContent).toContain('1 kayıt doğrulanamadı');
     expect(view.host.textContent).toContain('Doğrulama güncel değil');
+    expect(view.host.textContent).not.toContain('platform ekibi');
+    // Gozlemci salt okunur: elle dogrulama dugmesi yok.
+    expect(view.host.textContent).not.toContain('Zinciri şimdi doğrula');
+    await view.unmount();
+  });
+
+  it('yonetici bayat zinciri elle dogrulatir; durum guncellenir', async () => {
+    api.integrity.mockResolvedValue({ status: 'stale', latestSeq: 2, verifiedSeq: 1, verifiedAt: '2026-11-18T00:40:00.000Z', staleAfterHours: 26 });
+    api.verify.mockResolvedValue({
+      checked: 1,
+      findings: 0,
+      integrity: { status: 'verified', latestSeq: 2, verifiedSeq: 2, verifiedAt: '2026-11-26T06:00:00.000Z', staleAfterHours: 26 },
+    });
+    const view = await render({ sub: 'mgr-1', role: 'apartment_manager', apartmentId: 'apt-1', exp: 0 });
+    const button = [...view.host.querySelectorAll('button')].find((b) => b.textContent?.includes('Zinciri şimdi doğrula')) as HTMLButtonElement;
+    expect(button).toBeDefined();
+    await act(async () => button.click());
+    await flush();
+    expect(api.verify).toHaveBeenCalledWith('apartment');
+    expect(view.host.textContent).toContain('Zincir doğrulandı');
+    expect(view.host.textContent).toContain('tutarsızlık bulunmadı');
     await view.unmount();
   });
 

@@ -12,13 +12,13 @@ import { errorMessage } from '@/lib/api/errors';
 import { unitChoicesFrom } from '@/lib/api/portal';
 import { portalTicketsApi } from '@/lib/api/portalTickets';
 import { cn } from '@/lib/cn';
-import { CATEGORY_LABELS, TICKET_CATEGORIES, type TicketCategory } from '@/lib/tickets/model';
+import { type TicketCategory, categoriesForLocation, categoryLabelFor } from '@/lib/tickets/model';
 
 type Where = { kind: 'unit'; unitId: string; label: string } | { kind: 'common'; area: string };
 const STEPS = ['Konum', 'Kategori', 'Açıklama'] as const;
 
-/** Sakinin secebilecegi kategoriler (API ile ayni liste). */
-export const RESIDENT_CATEGORIES: readonly TicketCategory[] = TICKET_CATEGORIES;
+/** Sakinin secebilecegi kategoriler: daire icinde kisitli liste, ortak alanda tumu. */
+export const residentCategoriesFor = (where: Where): readonly TicketCategory[] => categoriesForLocation(where.kind);
 
 /**
  * Adim adim yeni talep: 1) daire ici (birden fazla dairede secim) veya ortak alan, 2) kategori
@@ -37,6 +37,12 @@ export function NewTicketWizard() {
   const [files, setFiles] = useState<File[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Konum degisince (ortak alan -> daire ici) o konumda gecersiz kalan kategori secimi temizlenir.
+  const changeWhere = (next: Where) => {
+    setWhere(next);
+    if (category && !categoriesForLocation(next.kind).includes(category)) setCategory(null);
+  };
 
   const submit = async () => {
     if (!where || !category) return;
@@ -75,7 +81,7 @@ export function NewTicketWizard() {
         ))}
       </ol>
 
-      {step === 0 && <LocationStep value={where} onChange={setWhere} onNext={() => setStep(1)} />}
+      {step === 0 && <LocationStep value={where} onChange={changeWhere} onNext={() => setStep(1)} />}
       {step === 1 && where && <CategoryStep where={where} value={category} onChange={setCategory} onNext={() => setStep(2)} />}
       {step === 2 && (
         <Card className="flex flex-col gap-4">
@@ -156,7 +162,7 @@ function CategoryStep({ where, value, onChange, onNext }: { where: Where; value:
     <Card className="flex flex-col gap-4">
       <h2 className="font-semibold">Ne tür bir sorun?</h2>
       <div role="radiogroup" aria-label="Kategori" className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-        {RESIDENT_CATEGORIES.map((c) => (
+        {residentCategoriesFor(where).map((c) => (
           <button
             key={c}
             type="button"
@@ -165,7 +171,7 @@ function CategoryStep({ where, value, onChange, onNext }: { where: Where; value:
             onClick={() => onChange(c)}
             className={cn('min-h-12 rounded-lg border px-3 py-2 text-small font-medium', value === c ? 'border-accent bg-accent/10 text-accent' : 'border-border-strong hover:bg-surface-muted')}
           >
-            {CATEGORY_LABELS[c]}
+            {categoryLabelFor(c, where.kind)}
           </button>
         ))}
       </div>

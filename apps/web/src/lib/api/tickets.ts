@@ -137,6 +137,9 @@ export const workCostsSchema = z.object({
   rechargeable: z.number().int(),
   suggestion: z.object({ expenseAccountId: z.string(), creditAccountId: z.string().optional() }),
   replayed: z.boolean().optional(),
+  /** Tek adimda gider + yansitma: yansitma sonucu (basarili) veya hatasi (gider yine kaydedildi). */
+  recharge: z.object({ transactionId: z.string(), liableParty: z.enum(['owner', 'occupant']), vacant: z.boolean().optional() }).optional(),
+  rechargeError: z.string().optional(),
 });
 export type WorkCosts = z.infer<typeof workCostsSchema>;
 export type CostItem = WorkCosts['items'][number];
@@ -152,6 +155,8 @@ export type NewCostInput =
       description?: string;
       supplier?: string;
       invoiceNumber?: string;
+      /** Yalnizca daire ici talep: gider kaydinin ardindan ayni tutar daireye yansitilir. */
+      recharge?: { liableParty: 'owner' | 'occupant'; dueDate: string };
     }
   | { mode: 'link'; idempotencyKey: string; expenseId: string };
 

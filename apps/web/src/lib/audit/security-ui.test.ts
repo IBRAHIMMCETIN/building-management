@@ -16,6 +16,12 @@ describe('denetim etiketleri', () => {
     expect(actionLabel('payment.intent.needs_review')).toBe('Online ödeme: needs review');
     expect(actionLabel('import.completed')).toBe('Toplu aktarım: completed');
     expect(actionLabel('yeni.islem')).toBe('yeni.islem');
+    expect(actionLabel('ticket.create')).toBe('Arıza talebi oluşturuldu');
+    expect(actionLabel('ticket.resolve')).toBe('Arıza talebi çözüldü');
+    expect(actionLabel('maintenance.task_complete')).toBe('Bakım görevi tamamlandı');
+    expect(actionLabel('maintenance.task_start')).toBe('Bakım görevi başlatıldı');
+    // Tanımsız ama bilinen alan: okunabilir yedek.
+    expect(actionLabel('ticket.photo_add')).toBe('Arıza talebi: photo add');
   });
 
   it('rol ve hash gosterimi', () => {

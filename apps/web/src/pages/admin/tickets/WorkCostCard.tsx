@@ -163,8 +163,15 @@ function NewExpenseDialog({ target, costs, onClose }: { target: CostTarget; cost
   const [description, setDescription] = useState(costs.target.label);
   const [supplier, setSupplier] = useState('');
   const [invoiceNumber, setInvoiceNumber] = useState('');
+  // Daire ici talep: gideri kaydederken ayni tutari tek adimda daireye yansitma secenegi.
+  const canRecharge = target.kind === 'ticket' && !!costs.target.unitId;
+  const [recharge, setRecharge] = useState(false);
+  const [party, setParty] = useState<'owner' | 'occupant'>('occupant');
+  const [dueDate, setDueDate] = useState('');
+  const [rechargeError, setRechargeError] = useState<string | null>(null);
   const kurus = parseTRYToKurus(amount);
-  const valid = kurus !== null && kurus <= MAX_KURUS && description.trim().length > 0;
+  const rechargeValid = !recharge || /^\d{4}-\d{2}-\d{2}$/.test(dueDate);
+  const valid = kurus !== null && kurus <= MAX_KURUS && description.trim().length > 0 && rechargeValid;
 
   const submit = () =>
     add.mutate(
@@ -178,8 +185,16 @@ function NewExpenseDialog({ target, costs, onClose }: { target: CostTarget; cost
         description: description.trim(),
         ...(supplier.trim() ? { supplier: supplier.trim() } : {}),
         ...(invoiceNumber.trim() ? { invoiceNumber: invoiceNumber.trim() } : {}),
+        ...(canRecharge && recharge ? { recharge: { liableParty: party, dueDate } } : {}),
       },
-      { onSuccess: onClose },
+      {
+        onSuccess: (r) => {
+          // Gider kaydedildi ama yansitma yapilamadiysa pencere acik kalir ve neden gosterilir;
+          // kart ustundeki "Daireye yansit" ile sonradan tamamlanabilir.
+          if (r.rechargeError) setRechargeError(r.rechargeError);
+          else onClose();
+        },
+      },
     );
 
   return (
@@ -223,18 +238,63 @@ function NewExpenseDialog({ target, costs, onClose }: { target: CostTarget; cost
           <Input value={invoiceNumber} onChange={(e) => setInvoiceNumber(e.target.value)} maxLength={60} />
         </FormField>
       </div>
+      {canRecharge && (
+        <div className="mt-4 flex flex-col gap-3 rounded-lg border border-border p-3">
+          <label className="flex items-start gap-2 text-small">
+            <input
+              type="checkbox"
+              checked={recharge}
+              onChange={(e) => setRecharge(e.target.checked)}
+              disabled={!!rechargeError}
+              className="mt-0.5 size-4 accent-accent"
+            />
+            Gideri kaydettikten sonra doğrudan bu daireye (Oturan / Kat maliki) borç olarak yansıt
+          </label>
+          {recharge && (
+            <div className="grid gap-4 sm:grid-cols-2">
+              <fieldset className="flex flex-col gap-2 text-small">
+                <legend className="mb-1 font-medium">Borçlu</legend>
+                <label className="flex items-center gap-2">
+                  <input type="radio" name="inline-party" checked={party === 'occupant'} onChange={() => setParty('occupant')} className="accent-accent" />
+                  Oturan (kiracı; boş dairede kat maliki)
+                </label>
+                <label className="flex items-center gap-2">
+                  <input type="radio" name="inline-party" checked={party === 'owner'} onChange={() => setParty('owner')} className="accent-accent" />
+                  Kat maliki
+                </label>
+              </fieldset>
+              <FormField label="Son ödeme tarihi">
+                <Input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
+              </FormField>
+              <p className="text-xs text-muted sm:col-span-2">
+                Gider tutarının tamamı "Onarım Yansıtma Gelirleri" hesabına tahakkuk olarak dairenin carisine yazılır. Kısmi yansıtma için
+                kutuyu boş bırakıp sonradan "Daireye yansıt"ı kullanın.
+              </p>
+            </div>
+          )}
+        </div>
+      )}
       {add.isError && (
         <div className="mt-4">
           <Alert tone="danger">{errorMessage(add.error)}</Alert>
         </div>
       )}
+      {rechargeError && (
+        <div className="mt-4">
+          <Alert tone="danger">
+            Gider kaydedildi ancak daireye yansıtılamadı: {rechargeError}. Kartta "Daireye yansıt" ile tekrar deneyebilirsiniz.
+          </Alert>
+        </div>
+      )}
       <div className="mt-4 flex justify-end gap-2">
-        <Button variant="ghost" onClick={onClose}>
-          Vazgeç
+        <Button variant={rechargeError ? 'secondary' : 'ghost'} onClick={onClose}>
+          {rechargeError ? 'Kapat' : 'Vazgeç'}
         </Button>
-        <Button loading={add.isPending} disabled={!valid} onClick={submit}>
-          Gideri kaydet
-        </Button>
+        {!rechargeError && (
+          <Button loading={add.isPending} disabled={!valid} onClick={submit}>
+            Gideri kaydet
+          </Button>
+        )}
       </div>
     </Dialog>
   );

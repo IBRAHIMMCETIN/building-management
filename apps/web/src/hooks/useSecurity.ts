@@ -47,6 +47,19 @@ export function useAuditIntegrity() {
   });
 }
 
+/** Zinciri gece isini beklemeden dogrulatir; sonucta butunluk durumu onbellege yazilir. */
+export function useVerifyAuditChain() {
+  const scope = useAuditScope();
+  const { user } = useAuth();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => auditApi.verify(scope),
+    onSuccess: (result) => {
+      queryClient.setQueryData(securityKeys.integrity(scope, user?.apartmentId), result.integrity);
+    },
+  });
+}
+
 /** Yuklu kayitlarin SHA-256 zincirini tarayicida dogrular (kayit listesi degistikce). */
 export function usePageVerification(entries: readonly Parameters<typeof verifyPage>[0][number][]) {
   const [check, setCheck] = useState<PageCheck>();

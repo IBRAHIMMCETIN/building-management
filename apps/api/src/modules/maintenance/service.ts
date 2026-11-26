@@ -539,7 +539,7 @@ export function createMaintenanceService(overrides: Partial<MaintenanceServiceDe
     if (assigneeId && !(await activeStaff(ctx.apartmentId)).includes(assigneeId)) throw new TicketError('unprocessable', 'Seçilen kişi bu apartmanın aktif bina görevlisi değil');
     const { assigneeId: _old, ...rest } = task;
     const next: MaintenanceTask = { ...rest, ...(assigneeId ? { assigneeId } : {}), ...touch(ctx, task) };
-    await saveTask(ctx, task, next);
+    await saveTask(ctx, task, next, 'maintenance.task_assign', { from: task.assigneeId ?? null, to: assigneeId });
     return { task: taskView(next, ctx, settings) };
   }
 
@@ -549,7 +549,7 @@ export function createMaintenanceService(overrides: Partial<MaintenanceServiceDe
     if (!taskActions(ctx, task, settings).includes('start')) throw new TicketError(task.status === 'scheduled' ? 'forbidden' : 'invalid_state', 'Bu görevi başlatamazsınız');
     guardVersion(task, o);
     const next: MaintenanceTask = { ...task, status: 'in_progress', startedAt: stamp(), startedBy: ctx.userId, ...touch(ctx, task) };
-    await saveTask(ctx, task, next);
+    await saveTask(ctx, task, next, 'maintenance.task_start');
     return { task: taskView(next, ctx, settings) };
   }
 

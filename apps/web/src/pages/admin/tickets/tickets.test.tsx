@@ -10,11 +10,12 @@ import { taskSchema } from '@/lib/api/maintenance';
 
 let perms = { canWriteCosts: true, canReadCosts: true };
 let costs: WorkCosts;
+const addMutate = vi.fn();
 vi.mock('@/hooks/useTickets', () => ({
   useTicketPermissions: () => perms,
   useWorkCosts: () => ({ isPending: false, isError: false, data: costs }),
   useUnlinkCost: () => ({ isPending: false, isError: false, mutate: vi.fn() }),
-  useAddCost: () => ({ isPending: false, isError: false, mutate: vi.fn() }),
+  useAddCost: () => ({ isPending: false, isError: false, mutate: addMutate }),
   useChargeUnit: () => ({ isPending: false, isError: false, mutate: vi.fn() }),
   useExpenseOptions: () => ({ isPending: false, isError: false, data: [] }),
 }));
@@ -94,7 +95,10 @@ describe('bakim formlari', () => {
 
 describe('masraf karti', () => {
   let container: HTMLDivElement;
-  afterEach(() => container?.remove());
+  afterEach(() => {
+    container?.remove();
+    document.body.innerHTML = '';
+  });
   const render = async () => {
     container = document.createElement('div');
     document.body.append(container);
@@ -131,5 +135,44 @@ describe('masraf karti', () => {
     const text = await render();
     expect(text).not.toContain('Yeni gider');
     expect(text).not.toContain('Daireye yansıt');
+  });
+
+  const setValue = async (el: Element | null | undefined, value: string) => {
+    const input = el as HTMLInputElement;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    await act(async () => {
+      setter.call(input, value);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+  };
+  const button = (label: string) => [...document.querySelectorAll('button')].find((b) => b.textContent?.trim() === label) as HTMLButtonElement;
+
+  it('daire ici talepte yeni gider: tek adimda daireye yansitma secenegi gidere eklenir', async () => {
+    perms = { canWriteCosts: true, canReadCosts: true };
+    costs = base;
+    addMutate.mockClear();
+    await render();
+    await act(async () => button('Yeni gider').click());
+    expect(document.body.textContent).toContain('Gideri kaydettikten sonra doğrudan bu daireye');
+    await setValue(document.querySelector('input[inputmode="decimal"]'), '500');
+    const box = [...document.querySelectorAll('input[type="checkbox"]')].find((c) => c.parentElement?.textContent?.includes('borç olarak yansıt')) as HTMLInputElement;
+    await act(async () => box.click());
+    expect(button('Gideri kaydet').disabled).toBe(true); // son odeme tarihi zorunlu
+    await act(async () => (document.querySelector('input[name="inline-party"]:not(:checked)') as HTMLInputElement).click()); // kat maliki
+    const dates = document.querySelectorAll('input[type="date"]');
+    await setValue(dates[dates.length - 1], '2026-12-20');
+    await act(async () => button('Gideri kaydet').click());
+    expect(addMutate).toHaveBeenCalledWith(
+      expect.objectContaining({ mode: 'expense', amount: 50000, recharge: { liableParty: 'owner', dueDate: '2026-12-20' } }),
+      expect.anything(),
+    );
+  });
+
+  it('ortak alan talebinde ve bakim gorevinde yansitma secenegi yok', async () => {
+    perms = { canWriteCosts: true, canReadCosts: true };
+    costs = { ...base, target: { ...base.target, unitId: undefined } };
+    await render();
+    await act(async () => button('Yeni gider').click());
+    expect(document.body.textContent).not.toContain('Gideri kaydettikten sonra doğrudan bu daireye');
   });
 });

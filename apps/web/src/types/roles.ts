@@ -35,6 +35,13 @@ export const PLATFORM_ROLES = ['platform_admin'] as const satisfies readonly Rol
  */
 export const APARTMENT_ADMIN_ROLES = ADMIN_ROLES.filter((r) => r !== 'platform_admin') as readonly Role[];
 
+/**
+ * Apartman ofis ekranlari (daireler, finans, duyurular, toplu aktarim, ayarlar): yonetim rolleri ve
+ * salt okur denetci. Bina gorevlisi ve guvenlik bu ekranlari GORMEZ (menu + dogrudan URL korumasi);
+ * yetkinin asli yine API'dedir.
+ */
+export const OFFICE_ROLES = ['apartment_manager', 'management_company', 'observer'] as const satisfies readonly Role[];
+
 export const isPlatformRole = (role: Role | undefined): role is 'platform_admin' => role === 'platform_admin';
 
 /** Denetim gunlugu (/admin/audit): apartman rolleri kendi zincirini, platform yoneticisi platform zincirini. */

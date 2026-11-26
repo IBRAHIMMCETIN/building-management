@@ -349,4 +349,39 @@ describe('zamanlayici - ledger_audit isi', () => {
     const res = await worker({ Records: [{ messageId: 'm1', body: JSON.stringify({ job: 'ledger_audit', scheduledTime: '2026-11-21T00:40:00Z' }) }] });
     expect(res.batchItemFailures).toEqual([{ itemIdentifier: 'm1' }]);
   });
+
+  it('zincir dogrulamasi defter denetiminden bagimsizdir: defter hatasinda bile zincir dogrulanir', async () => {
+    const verify = vi.fn(async (scope: string) => ({ scope, checked: 2, findings: [] }));
+    const worker = createSchedulerWorker({
+      core: { listSiteIds: async () => ['apt-1'], getSite: async () => site('apt-1', 'active') },
+      auditor: { run: async () => { throw new Error('throttled'); } },
+      metrics: { emit: vi.fn() }, log: { info: vi.fn(), error: vi.fn() },
+      finance: {} as never, payments: null, events: { publish: vi.fn() }, outbox: {} as never,
+      auditChain: { verify },
+    });
+    await worker({ Records: [{ messageId: 'm1', body: JSON.stringify({ job: 'ledger_audit', scheduledTime: '2026-11-21T00:40:00Z' }) }] });
+    expect(verify).toHaveBeenCalledWith('APT#apt-1');
+  });
+
+  it('zincir dogrulama hatasi defter denetimini durdurmaz; is hatasi olarak raporlanir', async () => {
+    const log = { info: vi.fn(), error: vi.fn() };
+    const run = vi.fn(async (apt: string) => ({
+      apartmentId: apt,
+      counts: { transactions: 0, entries: 0, accounts: 0, payments: 0, closures: 0, intents: 0 },
+      findings: [],
+      unstable: [],
+    }));
+    const worker = createSchedulerWorker({
+      core: { listSiteIds: async () => ['apt-1'], getSite: async () => site('apt-1', 'active') },
+      auditor: { run },
+      metrics: { emit: vi.fn() }, log,
+      finance: {} as never, payments: null, events: { publish: vi.fn() }, outbox: {} as never,
+      auditChain: { verify: async (scope: string) => (scope === 'PLATFORM' ? { scope, checked: 0, findings: [] } : Promise.reject(new Error('AccessDenied'))) },
+    });
+    const res = await worker({ Records: [{ messageId: 'm1', body: JSON.stringify({ job: 'ledger_audit', scheduledTime: '2026-11-21T00:40:00Z' }) }] });
+    expect(run).toHaveBeenCalledWith('apt-1');
+    expect(res.batchItemFailures).toEqual([{ itemIdentifier: 'm1' }]);
+    const failed = log.error.mock.calls.map((c) => JSON.parse(c[0] as string)).find((l) => l.msg === 'audit_chain_verify_failed');
+    expect(failed).toMatchObject({ apartmentId: 'apt-1', error: expect.stringContaining('AccessDenied') });
+  });
 });

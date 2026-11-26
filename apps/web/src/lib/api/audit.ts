@@ -5,6 +5,7 @@ import { apiClient } from './client';
  * Denetim gunlugu (salt okunur).
  *   GET /api/audit?scope=apartment|platform&limit=&cursor=&from=&to=&action=&actorId=
  *   GET /api/audit/integrity?scope=
+ *   POST /api/audit/verify?scope=   (yonetici: zinciri gece isini beklemeden dogrula)
  * `platform` kapsami yalnizca platform yoneticisi icindir; apartman kapsami JWT'deki (veya
  * destek oturumundaki) apartmandir.
  */
@@ -42,6 +43,14 @@ export const auditIntegritySchema = z.object({
 });
 export type AuditIntegrity = z.infer<typeof auditIntegritySchema>;
 
+export const auditVerifySchema = z.object({
+  checked: z.number(),
+  findings: z.number(),
+  skipped: z.string().optional(),
+  integrity: auditIntegritySchema,
+});
+export type AuditVerifyResult = z.infer<typeof auditVerifySchema>;
+
 export type AuditFilters = {
   /** ISO tarih-saat (saat dilimli). */
   from?: string;
@@ -60,4 +69,5 @@ export const auditApi = {
     }),
   integrity: (scope: AuditScope, signal?: AbortSignal) =>
     apiClient.get('/api/audit/integrity', { signal, query: { scope }, schema: auditIntegritySchema }),
+  verify: (scope: AuditScope) => apiClient.post('/api/audit/verify', undefined, { query: { scope }, schema: auditVerifySchema }),
 };
