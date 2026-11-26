@@ -12,6 +12,7 @@
     "db:init": "tsx scripts/local-db.ts",
     "backfill:sites": "tsx scripts/backfill-site-directory.ts",
     "backfill:expense-index": "tsx scripts/backfill-expense-index.ts",
+    "backfill:finance-summary": "tsx scripts/backfill-finance-summary.ts",
     "fix:receivable-names": "tsx scripts/fix-receivable-names.ts"
   },
   "dependencies": {

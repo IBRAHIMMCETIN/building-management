@@ -18,7 +18,9 @@ import { queryTenantAll } from '../../config/dynamodb.js';
 import { offsetRepository } from './offsets.js';
 import { bankRepository } from './bank/repository.js';
 import { paymentsRepository } from '../payments/repository.js';
-import { cancelledTransactions, feeLedgerFor, nextPeriod, periodBounds, previousPeriod, unpostedLateFee } from './lateFee.js';
+import { nextPeriod, periodBounds, previousPeriod } from './lateFee.js';
+import { unpostedFeeOf, summarizeLines } from './accountSummary.js';
+import { type SummaryRepo, loadAccountCores, summarizable } from './accountSummaryStore.js';
 import { type FinanceRepository, financeRepository } from './repository.js';
 import { FiscalConflictError, type FiscalRepository, fiscalRepository } from './periodRepository.js';
 import {
@@ -49,7 +51,7 @@ export type PeriodCheckSources = {
 };
 
 export type PeriodServiceDeps = {
-  finance: Pick<FinanceRepository, 'listAccounts' | 'listTransactions'>;
+  finance: Pick<FinanceRepository, 'listAccounts' | 'listTransactions'> & SummaryRepo;
   fiscal: FiscalRepository;
   sources: PeriodCheckSources;
   now: () => Date;
@@ -123,27 +125,35 @@ export function createPeriodService(overrides: Partial<PeriodServiceDeps> = {}) 
 
   type Loaded = {
     accounts: Account[];
-    upToEnd: Transaction[];
     periodTxs: Transaction[];
     after: Transaction[];
     opening: Map<string, number>;
     previous?: FiscalPeriod;
   };
 
-  /** Kapanis/kontrol listesi icin defter: donem sonuna kadarki tum islemler + sonrasi (net icin). */
+  /**
+   * Kapanis/kontrol listesi icin defter: yalnizca donemin islemleri + sonrasi (net icin).
+   *
+   * P1-a: acilis bakiyeleri onceki ayin KAPALI anlik goruntusunden alinir (kilit o aya kayit
+   * yazilmasini engeller); gecmis yillarin satirlari yeniden toplanmaz. Butunluk korunur:
+   * `verifySnapshot` her hesapta `kapanis + donem sonrasi net = canli bakiye` esitligini denetler,
+   * kapali bir aya sizan kayit bu esitligi bozar. Onceki kapali goruntu yoksa (sitenin ILK
+   * kapanisi) acilis tek seferlik olarak donem oncesi tum islemlerden hesaplanir.
+   */
   async function load(apartmentId: string, period: string, lock: FinanceLock | undefined): Promise<Loaded> {
     const { first, last } = periodBounds(period);
     const prevPeriod = previousPeriod(period);
-    const [accounts, upTo, afterPage, previous] = await Promise.all([
+    const [accounts, periodPage, afterPage, previous] = await Promise.all([
       deps.finance.listAccounts(apartmentId),
-      deps.finance.listTransactions(apartmentId, { to: last }),
+      deps.finance.listTransactions(apartmentId, { from: first, to: last }),
       deps.finance.listTransactions(apartmentId, { from: addDays(last, 1) }),
       (lock?.lastClosedPeriod ?? lock?.closing?.previousLastClosed) === prevPeriod ? deps.fiscal.getPeriod(apartmentId, prevPeriod) : Promise.resolve(undefined),
     ]);
-    const upToEnd = upTo.items;
-    const periodTxs = upToEnd.filter((t) => t.date >= first);
-    const opening = netByAccount(upToEnd.filter((t) => t.date < first));
-    return { accounts, upToEnd, periodTxs, after: afterPage.items, opening, ...(previous?.status === 'closed' ? { previous } : {}) };
+    const closedPrevious = previous?.status === 'closed' ? previous : undefined;
+    const opening = closedPrevious
+      ? new Map(closedPrevious.snapshot.rows.map((r) => [r.accountId, r.closing]))
+      : netByAccount((await deps.finance.listTransactions(apartmentId, { to: addDays(first, -1) })).items);
+    return { accounts, periodTxs: periodPage.items, after: afterPage.items, opening, ...(closedPrevious ? { previous: closedPrevious } : {}) };
   }
 
   function snapshotOf(l: Loaded): { snapshot: PeriodSnapshot; problems: ChecklistItem[] } {
@@ -185,10 +195,14 @@ export function createPeriodService(overrides: Partial<PeriodServiceDeps> = {}) 
     // Onceki ayin tazminati bu ayin 1'i tarihli kesinlesir: ay sonunda hala yazilmamis tutar var mi?
     const asOf = periodBounds(previousPeriod(period)).last;
     if (fee.monthlyBasisPoints > 0) {
-      const cancelled = cancelledTransactions(l.upToEnd);
-      const pending = l.accounts
-        .filter((a) => a.type === 'receivable' && !(a.closedThrough && a.closedThrough >= asOf))
-        .reduce((s, a) => s + unpostedLateFee(feeLedgerFor(a.accountId, l.upToEnd, cancelled), fee.monthlyBasisPoints, asOf), 0);
+      // P1-a: alt cari ozetlerinden (tam hesap gecmisi, asOf = onceki ay sonu); donem sonuna kadar
+      // deftere yazilmis tazminat dusulur. Tum defter taranmaz.
+      const receivables = l.accounts.filter((a) => summarizable(a) && !(a.closedThrough && a.closedThrough >= asOf));
+      const { cores } = await loadAccountCores(deps.finance, ctx.apartmentId, receivables, { asOf, today: today(), computedAt: stamp() });
+      const pending = receivables.reduce(
+        (s, a) => s + unpostedFeeOf(cores.get(a.accountId) ?? summarizeLines([]), fee.monthlyBasisPoints, asOf, last),
+        0,
+      );
       if (pending > 0) warnings.push({ code: 'late_fee_pending', message: `${formatPeriodTr(previousPeriod(period))} gecikme tazminatı deftere yazılmamış`, amount: pending });
     }
     if (offsetsPending > 0) warnings.push({ code: 'offset_requests_pending', message: 'Bekleyen sakin mahsup talebi var', count: offsetsPending });

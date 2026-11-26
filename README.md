@@ -2,7 +2,7 @@
 
 Türkiye'deki apartman, site ve profesyonel yönetim firmaları için çok kiracılı (multi-tenant), sunucusuz bir site ve aidat yönetim platformu. Kat Mülkiyeti Kanunu'na uygun alt cari (malik / kiracı) ayrımı, dağıtım anahtarlarıyla toplu tahakkuk ve değişmez (append-only) finansal defter üzerine kuruludur.
 
-> **Durum (22.11.2026):** Aktif geliştirme. Backend çekirdeği, yönetici ve sakin web ekranları, kıstelyevm, belge deposu ve toplu aktarım `main` dalında; `dev` ortamı AWS `eu-north-1` bölgesinde, web Cloudflare Pages üzerinde canlı. Online ödeme (Adım 8b ve v2 P1–P5: iyzico + PayTR, komisyon, şifreli IBAN, aktarımlar, platform faturası), taşınmada cari kapama / borç devri, güvenilir olay ve bildirim hattı ile güvenlik sertleştirmesi G1–G2 (denetim günlüğü, zorunlu MFA) `main`'e alındı. Canlı ödeme aktivasyonu (şirket ve iyzico/PayTR ticari başvuruları), SES ve G3 (Cloudflare WAF) alan adı ve başvurular tamamlanana kadar bekliyor ([Canlıya Geçiş Kontrol Listesi](#canlıya-geçiş-kontrol-listesi)). Banka ekstresi aktarımı ve eşleştirme Faz B1–B3.5 `main`'de (`6e2eb18`); **Finans 2.1** (hisseli mülkiyet, mülk/hisse devri, paydaş carileri) `main`'de (`d83e07f`); **Finans 2.2** (avans mahsubu, borç yapılandırma / taksit planı, muacceliyet) `feature/finance-offset-restructure` dalında: backend doğrulandı, web yerel doğrulama bekliyor. Faz B4 (online tahsilat aktarım mutabakatı) canlı ödeme aktivasyonundan sonra. Ayrıntılar için [Yol Haritası](#yol-haritası).
+> **Durum (26.11.2026):** Aktif geliştirme; tüm işler `main` dalında. `dev` yığını AWS `eu-north-1`'de, web Cloudflare Pages'te (https://building-management-apx.pages.dev) çalışıyor. Tamamlananlar: backend çekirdeği, yönetici / sakin / görevli ekranları, kıstelyevm, belge deposu, toplu aktarım, online ödeme (iyzico + PayTR, P1–P5; **canlıya alınmadı**), taşınmada cari kapama, transactional outbox + bildirim hattı, güvenlik G1–G2 (SHA-256 zincirli denetim günlüğü, zorunlu MFA) ve arayüzü, banka ekstresi B1–B3.5, Finans 2.1–2.4 (hisseli mülkiyet, mahsup / yapılandırma, sayaç-endeks dağıtımı, dönem kapanışı / bütçe / raporlar), Faz 1 ekip-rol yönetimi, O1 arıza / bakım, büyük siteler için arka plan toplu işleri (`bulkjobs`, 5.000 bölüme kadar) ve prod yapılandırma şablonu (`infra/prod.tfvars`, korkuluklar). **Alan adı `yonetimsistemim.com` henüz satın alınmadı**; buna bağlı SES e-posta, G3 (Cloudflare WAF) ve canlı ödeme aktivasyonu planlanan / bekleyen adımlardır. `prod` yığını henüz dağıtılmadı ([infra/PROD_DEPLOY.md](infra/PROD_DEPLOY.md), [Canlıya Geçiş Kontrol Listesi](#canlıya-geçiş-kontrol-listesi)). Ayrıntılar için [Yol Haritası](#yol-haritası).
 
 ---
 
@@ -28,24 +28,27 @@ Türkiye'deki apartman, site ve profesyonel yönetim firmaları için çok kirac
 ## Mimari
 
 ```
-React (Vite, PWA)  ──►  API Gateway (HTTP API, JWT authorizer, throttling)
-                                │
-                                ▼
-                     API Lambda — Modüler Monolit (Hono)
-                      │            │              │
-                      ▼            ▼              ▼
-                 DynamoDB     SNS (olaylar)   Cognito ◄── Pre Token Generation Lambda
-               (single-table)      │                     (apartmentId / role claim'leri)
-                                   ▼
-                              SQS (+ DLQ)
-                                   │
-                                   ▼
-                       Bildirim Worker Lambda
+React (Vite; sayfa bazlı code-splitting)  ──►  API Gateway (HTTP API, JWT authorizer, throttling)
+                                                   │
+                                                   ▼
+                                    API Lambda — Modüler Monolit (Hono)
+                    ┌──────────────┬─────────────┼──────────────┬────────────────────┐
+                    ▼              ▼             ▼              ▼                    ▼
+               DynamoDB       Denetim tablosu  Cognito ◄── Pre Token Lambda    SQS bulk-jobs (+DLQ)
+             (single-table,   (append-only,               (apartmentId / role /        │
+              OUTBOX# kayıtları) SHA-256 zinciri)          MFA claim'leri)              ▼
+                    │                                                         bulk-worker Lambda
+                    ▼ DynamoDB Streams                                        (parçalı, kendini
+              outbox-relay Lambda ──► SNS (olaylar) ──► SQS (+DLQ) ──►        yeniden kuyruğa atar)
+                                                         Bildirim worker (log | SES)
+
+EventBridge Scheduler ──► SQS scheduled-jobs (+DLQ) ──► scheduler-worker Lambda
+  (aidat, gecikme tazminatı, hatırlatma, ödeme mutabakatı, bakım, gece defter + zincir denetimi)
 ```
 
 | Katman | Teknoloji |
 | --- | --- |
-| Frontend | React 19 + Vite, Cloudflare Pages (Git entegrasyonu): https://building-management-apx.pages.dev |
+| Frontend | React 19 + Vite, Cloudflare Pages (Git entegrasyonu): https://building-management-apx.pages.dev (`dev` yığını). Sayfalar `React.lazy` ile ayrı parçalar (`router/lazyPage.tsx`), kütüphaneler vendor parçalarında (`vite.config.ts` → `rolldownOptions.output.codeSplitting`); Excel ve QR kütüphaneleri yalnızca ilgili ekranda dinamik yüklenir |
 | API | Node.js 24, [Hono](https://hono.dev) + `@hono/aws-lambda`, AWS Lambda (arm64) |
 | Kimlik | Amazon Cognito + Pre Token Generation trigger, `aws-jwt-verify` |
 | Veritabanı | Amazon DynamoDB (single-table, `apartmentId` bazlı izolasyon) |
@@ -77,11 +80,15 @@ building-management/
 │   │   │   ├── http/             # Hata ve yardımcı fonksiyonlar
 │   │   │   ├── modules/          # Domain modülleri (core, finance, portal, ...)
 │   │   │   └── workers/          # SQS tüketen worker Lambda'lar
-│   │   ├── scripts/seed-admin.ts # İlk yönetici kurulum betiği
+│   │   ├── scripts/              # seed-admin, backfill:sites, backfill:expense-index, backfill:finance-summary, fix:receivable-names
 │   │   └── test/                 # Vitest testleri
 │   └── web/                      # @bm/web — React + Vite
 ├── infra/                        # Serverless Terraform yığını
 │   ├── api.tf  cognito.tf  dynamodb.tf  sns_sqs.tf  worker.tf  outbox.tf  operations.tf
+│   ├── scheduler.tf  bulk_jobs.tf  audit.tf  security_monitoring.tf  payments.tf  bank.tf  storage.tf
+│   ├── environment.tf            # Alan adı bağlama + prod korkulukları (production_guardrails)
+│   ├── dev.tfvars  prod.tfvars   # Ortam ayarları (gizli bilgi içermez)
+│   ├── PROD_DEPLOY.md            # Prod dağıtım kontrol listesi
 │   ├── tests/serverless.tftest.hcl
 │   ├── github-oidc/              # GitHub Actions için OIDC rolü
 │   ├── budget/                   # AWS bütçe alarmı
@@ -152,7 +159,10 @@ npm run dev:api
 | Komut | Açıklama |
 | --- | --- |
 | `npm run dev -w @bm/api` | Yerel geliştirme sunucusu |
-| `npm run build:lambda -w @bm/api` | `dist/lambda/` altına `api.mjs`, `pre-token.mjs`, `notification-worker.mjs` (esbuild, ESM) |
+| `npm run build:lambda -w @bm/api` | `dist/lambda/` altına `api.mjs`, `pre-token.mjs`, `notification-worker.mjs`, `scheduler-worker.mjs`, `bulk-worker.mjs`, `outbox-relay.mjs` (esbuild, ESM) |
+| `npm run backfill:expense-index -w @bm/api` | Gider tarih dizinini (GSI1) eski giderlere ekler; bkz. [Veri düzeltme betikleri](#veri-düzeltme-betikleri) |
+| `npm run backfill:sites -w @bm/api` | Site dizinini (GSI1 `SITE_DIRECTORY`) eski sitelere ekler |
+| `npm run backfill:finance-summary -w @bm/api` | Alt cari özetlerini (`FSUM#`) doldurur/tazeler; `--verify` eski tam-defter hesabıyla karşılaştırır; bkz. [Veri düzeltme betikleri](#veri-düzeltme-betikleri) |
 | `npm run seed:admin -w @bm/api` | İlk kurulum betiği (bkz. [Bootstrap](#ilk-kurulum-bootstrap)) |
 
 ---
@@ -188,6 +198,8 @@ npm run dev:api
 | `PAYTR_SECRET_ARN` / `PAYTR_TEST_MODE` | PayTR mağaza anahtarları (Secrets Manager JSON `{"merchantId","merchantKey","merchantSalt"}`) ve `test_mode` (`1` varsayılan, canlıda `0`; Terraform `paytr_test_mode`). Yerelde `PAYTR_MERCHANT_ID` / `PAYTR_MERCHANT_KEY` / `PAYTR_MERCHANT_SALT`. |
 | `PAYMENTS_POS_RATE_BPS` / `PAYMENTS_POS_FIXED_FEE_KURUS` | Online ödeme sağlayıcısının sözleşme komisyonu: oran baz puan (`249` = %2,49; 0-1000) ve işlem başı sabit ücret kuruş (`25` = 0,25 TL; 0-5000). Varsayılan `0`; geçersiz değer başlangıçta hata verir. Komisyon tahmininde kullanılır, ödeme hesabı bazında geçersiz kılınabilir (Terraform `payments_pos_rate_bps`, `payments_pos_fixed_fee_kurus`). |
 | `BANK_IBAN_MAC_KEY_ID` | Faz B1: banka ekstresindeki karşı taraf IBAN'ının HMAC özeti için müşteri yönetimli KMS `HMAC_256` anahtarı (Terraform `bank_iban_mac_key_arn`). API yalnızca `kms:GenerateMac` (`HMAC_SHA_256`) yapar; düz IBAN hiçbir kayda yazılmaz. Yerelde verilmezse deterministik bellek içi HMAC (`BANK_IBAN_MAC_LOCAL_KEY` ile değiştirilebilir); production'da anahtarsız ekstre aktarılamaz (503). |
+| `BULK_JOBS_QUEUE_URL` | Arka plan toplu iş kuyruğu (Terraform `bulk_jobs_queue_url`; API, scheduler-worker ve bulk-worker). Yerelde verilmezse iş aynı süreçte parça parça işlenir (inline kuyruk). |
+| `BULK_JOB_BATCH_SIZE` / `BULK_JOB_CONCURRENCY` | bulk-worker: ilerleme kaydı başına bölüm (varsayılan 25) ve parça içi eşzamanlılık (varsayılan 4; sıcak gelir hesabı çakışmaları depoda kısa beklemeyle tekrar denenir). |
 | `AUDIT_TABLE_NAME` | Denetim günlüğü tablosu (Terraform: `<proje>-<ortam>-audit`). Lambda'da tanımsızsa hassas yazımlar reddedilir (fail closed); yerel geliştirme ve testlerde tanımsızsa denetim atlanır. |
 
 Gizli bilgiler koda gömülmez; AWS kimlik bilgileri SDK'nın varsayılan credential zincirinden gelir.
@@ -200,12 +212,18 @@ Gizli bilgiler koda gömülmez; AWS kimlik bilgileri SDK'nın varsayılan creden
 # API birim testleri (Vitest)
 npm test -w @bm/api
 
+# Web birim / bileşen testleri (Vitest + happy-dom) ve üretim derlemesi
+npm test -w @bm/web
+npm run build -w @bm/web
+
 # Terraform plan testleri (AWS kimlik bilgisi gerektirmez, mock provider)
 terraform -chdir=infra init -backend=false
 terraform -chdir=infra test
 ```
 
 Terraform testleri `command = plan` ile çalışır. Plan aşamasında bilinmesi gereken hesaplanmış değerler (ör. SQS ARN'i) `override_resource { override_during = plan }` ile sabitlenir.
+
+Kapsam (26.11.2026): API 67, web 67 test dosyası; Terraform 36 plan senaryosu (prod korkulukları ve alan adı bağlama dahil). Yüksek hacim testi `apps/api/test/bulk-jobs-scale.test.ts`: 1.200 bağımsız bölümlü sitede toplu aidat ve sayaç onayı parça parça (continuation) tamamlanır; worker kesintisi, yinelenen / eşzamanlı mesaj ve yeniden denemede çift kayıt oluşmaz, kuruş mutabakatı ve mizan korunur.
 
 ---
 
@@ -239,7 +257,29 @@ terraform -chdir=infra plan
 terraform -chdir=infra apply
 ```
 
-Çıktılar: `api_url`, `cognito_user_pool_id`, `cognito_user_pool_client_id`, `dynamodb_table_name`, `notification_queue_url`, `frontend_env` ve diğerleri.
+Çıktılar: `api_url`, `cognito_user_pool_id`, `cognito_user_pool_client_id`, `dynamodb_table_name`, `notification_queue_url`, `frontend_env`, `bulk_jobs_queue_url`, `cors_allow_origins`, `web_app_url` ve diğerleri.
+
+### Prod ortamı (henüz dağıtılmadı)
+
+- **`infra/prod.tfvars`:** `production_guardrails = true`, MFA `enforce`, açık kayıt kapalı, silme koruması ve zamanlayıcı açık, log saklama 90 gün, yalnızca `https` CORS, e-posta `log` kanalında (SES doğrulanana kadar), online ödeme **kapalı** (`disabled`, iyzico sandbox, PayTR test modu). `alert_email` / `ses_*` bilerek tfvars'ta yok: `-var-file` değerleri GitHub'dan gelen `TF_VAR_*` değerlerini ezerdi.
+- **Alan adı (planlanan, henüz alınmadı):** `prod.tfvars`'ta `# custom_domain = "yonetimsistemim.com"` satırı yorumdadır. Alan adı alınıp Cloudflare Pages prod projesine `app.yonetimsistemim.com` bağlandığında bu satır açılır: adres CORS listesine eklenir ve `web_app_url` (ödeme dönüşü, e-posta bağlantıları) bu adres olur. SES bu satırla açılmaz (DNS doğrulaması ayrı adım).
+- **`infra/environment.tf` korkulukları** (yalnızca `production_guardrails = true` iken, plan aşamasında): `environment = prod`, MFA `enforce`, `alert_email` dolu, CORS yalnızca `https` ve localhost'suz, `web_app_url` veya `custom_domain` var, silme koruması açık, zamanlayıcı açık, açık kayıt kapalı, `notification_channel = ses` ise `ses_identity_arn` var, canlı ödeme (iyzico `api.iyzipay.com` / PayTR `test_mode=false`) yalnızca alan adı ve komisyon oranıyla.
+- **Kontrol listesi:** [`infra/PROD_DEPLOY.md`](infra/PROD_DEPLOY.md) — ilk dağıtım öncesi (eski soneksiz prod yığını kararı, `production` environment, `ALERT_EMAIL`, prod Pages projesi), dağıtım, SNS onayı, alan adı, SES ve ödeme sırası.
+
+### Arka plan toplu işleri (`bulk_jobs.tf`)
+
+Büyük toplu tahakkuk ve sayaç dönemi onayı HTTP isteğinde çalışmaz (API Gateway 30 sn / Lambda 15 sn):
+
+| Kapsam | Davranış |
+| --- | --- |
+| ≤ 60 bağımsız bölüm (`SYNC_BULK_UNITS`, `SYNC_POSTING_UNITS`) | Senkron (eski davranış) |
+| 61 – 5.000 bölüm (`MAX_BULK_UNITS`, `MAX_POSTING_UNITS`) | API iş kaydı (`BULKJOB#`) açar, SQS `bulk-jobs`'a mesaj bırakır ve **202** + `{ mode: 'job', job }` döner |
+
+- **İşleme:** `bulk-worker` (300 sn, 1024 MB, en fazla 5 eşzamanlı) işi sürüm koşullu bir kirayla (`leaseUntil`) alır; bölümleri 25'erli alt parçalarla, parça içinde sınırlı eşzamanlılıkla yazar ve her alt parçadan sonra ilerlemeyi kaydeder. Lambda süresi 60 sn'nin altına düşünce veya çağrı başına 1.000 bölüme ulaşınca kirayı bırakır ve **kendini aynı kuyruğa devam mesajıyla bırakır** (self-chaining). Aidatta paylar ve borçlu taraf iş açılırken dondurulur (250'şerli `#L#` kayıtları); sayaçta dönemin `MDLINE` satırları kullanılır (hazırlık → parçalı yazım → sonlandırma).
+- **Garantiler:** Kalem anahtarları senkron yolla aynıdır (`<key>_<unitId>`, `MDP_<periodId>_<unitId>`); SQS tekrar teslimi, yinelenen mesaj ve "Tekrar dene" çift kayıt üretmez. Geçici hata mesajı SQS'e geri bırakır (5 deneme → DLQ + alarm); aidatta iş mantığı hatası bölümü "hatalı" sayar, sayaçta işi `failed` yapar (dönem `posting` kalır, yeniden deneme kaldığı yerden sürer). Özet bildirim deterministik kimlikle tektir.
+- **Zamanlayıcı:** Kuyruk tanımlıysa aylık otomatik aidat da bu iş olarak açılır (`auto-dues-<YYYY-MM>`).
+- **Arayüz:** `BulkJobProgress` bileşeni `GET /api/jobs/:jobId`'yi 1,5 sn'de bir sorgular: "İşleniyor: 420 / 1.250 bölüm (%34)", bitince özet, hatalı bölümler ve "Tekrar dene". Pencere kapatılsa da iş sunucuda sürer.
+- **Alarmlar:** DLQ boş değil, kuyrukta 15 dk'dan eski mesaj, worker hatası.
 
 ---
 
@@ -247,11 +287,12 @@ terraform -chdir=infra apply
 
 `.github/workflows/serverless-deploy.yml`:
 
-- **Her push / PR** (`main`, `feature/aws-entegrasyonu`): typecheck, test, `build:lambda`, `terraform fmt` / `validate` / `test`.
-- **Kimlik bilgisi varsa:** `terraform plan` (adım özetine yazılır).
-- **Yalnızca `main`'e push:** `terraform apply` + sağlık kontrolü (`production` environment).
+- **PR (`main`'e):** typecheck, test, `build:lambda` (paket kontrolü: `api`, `pre-token`, `notification-worker`, `scheduler-worker`, `bulk-worker`, `outbox-relay`), `terraform fmt` / `validate` / `test`; kimlik bilgisi varsa `dev`'e karşı salt okunur plan.
+- **`main`'e push:** `dev` yığını (`infra/dev.tfvars`, state `serverless-dev/`) plan + apply + sağlık kontrolü (`dev` environment).
+- **`v*` etiketi** (veya `main` / `v*` üzerinden `workflow_dispatch target=prod`): `prod` yığını (`infra/prod.tfvars`, state `serverless/`, `production` environment). Prod planı `production_guardrails` ile güvensiz ayarlarda başlamaz. Henüz hiç prod etiketi atılmadı.
+- **Sağlık kontrolü:** `/api/health` yeni SHA'yı döner, korumalı uç 401 verir ve `terraform output cors_allow_origins` içindeki her `https` adresi için CORS ön kontrolü geçer.
 
-Web (Cloudflare Pages, Git entegrasyonu): `main`'e her push'ta Cloudflare kendisi derler ve yayınlar. Derleme değişkenleri Pages proje ayarlarındadır (**Production** → prod yığınının `frontend_env` çıktısı, **Preview** → dev yığınının). Canlı adres `serverless-deploy.yml`'deki varsayılan CORS listesindedir; sağlık kontrolü her deploy'da `https` adreslerinin API'ye CORS iznini doğrular.
+Web (Cloudflare Pages, Git entegrasyonu): `main`'e her push'ta Cloudflare kendisi derler ve yayınlar. Derleme değişkenleri Pages proje ayarlarındadır (**Production** → prod yığınının `frontend_env` çıktısı, **Preview** → dev yığınının). CORS listesi ortamın tfvars dosyasındadır (`cors_allow_origins`; prod'da `custom_domain` açılınca `https://app.<alan adı>` otomatik eklenir). Prod için ayrı bir Cloudflare Pages projesi henüz oluşturulmadı (`prod.tfvars`'taki `pages.dev` adresi yer tutucudur).
 
 AWS erişimi tercihen OIDC ile sağlanır (`infra/github-oidc`, repo variable `AWS_DEPLOY_ROLE_ARN`). Repo variable'ları: `AWS_REGION`, `ALERT_EMAIL` (prod'da zorunlu; boşsa prod planı korkulukta durur), `SES_IDENTITY_ARN`, `SES_FROM_ADDRESS`. Ortam ayarları (CORS, MFA, ödeme, alan adı, Cognito katmanı) `infra/dev.tfvars` ve `infra/prod.tfvars`'tadır; eski `CORS_ALLOW_ORIGINS` / `COGNITO_USER_POOL_TIER` değişkenleri artık kullanılmaz. Prod: `infra/PROD_DEPLOY.md`.
 
@@ -311,7 +352,13 @@ Tüm uçlar `/api` altındadır. `GET /api/health` dışındakiler JWT ile korun
 | `portal/tickets` | `/api/portal/tickets` | Sakin: açtığım + dairemin talepleri (yalnızca herkese açık olaylar), `POST /` (öncelik seçilmez), `GET /similar`, `POST /:id/comments`, `POST /:id/confirm` `{ version, rating?, note? }`, `/reopen` `{ version, note }`, `/cancel` `{ version }`, fotoğraf yükleme / görüntüleme |
 | `maintenance` | `/api/maintenance` | Periyodik bakım: `GET /presets`, `GET\|POST /templates`, `GET\|PUT /templates/:id`, `POST /templates/:id/archive`, `GET /tasks`, `GET /calendar?month=`, `GET /tasks/:id`, `POST /tasks/:id/assign\|start\|complete\|skip\|ticket`, fotoğraflar; masraf uçları `/tasks/:id/costs` (talep ile aynı sözleşme). Görevler `maintenance_tasks` işiyle (04:10) idempotent üretilir; `ticket_maintenance` (07:30) çözülen talebi `autoCloseDays` sonra kapatır ve günlük operasyon özetini (`OPERATIONS_DIGEST`) yayınlar |
 | `portal` | `/api/portal` | Sakin ekranı: `my-unit`, `my-dues`, `my-statement`, `my-receipts`, duyurular; Finans 2.2: `my-plans`, `offset-options`, `GET\|POST offset-requests` |
-| `audit` | `/api/audit` | Denetim günlüğü, salt okunur: en yeni önce, `limit` (≤100), `cursor`, `from`/`to`, `action` öneki, `actorId`. Varsayılan kapsam JWT'deki apartman (`apartment_manager`, `management_company`, `observer`; `platform_admin` yalnızca destek oturumuyla); `?scope=platform` yalnızca doğrudan `platform_admin` (platform zinciri). Yanıt hash'e giren tüm alanları içerir (tarayıcıda doğrulama). `GET /integrity?scope=`: gece doğrulamasının durumu (`verified` / `pending` / `stale` / `empty`) |
+| `metering` | `/api/metering` | Finans 2.3 sayaç / endeks dağıtımı (yazma: yönetici; okuma: + denetçi): sayaç sicili, değişim (`/swaps`, önizlemeli, geri alınabilir), dağıtım şablonları (hazır ısınma / su), dönemler, `POST /periods/:id/calculate` (önizleme + `calcHash`), `POST /periods/:id/approve` `{ calcHash }` (60 bölüme kadar senkron; üstü **202 + arka plan işi**), toplu ters kayıt ve düzeltilmiş dönem, daire dağıtım dökümü PDF, `GET /expenses` fatura seçicisi (gider tarih dizininden en yeni 200) |
+| `meter-readings` | `/api/meter-readings` | Okuma girişi (yönetici + `building_staff`): açık dönemler, okuma cetveli, `PUT /periods/:id`, CSV/Excel toplu okuma (`/import`, `dryRun`), fotoğraf kanıtı (S3 imzalı URL) |
+| `portal/meters` | `/api/portal/meters` | Sakin tüketim geçmişi (bina / blok ortalaması) ve dağıtım dökümü PDF |
+| `imports` | `/api/imports` | Excel/CSV toplu aktarım (daireler, kişiler, açılış bakiyeleri): önizleme, 25'lik parçalarla idempotent yazım, hata raporu |
+| `documents` | `/api/documents` | Makbuz PDF ve gider faturası: S3'e yalnızca kısa ömürlü imzalı URL ile yükleme / indirme |
+| `payments` | `/api/finance/online-payments`, `/api/portal/payments`, `/api/admin/payments`, `/api/payments` | Online ödeme (iyzico + PayTR; **canlı değil**): yönetici listesi, sakin ödeme niyeti / sonuç, platform ödeme hesapları, ayarlar, aktarımlar, komisyon faturaları; kimliksiz callback / webhook rotaları |
+| `audit` | `/api/audit` | Denetim günlüğü, salt okunur: en yeni önce, `limit` (≤100), `cursor`, `from`/`to`, `action` öneki, `actorId`. Varsayılan kapsam JWT'deki apartman (`apartment_manager`, `management_company`, `observer`; `platform_admin` yalnızca destek oturumuyla); `?scope=platform` yalnızca doğrudan `platform_admin` (platform zinciri). Yanıt hash'e giren tüm alanları içerir (tarayıcıda doğrulama). `GET /integrity?scope=`: gece doğrulamasının durumu (`verified` / `pending` / `stale` / `empty`). `POST /verify?scope=`: zinciri gece işini beklemeden artımlı doğrular (`apartment_manager`, `management_company`; platform zincirinde doğrudan `platform_admin`; gözlemci ve destek oturumu hariç; kontrol noktası 60 sn içinde tazeyse yeniden okunmaz). Bulguda kontrol noktası ilerlemez, ayrıntı yalnızca loga (`audit_chain_manual_verify`) yazılır |
 | `mfa` | `/api/mfa` | `GET /users/:userId` (MFA ve hesap durumu, `canReset` / `blockedReason`; sıfırlamayla aynı yetki kuralları), `GET /users?email=` (yalnızca `platform_admin`), `POST /users/:userId/reset` `{ reason }` (10-500 karakter): cihaz kaybında TOTP'yi kapatır ve tüm oturumları düşürür; önce denetim günlüğüne yazılır. `platform_admin` herkes için; `apartment_manager` / `management_company` yalnızca kendi apartmanındaki, başka apartmanda yönetici/denetçi olmayan ve `platform_admin` olmayan kullanıcılar için. Kendi MFA'sı ve destek oturumu ile yapılamaz |
 | `finance/bank` | `/api/bank` | Faz B3.5: `POST /statements/:id/commit` `{ …, rememberFormat? }` (eşleme `BANKFMT#` olarak aynı atomik yazımda + `bank.format.save`), `GET /lines/:lineId/payable-suggestions`, `POST /lines/:lineId/settle-payable` `{ bankAccountId, expectedVersion, payableAccountId, description?, reason? }`, `GET /reconciliation/report?bankAccountId=&from=&to=` (PDF, 5 dk imzalı link). Faz B3: `GET\|POST /statements/:id/auto-match` (`{ idempotencyKey, minConfidence? = 0.85 }`; istek başına 25 satır, `remaining > 0` ise aynı anahtarla devam), `POST /lines/:lineId/expense` `{ bankAccountId, expectedVersion, expenseAccountId, description?, supplier?, invoiceNumber?, reason? }`, `GET /reconciliation?bankAccountId=&from=&to=` (açılış/kapanış, fark, bekleyen net, açıklanamayan fark, giren/çıkan döküm); `/unmatch` gidere çevrilmiş satırı da ters kayıtla geri alır. Faz B2 eşleştirme: `GET /queue`, `/targets`, `/lines/:lineId/suggestions`, `/lines/:lineId/history`, `/reconciliation`, `/accounts`; `POST /lines/:lineId/match` `{ bankAccountId, expectedVersion, allocations[{accountId, amount}] }`, `/ignore`, `/unmatch` `{ bankAccountId, expectedVersion, reason }`; `PUT /accounts/:id/profile`. Faz B1 banka ekstresi aktarımı: `POST /statements/upload-url` (5 dk imzalı PUT, S3 `apartments/{apt}/bank-statements/{yyyy}/{mm}/{statementId}`, ≤ 5 MB), `POST /statements` (önizleme: CSV/XLSX/HTML-xls, sütun eşleme istek > hesaba kayıtlı > otomatik, dosya içi ve önceden aktarılmış tekrarlar, bakiye sürekliliği, çakışan dönem), `POST /statements/:id/commit` `{ expectedVersion, acknowledgeWarnings? }` (idempotent satır yazımı + denetim), `GET /statements[/:id]`, `GET /lines?bankAccountId=&status=&from=&to=&statementId=&order=&limit=&cursor=`, `GET\|PUT /formats/:bankAccountId` (sürüm koşullu), `GET /templates`. Yazma: `apartment_manager`, `management_company`; okuma: + `observer` (`platform_admin` yalnızca destek oturumuyla) |
 | `bulkjobs` | `/api/jobs` | Arka plan toplu işleri (büyük siteler, 1.000–5.000 bölüm): `GET /:jobId` (durum `pending\|running\|completed\|completed_with_errors\|failed`, `processed` / `total` / `percent`, hatalı bölüm örnekleri, sonuç), `POST /:jobId/retry` (idempotent; yazılmış kalemler tekrar yazılmaz). Başlatan uçlar **202** + `{ mode: 'job', job }` döner: `POST /api/finance/dues/jobs` (her zaman), `POST /api/finance/dues` (toplu kapsam `SYNC_BULK_UNITS` = 60 bölümü aşarsa) ve `POST /api/metering/periods/:id/approve` (dönem `SYNC_POSTING_UNITS` = 60 bölümü aşarsa). İş SQS `bulk-jobs` kuyruğundan `bulk-worker` Lambda'sıyla 25'erli parçalarla, parça içinde sınırlı eşzamanlılıkla yazılır; Lambda süresi azalınca kendini aynı kuyruğa devam mesajıyla bırakır. Kalem anahtarları senkron yolla aynıdır (`<key>_<unitId>`, `MDP_<periodId>_<unitId>`): tekrar teslim ve yeniden deneme çift kayıt üretmez. Büyük sitelerde zamanlanmış aylık aidat da bu kuyruğu kullanır. Okuma: `apartment_manager`, `management_company`, `observer`; yeniden deneme: ilk ikisi |
@@ -326,6 +373,22 @@ Yedi rol: `platform_admin`, `management_company`, `apartment_manager`, `resident
 - Apartman bazlı roller Cognito gruplarında değil, DynamoDB `Membership` kayıtlarında tutulur. Cognito grubu yalnızca `platform_admin` için kullanılır.
 - Kullanıcı aktif apartmanı seçtiğinde **Pre Token Generation Lambda** access token'a `apartmentId`, `role` (ve varsa `organizationId`) claim'lerini ekler.
 - Handler'lar tenant izolasyonunu istek gövdesinden değil, **JWT claim'lerinden** yapar.
+- Web menüsü ve rota korumaları aynı rol listelerini kullanır (`apps/web/src/types/roles.ts`, `layouts/adminNav.ts`, `router/index.tsx`). Menüde görünmeyen bir ekrana doğrudan URL ile girilirse kullanıcı rolünün açılış sayfasına yönlendirilir; yetkinin asıl kaynağı yine API'dir.
+
+| Yönetim paneli ekranı | `apartment_manager` | `management_company` | `observer` | `building_staff` | `security_guard` | `platform_admin` |
+| --- | :-: | :-: | :-: | :-: | :-: | :-: |
+| Genel Bakış (`/admin`) | ✓ | ✓ | ✓ (salt okur) | ✓ (bekleyen işler) | ✓ | — (platform paneli) |
+| Daireler, Finans, Duyurular, Toplu Aktarım, Ayarlar (`OFFICE_ROLES`) | ✓ | ✓ | ✓ (salt okur) | — | — | — |
+| Sayaç Dağıtımı (`/admin/meters`) | ✓ | ✓ | ✓ (salt okur) | — | — | — |
+| Sayaç Okuma (`/admin/meter-readings`) | ✓ | ✓ | — | ✓ | — | — |
+| Arıza & Bakım (`/admin/tickets`) | ✓ | ✓ | ✓ (salt okur) | ✓ | ✓ (kendi talepleri) | — |
+| İşlerim (`/admin/my-tasks`) | — | — | — | ✓ | — | — |
+| Ekip (`/admin/team`) | ✓ | ✓ | ✓ (salt okur) | — | — | — |
+| Denetim Günlüğü (`/admin/audit`) | ✓ | ✓ | ✓ | — | — | ✓ (platform zinciri) |
+| Güvenlik / MFA sıfırlama (`/admin/security`) | ✓ | ✓ | — | — | — | — |
+| Apartmanlar, Ödeme Hesapları, Aktarımlar, Faturalar, Kullanıcılar | — | — | — | — | — | ✓ |
+
+`resident` yalnızca sakin portalını (`/app/*`) görür; üst çubukta aktif sitenin adı (yoksa **YÖNESİST** markası) gösterilir.
 
 ---
 
@@ -334,9 +397,11 @@ Yedi rol: `platform_admin`, `management_company`, `apartment_manager`, `resident
 **Güncel durum**
 
 - **Denetim günlüğü (G1):** Hassas işlemler aynı transaction'da ayrı ve yalnızca eklemeye açık bir tabloya yazılır. Her kayıt bir öncekinin SHA-256 özetine bağlıdır (apartman başına ve `PLATFORM` zinciri) ve 10 yıl saklanır. Zincirler her gece doğrulanır.
-- **Zorunlu MFA (G2):** `platform_admin`, `management_company`, `apartment_manager` ve `observer` için TOTP zorunludur (`warn` → kullanıcı bazlı geçiş süresi → `enforce`). Zorunluyken API yalnızca `/api/me/*` uçlarını açar.
+- **Denetim günlüğü arayüzü:** Olaylar Türkçe etiketlenir (defter, arıza talebi `ticket.*`, bakım `maintenance.*`, sayaç `meters.*`, finans dönemi / bütçe vb.); sözlükte olmayan anahtar okunabilir yedek etiketle gösterilir. Gece doğrulaması gecikirse yönetici **"Zinciri şimdi doğrula"** (`POST /api/audit/verify`) ile artımlı doğrulama yapabilir. Gece işinde zincir doğrulaması defter denetiminden bağımsız çalışır: biri hata verse de diğerinin kontrol noktası ve metriği üretilir (`audit_chain_verify_failed` logu).
+- **Zorunlu MFA (G2):** `platform_admin`, `management_company`, `apartment_manager` ve `observer` için TOTP zorunludur (`off` / `warn` → kullanıcı bazlı geçiş süresi / `enforce`). Zorunluyken API yalnızca `/api/me/*` uçlarını açar. `dev` varsayılanı `warn`; `prod.tfvars`'ta `enforce` ve prod korkuluğu başka bir değere izin vermez.
 - **Platform erişimi:** `platform_admin` platform zincirini doğrudan görür. Apartman verisine yalnızca gerekçeli, en fazla 60 dakikalık, salt okunur ve her isteği denetlenen destek oturumuyla erişir.
-- **Uç koruma (G3) bekliyor:** Alan adı alınınca Cloudflare WAF devreye girecek. Şimdilik stage ve rota bazlı throttling ile alarmlar kullanılıyor.
+- **Uç koruma (G3) bekliyor:** Alan adı (`yonetimsistemim.com`) henüz satın alınmadı; alındığında Cloudflare WAF devreye girecek. Şimdilik stage ve rota bazlı throttling ile alarmlar kullanılıyor.
+- **Alarm teslimi:** Tüm alarmlar `alerts` SNS topic'ine gider; e-posta aboneliği yalnızca `alert_email` (GitHub `ALERT_EMAIL`) doluysa oluşur ve ilk apply'dan sonra gelen SNS onay e-postası tıklanana kadar **hiçbir alarm iletilmez**. Prod korkuluğu boş `alert_email`'i reddeder.
 
 **Web ekranları**
 
@@ -524,7 +589,7 @@ API Gateway sınırı istemci başına değil, rota başınadır: arka ucu ve ma
 - [x] TOTP kurulum uçları (`/api/me/mfa`) ve denetimli yönetici sıfırlaması (`/api/mfa/users/:userId/reset`, `mfa.reset` / `mfa.totp.enable` denetim kayıtları)
 - [x] Web: QR + manuel anahtar + 6 haneli kod ile kurulum ekranı (`/mfa-setup`), geçiş süresi banner'ı, `MFA_REQUIRED`'da kurulum ekranına yönlendirme
 
-**Güvenlik arayüzü ve izleme (`feature/guvenlik-arayuz-izleme`)**
+**Güvenlik arayüzü ve izleme (`main`'e alındı)**
 
 - [x] Denetim günlüğü ekranı (`/admin/audit`): filtre, sayfalama, detay, sunucu ve tarayıcı zincir doğrulaması; platform zinciri (`?scope=platform`) ve `GET /api/audit/integrity`
 - [x] MFA yönetimi: apartman güvenlik ekranı (`/admin/security`), platform kullanıcı arama (`/admin/users`), `GET /api/mfa/users/:userId` ve `GET /api/mfa/users?email=`
@@ -563,7 +628,7 @@ API Gateway sınırı istemci başına değil, rota başınadır: arka ucu ve ma
 - [x] Web: Daireler → **Mülkiyet** penceresi (paydaşlar, kesir ve %, toplam göstergesi, temsilci, faturalama modu, geçmiş, devirler ve geri alma), **Mülk / hisse devri** sihirbazı (tür, pay hareketleri, taslak tablo, önizleme, gerekçe ve onay), Finans → **Paydaşlar / hisse** (hisse tamlığı eksik daireler ve tamamlama, ilk sicil geçişi, paydaş carileri ve tahsilat), tahsilat diyaloğunda paydaş carisi seçimi, denetim etiketleri (`ownership.*`)
 - [x] Testler: `apps/api/test/ownership.test.ts`; web `lib/ownership/shares.test.ts`, `pages/admin/units/ownershipWizard.test.ts`, `OwnershipTransferWizard.test.tsx`, `UnitOwnershipView.test.tsx`, `pages/admin/finance/ownershipPanel.test.ts`
 
-**Finans 2.2 — Avans mahsubu ve borç yapılandırma (`feature/finance-offset-restructure`; backend doğrulandı, web yerel doğrulama bekliyor)**
+**Finans 2.2 — Avans mahsubu ve borç yapılandırma (`main`'e alındı: `1877a77`)**
 
 - [x] Defter çekirdeği: alacak satırında hedefli kapama (`settles: [{ chargeId, amount }]`; hedefli tutar önce kendi kalemine, kalan havuz FIFO ile — seçilmeyen kalemlerin durumu değişmez), taksit kaleminde tazminat tabanı (`feeBase`; ödemeler önce anapara payını kapatır, taksitlendirilen tazminata tazminat işlemez). Yeni işlem türleri `offset` ve `restructure` (aynı alt caride kendi içinde dengeli, ara hesap yok). Gece denetimi `settlement_invalid`; genel ters kayıt ucu mahsup / plan işlemlerini ve bunlara bağlı kalemleri reddeder
 - [x] Avans mahsubu (`OFFSET#`): serbest avans → başka alt carinin açık borcu, kısmi veya kalem seçerek, tek atomik yazım + denetim (`finance.offset`) + idempotency; kaynak sahipleri hedefte değilse "muvafakat alındı" beyanı + açıklama zorunlu ve denetimde işaretli; geri alma ters kayıtla. Sakin talebi (`OFFSETREQ#`): portaldan talep, yönetici kısmi tutar / muvafakatla onay veya gerekçeli ret
@@ -592,7 +657,7 @@ API Gateway sınırı istemci başına değil, rota başınadır: arka ucu ve ma
 - [x] Web: kuyrukta çıkan satırlar için tedarikçi önerisi ve **“Tedarikçi Ödemesi”** diyaloğu (açık borç, açık fatura, kalan borç, fazla ödeme uyarısı), Finans → **Tedarikçiler** sekmesi (bakiyeler, açık faturalar, elle ödeme), mutabakat kartında **“PDF indir”**
 - [x] Testler: `apps/api/test/bank-b3-5.test.ts`, web `lib/bank/payable.test.ts`, `lib/bank/formatMemory.test.ts`, `SettlePayableDialog.test.tsx`
 
-**Finans 2.4 — Dönem kapanışı, bütçe, raporlar (`feature/finance-period-close-budget`)**
+**Finans 2.4 — Dönem kapanışı, bütçe, raporlar (`main`'e alındı: `52db844`)**
 
 - [x] Hesap planı:
   - Hesap kodu (`Account.code`) ve hazır gelir hesapları: Demirbaş Gelirleri, Isınma / Yakıt Gelirleri.
@@ -613,7 +678,7 @@ API Gateway sınırı istemci başına değil, rota başınadır: arka ucu ve ma
   - Genel Bakış göstergeleri ve 12 aylık gelir-gider grafiği.
 - [x] Gece denetimi: dönem snapshot'ı, kapalı aya yazım ve kilit bütünlüğü. Taksit planı işlemleri hesap kapsamlı `LE#` okumasıyla okunur.
 
-**Faz 3 — O1 Arıza / talep, periyodik bakım ve görevli iş listesi (`feature/o1-ariza-bakim`)**
+**Faz 3 — O1 Arıza / talep, periyodik bakım ve görevli iş listesi (`main`'e alındı: `47c55dc`)**
 
 - [x] Talep çekirdeği (O1-1): durum makinesi (`open → assigned → in_progress ⇄ on_hold → resolved → closed`, iptal, 7 gün içinde yeniden açma), rol / yetki matrisi, okunur numara (`T-000123`), SLA (acil 4 sa, yüksek 24 sa, normal 72 sa, düşük 7 gün; site ayarı), append-only zaman çizelgesi ve iç notlar; talep + olay + indeks + idempotency + outbox + denetim tek atomik yazım
 - [x] Sakin portalı uçları, S3 fotoğraf (geçici yükleme → `apartments/{apt}/tickets/{ticketId}/`), outbox olayları ve e-posta şablonları, `email.tickets` tercihi (O1-2); ekip daveti olan ama kişi kaydı olmayan personele e-posta için ekip kaydı yedeği
@@ -623,9 +688,46 @@ API Gateway sınırı istemci başına değil, rota başınadır: arka ucu ve ma
 - [x] Web sakin (O1-6): **Talepler** (`/app/talepler`) listesi ve “onayınızı bekliyor” vurgusu, adım adım yeni talep (daire içi / ortak alan, benzer açık talep uyarısı, en fazla 6 fotoğraf), talep ayrıntısı (yalnızca herkese açık olaylar), 1–5 puanlı onay, yeniden açma, geri çekme; ana sayfa kartı; Hesabım → **Arıza e-postaları** anahtarı
 - [x] Testler: `apps/api/test/tickets.test.ts`, `tickets-portal.test.ts`, `maintenance.test.ts`, `workcosts.test.ts`, `no-delete-writes.test.ts`; web `lib/tickets/model.test.ts`, `pages/admin/tickets/tickets.test.tsx`, `pages/resident/tickets/residentTickets.test.tsx`
 
+**Faz 1 — Ekip, roller ve Hesabım (`main`'e alındı: `d3aa8b5`)**
+
+- [x] Ekip ekranı (`/admin/team`): görevli / güvenlik / yönetici daveti, rol bitirme, yeniden davet; son yönetici koruması; denetçiye maskeli e-posta
+- [x] Hesabım (`/admin/account`, `/app/account`): profil, iki adımlı doğrulama, bildirim tercihleri (e-posta, arıza e-postaları)
+- [x] Alacak hesabı adlarının daire numarasına çevrilmesi (`fix:receivable-names`)
+
+**Finans 2.3 — Sayaç / endeks dağıtımı (`main`'e alındı: `df310cc`, `6637dd6`)**
+
+- [x] Hesap motoru: merkezi ısıtma varsayılanı %30 ortak (m²) + %70 tüketim, oran ve ortak anahtar (m², eşit, arsa payı) düzenlenebilir; su şablonları %0 ortak; en büyük kalan yöntemiyle sıfır kuruş fark; sıfır tüketimde tamamı ortak anahtarla
+- [x] Sayaç sicili, değişim (eski kapanış + yeni açılış endeksi), emeklilik, fotoğraf kanıtı; okuma girişi ve CSV/Excel toplu okuma (`building_staff` dahil); geri giden endeks hata, 3× sıçrama uyarı
+- [x] Önizleme–onay hash kilidi (`calcHash`), dönem bazlı idempotent tahakkuk (`MDP_<periodId>_<unitId>`), yarım onayın aynı komutla tamamlanması, toplu ters kayıt ve düzeltilmiş dönem
+- [x] Fatura çift dağıtım kilidi (`EXPDIST`), gece denetiminde dönem mutabakatı ve takılı dönem tespiti; sakin tüketim geçmişi ve dağıtım dökümü PDF
+- [x] Web: yönetici `/admin/meters`, görevli `/admin/meter-readings` (mobil, kamera fotoğrafı), sakin `/app/tuketim`
+
+**Uçtan uca test düzeltmeleri — UI, RBAC, denetim (`main`'e alındı: `35e717f`)**
+
+- [x] Denetim günlüğünde arıza / bakım / sayaç / finans dönemi olaylarının Türkçe etiketleri ve okunabilir yedek etiket; bakım görevi atama / başlatma denetim kaydı
+- [x] `POST /api/audit/verify` ve "Zinciri şimdi doğrula"; gece işinde zincir doğrulamasının defter denetiminden ayrılması; panik yaratmayan uyarı metni
+- [x] `building_staff` / `security_guard` menü ve doğrudan URL izolasyonu (`OFFICE_ROLES`), yönetim paneli üst bar taşma düzeltmesi
+- [x] Sakin yeni talep sihirbazında konuma göre kategori (daire içi: su / elektrik / ısınma / yapı-kapı-pencere / güvenlik-diyafon / diğer)
+- [x] Talepten yeni giderde tek adımda daireye yansıtma (oturan / kat maliki + son ödeme tarihi); iki adımlı "Daireye yansıt" korunur
+- [x] Sakin portalı başlığında aktif site adı (yoksa YÖNESİST); giriş ekranı ve sekme başlığı markası
+
+**Ölçek — arka plan toplu işleri (`main`'e alındı: `9e40696`)**
+
+- [x] `bulkjobs` modülü, `bulk-jobs` + DLQ kuyruğu, kendini yeniden kuyruğa atan `bulk-worker`, iş kiralama ve ilerleme kaydı; toplu aidat (`POST /api/finance/dues/jobs`, büyük `/dues` → 202) ve büyük sayaç onayı (→ 202); zamanlanmış aylık aidatın büyük sitede iş olarak açılması
+- [x] `BulkJobProgress` (aidat diyaloğu ve sayaç dönem kartları), `GET /api/jobs/:jobId`, `POST /api/jobs/:jobId/retry`
+- [x] Sayaç önizlemesinde borçlu çözümlemesinin sınırlı eşzamanlılıkla (16) yapılması
+- [x] 1.200 bölümlü ölçek testleri (`bulk-jobs-scale.test.ts`), Terraform plan testi
+
+**Prod hazırlığı ve performans (`main`'e alındı: `0747082`)**
+
+- [x] `infra/prod.tfvars`, `infra/environment.tf` (`custom_domain`, `production_guardrails`), `infra/PROD_DEPLOY.md`; CI prod planına `prod.tfvars` ekler, localhost'a düşen sessiz prod CORS varsayılanı kaldırıldı; sağlık kontrolü CORS listesini Terraform çıktısından okur
+- [x] Web sayfa bazlı code-splitting (`React.lazy` + `Suspense`, yeni sürümde eksik parça için tek seferlik yenileme), vendor parçaları, `qrcode` dinamik yükleme
+- [x] Gider tarih dizini (GSI1 `EXPDATE#<apartmentId>`): `listRecentExpenses` ile sayaç fatura seçicisi ve talep masrafı seçicisi tüm giderleri okumaz; eski kayıtlar için `backfill:expense-index`
+
 ### Veri düzeltme betikleri
 
 - `npm run backfill:expense-index -w @bm/api -- --dry-run`: gider tarih dizini (GSI1 `EXPDATE#<apartmentId>`) gelmeden önce yazılmış giderlere dizin anahtarlarını ekler; gider seçicileri (sayaç dönemi faturası, talep masrafı bağlama) en yeni 200 gideri bu dizinden sınırlı sorguyla okur. Her ortamda dağıtımdan sonra bir kez; tekrar çalıştırılabilir, Scan yetkisi gerektirir (yönetici kimliği).
+- `npm run backfill:finance-summary -w @bm/api -- --dry-run` (P1-a): alt cari özetlerini (`FSUM#<hesap>`) her sitenin her daire carisi için yalnızca o carinin kendi defter satırlarından üretir ve yazar. Özet türetilmiş veridir (defter TX/LE, bakiye, idempotency ve denetim zinciri değişmez); özet yoksa sistem yine doğru çalışır, betik ilk isteğin yükünü alır. `--verify` her sitede özetten üretilen aidat durumunu eski tam-defter hesabıyla karşılaştırır (uyuşmazlıkta çıkış kodu 2); `--site <id>` tek site, `--concurrency <n>` eşzamanlılık. Tekrar çalıştırılabilir (taze özet atlanır, yazım sürüm koşullu); Scan gerektirmez.
 - `npm run fix:receivable-names -w @bm/api -- --dry-run` (Faz 1): adında ham daire kimliği olan eski alacak hesaplarını `Daire <no> - Kat Maliki / Kiracı/Sakin / Kat Maliki (paydaş)` biçimine çevirir. Yalnızca hesap adı (+ sürüm) değişir; defter ve geçmiş açıklamalar olduğu gibi kalır. Tekrar çalıştırılabilir, Scan yetkisi gerektirir (yönetici kimliği).
 
 ### Sırada
@@ -644,7 +746,7 @@ API Gateway sınırı istemci başına değil, rota başınadır: arka ucu ve ma
 
 **Finans**
 
-- [ ] Sayaç/endeks dağıtımı ve sayaç görselleri
+- [x] Sayaç/endeks dağıtımı ve sayaç fotoğraf kanıtı (Finans 2.3, tamamlandı)
 - [ ] Finans 2.2 sonrası: sakin portalından yapılandırma talebi, tedarikçi avans mahsubu
 
 **Platform ve operasyon**
@@ -657,10 +759,26 @@ API Gateway sınırı istemci başına değil, rota başınadır: arka ucu ve ma
 - [ ] Rapor/PDF, banka ve OCR worker'ları
 - [ ] Bildirim devamı: web'de tercih ekranı, yöneticiye toplu işlem özeti, SES geri dönüş/şikâyet olaylarının işlenmesi, SMS/WhatsApp kanalı
 
+**Performans ve ölçek (çok yıllık kullanım)**
+
+- [x] **P1-a — finans defter okumalarının ölçeklenmesi:** tek cari işlemleri (cari kapama, avans mahsubu, yapılandırma/taksit planları, mülk/hisse devri, ters kayıt engeli, toplu geri alma önizlemesi, devir bakiyesi tespiti) yalnızca ilgili carilerin `LE#` satırlarını okur. Site geneli raporlar (Genel Bakış, `/summary`, `dues-status`, ayrılan cariler, hatırlatmalar, gecikme tazminatı kesinleştirme, dönem kapanışı tazminat uyarısı) hesap sürümüne mühürlü alt cari özetinden (`FSUM#`, `accountSummary.ts` / `accountSummaryStore.ts`) okur; özet yalnızca `Account.version` tutuyorsa kullanılır (defter yazımı sürümü aynı `TransactWriteItems` içinde artırır), bayat özet o carinin kendi satırlarından yeniden üretilir. Toplu iş ve tazminat kesinleştirmesi sonrası özetler worker'da tazelenir. Dönem kapanışı açılışı önceki kapalı ayın anlık görüntüsünden, raporlar kapalı ay yoksa canlı bakiye − (dönem başından bugüne net) ile alır; kasa/banka defteri açılışı da canlı bakiyeden. Kistelyevm hesabı `asOf`'tan bağımsız zaman çizelgesine ayrıldı (sonuç birebir aynı). Ölçek ve eşdeğerlik testleri: `finance-p1a-ledger-scaling.test.ts`. Dağıtım sonrası her ortamda bir kez `backfill:finance-summary` (önce `--verify`).
+- [ ] P1-a sonrası kalan sınırlı/kademeli okumalar: banka hesabı mutabakat raporu ve tedarikçi açık kalemleri hesabın tüm `LE#` satırlarını okur (hesap bazlı, site bazlı değil); sitenin ilk dönem kapanışı açılışı tek seferlik tüm geçmişten hesaplar
+- [ ] Büyük sitede (1.000+ bölüm) sayaç önizlemesi (`/calculate`) hâlâ senkron: canlı ölçüm ve gerekirse arka plan işine alma
+- [ ] Gece denetimi (`ledger_audit`) tüm siteleri tek Lambda çağrısında sırayla tarar: süre metriği / alarmı ve site başına mesaja bölme
+- [ ] PWA (manifest + service worker) — proje hedefinde var, henüz yok
+
+**Ürün modülleri (onaylı sıra: O1 sonrası)**
+
+- [ ] Y1 — Genel kurul / anket / oylama (oy ağırlığı hazırlığı `GET /api/ownership/voting-roll` mevcut)
+- [ ] Güvenlik görevlisi ekranları: plaka sorgu, misafir / kurye QR geçiş (rol var, ekran yok)
+- [ ] Rezervasyon (ortak alan), ihale
+- [ ] Yönetim firması portföyü (çoklu apartman paneli), abonelik / lisans
+- [ ] Otomasyon / kanallar: SMS / WhatsApp, rapor / OCR worker'ları
+
 **Güvenlik sertleştirmesi (G3 alan adına bağlı, beklemede)**
 
 - [ ] Denetim günlüğü devamı: S3 Object Lock (WORM) dışa aktarım
-- [ ] MFA devamı: `warn` → `enforce` geçişinin ortam bazında planlanması
+- [x] MFA: prod için `enforce` (`prod.tfvars` + korkuluk); `dev` `warn`'da kalır
 - [ ] G3 — Uç koruma (alan adı alındığında): API özel alan adı Cloudflare arkasında, WAF ve oran sınırlama, `disable_execute_api_endpoint`, kaynak doğrulama (HTTP API'ye AWS WAF bağlanamaz; CloudFront WAF'ı hesap SCP'si nedeniyle kullanılamaz)
 
 ### Online Ödeme Canlıya Geçiş Runbook'u (P1–P5)
@@ -727,6 +845,13 @@ Sıra önemlidir; her adım bir öncekinin çıktısını kullanır. Komutlar re
 ### Canlıya Geçiş Kontrol Listesi
 
 Bilinen, bilerek ertelenmiş adımlar:
+
+- [ ] **Alan adı (planlanan, henüz alınmadı):** `yonetimsistemim.com` satın alınacak; ardından Cloudflare Pages prod projesine `app.yonetimsistemim.com` bağlanır ve `infra/prod.tfvars` → `custom_domain` satırı açılır.
+- [ ] **İlk prod dağıtımı:** [`infra/PROD_DEPLOY.md`](infra/PROD_DEPLOY.md) — eski soneksiz prod yığını için önce yalnızca plan (destroy / replace satırları incelenir), `production` environment onaylayıcısı, `ALERT_EMAIL`, prod Pages projesi (`prod.tfvars`'taki `pages.dev` adresi yer tutucudur), ilk `v*` etiketi.
+- [ ] **SNS alarm aboneliği onayı:** İlk apply'dan sonra `ALERT_EMAIL` kutusuna gelen onay bağlantısı tıklanır; `aws sns list-subscriptions-by-topic` ile `PendingConfirmation` olmadığı doğrulanır, test alarmıyla teslim denenir.
+- [ ] **Davet e-postası kapasitesi:** SES bağlanana kadar Cognito `COGNITO_DEFAULT` ile günde yaklaşık 50 e-posta gönderir; 300+ sakinli pilot sitede toplu davet için SES zorunludur.
+- [ ] **Gider tarih dizini:** Her ortamda dağıtımdan sonra bir kez `npm run backfill:expense-index -w @bm/api`.
+- [ ] **Alt cari özetleri (P1-a):** Her ortamda dağıtımdan sonra bir kez `npm run backfill:finance-summary -w @bm/api -- --verify` (uyuşmazlık raporu boş olmalı), ardından `--verify` olmadan da çalıştırılabilir.
 
 - [ ] **AWS SES e-posta aktivasyonu (canlıya geçiş öncesi).** Alan adı henüz satın alınmadı; bildirimler şu an `notification_channel = "log"` modunda yalnızca yapılandırılmış log olarak üretiliyor, e-posta gönderilmiyor. Sıra:
   1. **Alan adı ve SES kimliği:** `yonetimsistemim.com` satın alındıktan sonra AWS SES'te (`eu-north-1`) alan adı kimliği (Domain Identity) oluşturulur. SES'in verdiği DKIM CNAME kayıtları ile SPF (TXT) ve önerilen DMARC (`_dmarc` TXT) kayıtları DNS'e eklenir; kimlik durumu *Verified* olana kadar beklenir.

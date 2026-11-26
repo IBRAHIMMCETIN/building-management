@@ -324,6 +324,14 @@ export function createPlanService(overrides: Partial<PlanServiceDeps> & Pick<Pla
     ...overrides,
   };
   const repo = deps.financeRepo;
+  /**
+   * P1-a: plan hesaplari yalnizca planin alt carisinin satirlarini kullanir (`planState`,
+   * `openPlanIds`, tazminat). Tum defter yerine bu carilerin satirlari (LE# + BatchGet).
+   */
+  const accountOnly = async (apartmentId: string, accountIds: readonly string[]): Promise<{ items: Transaction[] }> => {
+    const ids = [...new Set(accountIds)];
+    return { items: ids.length ? await accountTransactions(repo, apartmentId, ids) : [] };
+  };
   const stamp = (): IsoDateTime => deps.now().toISOString();
   const today = (): IsoDate => new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Istanbul' }).format(deps.now());
   const shortId = () => deps.newId().replace(/[^A-Za-z0-9]/g, '').slice(0, 16);
@@ -363,7 +371,8 @@ export function createPlanService(overrides: Partial<PlanServiceDeps> & Pick<Pla
     if (p.firstDueDate > addMonths(R, 12)) throw new ValidationError('Ilk taksit vadesi en fazla 12 ay sonra olabilir', 'firstDueDate');
     const account = await requireAccount(ctx, p.accountId);
     if (account.closedThrough && R <= account.closedThrough) throw new FinanceError('conflict', 'Bu cari bugune kadar kapatilmis');
-    const [txPage, r, plans] = await Promise.all([repo.listTransactions(ctx.apartmentId), rate(ctx.apartmentId), deps.plans.list(ctx.apartmentId)]);
+    // P1-a: yalnizca bu carinin satirlari.
+    const [txPage, r, plans] = await Promise.all([accountOnly(ctx.apartmentId, [account.accountId]), rate(ctx.apartmentId), deps.plans.list(ctx.apartmentId)]);
     const txs = txPage.items;
     if (plans.some((x) => x.accountId === account.accountId && x.status === 'active') || openPlanIds(account.accountId, txs).length > 0) {
       throw new FinanceError('conflict', 'Bu caride zaten aktif bir yapılandırma planı var');
@@ -545,7 +554,8 @@ export function createPlanService(overrides: Partial<PlanServiceDeps> & Pick<Pla
   async function openItems(ctx: PlanContext, accountId: string | undefined) {
     const account = await requireAccount(ctx, assertId(accountId, 'accountId'));
     const R = today();
-    const [txPage, r, plans] = await Promise.all([repo.listTransactions(ctx.apartmentId), rate(ctx.apartmentId), deps.plans.list(ctx.apartmentId)]);
+    // P1-a: yalnizca bu carinin satirlari.
+    const [txPage, r, plans] = await Promise.all([accountOnly(ctx.apartmentId, [account.accountId]), rate(ctx.apartmentId), deps.plans.list(ctx.apartmentId)]);
     const txs = txPage.items;
     const cancelled = cancelledIn(txs);
     const { open } = allocate(readSubledger(linesOfAccount(account.accountId, txs), cancelled), R);
@@ -585,7 +595,7 @@ export function createPlanService(overrides: Partial<PlanServiceDeps> & Pick<Pla
 
   async function get(ctx: PlanContext, planId: string) {
     const plan = await requirePlan(ctx, planId);
-    const txs = (await repo.listTransactions(ctx.apartmentId)).items;
+    const txs = (await accountOnly(ctx.apartmentId, [plan.accountId])).items;
     return view(plan, txs, today());
   }
 
@@ -593,10 +603,11 @@ export function createPlanService(overrides: Partial<PlanServiceDeps> & Pick<Pla
     const accountId = q.accountId ? assertId(q.accountId, 'accountId') : undefined;
     const statuses = [...PLAN_STATUSES, 'completed'];
     if (q.status !== undefined && !statuses.includes(q.status)) throw new ValidationError(`status su degerlerden biri olmalidir: ${statuses.join(', ')}`, 'status');
-    const [plans, txPage] = await Promise.all([deps.plans.list(ctx.apartmentId), repo.listTransactions(ctx.apartmentId)]);
+    const plans = (await deps.plans.list(ctx.apartmentId)).filter((p) => p.apartmentId === ctx.apartmentId && (!accountId || p.accountId === accountId));
+    // P1-a: yalnizca listelenen planlarin carileri.
+    const txPage = await accountOnly(ctx.apartmentId, plans.map((p) => p.accountId));
     const day = today();
     return plans
-      .filter((p) => p.apartmentId === ctx.apartmentId && (!accountId || p.accountId === accountId))
       .map((p) => view(p, txPage.items, day))
       .filter((v) => !q.status || v.state.displayStatus === q.status)
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
@@ -776,7 +787,7 @@ export function createPlanService(overrides: Partial<PlanServiceDeps> & Pick<Pla
     const plans = (await deps.plans.list(apartmentId)).filter((p) => p.apartmentId === apartmentId && p.status === 'active');
     const out = { checked: plans.length, flagged: [] as string[], accelerated: [] as string[], cleared: [] as string[] };
     if (plans.length === 0) return out;
-    const [txPage, accounts] = await Promise.all([repo.listTransactions(apartmentId), repo.listAccounts(apartmentId)]);
+    const [txPage, accounts] = await Promise.all([accountOnly(apartmentId, plans.map((p) => p.accountId)), repo.listAccounts(apartmentId)]);
     for (const plan of plans) {
       const st = planState(plan, txPage.items, day);
       const holder = accounts.find((a) => a.accountId === plan.accountId)?.coOwner?.userId;
@@ -839,10 +850,10 @@ export function createPlanService(overrides: Partial<PlanServiceDeps> & Pick<Pla
     if (!deps.portal) throw new FinanceError('unprocessable', 'Portal baglantisi yok');
     const resolved = await deps.portal.resolveUnit(ctx, unitId);
     const accounts = new Set(resolved.parties.map((p) => resolved.accounts[p]));
-    const [plans, txPage] = await Promise.all([deps.plans.list(ctx.apartmentId), repo.listTransactions(ctx.apartmentId)]);
+    const plans = (await deps.plans.list(ctx.apartmentId)).filter((p) => p.apartmentId === ctx.apartmentId && accounts.has(p.accountId) && p.status !== 'cancelled');
+    const txPage = await accountOnly(ctx.apartmentId, plans.map((p) => p.accountId));
     const day = today();
     const items = plans
-      .filter((p) => p.apartmentId === ctx.apartmentId && accounts.has(p.accountId) && p.status !== 'cancelled')
       .map((p) => {
         const st = planState(p, txPage.items, day);
         // Sakine yalnizca plan ozeti ve taksitler (gerekce / denetim alanlari yok).

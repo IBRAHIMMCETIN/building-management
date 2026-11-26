@@ -74,9 +74,22 @@ function roundHalfUp(n: bigint, d: bigint): bigint {
   return (n * 2n + d) / (d * 2n);
 }
 
-export function computeLateFee({ charges, credits, settlements = [], monthlyBasisPoints, asOf }: LateFeeInput): LateFeeResult {
-  if (!Number.isInteger(monthlyBasisPoints) || monthlyBasisPoints < 0) throw new Error('Gecersiz oran');
-  const end = dayNumber(asOf);
+/**
+ * P1-a: tazminatin `asOf`'tan bagimsiz zaman cizelgesi. Kurus-gun katkisi bir "segment" ile
+ * ifade edilir: `amount` kurus, `start` gununden (haric) `end` gunune (dahil) kadar isler;
+ * `end = null` hala acik (odenmemis) tazminat tabanidir. Olaylar (hedefli kapama, havuz) asOf'a
+ * bakilmadan uygulanir - `computeLateFee` de oyle yapar - bu yuzden
+ * `principalDays(asOf) = Sum(amount x max(0, min(end, asOf) - start))` her asOf icin birebir aynidir.
+ */
+export type FeeSegment = { amount: number; start: number; end: number | null };
+
+export type LateFeeTimeline = {
+  segments: FeeSegment[];
+  /** Olaylardan sonra kalan acik kalemler (vade gunu + kalan tutar), vade sirasinda. */
+  open: { due: number; remaining: number }[];
+};
+
+export function lateFeeTimeline({ charges, credits, settlements = [] }: Pick<LateFeeInput, 'charges' | 'credits' | 'settlements'>): LateFeeTimeline {
   const open = [...charges]
     .filter((c) => c.amount > 0)
     .sort((a, b) => a.dueDate.localeCompare(b.dueDate) || a.id.localeCompare(b.id))
@@ -95,16 +108,12 @@ export function computeLateFee({ charges, credits, settlements = [], monthlyBasi
     });
   const byId = new Map(open.map((c) => [c.id, c]));
 
-  let principalDays = 0n;
-  const accrue = (amount: number, start: number, closedOn: number) => {
-    const days = Math.min(closedOn, end) - start;
-    if (days > 0 && amount > 0) principalDays += BigInt(amount) * BigInt(days);
-  };
+  const segments: FeeSegment[] = [];
   /** Kaleme `amount` uygulanir; tazminat tabanindan dusen kisim o gune kadar tazminat dogurur. */
   const apply = (c: (typeof open)[number], amount: number, day: number) => {
     const applied = Math.min(amount, c.remaining);
     const fromBearing = Math.min(applied, c.bearing);
-    accrue(fromBearing, c.start, day);
+    if (fromBearing > 0) segments.push({ amount: fromBearing, start: c.start, end: day });
     c.bearing -= fromBearing;
     c.remaining -= applied;
     return applied;
@@ -132,15 +141,39 @@ export function computeLateFee({ charges, credits, settlements = [], monthlyBasi
     }
   }
 
-  let overduePrincipal = 0;
+  const stillOpen: LateFeeTimeline['open'] = [];
   for (const c of open) {
     if (c.remaining <= 0) continue;
-    accrue(c.bearing, c.start, end);
-    if (c.due < end) overduePrincipal += c.remaining;
+    if (c.bearing > 0) segments.push({ amount: c.bearing, start: c.start, end: null });
+    stillOpen.push({ due: c.due, remaining: c.remaining });
   }
+  return { segments, open: stillOpen };
+}
 
-  const fee = monthlyBasisPoints === 0 ? 0n : roundHalfUp(principalDays * BigInt(monthlyBasisPoints), DIVISOR);
-  return { fee: Number(fee), principalDays, overduePrincipal };
+/** Segmentlerin `end` gunune (dahil) kadar kurus-gun toplami. */
+export function principalDaysAt(segments: readonly FeeSegment[], end: number): bigint {
+  let total = 0n;
+  for (const s of segments) {
+    const days = Math.min(s.end ?? end, end) - s.start;
+    if (days > 0 && s.amount > 0) total += BigInt(s.amount) * BigInt(days);
+  }
+  return total;
+}
+
+/** Kurus-gun -> kurus tazminat (TEK yuvarlama, yarim yukari). */
+export function feeOfPrincipalDays(principalDays: bigint, monthlyBasisPoints: number): number {
+  if (!Number.isInteger(monthlyBasisPoints) || monthlyBasisPoints < 0) throw new Error('Gecersiz oran');
+  return monthlyBasisPoints === 0 ? 0 : Number(roundHalfUp(principalDays * BigInt(monthlyBasisPoints), DIVISOR));
+}
+
+export function computeLateFee({ charges, credits, settlements = [], monthlyBasisPoints, asOf }: LateFeeInput): LateFeeResult {
+  if (!Number.isInteger(monthlyBasisPoints) || monthlyBasisPoints < 0) throw new Error('Gecersiz oran');
+  const end = dayNumber(asOf);
+  const timeline = lateFeeTimeline({ charges, credits, settlements });
+  const principalDays = principalDaysAt(timeline.segments, end);
+  let overduePrincipal = 0;
+  for (const c of timeline.open) if (c.due < end) overduePrincipal += c.remaining;
+  return { fee: feeOfPrincipalDays(principalDays, monthlyBasisPoints), principalDays, overduePrincipal };
 }
 
 // ---------------------------------------------------------------------------

@@ -20,6 +20,7 @@
  */
 import { createHash, randomUUID } from 'node:crypto';
 import { DataAccessError } from '../../config/dynamodb.js';
+import { contentionBackoffMs } from '../audit/log.js';
 import { mapLimit } from '../core/concurrency.js';
 import { ValidationError } from '../core/validation.js';
 import type { Role } from '../../auth/claims.js';
@@ -55,6 +56,15 @@ export type BulkJobOptions = {
   leaseSeconds: number;
   /** Bolum basina deneme (is mantigi hatasi deterministiktir; gecici hata icin). */
   attemptsPerUnit: number;
+  /** Bolum denemeleri arasi bekleme carpani (ms; ustel + jitter). Testte 0. */
+  retryBaseMs: number;
+  /**
+   * Ust uste bu kadar worker cagrisi gecici hatayla biterse is `failed` olur. SQS
+   * `maxReceiveCount` (5) altinda tutulur ki mesaj DLQ'ya gitmeden is durumu kesinlessin.
+   */
+  maxTransientFailures: number;
+  /** Kirasi olmayan `running`/`pending` is bu kadar dakikadir ilerlemiyorsa takili sayilir (tekrar dene). */
+  staleMinutes: number;
 };
 
 export const DEFAULT_BULK_JOB_OPTIONS: BulkJobOptions = {
@@ -63,13 +73,17 @@ export const DEFAULT_BULK_JOB_OPTIONS: BulkJobOptions = {
   maxUnitsPerInvocation: 1000,
   safetyMs: 60_000,
   leaseSeconds: 360,
-  attemptsPerUnit: 3,
+  attemptsPerUnit: 5,
+  retryBaseMs: 1,
+  maxTransientFailures: 3,
+  staleMinutes: 15,
 };
 
 export type BulkJobDeps = {
   repository: BulkJobRepository;
   queue: BulkJobQueue;
-  finance: Pick<FinanceService, 'planBulkJob' | 'postBulkLine' | 'prepareBulkPosting' | 'recordDuesBatchSummary'>;
+  finance: Pick<FinanceService, 'planBulkJob' | 'postBulkLine' | 'prepareBulkPosting' | 'recordDuesBatchSummary'> &
+    Partial<Pick<FinanceService, 'refreshSummaries'>>;
   meters?: Pick<MeterPostingService, 'prepareApproval' | 'postStep' | 'finalizePosting' | 'getPeriod'>;
   now?: () => Date;
   newToken?: () => string;
@@ -268,15 +282,35 @@ export function createBulkJobService(deps: BulkJobDeps) {
     delete next.finishedAt;
     delete next.leaseUntil;
     delete next.leaseToken;
+    delete next.transientFailures;
     await repo.update(next, job.version);
     await enqueue(next);
     return next;
   }
 
+  /** Kirasi bos (veya suresi dolmus) ve uzun suredir ilerlemeyen calisan/bekleyen is. */
+  function isStale(job: BulkJob): boolean {
+    if (job.status !== 'running' && job.status !== 'pending') return false;
+    const t = now().getTime();
+    if (job.leaseUntil && Date.parse(job.leaseUntil) > t) return false;
+    return t - Date.parse(job.updatedAt) >= opt.staleMinutes * 60_000;
+  }
+
   async function retry(ctx: BulkJobContext, jobId: string) {
     const job = await get(ctx, jobId);
+    if (isStale(job)) {
+      // Takili is (ornegin gecici hata mesaji DLQ'ya dustu): imlec korunur, kaldigi yerden devam.
+      const next: BulkJob = { ...job, status: 'pending', transientFailures: 0, updatedAt: stamp(), version: job.version + 1 };
+      delete next.leaseUntil;
+      delete next.leaseToken;
+      delete next.error;
+      await repo.update(next, job.version);
+      await enqueue(next);
+      log.info(JSON.stringify({ msg: 'bulk_job_resumed', jobId: job.jobId, apartmentId: job.apartmentId, cursor: job.cursor, total: job.total }));
+      return next;
+    }
     if (job.status !== 'failed' && job.status !== 'completed_with_errors') {
-      throw new BulkJobError('conflict', 'Yalnızca başarısız veya hatalı biten iş yeniden denenebilir');
+      throw new BulkJobError('conflict', 'Yalnızca başarısız, hatalı biten veya takılı kalan iş yeniden denenebilir');
     }
     return restart(job);
   }
@@ -343,10 +377,21 @@ export function createBulkJobService(deps: BulkJobDeps) {
       const done = job.kind === 'dues_bulk' ? await runDues(() => job, save, finish, shouldStop, (n) => (handled += n)) : await runMeter(() => job, save, finish, shouldStop, (n) => (handled += n));
       if (done) {
         log.info(JSON.stringify({ msg: 'bulk_job_done', jobId: job.jobId, apartmentId: job.apartmentId, kind: job.kind, status: job.status, total: job.total, failed: job.failed, invocations: job.invocations }));
+        // P1-a: toplu tahakkuk tum alt carilerin surumunu artirdi; ozetleri worker'da tazele ki
+        // ilk Genel Bakis / dues-status istegi yuzlerce hesabi yeniden okumasin. En iyi caba:
+        // hata veya sure azligi sonucu degistirmez (istek yolu bayat ozeti kendisi uretir).
+        if (deps.finance.refreshSummaries && budget.remainingMs() > opt.safetyMs + 30_000) {
+          try {
+            const stats = await deps.finance.refreshSummaries(job.apartmentId);
+            log.info(JSON.stringify({ msg: 'finance_summary_refreshed', jobId: job.jobId, apartmentId: job.apartmentId, ...stats }));
+          } catch (err) {
+            log.info(JSON.stringify({ msg: 'finance_summary_refresh_failed', jobId: job.jobId, apartmentId: job.apartmentId, error: messageOf(err) }));
+          }
+        }
         return { outcome: 'done', job };
       }
       // Kirayi birak, sonra devam mesaji (gonderim basarisizsa SQS ayni mesaji tekrar teslim eder).
-      const released: BulkJob = { ...job, updatedAt: stamp(), version: job.version + 1 };
+      const released: BulkJob = { ...job, transientFailures: 0, updatedAt: stamp(), version: job.version + 1 };
       delete released.leaseUntil;
       delete released.leaseToken;
       await repo.update(released, job.version);
@@ -362,15 +407,34 @@ export function createBulkJobService(deps: BulkJobDeps) {
         log.error(JSON.stringify({ msg: 'bulk_job_failed', jobId: job.jobId, apartmentId: job.apartmentId, kind: job.kind, error: messageOf(err) }));
         return { outcome: 'done', job };
       }
-      // Gecici hata: kirayi birakmayi dene (hemen tekrar teslimde beklemesin), sonra SQS'e birak.
+      // Gecici hata. Bu cagride ilerleme olduysa sayac 1'den, olmadiysa bir artarak devam eder.
+      const streak = handled > 0 ? 1 : (current.transientFailures ?? 0) + 1;
+      if (streak >= opt.maxTransientFailures) {
+        // Sonsuz `running` yerine kesin durum: is `failed`, "Tekrar dene" idempotent olarak
+        // (yazilmis kalemler replay) kaldigi yerden tamamlar. Mesaj basariyla tuketilir (DLQ yok).
+        try {
+          await finish({
+            status: 'failed',
+            transientFailures: streak,
+            error: { code: 'transient_exhausted', message: `Gecici hata ${streak} kez ust uste tekrarlandi: ${messageOf(err)}` },
+          });
+        } catch (finishErr) {
+          if (finishErr instanceof LeaseLostError) return { outcome: 'skipped', job };
+          throw err;
+        }
+        log.error(JSON.stringify({ msg: 'bulk_job_failed', jobId: job.jobId, apartmentId: job.apartmentId, kind: job.kind, reason: 'transient_exhausted', processed: job.processed, total: job.total, error: messageOf(err) }));
+        return { outcome: 'done', job };
+      }
+      // Kirayi birakmayi dene (hemen tekrar teslimde beklemesin), sonra SQS'e birak.
       try {
-        const released: BulkJob = { ...job, updatedAt: stamp(), version: job.version + 1 };
+        const released: BulkJob = { ...job, transientFailures: streak, updatedAt: stamp(), version: job.version + 1 };
         delete released.leaseUntil;
         delete released.leaseToken;
         await repo.update(released, job.version);
       } catch {
         // Kira suresi dolunca zaten serbest kalir.
       }
+      log.error(JSON.stringify({ msg: 'bulk_job_transient_error', jobId: job.jobId, apartmentId: job.apartmentId, processed: job.processed, total: job.total, streak, error: messageOf(err) }));
       throw err;
     }
   }
@@ -400,9 +464,14 @@ export function createBulkJobService(deps: BulkJobDeps) {
           try {
             return { ok: await deps.finance.postBulkLine(ctx, params.spec, line) };
           } catch (err) {
-            // Is mantigi hatasi deterministiktir: bolum hatali sayilir, is devam eder.
+            // Is mantigi hatasi deterministiktir: bolum hatali sayilir, is devam eder. (Ayni kalem
+            // zaten yazilmissa idempotency kaydi `replayed` dondurur; hata degildir.)
             if (isBusinessError(err)) return { error: messageOf(err) };
-            if (attempt < opt.attemptsPerUnit) continue;
+            if (attempt < opt.attemptsPerUnit) {
+              // Gecici (cekisme / kisitlama): eszamanli kalemler ayni anda tekrar carpismasin.
+              if (opt.retryBaseMs > 0) await new Promise((r) => setTimeout(r, opt.retryBaseMs * contentionBackoffMs(attempt)));
+              continue;
+            }
             throw err; // gecici: mesaj SQS'e doner, ilerleme son kayittan devam eder
           }
         }

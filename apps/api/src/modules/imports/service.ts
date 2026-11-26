@@ -6,8 +6,8 @@ import { CoreError, type CoreService, createCoreService, sumLandShares } from '.
 import type { IsoDate, LandShare, Unit } from '../core/types.js';
 import { ValidationError, asObject, assertId, optString, reqString } from '../core/validation.js';
 import { cancelledTransactions } from '../finance/lateFee.js';
-import { type FinanceRepository, financeRepository } from '../finance/repository.js';
-import { FinanceError, type FinanceService } from '../finance/service.js';
+import { type FinanceRepository, accountTransactions, financeRepository } from '../finance/repository.js';
+import { FinanceError, type FinanceService, SYSTEM_ACCOUNTS } from '../finance/service.js';
 import { type MembershipService, createMembershipService } from '../memberships/service.js';
 import { type PersonRepository, personRepository } from '../residents/repository.js';
 import { ResidentsError, type ResidentsService } from '../residents/service.js';
@@ -69,7 +69,7 @@ export type ImportsServiceDeps = {
   memberships: Pick<MembershipService, 'list' | 'deactivate'>;
   people: Pick<PersonRepository, 'list'>;
   finance: Pick<FinanceService, 'postOpeningBalance' | 'postOpeningFunds' | 'reverseTransaction'>;
-  financeRepo: Pick<FinanceRepository, 'listTransactions'>;
+  financeRepo: Pick<FinanceRepository, 'listTransactions'> & Partial<Pick<FinanceRepository, 'listAccounts' | 'listAccountEntries' | 'getTransactions'>>;
   now: () => Date;
   newId: () => string;
 };
@@ -163,7 +163,9 @@ export function createImportsService(overrides: Partial<ImportsServiceDeps> & Pi
    * yeniden baslatildi) devir borclari ikinci kez yazilmasin diye kullanilir.
    */
   async function postedOpenings(apartmentId: string): Promise<Map<string, Set<string | undefined>>> {
-    const { items: ledger } = await deps.financeRepo.listTransactions(apartmentId);
+    // P1-a: her devir bakiyesi karsi tarafta `opening-balance` hesabina yazilir (ters kaydi da):
+    // yalnizca o hesabin satirlari okunur, tum defter degil.
+    const ledger = await accountTransactions(deps.financeRepo, apartmentId, [SYSTEM_ACCOUNTS.openingBalance]);
     const cancelled = cancelledTransactions(ledger);
     const out = new Map<string, Set<string | undefined>>();
     for (const tx of ledger) {
@@ -616,7 +618,6 @@ export function createImportsService(overrides: Partial<ImportsServiceDeps> & Pi
     const todo = items.sort((a, b) => order.indexOf(a.kind) - order.indexOf(b.kind)).slice(0, ROLLBACK_BATCH);
     const financeCtx = { apartmentId: ctx.apartmentId, userId: ctx.userId };
     const report = { ...(job.rollbackReport ?? { reversed: 0, membershipsEnded: 0, unitsDeactivated: 0, unitsKept: 0 }) };
-    let ledger: Awaited<ReturnType<FinanceRepository['listTransactions']>>['items'] | undefined;
 
     for (const item of todo) {
       if ((item.kind === 'balance' || item.kind === 'funds') && item.transactionId) {
@@ -635,7 +636,16 @@ export function createImportsService(overrides: Partial<ImportsServiceDeps> & Pi
         }
         report.membershipsEnded++;
       } else if (item.kind === 'unit' && item.unitId) {
-        ledger ??= (await deps.financeRepo.listTransactions(ctx.apartmentId)).items;
+        // P1-a: daireye bagli satirlar yalnizca dairenin alt carilerine yazilir; tum defter yerine
+        // bu carilerin satirlari (hesap listesi yoksa eski tam taramaya duser).
+        const unitAccounts = deps.financeRepo.listAccounts
+          ? (await deps.financeRepo.listAccounts(ctx.apartmentId)).filter((a) => a.unitId === item.unitId).map((a) => a.accountId)
+          : undefined;
+        const ledger = unitAccounts
+          ? unitAccounts.length
+            ? await accountTransactions(deps.financeRepo, ctx.apartmentId, unitAccounts)
+            : []
+          : (await deps.financeRepo.listTransactions(ctx.apartmentId)).items;
         const cancelled = cancelledTransactions(ledger);
         const hasActivity = ledger.some((tx) => !cancelled.has(tx.transactionId) && tx.lines.some((l) => l.unitId === item.unitId));
         const otherMembers = (await deps.memberships.list({ apartmentId: ctx.apartmentId, userId: ctx.userId }, { unitId: item.unitId, status: 'active' })).length > 0;

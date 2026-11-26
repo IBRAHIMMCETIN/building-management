@@ -7,6 +7,7 @@ import {
   type PostInput,
 } from '../../src/modules/finance/repository.js';
 import type { Account, Expense, IdempotencyRecord, Payment, Transaction } from '../../src/modules/finance/types.js';
+import type { AccountSummaryItem } from '../../src/modules/finance/accountSummary.js';
 import type { DomainEvent } from '../../src/events/publisher.js';
 import { PeriodClosedError } from '../../src/modules/finance/periodLock.js';
 
@@ -27,6 +28,8 @@ export function createFakeFinanceRepo(defaultApartmentId = 'apt-1') {
   const batches: PostBatchInput[] = [];
   /** Transactional outbox: `apt|eventId` -> olay (yazim sirasiyla). */
   const outbox = new Map<string, DomainEvent>();
+  /** P1-a: alt cari ozetleri (`apt|accountId`), turetilmis veri. */
+  const summaries = new Map<string, AccountSummaryItem>();
 
   /**
    * Gercek tabloda idempotency kaydi tek anahtardadir (`IDEM#<id>`): `postBatch.idempotency` ile
@@ -209,6 +212,14 @@ export function createFakeFinanceRepo(defaultApartmentId = 'apt-1') {
       const end = start + q.limit;
       return { items: all.slice(start, end), cursor: end < all.length ? String(end) : undefined };
     },
+    listAccountSummaries: async (apt) => [...summaries.values()].filter((x) => x.siteId === apt).map((x) => structuredClone(x)),
+    putAccountSummary: async (item) => {
+      const cur = summaries.get(k(item.siteId, item.accountId));
+      // Gercek depodaki kosul: kayit yoksa veya saklanan surum <= yeni surum.
+      if (cur && cur.sourceVersion > item.sourceVersion) return false;
+      summaries.set(k(item.siteId, item.accountId), structuredClone(item));
+      return true;
+    },
     postTransaction: async (input) => {
       await postBatch({
         transactions: [input.transaction],
@@ -252,6 +263,7 @@ export function createFakeFinanceRepo(defaultApartmentId = 'apt-1') {
     batches,
     docs,
     outbox,
+    summaries,
     /** Outbox'a yazilan olaylar (yazim sirasiyla); istege bagli tur filtresi. */
     events: <T extends DomainEvent['type']>(type?: T) =>
       [...outbox.values()].filter((e): e is Extract<DomainEvent, { type: T }> => !type || e.type === type),

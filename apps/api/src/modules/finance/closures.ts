@@ -29,7 +29,7 @@ import { type MembershipRepository, membershipGsi1, membershipRepository } from 
 import type { UnitMembership } from '../portal/types.js';
 import { feeLedgerFor, unpostedLateFee } from './lateFee.js';
 import { coversDay } from './occupancy.js';
-import { type FinanceRepository, LedgerConflictError, type ReplaceRecord, financeKeys, financeRepository } from './repository.js';
+import { type FinanceRepository, LedgerConflictError, type ReplaceRecord, accountTransactions, financeKeys, financeRepository } from './repository.js';
 import { DEFAULT_LATE_FEE_BASIS_POINTS, FinanceError, type FinanceService, SYSTEM_ACCOUNTS } from './service.js';
 import { allocate, cancelledIn, linesOfAccount, openPlanIds, readSubledger, transferItemId } from './subledger.js';
 import { type Account, type Transaction, type TransactionLine, type TransferItem, mainReceivableId } from './types.js';
@@ -353,10 +353,11 @@ export function createClosureService(overrides: Partial<ClosureServiceDeps> & Pi
     if (moveOutDate > today()) throw new ValidationError('Cikis tarihi bugunden sonra olamaz', 'moveOutDate');
     const sourceAccountId = mainReceivableId(unit.unitId, party);
 
+    // P1-a: kapama plani yalnizca kaynak carinin satirlarini kullanir (tum defter okunmaz).
     const [source, memberships, txPage, r] = await Promise.all([
       repo.getAccount(ctx.apartmentId, sourceAccountId),
       deps.memberships.list(ctx.apartmentId, { unitId: unit.unitId }),
-      repo.listTransactions(ctx.apartmentId),
+      accountTransactions(repo, ctx.apartmentId, [sourceAccountId]).then((items) => ({ items })),
       rate(ctx.apartmentId),
     ]);
     const plan = planClosure(sourceAccountId, txPage.items, moveOutDate, r);
@@ -456,10 +457,11 @@ export function createClosureService(overrides: Partial<ClosureServiceDeps> & Pi
 
     if (p.moveOutDate > today()) throw new ValidationError('Cikis tarihi bugunden sonra olamaz', 'moveOutDate');
     const sourceAccountId = mainReceivableId(unit.unitId, p.party);
+    // P1-a: kapama plani yalnizca kaynak carinin satirlarini kullanir (tum defter okunmaz).
     const [source, memberships, txPage, r] = await Promise.all([
       repo.getAccount(ctx.apartmentId, sourceAccountId),
       deps.memberships.list(ctx.apartmentId, { unitId: unit.unitId }),
-      repo.listTransactions(ctx.apartmentId),
+      accountTransactions(repo, ctx.apartmentId, [sourceAccountId]).then((items) => ({ items })),
       rate(ctx.apartmentId),
     ]);
     if (source?.closedThrough && p.moveOutDate <= source.closedThrough) {
@@ -763,8 +765,9 @@ export function createClosureService(overrides: Partial<ClosureServiceDeps> & Pi
       throw new FinanceError('unprocessable', 'Avans iade edildigi icin kapama geri alinamaz; duzeltmeyi elle kayitla yapin');
     }
 
+    // P1-a: kapama/acilis islemleri ve hedef cari satirlari: yalnizca kaynak + hedef cari.
     const [txPage, source, unitMembers] = await Promise.all([
-      repo.listTransactions(ctx.apartmentId),
+      accountTransactions(repo, ctx.apartmentId, [closure.sourceAccountId, ...(closure.targetAccountId ? [closure.targetAccountId] : [])]).then((items) => ({ items })),
       repo.getAccount(ctx.apartmentId, closure.sourceAccountId),
       deps.memberships.list(ctx.apartmentId, { unitId: closure.unitId }),
     ]);

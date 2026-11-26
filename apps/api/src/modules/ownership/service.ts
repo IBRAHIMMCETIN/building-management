@@ -22,7 +22,7 @@ import { type CoreRepository, coreRepository } from '../core/repository.js';
 import { type IsoDate, type IsoDateTime, type LiableParty, type Unit, toKurus } from '../core/types.js';
 import { ValidationError, asObject, assertId, isIsoDate, optString, reqEnum, reqString } from '../core/validation.js';
 import { type CariClosure, type ClosureRepository, closureKeys, closureRepository, planClosure, reversibleTransactions } from '../finance/closures.js';
-import { type FinanceRepository, LedgerConflictError, type ReplaceRecord, financeKeys, financeRepository } from '../finance/repository.js';
+import { type FinanceRepository, LedgerConflictError, type ReplaceRecord, accountTransactions, financeKeys, financeRepository } from '../finance/repository.js';
 import { DEFAULT_LATE_FEE_BASIS_POINTS, FinanceError, type FinanceService, SYSTEM_ACCOUNTS } from '../finance/service.js';
 import { openPlanIds } from '../finance/subledger.js';
 import {
@@ -796,7 +796,12 @@ export function createOwnershipService(overrides: Partial<OwnershipServiceDeps> 
 
     // ----- Cari kapamalar -----
     const closures: TransferPlan['closures'] = [];
-    const txs = (await ledger.listTransactions(ctx.apartmentId)).items;
+    // P1-a: kapanabilecek carilerin (ortak malik carisi / cikan paydaslarin alt carileri) satirlari;
+    // tum defter okunmaz. Cikan yoksa kapama da yoktur.
+    const closable = diff.exiting.length
+      ? [mainReceivableId(state.unit.unitId, 'owner'), ...diff.exiting.map((userId) => coOwnerReceivableId(state.unit.unitId, userId))]
+      : [];
+    const txs = closable.length ? await accountTransactions(ledger, ctx.apartmentId, closable) : [];
     const r = await rate(ctx.apartmentId);
     const recipientsOf = (userId: string) => [...new Set(p.moves.filter((m) => m.fromUserId === userId).map((m) => m.toUserId))];
     if (billing === 'joint') {
@@ -1191,7 +1196,6 @@ export function createOwnershipService(overrides: Partial<OwnershipServiceDeps> 
     if (!state.head || state.head.seq !== transfer.recordSeq) {
       throw new FinanceError('unprocessable', 'Bu devirden sonra sicilde başka bir değişiklik var; önce sonraki değişikliği geri alın');
     }
-    const all = (await ledger.listTransactions(ctx.apartmentId)).items;
     const day = today();
     const reversals: Transaction[] = [];
     const replace: ReplaceRecord[] = [];
@@ -1205,6 +1209,8 @@ export function createOwnershipService(overrides: Partial<OwnershipServiceDeps> 
       if (source?.closedThrough && source.closedThrough > closure.moveOutDate) {
         throw new FinanceError('unprocessable', 'Kapanan cari daha sonra tekrar kapatılmış; önce sonraki kapamayı geri alın');
       }
+      // P1-a: yalnizca bu kapamanin kaynak + hedef carisi.
+      const all = await accountTransactions(ledger, ctx.apartmentId, [closure.sourceAccountId, ...(closure.targetAccountId ? [closure.targetAccountId] : [])]);
       for (const t of reversibleTransactions(closure, all, day)) {
         reversals.push(
           tx(ctx, {

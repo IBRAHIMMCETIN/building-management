@@ -23,9 +23,10 @@ import {
 } from '../../config/dynamodb.js';
 import { toOutboxItems } from '../../events/outbox.js';
 import { PeriodClosedError, earliestDate, periodKeys } from './periodLock.js';
-import { type AuditDraft, sendWithAudit } from '../audit/log.js';
+import { type AuditDraft, contentionBackoffMs, sendWithAudit } from '../audit/log.js';
 import type { DomainEvent } from '../../events/publisher.js';
 import type { IsoDate, TableKeys } from '../core/types.js';
+import type { AccountSummaryItem } from './accountSummary.js';
 import type {
   Account,
   Expense,
@@ -73,11 +74,25 @@ export const financeKeys = {
     PK: tenantPk(apartmentId),
     SK: skKey('IDEM', id),
   }),
+  /**
+   * P1-a: alt cari ozeti (turetilmis; defter degil). `Account.version` ile muhurlu: surum
+   * tutmuyorsa okuyan yok sayar ve hesabin kendi satirlarindan yeniden uretir.
+   */
+  accountSummary: (apartmentId: string, accountId: string): TableKeys => ({
+    PK: tenantPk(apartmentId),
+    SK: skKey('FSUM', accountId),
+  }),
 };
+
+/** Ozet kayitlarinin SK oneki (`ACCT#` ile cakismaz: hesap listesi bunlari okumaz). */
+export const ACCOUNT_SUMMARY_PREFIX = `FSUM${KEY_SEPARATOR}`;
+/** Tek ozet kaydinin ust boyutu (DynamoDB 400 KB siniri altinda guvenli pay). */
+const MAX_SUMMARY_BYTES = 300_000;
 
 const ACCOUNT_PREFIX = 'ACCT#';
 const MAX_LINES = 20;
-const MAX_ATTEMPTS = 3;
+/** Yalnizca cekisme (`TransactionConflict`) iptallerinde toplam deneme (ustel bekleme + jitter). */
+const MAX_CONFLICT_ATTEMPTS = 6;
 
 // ---------------------------------------------------------------------------
 // Defter cakisma hatasi
@@ -516,9 +531,11 @@ export async function postBatch(input: PostBatchInput): Promise<void> {
             `Hesap: ${label.accountId}`,
           );
         }
-        // Es zamanli islem cakismasi gecicidir; kisa beklemeyle tekrar denenir.
-        if (failed < 0 && reasons.some((r) => r.Code === 'TransactionConflict') && attempt < MAX_ATTEMPTS) {
-          await sleep(25 * attempt);
+        // Es zamanli islem cakismasi gecicidir (iptal edilen islem hicbir sey yazmadi): ustel
+        // artan, jitter'li beklemeyle tekrar denenir. Denetim kaydi aciksa ayni kural
+        // `sendWithAudit` icinde (karisik iptal nedenleri dahil) uygulanir.
+        if (failed < 0 && reasons.some((r) => r.Code === 'TransactionConflict') && attempt < MAX_CONFLICT_ATTEMPTS) {
+          await sleep(contentionBackoffMs(attempt));
           continue;
         }
       }
@@ -570,6 +587,17 @@ export type FinanceRepository = {
   /** Finans 2.4: islem basliklarini kimlikle toplu okur (BatchGet, tutarli; sira garanti degil). */
   getTransactions?(apartmentId: string, transactionIds: readonly string[]): Promise<Transaction[]>;
 
+  /**
+   * P1-a: saklanan alt cari ozetleri (`FSUM#`). Tutarli okuma gerekmez: gecerlilik hesap surumuyla
+   * okuyan tarafta denetlenir (`accountSummaryStore.ts`).
+   */
+  listAccountSummaries?(apartmentId: string): Promise<AccountSummaryItem[]>;
+  /**
+   * Ozeti yazar; yalnizca kayit yoksa veya saklanan ozet daha eski/ayni surumdeyse (kosullu).
+   * Yazildiysa true; daha yeni bir ozet varsa veya ozet cok buyukse false.
+   */
+  putAccountSummary?(item: AccountSummaryItem): Promise<boolean>;
+
   postTransaction(input: PostInput): Promise<void>;
   postBatch(input: PostBatchInput): Promise<void>;
   /**
@@ -588,6 +616,8 @@ export type TransactionQuery = {
   newestFirst?: boolean;
   limit?: number;
   cursor?: string;
+  /** P1-a: tutarli okuma (canli bakiyeden geriye hesaplanan acilislarda yazimla yaris olmasin). */
+  consistent?: boolean;
 };
 
 const encodeCursor = (key: QueryCommandOutput['LastEvaluatedKey']) =>
@@ -714,6 +744,7 @@ async function queryTransactions(
           ExpressionAttributeNames: { '#pk': 'PK', '#sk': 'SK' },
           ExpressionAttributeValues: { ':pk': pk, ':lo': lower, ':hi': upper },
           ScanIndexForward: !q.newestFirst,
+          ...(q.consistent ? { ConsistentRead: true } : {}),
           ...(q.limit ? { Limit: q.limit - items.length } : {}),
           ...(startKey ? { ExclusiveStartKey: startKey } : {}),
         }),
@@ -838,6 +869,28 @@ export function createFinanceRepository(): FinanceRepository {
     listTransactions: queryTransactions,
     listAccountEntries: queryAccountEntries,
     getTransactions: batchGetTransactions,
+    listAccountSummaries: (apartmentId) => queryTenantAll<AccountSummaryItem>(apartmentId, ACCOUNT_SUMMARY_PREFIX),
+    async putAccountSummary(item) {
+      const keys = financeKeys.accountSummary(item.siteId, item.accountId);
+      if (item.PK !== keys.PK || item.SK !== keys.SK) throw new Error('Ozet anahtari tenant/hesapla uyusmuyor');
+      if (Buffer.byteLength(JSON.stringify(item)) > MAX_SUMMARY_BYTES) return false;
+      const { client, tableName } = getDynamo();
+      try {
+        await client.send(
+          new PutCommand({
+            TableName: tableName,
+            Item: item,
+            ConditionExpression: 'attribute_not_exists(PK) OR #sv <= :sv',
+            ExpressionAttributeNames: { '#sv': 'sourceVersion' },
+            ExpressionAttributeValues: { ':sv': item.sourceVersion },
+          }),
+        );
+        return true;
+      } catch (err) {
+        if (err instanceof ConditionalCheckFailedException) return false;
+        throw toDataAccessError(err);
+      }
+    },
 
     postTransaction,
     postBatch,

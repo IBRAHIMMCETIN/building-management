@@ -24,7 +24,7 @@ import { ValidationError, asObject, assertId, optString, reqString } from '../co
 import { type MembershipRepository, membershipRepository } from '../memberships/repository.js';
 import type { PortalContext, PortalService } from '../portal/service.js';
 import { coversDay } from './occupancy.js';
-import { type FinanceRepository, LedgerConflictError, financeKeys, financeRepository } from './repository.js';
+import { type FinanceRepository, LedgerConflictError, accountTransactions, financeKeys, financeRepository } from './repository.js';
 import { FinanceError } from './service.js';
 import { type AllocatedCharge, allocate, cancelledIn, linesOfAccount, readSubledger } from './subledger.js';
 import { type Account, type ChargeSettlement, type Transaction, mainReceivableId } from './types.js';
@@ -245,8 +245,9 @@ export function createOffsetService(overrides: Partial<OffsetServiceDeps> = {}) 
     ]);
     const day = today();
     const unitIds = [...new Set([source.unitId, target.unitId])];
+    // P1-a: yalnizca kaynak ve hedef carinin satirlari (tum defter okunmaz).
     const [txPage, ...memberLists] = await Promise.all([
-      repo.listTransactions(ctx.apartmentId),
+      accountTransactions(repo, ctx.apartmentId, [source.accountId, target.accountId]).then((items) => ({ items })),
       ...unitIds.map((u) => deps.memberships.list(ctx.apartmentId, { unitId: u })),
     ]);
     const members = memberLists.flat().filter((m) => m.apartmentId === ctx.apartmentId);
@@ -565,7 +566,7 @@ export function createOffsetService(overrides: Partial<OffsetServiceDeps> = {}) 
   async function portalOptions(ctx: PortalContext, unitId?: string) {
     const { unitId: u, targets, sources, byId } = await portalAccounts(ctx, unitId);
     const day = today();
-    const txs = (await repo.listTransactions(ctx.apartmentId)).items;
+    const txs = await accountTransactions(repo, ctx.apartmentId, [...new Set([...sources, ...targets])]);
     const name = (id: string) => byId.get(id)?.name ?? id;
     return {
       unitId: u,
@@ -601,7 +602,7 @@ export function createOffsetService(overrides: Partial<OffsetServiceDeps> = {}) 
     if (!acc.targets.includes(targetAccountId)) throw new ValidationError('Hedef cari bu dairedeki carileriniz arasinda degil', 'targetAccountId');
     if (sourceAccountId === targetAccountId) throw new ValidationError('Kaynak ve hedef ayni cari olamaz', 'targetAccountId');
     const day = today();
-    const txs = (await repo.listTransactions(ctx.apartmentId)).items;
+    const txs = await accountTransactions(repo, ctx.apartmentId, [sourceAccountId, targetAccountId]);
     const src = accountPosition(sourceAccountId, txs, day);
     const tgt = accountPosition(targetAccountId, txs, day);
     if (amount > Math.min(src.advance, tgt.openDebt)) {

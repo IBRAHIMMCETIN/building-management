@@ -4,8 +4,15 @@
  * Tum tutarlar kurus cinsinden tam sayidir.
  */
 import type { IsoDate, LiableParty, Unit } from '../core/types.js';
-import { cancelledTransactions, unpostedLateFee } from './lateFee.js';
-import { type AccountLine, allocate, feeInputsOf, linesOfAccount, readSubledger } from './subledger.js';
+import {
+  type CoreEntry,
+  buildDueRemindersFromCores,
+  buildDuesStatusFromCores,
+  buildFormerAccountsFromCores,
+  summarizeLines,
+} from './accountSummary.js';
+import { cancelledTransactions } from './lateFee.js';
+import { type AccountLine, linesOfAccount } from './subledger.js';
 import { type Account, type Transaction, isPrimaryReceivableId } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -152,10 +159,6 @@ export type UnitDuesView = {
 /** `fee`: deftere yazilmis gecikme tazminati; mahsupta anaparadan SONRA gelir (karar 2a). */
 type Charge = { amount: number; dueDate: IsoDate; fee?: boolean };
 
-function daysBetween(from: IsoDate, to: IsoDate): number {
-  return Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000);
-}
-
 /**
  * FIFO: alacaklar (odeme, iptal) en eski vadeli borclardan baslayarak dusulur. Kalan
  * borclardan vadesi bugunden once olanlar gecikmis sayilir. Vadesiz borc satiri (ornegin bir
@@ -208,92 +211,12 @@ export function buildDuesStatus(
     }
   }
 
-  const none = (): PartyDues => ({ charged: 0, paid: 0, balance: 0, overdue: 0, lateFee: 0 });
-  const add = (a: PartyDues, b: PartyDues): PartyDues => {
-    const oldest = [a.oldestUnpaidDueDate, b.oldestUnpaidDueDate].filter((d): d is IsoDate => Boolean(d)).sort()[0];
-    return {
-      charged: a.charged + b.charged,
-      paid: a.paid + b.paid,
-      balance: a.balance + b.balance,
-      overdue: a.overdue + b.overdue,
-      ...(oldest ? { oldestUnpaidDueDate: oldest } : {}),
-      lateFee: a.lateFee + b.lateFee,
-    };
-  };
-  type Slot = { owner: PartyDues; occupant: PartyDues; former?: PartyDues; lastPaymentDate?: IsoDate };
-  const perUnit = new Map<string, Slot>();
-  const slot = (unitId: string) => {
-    let s = perUnit.get(unitId);
-    if (!s) {
-      s = { owner: none(), occupant: none() };
-      perUnit.set(unitId, s);
-    }
-    return s;
-  };
-
-  for (const [accountId, lines] of linesByAccount) {
+  // P1-a: hesap ozeti uzerinden (servis, saklanan ozetlerle ayni kurucuyu kullanir).
+  const entries: CoreEntry[] = [...linesByAccount].map(([accountId, lines]) => {
     const m = meta.get(accountId) as Meta;
-    const sub = readSubledger(lines, cancelled);
-    const { open } = allocate(sub, today);
-    const overdueOpen = open.filter((c) => c.overdue);
-    const dues: PartyDues = {
-      // Finans 2.2: yapilandirma kalemleri (taksitler) asil kalemlerin yerini alir; iki kez sayilmaz.
-      charged: sub.charges.filter((c) => c.txKind !== 'restructure').reduce((s, c) => s + c.amount, 0),
-      paid: sub.credits.reduce((s, c) => s + c.amount, 0),
-      balance: sub.balance,
-      overdue: overdueOpen.reduce((s, c) => s + c.remaining, 0),
-      ...(open[0] ? { oldestUnpaidDueDate: open[0].dueDate } : {}),
-      lateFee: lateFeeBasisPoints > 0 ? unpostedLateFee(feeInputsOf(sub), lateFeeBasisPoints, today) : 0,
-    };
-    const s = slot(m.unitId);
-    if (m.main) {
-      // Paydas alt carileri (Finans 2.1) dairenin malik tarafinda toplanir.
-      s[m.party] = add(s[m.party], dues);
-      for (const c of sub.credits) {
-        if (c.txKind === 'payment' && (!s.lastPaymentDate || c.date > s.lastPaymentDate)) s.lastPaymentDate = c.date;
-      }
-    } else {
-      // Ayrilan sakin/malik carileri: daire durumuna karismaz, ayri gosterilir.
-      s.former = add(s.former ?? none(), dues);
-    }
-  }
-
-  return units
-    .filter((u) => u.status === 'active')
-    .map((u) => {
-      const s = perUnit.get(u.unitId) ?? { owner: none(), occupant: none() };
-      const { owner, occupant } = s;
-      const balance = owner.balance + occupant.balance;
-      const overdue = owner.overdue + occupant.overdue;
-      const oldest = [owner, occupant]
-        .filter((p) => p.overdue > 0 && p.oldestUnpaidDueDate)
-        .map((p) => p.oldestUnpaidDueDate as IsoDate)
-        .sort()[0];
-      const status: DuesStatus =
-        owner.charged + occupant.charged === 0 && balance === 0
-          ? 'none'
-          : overdue > 0
-            ? 'overdue'
-            : balance > 0
-              ? 'pending'
-              : balance < 0
-                ? 'advance'
-                : 'paid';
-      return {
-        unitId: u.unitId,
-        unitNumber: u.number,
-        blockId: u.blockId,
-        owner,
-        occupant,
-        balance,
-        overdue,
-        lateFee: owner.lateFee + occupant.lateFee,
-        daysOverdue: oldest ? Math.max(daysBetween(oldest, today), 0) : 0,
-        status,
-        lastPaymentDate: s.lastPaymentDate,
-        ...(s.former ? { former: s.former } : {}),
-      };
-    });
+    return { accountId, unitId: m.unitId, party: m.party, main: m.main, core: summarizeLines(lines, cancelled) };
+  });
+  return buildDuesStatusFromCores(units, entries, today, lateFeeBasisPoints);
 }
 
 // ---------------------------------------------------------------------------
@@ -333,39 +256,15 @@ export function buildFormerAccounts(
   lateFeeBasisPoints = 0,
   includeSettled = false,
 ): FormerAccountView[] {
-  const unitById = new Map(units.map((u) => [u.unitId, u]));
   const cancelled = cancelledTransactions(transactions);
-  const former = accounts.filter(
-    (a) => a.type === 'receivable' && a.unitId && a.liableParty && !isPrimaryReceivableId(a.accountId, a.unitId, a.liableParty),
+  return buildFormerAccountsFromCores(
+    accounts,
+    units,
+    (accountId) => summarizeLines(linesOfAccount(accountId, transactions), cancelled),
+    today,
+    lateFeeBasisPoints,
+    includeSettled,
   );
-  return former
-    .filter((a) => includeSettled || a.balance !== 0)
-    .map((a) => {
-      const sub = readSubledger(linesOfAccount(a.accountId, transactions), cancelled);
-      const { open } = allocate(sub, today);
-      const overdue = open.filter((c) => c.overdue);
-      const oldest = overdue[0]?.dueDate ?? open[0]?.dueDate;
-      const unit = unitById.get(a.unitId as string);
-      const lastPayment = sub.credits.filter((c) => c.txKind === 'payment').map((c) => c.date).sort().at(-1);
-      return {
-        accountId: a.accountId,
-        name: a.name,
-        unitId: a.unitId as string,
-        ...(unit ? { unitNumber: unit.number, blockId: unit.blockId } : {}),
-        liableParty: a.liableParty as LiableParty,
-        ...(a.closureId ? { closureId: a.closureId } : {}),
-        ...(a.holder ? { holder: a.holder } : {}),
-        balance: a.balance,
-        debt: Math.max(a.balance, 0),
-        advance: Math.max(-a.balance, 0),
-        overdue: overdue.reduce((s, c) => s + c.remaining, 0),
-        ...(oldest ? { oldestUnpaidDueDate: oldest } : {}),
-        daysOverdue: overdue[0]?.daysOverdue ?? 0,
-        lateFee: lateFeeBasisPoints > 0 ? unpostedLateFee(feeInputsOf(sub), lateFeeBasisPoints, today) : 0,
-        ...(lastPayment ? { lastPaymentDate: lastPayment } : {}),
-      };
-    })
-    .sort((x, y) => (x.unitNumber ?? x.unitId).localeCompare(y.unitNumber ?? y.unitId, 'tr', { numeric: true }) || x.accountId.localeCompare(y.accountId));
 }
 
 // ---------------------------------------------------------------------------
@@ -442,9 +341,6 @@ export type DueReminder = {
   userId?: string;
 };
 
-const shiftDate = (d: IsoDate, days: number): IsoDate =>
-  new Date(Date.parse(`${d}T00:00:00Z`) + days * 86_400_000).toISOString().slice(0, 10);
-
 /**
  * `date` gunu gonderilecek hatirlatmalar: acik borcu olan alt carilerde vadesi 3 gun sonra
  * olan (upcoming), 1 gun once (overdue_1) ve 7 gun once (overdue_7) gecen kalemler.
@@ -458,11 +354,6 @@ export function buildDueReminders(
   /** Hesap -> paydas kullanici (paydas alt carileri, Finans 2.1). */
   holders: ReadonlyMap<string, string> = new Map(),
 ): DueReminder[] {
-  const targets = new Map<IsoDate, DueReminderKind>([
-    [shiftDate(date, 3), 'upcoming'],
-    [shiftDate(date, -1), 'overdue_1'],
-    [shiftDate(date, -7), 'overdue_7'],
-  ]);
   const cancelled = cancelledTransactions(transactions);
   type Acc = { accountId: string; unitId: string; party: LiableParty; lines: AccountLine[] };
   const perAccount = new Map<string, Acc>();
@@ -479,20 +370,9 @@ export function buildDueReminders(
       acc.lines.push({ transaction: tx, side: line.side, amount: line.amount, date: tx.date, ...(line.settles ? { settles: line.settles } : {}) });
     }
   }
-
-  const out: DueReminder[] = [];
-  for (const acc of [...perAccount.values()].sort(
-    (a, b) => a.unitId.localeCompare(b.unitId) || a.party.localeCompare(b.party) || a.accountId.localeCompare(b.accountId),
-  )) {
-    const userId = holders.get(acc.accountId);
-    const { open } = allocate(readSubledger(acc.lines, cancelled), date);
-    const byDue = new Map<IsoDate, number>();
-    for (const c of open) {
-      if (targets.has(c.dueDate)) byDue.set(c.dueDate, (byDue.get(c.dueDate) ?? 0) + c.remaining);
-    }
-    for (const [dueDate, amount] of [...byDue.entries()].sort(([a], [b]) => a.localeCompare(b))) {
-      out.push({ unitId: acc.unitId, liableParty: acc.party, kind: targets.get(dueDate) as DueReminderKind, dueDate, amount, ...(userId ? { userId } : {}) });
-    }
-  }
-  return out;
+  return buildDueRemindersFromCores(
+    [...perAccount.values()].map((acc) => ({ accountId: acc.accountId, unitId: acc.unitId, party: acc.party, core: summarizeLines(acc.lines, cancelled) })),
+    date,
+    holders,
+  );
 }

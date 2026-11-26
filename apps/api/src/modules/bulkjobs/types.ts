@@ -84,6 +84,12 @@ export type BulkJob = {
   leaseToken?: string;
   /** Worker cagrisi sayisi (continuation dahil). */
   invocations: number;
+  /**
+   * Ust uste gecici hatayla biten worker cagrisi sayisi (ilerleme olan cagri sayaci 1'e cekip
+   * baslatir). Sinira ulasinca is `failed` yapilir: SQS mesaji DLQ'ya gidip is sonsuza dek
+   * `running` gorunmez; "Tekrar dene" idempotent olarak kaldigi yerden tamamlar.
+   */
+  transientFailures?: number;
   createdAt: string;
   createdBy: string;
   /** Baslatanin rolu (sayac servisinin baglami icin). */

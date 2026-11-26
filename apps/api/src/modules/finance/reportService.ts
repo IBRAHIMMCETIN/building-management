@@ -44,7 +44,7 @@ export const REPORT_KINDS = ['trial-balance', 'income-expense', 'budget-vs-actua
 export type ReportKind = (typeof REPORT_KINDS)[number];
 
 export type ReportServiceDeps = {
-  finance: Pick<FinanceRepository, 'listAccounts' | 'listTransactions'> & Partial<Pick<FinanceRepository, 'listAccountEntries' | 'getTransactions'>>;
+  finance: Pick<FinanceRepository, 'listAccounts' | 'listTransactions'> & Partial<Pick<FinanceRepository, 'listAccountEntries' | 'getTransactions' | 'getAccount'>>;
   fiscal: Pick<FiscalRepository, 'listPeriods' | 'getLock'>;
   budgets: BudgetReader;
   ledger: Pick<FinanceService, 'summary' | 'duesStatus'>;
@@ -85,6 +85,35 @@ export function createReportService(overrides: Partial<ReportServiceDeps> & Pick
   // Veri yukleme
   // -------------------------------------------------------------------------
 
+  const sameVersions = (a: readonly { accountId: string; version: number }[], b: readonly { accountId: string; version: number }[]) => {
+    if (a.length !== b.length) return false;
+    const v = new Map(a.map((x) => [x.accountId, x.version]));
+    return b.every((x) => v.get(x.accountId) === x.version);
+  };
+
+  /**
+   * P1-a: `fromStart` oncesi acilis = canli bakiye - (fromStart ve sonrasi net). Hesaplar, aradaki
+   * islemler (tutarli okuma) ve tekrar hesaplar okunur; surumler degismediyse aradaki yazim yoktur
+   * ve sonuc `net(fromStart oncesi tum islemler)` ile birebir aynidir. Es zamanli yazimda tekrar
+   * denenir; olmazsa eski yonteme (tam tarama) duser.
+   */
+  async function openingFromBalances(apartmentId: string, fromStart: IsoDate): Promise<Map<string, number>> {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const accounts = await deps.finance.listAccounts(apartmentId);
+      const since = netByAccount((await deps.finance.listTransactions(apartmentId, { from: fromStart, consistent: true })).items);
+      if (!sameVersions(accounts, await deps.finance.listAccounts(apartmentId))) continue;
+      const opening = new Map<string, number>();
+      for (const a of accounts) {
+        const value = a.balance - (since.get(a.accountId) ?? 0);
+        if (value !== 0) opening.set(a.accountId, value);
+      }
+      const known = new Set(accounts.map((a) => a.accountId));
+      for (const [accountId, net] of since) if (!known.has(accountId) && net !== 0) opening.set(accountId, -net);
+      return opening;
+    }
+    return netByAccount((await deps.finance.listTransactions(apartmentId, { to: addDays(fromStart, -1) })).items);
+  }
+
   async function loadActivity(apartmentId: string, fromMonth: string, toMonth: string): Promise<ReportActivity & { openTransactions: Transaction[] }> {
     const months = monthsBetween(fromMonth, toMonth);
     const [accounts, periods] = await Promise.all([deps.finance.listAccounts(apartmentId), deps.fiscal.listPeriods(apartmentId)]);
@@ -104,7 +133,10 @@ export function createReportService(overrides: Partial<ReportServiceDeps> & Pick
         for (const [acc, net] of netByAccount(gap)) base.set(acc, (base.get(acc) ?? 0) + net);
         opening = base;
       } else {
-        opening = netByAccount((await deps.finance.listTransactions(apartmentId, { to: addDays(fromStart, -1) })).items);
+        // P1-a: hic kapali ay yoksa acilis = canli bakiye - (rapor basindan bugune net). Bakiye her
+        // defter yazimiyla ayni atomik islemde guncellenir (gece denetimi esitligi dogrular); boylece
+        // gecmis yillarin satirlari okunmaz, yalnizca rapor araligi ve sonrasi okunur.
+        opening = await openingFromBalances(apartmentId, fromStart);
       }
     }
 
@@ -246,11 +278,27 @@ export function createReportService(overrides: Partial<ReportServiceDeps> & Pick
     const to = parseDate(q.to, 'to') ?? today();
     const from = parseDate(q.from, 'from') ?? `${to.slice(0, 7)}-01`;
     if (from > to) throw new ValidationError('from, to tarihinden sonra olamaz', 'from');
-    const [before, inRange] = await Promise.all([
-      listEntries(ctx.apartmentId, accountId, { to: addDays(from, -1) }),
-      listEntries(ctx.apartmentId, accountId, { from, to }),
-    ]);
-    const opening = before.reduce((s, e) => s + (e.side === 'debit' ? e.amount : -e.amount), 0);
+    // P1-a: kasa/banka "sicak" hesaplardir; acilis tum gecmis satirlarindan degil, canli bakiye -
+    // (from ve sonrasi satirlar) ile bulunur. Hesap surumu okuma boyunca degismediyse birebir ayni.
+    const net = (list: readonly { side: string; amount: number }[]) => list.reduce((s, e) => s + (e.side === 'debit' ? e.amount : -e.amount), 0);
+    let opening: number | undefined;
+    let inRange: Awaited<ReturnType<typeof listEntries>> = [];
+    let base = account;
+    for (let attempt = 0; attempt < 3 && opening === undefined; attempt++) {
+      const since = await listEntries(ctx.apartmentId, accountId, { from });
+      const again = deps.finance.getAccount
+        ? await deps.finance.getAccount(ctx.apartmentId, accountId)
+        : (await deps.finance.listAccounts(ctx.apartmentId)).find((a) => a.accountId === accountId);
+      if (again && again.version === base.version) {
+        opening = base.balance - net(since);
+        inRange = since.filter((e) => e.date <= to);
+      } else if (again) base = again;
+    }
+    if (opening === undefined) {
+      const [before, range] = await Promise.all([listEntries(ctx.apartmentId, accountId, { to: addDays(from, -1) }), listEntries(ctx.apartmentId, accountId, { from, to })]);
+      opening = net(before);
+      inRange = range;
+    }
     const txs = inRange.length ? await getTransactions(ctx.apartmentId, [...new Set(inRange.map((e) => e.transactionId))]) : [];
     return {
       account: { accountId, name: account.name, type: account.type, ...(account.code ? { code: account.code } : {}) },

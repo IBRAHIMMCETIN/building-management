@@ -29,18 +29,19 @@ import {
   type ReplaceRecord,
   financeKeys,
   financeRepository,
+  accountTransactions,
   ledgerAuditDraft,
 } from './repository.js';
+import { buildDueRemindersFromCores, buildDuesStatusFromCores, buildFormerAccountsFromCores, coreEntries, summarizeLines, unpostedFeeOf } from './accountSummary.js';
+import { type CoreLoadStats, loadAccountCores, refreshAccountSummaries, summarizable } from './accountSummaryStore.js';
 import {
   cancelledTransactions,
-  feeLedgerFor,
   isPeriod,
   nextPeriod,
   periodBounds,
   periodLabel,
-  unpostedLateFee,
 } from './lateFee.js';
-import { buildDueReminders, buildDuesStatus, buildFormerAccounts, buildSummary, toTransactionView } from './reports.js';
+import { buildSummary, toTransactionView } from './reports.js';
 import {
   ACCOUNT_TYPES,
   type Account,
@@ -1947,7 +1948,11 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
     // Finans 2.2: hedefli mahsupla (yapilandirma / mahsup) kapatilmis bir kalemin islemi ters
     // cevrilemez; once ilgili plan veya mahsup geri alinmali.
     if (original.lines.some((l) => l.side === 'debit' && l.unitId && l.liableParty)) {
-      const all = preloaded?.all ?? (await repo.listTransactions(ctx.apartmentId)).items;
+      // P1-a: hedefli kapama (settles) kalemin kendi alt carisindaki alacak satirindadir; yalnizca
+      // o carilerin satirlari okunur (ters kayitlar da ayni hesaplara yazilir).
+      const all =
+        preloaded?.all ??
+        (await accountTransactions(repo, ctx.apartmentId, [...new Set(original.lines.filter((l) => l.side === 'debit' && l.unitId && l.liableParty).map((l) => l.accountId))]));
       const cancelledIds = preloaded?.cancelled ?? cancelledTransactions(all);
       const prefix = original.transactionId;
       const settled = all.some(
@@ -1977,9 +1982,21 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
    * (yarida kalan geri almanin devami); diger islemler icin engel varsa nedeniyle.
    */
   async function reversalStatus(ctx: FinanceContext, transactionIds: readonly string[]) {
-    const all = (await repo.listTransactions(ctx.apartmentId)).items;
+    // P1-a: istenen islemler kimlikle; iptal / hedefli kapama / tazminat kontrolu icin yalnizca
+    // bu islemlerin alt carilerinin satirlari (daireye bagli satiri olmayan islemde tum hesaplari).
+    const requested = (
+      repo.getTransactions
+        ? await repo.getTransactions(ctx.apartmentId, [...new Set(transactionIds)])
+        : await Promise.all([...new Set(transactionIds)].map((id) => repo.getTransaction(ctx.apartmentId, id)))
+    ).filter((t): t is Transaction => !!t && t.siteId === ctx.apartmentId);
+    const scope = new Set<string>();
+    for (const t of requested) {
+      const unitLines = t.lines.filter((l) => l.unitId);
+      for (const l of unitLines.length ? unitLines : t.lines) scope.add(l.accountId);
+    }
+    const all = scope.size ? await accountTransactions(repo, ctx.apartmentId, [...scope]) : [];
     const cancelled = cancelledTransactions(all);
-    const byId = new Map(all.map((t) => [t.transactionId, t]));
+    const byId = new Map([...requested, ...all].map((t) => [t.transactionId, t]));
     const out: { transactionId: string; state: 'reversible' | 'reversed' | 'blocked' | 'missing'; code?: string; message?: string; lateFeeAfter?: string[] }[] = [];
     for (const id of transactionIds) {
       const t = byId.get(id);
@@ -2109,14 +2126,21 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
   // Raporlar (salt okunur)
   // -------------------------------------------------------------------------
 
-  async function loadReportData(ctx: FinanceContext) {
+  /**
+   * P1-a: site geneli raporlar tum defteri degil, alt cari ozetlerini okur (`accountSummaryStore`).
+   * Hesaplar ozetlerden ONCE tutarli okunur: ozetin gecerliligi bu surumlere gore denetlenir.
+   * Bayat ozetler yalnizca kendi hesabinin satirlarindan yeniden uretilir.
+   */
+  async function loadReportData(ctx: FinanceContext, asOf: IsoDate = today()) {
     await ensureSystemAccounts(ctx);
-    const [accounts, units, txs] = await Promise.all([
-      repo.listAccounts(ctx.apartmentId),
-      deps.core.listUnits(ctx.apartmentId),
-      repo.listTransactions(ctx.apartmentId),
-    ]);
-    return { accounts, units, transactions: txs.items };
+    const [accounts, units] = await Promise.all([repo.listAccounts(ctx.apartmentId), deps.core.listUnits(ctx.apartmentId)]);
+    const { cores } = await loadAccountCores(repo, ctx.apartmentId, accounts.filter(summarizable), { asOf, today: today(), computedAt: stamp() });
+    return { accounts, units, cores };
+  }
+
+  /** Sitenin bayat alt cari ozetlerini tazeler (toplu isler / zamanlayici sonrasi; en iyi caba). */
+  async function refreshSummaries(apartmentId: string): Promise<CoreLoadStats> {
+    return refreshAccountSummaries(repo, apartmentId, { today: today(), computedAt: stamp() });
   }
 
   async function lateFeeRate(apartmentId: string): Promise<number> {
@@ -2126,9 +2150,8 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
 
   /** Daire bazli aidat durumu (FIFO ile gecikme + islemis kistelyevm tazminati). */
   async function duesStatus(ctx: FinanceContext) {
-    const [{ accounts, units, transactions }, rate] = await Promise.all([loadReportData(ctx), lateFeeRate(ctx.apartmentId)]);
-    const receivables = new Set(accounts.filter((a) => a.type === 'receivable').map((a) => a.accountId));
-    const items = buildDuesStatus(units, transactions, receivables, today(), rate).sort((a, b) =>
+    const [{ accounts, units, cores }, rate] = await Promise.all([loadReportData(ctx), lateFeeRate(ctx.apartmentId)]);
+    const items = buildDuesStatusFromCores(units, coreEntries(accounts, cores), today(), rate).sort((a, b) =>
       a.unitNumber.localeCompare(b.unitNumber, 'tr', { numeric: true }),
     );
     return { asOf: today(), lateFeeMonthlyBasisPoints: rate, items };
@@ -2136,18 +2159,18 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
 
   /** Ayrilan sakin/malik carileri (tasinmada kapama ile acilan), varsayilan: bakiyesi olanlar. */
   async function formerAccounts(ctx: FinanceContext, opts: { all?: string } = {}) {
-    const [{ accounts, units, transactions }, rate] = await Promise.all([loadReportData(ctx), lateFeeRate(ctx.apartmentId)]);
+    const [{ accounts, units, cores }, rate] = await Promise.all([loadReportData(ctx), lateFeeRate(ctx.apartmentId)]);
+    const coreOf = (accountId: string) => cores.get(accountId) ?? summarizeLines([]);
     return {
       asOf: today(),
-      items: buildFormerAccounts(accounts, units, transactions, today(), rate, opts.all === 'true'),
+      items: buildFormerAccountsFromCores(accounts, units, coreOf, today(), rate, opts.all === 'true'),
     };
   }
 
   /** Kasa/banka bakiyeleri + alacak/gecikme ozeti. */
   async function summary(ctx: FinanceContext) {
-    const [{ accounts, units, transactions }, rate] = await Promise.all([loadReportData(ctx), lateFeeRate(ctx.apartmentId)]);
-    const receivables = new Set(accounts.filter((a) => a.type === 'receivable').map((a) => a.accountId));
-    return { asOf: today(), ...buildSummary(accounts, buildDuesStatus(units, transactions, receivables, today(), rate)) };
+    const [{ accounts, units, cores }, rate] = await Promise.all([loadReportData(ctx), lateFeeRate(ctx.apartmentId)]);
+    return { asOf: today(), ...buildSummary(accounts, buildDuesStatusFromCores(units, coreEntries(accounts, cores), today(), rate)) };
   }
 
   // -------------------------------------------------------------------------
@@ -2220,9 +2243,9 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
     const postPeriod = nextPeriod(p.period);
     const postDate = periodBounds(postPeriod).first;
     const dueDate = `${postPeriod}-${String(p.dueDayOfMonth).padStart(2, '0')}`;
-    const [accounts, txPage] = await Promise.all([repo.listAccounts(apartmentId), repo.listTransactions(apartmentId)]);
-    const transactions = txPage.items;
-    const cancelled = cancelledTransactions(transactions);
+    // P1-a: tum defter yerine alt cari ozetleri (asOf = donem sonu; ozet ufku buna gore secilir).
+    const accounts = await repo.listAccounts(apartmentId);
+    const { cores } = await loadAccountCores(repo, apartmentId, accounts.filter(summarizable), { asOf: last, today: today(), computedAt: stamp() });
 
     const receivables = accounts
       .filter((a) => a.type === 'receivable' && a.unitId && a.liableParty)
@@ -2243,7 +2266,7 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
         if (tx) items.push({ accountId: account.accountId, unitId, liableParty: party, amount: tx.totalAmount, transactionId: tx.transactionId, replayed: true });
         continue;
       }
-      const amount = unpostedLateFee(feeLedgerFor(account.accountId, transactions, cancelled), p.monthlyBasisPoints, last);
+      const amount = unpostedFeeOf(cores.get(account.accountId) ?? summarizeLines([]), p.monthlyBasisPoints, last);
       if (amount < 1) continue;
 
       const fp = fingerprint({ op: 'late_fee', period: p.period, accountId: account.accountId, amount });
@@ -2293,6 +2316,8 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
       }
     }
     const fresh = items.filter((i) => !i.replayed);
+    // Yazilan tazminatlar hesap surumlerini artirdi: ozetleri simdi tazele (istek yolu okumasin).
+    if (fresh.length > 0) await refreshSummaries(apartmentId).catch(() => undefined);
     return {
       period: p.period,
       count: fresh.length,
@@ -2414,16 +2439,17 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
   /** Hatirlatma gunu `date` (Istanbul) icin gonderilecek borc hatirlatmalari. */
   async function dueReminders(apartmentId: string, date: IsoDate) {
     if (!isIsoDate(date)) throw new ValidationError('date YYYY-MM-DD olmali', 'date');
-    const [accounts, txPage] = await Promise.all([repo.listAccounts(apartmentId), repo.listTransactions(apartmentId)]);
+    const accounts = await repo.listAccounts(apartmentId);
     // Daire guncel carileri: ana cariler ve (Finans 2.1) paydas alt carileri. Ayrilan sakin
     // carilerinin sahibine portal/bildirim erisimi yok; hatirlatma bugunku sakine gitmemeli.
     const current = accounts.filter(
       (a) => a.type === 'receivable' && a.unitId && a.liableParty && isPrimaryReceivableId(a.accountId, a.unitId, a.liableParty),
     );
-    const receivables = new Set(current.map((a) => a.accountId));
     // Paydas alt carisinin hatirlatmasi yalnizca o paydasa.
     const holders = new Map(current.filter((a) => a.coOwner).map((a) => [a.accountId, (a.coOwner as { userId: string }).userId]));
-    return buildDueReminders(txPage.items, receivables, date, holders);
+    // P1-a: acik kalemler (FIFO) tarihten bagimsizdir; ozetin ufku hatirlatma gununu kapsamali.
+    const { cores } = await loadAccountCores(repo, apartmentId, current, { asOf: date < today() ? date : today(), today: today(), computedAt: stamp() });
+    return buildDueRemindersFromCores(coreEntries(current, cores), date, holders);
   }
 
   // -------------------------------------------------------------------------
@@ -2970,6 +2996,8 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
     duesStatus,
     formerAccounts,
     summary,
+    /** P1-a: bayat alt cari ozetlerini tazeler (toplu isler, zamanlayici, backfill). */
+    refreshSummaries,
     autoChargeDues,
     postLateFees,
     dueReminders,

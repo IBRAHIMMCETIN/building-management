@@ -30,7 +30,16 @@ import { getRequestContext } from './context.js';
 export const GENESIS_HASH = '0'.repeat(64);
 export const AUDIT_RETENTION_YEARS = 10;
 const SEQ_DIGITS = 12;
-const MAX_CHAIN_ATTEMPTS = 6;
+const MAX_CHAIN_ATTEMPTS = 8;
+
+/**
+ * Cekisme sonrasi bekleme: ustel artan pencere + tam jitter (eszamanli yazicilar ayni anda tekrar
+ * denemesin). 1. deneme ~10-50 ms, 7. deneme en fazla ~1 sn.
+ */
+export function contentionBackoffMs(attempt: number, random: () => number = Math.random): number {
+  const window = Math.min(1000, 20 * 2 ** Math.max(0, attempt));
+  return 10 + Math.floor(random() * window);
+}
 const DETAILS_MAX_BYTES = 4000;
 
 export type AuditTarget = { type: string; id: string };
@@ -223,12 +232,26 @@ export class AuditChainBusyError extends DataAccessError {
 }
 
 /** Yalnizca denetim kaydinin kosulu/cakismasi yuzunden mi iptal edildi? */
-function auditOnlyConflict(err: unknown, auditIndex: number): boolean {
+/**
+ * Iptal yalnizca CEKISMEDEN mi? Gecici sayilan nedenler: herhangi bir ogede `TransactionConflict`
+ * (sicak gelir hesabi, donem kilidi `ConditionCheck`'i gibi ayni anda baska islemin dokundugu
+ * ogeler) ve denetim kaydinin (`firstAuditIndex` ve sonrasi) zincir yarisi
+ * (`ConditionalCheckFailed`: ayni sira numarasini baska yazim aldi). Veri ogelerinde
+ * `ConditionalCheckFailed` (idempotency, surum, kapama kilidi...) is kuralidir: tekrar denenmez.
+ *
+ * Toplu tahakkukta eszamanli kalemler ayni anda gelir hesabina, kilit kaydina ve denetim zincirine
+ * dokundugu icin iptal nedenleri KARISIK gelir (or. `...,TransactionConflict,None,TransactionConflict,
+ * ConditionalCheckFailed`); eski kontrol yalnizca "tek basina denetim cakismasi"ni tekrar deniyordu.
+ * Iptal edilen islem hicbir ogeyi yazmaz: tekrar denemek guvenlidir.
+ */
+export function contentionOnly(err: unknown, firstAuditIndex: number): boolean {
   if (!(err instanceof TransactionCanceledException)) return false;
   const reasons = err.CancellationReasons ?? [];
-  const audit = reasons[auditIndex]?.Code;
-  if (audit !== 'ConditionalCheckFailed' && audit !== 'TransactionConflict') return false;
-  return reasons.every((r, i) => i === auditIndex || !r.Code || r.Code === 'None');
+  const failed = reasons.map((r, i) => ({ i, code: r.Code })).filter((r) => r.code && r.code !== 'None');
+  return (
+    failed.length > 0 &&
+    failed.every((r) => r.code === 'TransactionConflict' || (r.i >= firstAuditIndex && r.code === 'ConditionalCheckFailed'))
+  );
 }
 
 /**
@@ -257,8 +280,11 @@ export async function sendWithAudit(
       await client.send(new TransactWriteCommand({ TransactItems: [...items, auditPut(table, entry)] }));
       return entry;
     } catch (err) {
-      if (!auditOnlyConflict(err, items.length)) throw err;
-      await new Promise((r) => setTimeout(r, 10 * attempt + Math.floor(Math.random() * 10)));
+      if (!contentionOnly(err, items.length) || attempt === MAX_CHAIN_ATTEMPTS) {
+        if (contentionOnly(err, items.length)) throw new AuditChainBusyError();
+        throw err;
+      }
+      await new Promise((r) => setTimeout(r, contentionBackoffMs(attempt)));
     }
   }
   throw new AuditChainBusyError();
@@ -300,19 +326,14 @@ export async function sendWithAudits(
       await client.send(new TransactWriteCommand({ TransactItems: [...items, ...entries.map((e) => auditPut(table, e))] }));
       return entries;
     } catch (err) {
-      if (!auditOnlyConflicts(err, items.length)) throw err;
-      await new Promise((r) => setTimeout(r, 10 * attempt + Math.floor(Math.random() * 10)));
+      if (!contentionOnly(err, items.length) || attempt === MAX_CHAIN_ATTEMPTS) {
+        if (contentionOnly(err, items.length)) throw new AuditChainBusyError();
+        throw err;
+      }
+      await new Promise((r) => setTimeout(r, contentionBackoffMs(attempt)));
     }
   }
   throw new AuditChainBusyError();
-}
-
-/** Iptal yalnizca denetim kayitlarinin (indeks >= `firstAuditIndex`) kosulundan mi? */
-function auditOnlyConflicts(err: unknown, firstAuditIndex: number): boolean {
-  if (!(err instanceof TransactionCanceledException)) return false;
-  const reasons = err.CancellationReasons ?? [];
-  const failed = reasons.map((r, i) => ({ i, code: r.Code })).filter((r) => r.code && r.code !== 'None');
-  return failed.length > 0 && failed.every((r) => r.i >= firstAuditIndex && (r.code === 'ConditionalCheckFailed' || r.code === 'TransactionConflict'));
 }
 
 /** `putNewItem` + denetim kaydi (atomik). Kayit varsa `DataAccessError('conflict')`. */
