@@ -7,7 +7,8 @@ import type { PeriodService } from './periods.js';
 import type { ReportService } from './reportService.js';
 import type { BudgetService } from './budgets.js';
 import type { PlanService } from './plans.js';
-import type { FinanceContext, FinanceService } from './service.js';
+import { type BulkJobService, jobView } from '../bulkjobs/service.js';
+import { BulkTooLargeError, type FinanceContext, type FinanceService } from './service.js';
 
 const READ_ROLES: readonly Role[] = ['apartment_manager', 'management_company', 'observer'];
 const WRITE_ROLES: readonly Role[] = ['apartment_manager', 'management_company'];
@@ -26,6 +27,8 @@ export type FinanceRoutesDeps = {
   reports?: ReportService;
   /** Finans 2.4-4: butce / isletme projesi. */
   budgets?: BudgetService;
+  /** Buyuk toplu tahakkuk arka plan isi (SQS). Verilmezse buyuk kapsam 422 doner. */
+  jobs?: Pick<BulkJobService, 'startDues'>;
 };
 
 /**
@@ -46,7 +49,7 @@ export type FinanceRoutesDeps = {
  * Tenant izolasyonu: `apartmentId` YALNIZCA JWT claim'inden gelir; URL/govde ile
  * degistirilemez. Claim'de apartmentId yoksa (ornegin apartman secilmemis) 403 doner.
  */
-export function financeRoutes({ authenticate, service, closures, offsets, plans, periods, reports, budgets }: FinanceRoutesDeps) {
+export function financeRoutes({ authenticate, service, closures, offsets, plans, periods, reports, budgets, jobs }: FinanceRoutesDeps) {
   const r = new Hono<Env>();
   r.use('*', authenticateWith(authenticate));
   r.use('*', async (c, next) => {
@@ -78,8 +81,28 @@ export function financeRoutes({ authenticate, service, closures, offsets, plans,
   // Toplu tahakkuk onizlemesi (yazmaz): paylar ve gider kalemi muafiyetleri.
   r.post('/dues/preview', requireRole(WRITE_ROLES), async (c) => c.json(await service.previewBulk(ctx(c), await readJson(c))));
 
+  // Toplu tahakkuk arka plan isi: hemen 202 + is kimligi; ilerleme GET /api/jobs/:jobId.
+  if (jobs) {
+    r.post('/dues/jobs', requireRole(WRITE_ROLES), async (c) => {
+      const claims = c.get('claims');
+      const { job, created } = await jobs.startDues({ ...ctx(c), role: claims.role }, await readJson(c));
+      return c.json({ mode: 'job', created, job: jobView(job) }, 202);
+    });
+  }
+
   r.post('/dues', requireRole(WRITE_ROLES), async (c) => {
-    const result = await service.charge(ctx(c), await readJson(c));
+    const body = await readJson(c);
+    let result: Awaited<ReturnType<FinanceService['charge']>>;
+    try {
+      result = await service.charge(ctx(c), body);
+    } catch (err) {
+      // Buyuk kapsam istek suresini asar: ayni govdeyle arka plan isi acilir (202).
+      if (err instanceof BulkTooLargeError && jobs) {
+        const { job, created } = await jobs.startDues({ ...ctx(c), role: c.get('claims').role }, body);
+        return c.json({ mode: 'job', created, job: jobView(job) }, 202);
+      }
+      throw err;
+    }
     if (result.mode === 'single') {
       return c.json(
         { mode: 'single', replayed: result.replayed, transaction: publicView(result.transaction) },

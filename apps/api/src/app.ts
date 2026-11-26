@@ -62,6 +62,10 @@ import { type PortalService, createPortalService } from './modules/portal/servic
 import { meterPortalRoutes, meterReadingRoutes, meterRoutes } from './modules/meters/routes.js';
 import { type MeterPortalService, createMeterPortalService } from './modules/meters/portalView.js';
 import { type MeterPostingService, createMeterPostingService } from './modules/meters/posting.js';
+import { bulkJobRoutes } from './modules/bulkjobs/routes.js';
+import { createDynamoBulkJobRepository } from './modules/bulkjobs/repository.js';
+import { type BulkJobQueue, createInlineBulkJobQueue, loadBulkJobQueueFromEnv } from './modules/bulkjobs/queue.js';
+import { type BulkJobService, createBulkJobService } from './modules/bulkjobs/service.js';
 import { type MeterReadingService, createMeterReadingService } from './modules/meters/readings.js';
 import { type MeterReversalService, createMeterReversalService } from './modules/meters/reversal.js';
 import { type MeterService, createMeterService } from './modules/meters/service.js';
@@ -122,6 +126,11 @@ export type AppConfig = {
   meterReadingService?: MeterReadingService;
   /** Finans 2.3-3: hesap onizleme, onay ve toplu tahakkuk. */
   meterPostingService?: MeterPostingService;
+  /**
+   * Buyuk toplu tahakkuk / sayac onayi arka plan isleri. Verilmezse `BULK_JOBS_QUEUE_URL` varsa
+   * SQS, yoksa (yerel gelistirme) ayni surecte isleyen kuyrukla kurulur.
+   */
+  bulkJobService?: BulkJobService;
   /** Finans 2.3-4: toplu geri alma ve duzeltilmis donem. */
   meterReversalService?: MeterReversalService;
   /** Finans 2.3-5a: sakin tuketim gecmisi ve dagitim dokumu PDF. */
@@ -230,6 +239,15 @@ export function createApp(config: AppConfig) {
       ownership: ownershipReader,
     });
   incomeAccountResolver = financeService.resolveIncomeAccount;
+  // Sayac onayi hem senkron rotada hem arka plan isinde ayni servisle calisir.
+  const meterPostingService = config.meterPostingService ?? createMeterPostingService({ finance: financeService, ownership: ownershipReader });
+  // Toplu isler: SQS (Lambda) veya yerelde ayni surecte parcali isleme.
+  let bulkJobService: BulkJobService | undefined = config.bulkJobService;
+  if (!bulkJobService) {
+    const queue: BulkJobQueue = loadBulkJobQueueFromEnv() ?? createInlineBulkJobQueue(() => (m) => (bulkJobService as BulkJobService).handle(m).then(() => undefined));
+    bulkJobService = createBulkJobService({ repository: createDynamoBulkJobRepository(), queue, finance: financeService, meters: meterPostingService });
+  }
+  app.route('/api/jobs', bulkJobRoutes({ authenticate, service: bulkJobService }));
   // Online odeme (Adim 8b). Yonetici uclari finans rotalarindan, sakin uclari portal
   // rotalarindan ONCE baglanir (daha ozel yol); callback/webhook kimliksizdir.
   let paymentsService = config.paymentsService;
@@ -271,6 +289,7 @@ export function createApp(config: AppConfig) {
       ...(periodService ? { periods: periodService } : {}),
       ...(reportService ? { reports: reportService } : {}),
       ...(budgetService ? { budgets: budgetService } : {}),
+      jobs: bulkJobService,
     }),
   );
   // Faz B1: banka ekstresi aktarimi (ekstre yukleme, onizleme, satir aktarimi, sutun eslemesi).
@@ -293,7 +312,8 @@ export function createApp(config: AppConfig) {
       portal: meterPortalService,
       authenticate,
       service: config.meterService ?? createMeterService(),
-      posting: config.meterPostingService ?? createMeterPostingService({ finance: financeService, ownership: ownershipReader }),
+      posting: meterPostingService,
+      jobs: bulkJobService,
       reversal: config.meterReversalService ?? createMeterReversalService({ finance: financeService }),
     }),
   );

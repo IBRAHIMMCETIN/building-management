@@ -134,3 +134,11 @@ output "payee_kms_key_arn" {
   description = "P4: aktarim alicisi (IBAN) sifreleme anahtari. Odeme kapaliysa null."
   value       = local.payee_kms_key_arn
 }
+
+output "bulk_worker_function_name" {
+  value = aws_lambda_function.bulk_worker.function_name
+}
+
+output "bulk_jobs_queue_url" {
+  value = aws_sqs_queue.bulk_jobs.url
+}

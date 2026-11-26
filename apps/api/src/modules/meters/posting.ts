@@ -14,6 +14,7 @@
  *  4. Kurus mutabakat kilidi: yazimdan once (ve her devamda) satir toplami = fatura tutari.
  */
 import type { AuditDraft } from '../audit/log.js';
+import { mapLimit } from '../core/concurrency.js';
 import { type CoreRepository, coreRepository } from '../core/repository.js';
 import { type LiableParty, type Unit, toKurus } from '../core/types.js';
 import { asObject, assertId, reqString } from '../core/validation.js';
@@ -47,8 +48,15 @@ export type MeterPostingServiceDeps = {
 
 /** Atomik yazim basina kayit (denetim payi birakilir). */
 const CHUNK = 90;
-/** Toplu tahakkuk siniri (karar 8; mevcut `MAX_BULK_UNITS` ile ayni). */
-export const MAX_POSTING_UNITS = 500;
+/** Toplu tahakkuk siniri (mevcut `MAX_BULK_UNITS` ile ayni; 2.500+ bolumlu siteler). */
+export const MAX_POSTING_UNITS = 5000;
+/**
+ * Bu sayidan fazla bolumlu donemin onayi HTTP isteginde calismaz: arka plan isi (bulkjobs, SQS)
+ * olarak acilir ve parca parca yazilir. Kucuk donemler (ve testler) senkron yolu kullanir.
+ */
+export const SYNC_POSTING_UNITS = 60;
+/** Borclu cozumleme ve kalem yazimindaki eszamanlilik (sicak gelir hesabi icin sinirli). */
+const RESOLVE_CONCURRENCY = 16;
 
 const CATEGORY_LABEL: Record<TemplateCategory, string> = { heating: 'Isınma', hot_water: 'Sıcak su', cold_water: 'Su' };
 
@@ -187,11 +195,14 @@ export function createMeterPostingService(overrides: Partial<MeterPostingService
 
     const resolve = await liabilityResolver(ctx, period);
     const unitById = new Map(units.map((u) => [u.unitId, u]));
+    // Borclu cozumleme bolum basina okuma yapar (cari, hisseli mulkiyet): 2.500 bolumde sirali
+    // okuma istek suresini asardi; sinirli eszamanlilikla ve girdi sirasiyla cozulur.
+    const resolved = await mapLimit(result.lines, RESOLVE_CONCURRENCY, (line) => (line.amount > 0 ? resolve(line.unitId) : Promise.resolve(undefined)));
     const lines: PlannedLine[] = [];
-    for (const line of result.lines) {
+    for (const [i, line] of result.lines.entries()) {
       let liability: LineLiability = { party: period.template.liableParty, vacant: false, kind: 'none' };
       if (line.amount > 0) {
-        const r = await resolve(line.unitId);
+        const r = resolved[i] as LineLiability | Blocker;
         if ('code' in r) {
           blockers.push(r);
           continue;
@@ -284,17 +295,30 @@ export function createMeterPostingService(overrides: Partial<MeterPostingService
   // -------------------------------------------------------------------------
 
   async function approve(ctx: MeterContext, periodId: string, body: unknown) {
-    const o = asObject(body);
-    const calcHash = reqString(o, 'calcHash', 128);
+    const calcHash = reqString(asObject(body), 'calcHash', 128);
+    const prepared = await prepareApproval(ctx, periodId, calcHash);
+    if (prepared.kind === 'posted') {
+      return { period: prepared.period, replayed: true, posted: prepared.period.chargeCount ?? 0, written: 0 };
+    }
+    return resume(ctx, prepared.period);
+  }
+
+  /**
+   * Onayin yazim oncesi asamasi (kural 1, 4): hesap yeniden yapilir, `calcHash` dogrulanir,
+   * dagitim satirlari yazilir ve donem `posting` olur. Kalem yazimi `postStep` ile (senkron yolda
+   * hemen, buyuk donemde arka plan isinde parca parca) yapilir. Tekrar cagrilmasi guvenlidir:
+   * `posting` donem aynen, `posted` donem `posted` olarak doner.
+   */
+  async function prepareApproval(ctx: MeterContext, periodId: string, calcHash: string): Promise<{ kind: 'posting' | 'posted'; period: MeterPeriod }> {
     let period = await loadPeriod(ctx, periodId);
 
     if (period.status === 'posted') {
       if (period.calc?.hash !== calcHash) throw new MeterError('conflict', 'Dönem farklı bir hesapla onaylanmış');
-      return { period, replayed: true, posted: period.chargeCount ?? 0, written: 0 };
+      return { kind: 'posted', period };
     }
     if (period.status === 'posting') {
       if (period.calc?.hash !== calcHash) throw new MeterError('conflict', 'Onay devam ediyor; bu hesap özeti onaylanan hesapla uyuşmuyor');
-      return resume(ctx, period);
+      return { kind: 'posting', period };
     }
     if (period.status !== 'draft' && period.status !== 'calculated') throw new MeterError('unprocessable', 'Bu dönem onaylanamaz (iptal edilmiş veya geri alınmış)');
 
@@ -348,7 +372,7 @@ export function createMeterPostingService(overrides: Partial<MeterPostingService
       ],
     );
     period = posting;
-    return resume(ctx, period);
+    return { kind: 'posting', period };
   }
 
   /** Onaylanan hesaba ait satirlar (onceki yarim denemelerden kalan eski satirlar haric). */
@@ -361,6 +385,29 @@ export function createMeterPostingService(overrides: Partial<MeterPostingService
 
   /** Onaylanan donemin tahakkukunu yazar / tamamlar. Tekrar cagrilmasi guvenlidir. */
   async function resume(ctx: MeterContext, period: MeterPeriod) {
+    let written = 0;
+    for (;;) {
+      const step = await postStep(ctx, period, { maxUnits: Number.POSITIVE_INFINITY });
+      written += step.written;
+      if (step.pending === 0) break;
+    }
+    const done = await finalizePosting(ctx, period, { written });
+    return { period: done.period, replayed: false, posted: done.chargeCount, written };
+  }
+
+  /**
+   * Parcali kalem yazimi (kural 3, 4): bekleyen (`pending`) satirlardan en fazla `maxUnits` tanesi
+   * `MDP_<periodId>_<unitId>` anahtariyla yazilir; ilerleme satir durumunda (`posted`) saklanir,
+   * bu yuzden imlec gerekmez ve ayni adim tekrar cagrilabilir. Her alt parcadan sonra satirlar
+   * yazilir (kesintide en fazla bir alt parca yeniden oynatilir; defter yazimi idempotent).
+   * `shouldStop` true donerse (Lambda suresi azaldi) yeni alt parcaya gecilmez.
+   */
+  async function postStep(
+    ctx: MeterContext,
+    period: MeterPeriod,
+    opts: { maxUnits: number; batchSize?: number; concurrency?: number; shouldStop?: () => boolean },
+  ): Promise<{ processed: number; written: number; pending: number; total: number; posted: number }> {
+    if (period.status !== 'posting') throw new MeterError('unprocessable', 'Dönem tahakkuk aşamasında değil');
     const lines = await frozenLines(ctx, period);
     // Kural 4: her devamda da (dondurulmus satirlarla) mutabakat.
     assertReconciled(period.totalAmount as number, lines);
@@ -370,91 +417,104 @@ export function createMeterPostingService(overrides: Partial<MeterPostingService
     const batchId = period.batchId ?? `mdp-${period.periodId}`;
     const description = `${CATEGORY_LABEL[period.template.category]} — ${period.name}`.slice(0, 200);
     const reference = `METER_PERIOD:${period.periodId}`;
-
-    // 3) Daire basina tahakkuk (idempotent: MDP_<periodId>_<unitId>). Yazilmis daire tekrar yazilmaz.
+    const charged = lines.filter((l) => l.amount > 0);
+    const pendingLines = charged.filter((l) => !(l.status === 'posted' && l.transactionId));
+    const todo = pendingLines.slice(0, Math.max(0, opts.maxUnits));
+    const batchSize = Math.max(1, opts.batchSize ?? 25);
+    let processed = 0;
     let written = 0;
-    let charged = 0;
-    const updated: MeterWrite[] = [];
-    const summary: { unitId: string; amount: number; transactionId: string; liableParty: LiableParty; coOwnerParts?: { userId: string; amount: number }[] }[] = [];
-    for (const line of lines) {
-      if (line.amount <= 0) continue;
-      charged++;
-      // Ayrilan cariye yazilan kalem dairenin bugunku sakinine bildirilmez (ozet disinda).
-      const notify = line.liability.kind !== 'former';
-      if (line.status === 'posted' && line.transactionId) {
-        if (notify) summary.push({ unitId: line.unitId, amount: line.amount, transactionId: line.transactionId, liableParty: line.liability.party, ...(line.coOwnerParts ? { coOwnerParts: line.coOwnerParts } : {}) });
-        continue;
-      }
-      const f = line.liability.former;
-      const r = await deps.finance.chargeMeterLine(
-        { apartmentId: ctx.apartmentId, userId: ctx.userId },
-        {
-          idemId: `MDP_${period.periodId}_${line.unitId}`,
-          unitId: line.unitId,
-          party: line.liability.party,
-          vacant: line.liability.vacant,
-          amount: line.amount,
-          date: period.accrualDate,
-          dueDate: period.dueDate,
-          description,
-          batchId,
-          reference,
-          ...(period.template.incomeAccountId ? { incomeAccountId: period.template.incomeAccountId } : {}),
-          ...(line.liability.kind === 'former' && f
-            ? { former: { closureId: f.closureId, sourceAccountId: f.sourceAccountId, userIds: f.userIds, periodEnd: f.periodEnd, unitNumber: line.unitNumber ?? line.unitId } }
-            : {}),
-        },
-      );
-      if (!r.replayed) written++;
-      if (notify) summary.push({ unitId: line.unitId, amount: line.amount, transactionId: r.transactionId, liableParty: r.liableParty, ...(r.coOwnerParts ? { coOwnerParts: r.coOwnerParts } : {}) });
-      const next: MeterLine = {
-        ...line,
-        status: 'posted',
-        transactionId: r.transactionId,
-        accountIds: r.accountIds,
-        ...(r.coOwnerParts ? { coOwnerParts: r.coOwnerParts } : {}),
-        postedAt: stamp(),
-        version: line.version + 1,
-      };
-      updated.push({ op: 'replace', item: next, expectedVersion: line.version });
+
+    for (let i = 0; i < todo.length; i += batchSize) {
+      if (i > 0 && opts.shouldStop?.()) break;
+      const slice = todo.slice(i, i + batchSize);
+      const updated = await mapLimit(slice, opts.concurrency ?? 1, async (line): Promise<MeterWrite> => {
+        const f = line.liability.former;
+        const r = await deps.finance.chargeMeterLine(
+          { apartmentId: ctx.apartmentId, userId: ctx.userId },
+          {
+            idemId: `MDP_${period.periodId}_${line.unitId}`,
+            unitId: line.unitId,
+            party: line.liability.party,
+            vacant: line.liability.vacant,
+            amount: line.amount,
+            date: period.accrualDate,
+            dueDate: period.dueDate,
+            description,
+            batchId,
+            reference,
+            ...(period.template.incomeAccountId ? { incomeAccountId: period.template.incomeAccountId } : {}),
+            ...(line.liability.kind === 'former' && f
+              ? { former: { closureId: f.closureId, sourceAccountId: f.sourceAccountId, userIds: f.userIds, periodEnd: f.periodEnd, unitNumber: line.unitNumber ?? line.unitId } }
+              : {}),
+          },
+        );
+        if (!r.replayed) written++;
+        const next: MeterLine = {
+          ...line,
+          status: 'posted',
+          transactionId: r.transactionId,
+          accountIds: r.accountIds,
+          ...(r.coOwnerParts ? { coOwnerParts: r.coOwnerParts } : {}),
+          postedAt: stamp(),
+          version: line.version + 1,
+        };
+        return { op: 'replace', item: next, expectedVersion: line.version };
+      });
+      await chunked(updated);
+      processed += slice.length;
     }
-    await chunked(updated);
+    return { processed, written, pending: pendingLines.length - processed, total: charged.length, posted: charged.length - pendingLines.length + processed };
+  }
+
+  /**
+   * Tum kalemler yazildiktan sonra (kural 3): ozet bildirim (outbox, deterministik kimlik), sayac
+   * son onayli endeks / tuketim imleci ve donem `posted`. Tekrar cagrilmasi guvenlidir.
+   */
+  async function finalizePosting(ctx: MeterContext, period: MeterPeriod, info: { written?: number } = {}): Promise<{ period: MeterPeriod; chargeCount: number }> {
+    if (period.status === 'posted') return { period, chargeCount: period.chargeCount ?? 0 };
+    const lines = await frozenLines(ctx, period);
+    assertReconciled(period.totalAmount as number, lines);
+    const charged = lines.filter((l) => l.amount > 0);
+    if (charged.some((l) => !(l.status === 'posted' && l.transactionId))) {
+      throw new MeterError('unprocessable', 'Tahakkuk tamamlanmadı; bekleyen satırlar var');
+    }
+    const batchId = period.batchId ?? `mdp-${period.periodId}`;
+    const description = `${CATEGORY_LABEL[period.template.category]} — ${period.name}`.slice(0, 200);
 
     // 4) Ozet bildirim (outbox; deterministik kimlik -> tekrar cagrida ikinci olay yok).
+    // Ayrilan cariye yazilan kalem dairenin bugunku sakinine bildirilmez (ozet disinda).
+    const summary = charged
+      .filter((l) => l.liability.kind !== 'former')
+      .map((l) => ({
+        unitId: l.unitId,
+        amount: toKurus(l.amount),
+        transactionId: l.transactionId as string,
+        liableParty: l.liability.party,
+        ...(l.coOwnerParts ? { coOwnerParts: l.coOwnerParts.map((c) => ({ userId: c.userId, amount: toKurus(c.amount) })) } : {}),
+      }));
     await deps.finance.recordDuesBatchSummary(
       { apartmentId: ctx.apartmentId, userId: ctx.userId },
-      {
-        batchId,
-        date: period.accrualDate,
-        dueDate: period.dueDate,
-        description,
-        liableParty: period.template.liableParty,
-        results: summary.map(({ coOwnerParts, ...x }) => ({
-          ...x,
-          amount: toKurus(x.amount),
-          ...(coOwnerParts ? { coOwnerParts: coOwnerParts.map((c) => ({ userId: c.userId, amount: toKurus(c.amount) })) } : {}),
-        })),
-      },
+      { batchId, date: period.accrualDate, dueDate: period.dueDate, description, liableParty: period.template.liableParty, results: summary },
     );
 
     // 5) Sayac imleci: son onayli endeks + son tuketimler (bu donem zaten yazildiysa atlanir).
+    const cursors = lines.flatMap((line) => line.meters);
+    const meters = await mapLimit(cursors, RESOLVE_CONCURRENCY, (c) => repo.get<Meter>(meterKeys.meter(ctx.apartmentId, c.meterId)));
     const meterWrites: MeterWrite[] = [];
-    for (const line of lines) {
-      for (const c of line.meters) {
-        const m = await repo.get<Meter>(meterKeys.meter(ctx.apartmentId, c.meterId));
-        if (!m || m.lastReading?.periodId === period.periodId) continue;
-        const recent: RecentConsumption[] = [{ delta: c.delta, days: c.days, periodId: period.periodId }, ...(m.recentConsumption ?? [])].slice(0, 3);
-        meterWrites.push({
-          op: 'replace',
-          item: { ...m, lastReading: { index: c.endIndex, date: c.endDate, periodId: period.periodId }, recentConsumption: recent, updatedAt: stamp(), updatedBy: ctx.userId, version: m.version + 1 },
-          expectedVersion: m.version,
-        });
-      }
-    }
+    cursors.forEach((c, i) => {
+      const m = meters[i];
+      if (!m || m.lastReading?.periodId === period.periodId) return;
+      const recent: RecentConsumption[] = [{ delta: c.delta, days: c.days, periodId: period.periodId }, ...(m.recentConsumption ?? [])].slice(0, 3);
+      meterWrites.push({
+        op: 'replace',
+        item: { ...m, lastReading: { index: c.endIndex, date: c.endDate, periodId: period.periodId }, recentConsumption: recent, updatedAt: stamp(), updatedBy: ctx.userId, version: m.version + 1 },
+        expectedVersion: m.version,
+      });
+    });
     await chunked(meterWrites);
 
     // 6) Donem -> posted.
-    const chargeCount = charged;
+    const chargeCount = charged.length;
     const posted: MeterPeriod = { ...period, status: 'posted', postedAt: stamp(), chargeCount, updatedAt: stamp(), updatedBy: ctx.userId, version: period.version + 1 };
     await repo.write(
       [{ op: 'replace', item: posted, expectedVersion: period.version }],
@@ -464,11 +524,11 @@ export function createMeterPostingService(overrides: Partial<MeterPostingService
           action: 'meters.period_posted',
           target: { type: 'meter_period', id: period.periodId },
           actorId: ctx.userId,
-          details: { batchId, chargeCount, written, totalAmount: period.totalAmount },
+          details: { batchId, chargeCount, ...(info.written !== undefined ? { written: info.written } : {}), totalAmount: period.totalAmount },
         },
       ],
     );
-    return { period: posted, replayed: false, posted: chargeCount, written };
+    return { period: posted, chargeCount };
   }
 
   async function listLines(ctx: MeterContext, periodId: string) {
@@ -477,7 +537,10 @@ export function createMeterPostingService(overrides: Partial<MeterPostingService
     return { period, lines, total: lines.reduce((s, l) => s + l.amount, 0) };
   }
 
-  return { calculate, approve, listLines, computePlan };
+  /** Arka plan isi icin: donemi (guncel surumuyla) okur. */
+  const getPeriod = loadPeriod;
+
+  return { calculate, approve, listLines, computePlan, prepareApproval, postStep, finalizePosting, getPeriod };
 }
 
 export type MeterPostingService = ReturnType<typeof createMeterPostingService>;

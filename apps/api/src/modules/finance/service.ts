@@ -95,9 +95,57 @@ export class FinanceError extends Error {
   }
 }
 
+/** Senkron toplu tahakkuk icin kapsam fazla buyuk: rota bunu arka plan isine cevirir. */
+export class BulkTooLargeError extends FinanceError {
+  readonly unitCount: number;
+  constructor(unitCount: number, message: string) {
+    super('unprocessable', message);
+    this.name = 'BulkTooLargeError';
+    this.unitCount = unitCount;
+  }
+}
+
 /** Para tutari ust siniri: 999.999.999,99 TL (kurus). */
 export const MAX_AMOUNT = 99_999_999_999;
-export const MAX_BULK_UNITS = 500;
+/**
+ * Toplu tahakkuk kapsam ust siniri (asenkron is dahil). 2.500+ bolumlu siteler icin genis tutulur;
+ * istek suresi siniri `SYNC_BULK_UNITS` ile ayrica korunur.
+ */
+export const MAX_BULK_UNITS = 5000;
+/**
+ * Bu sayidan fazla bagimsiz bolume yazan toplu tahakkuk HTTP isteginde calismaz: arka plan isi
+ * (`bulkjobs`, SQS) olarak acilir. Kucuk sitelerde (ve testlerde) senkron yol aynen korunur.
+ */
+export const SYNC_BULK_UNITS = 60;
+
+/** Asenkron toplu tahakkukun dondurulmus parametreleri (is kaydinda saklanir). */
+export type BulkDuesSpec = {
+  idempotencyKey: string;
+  batchId: string;
+  liableParty: LiableParty;
+  totalAmount: number;
+  distributionKey: DuesDistributionKey;
+  date: IsoDate;
+  dueDate: IsoDate;
+  description: string;
+  incomeAccountId: string;
+  /** Idempotency parmak izine giren kapsam (blok, gider kalemi, gelir hesabi). */
+  scopeFp: Record<string, unknown>;
+  expenseCategory?: string;
+};
+
+/** Dondurulmus dagitim satiri: pay ve borclu taraf is acilirken bir kez hesaplanir. */
+export type BulkDuesLine = { unitId: string; unitNumber: string; amount: number; party: LiableParty; vacant: boolean };
+
+export type BulkDuesLineResult = {
+  unitId: string;
+  amount: Kurus;
+  transactionId: string;
+  replayed: boolean;
+  liableParty: LiableParty;
+  vacant: boolean;
+  coOwnerParts?: { userId: string; amount: Kurus }[];
+};
 
 /** Daire alt carisinin adi (Faz 1: UUID yerine daire numarasi). */
 export function receivableName(unitNumber: string, party: LiableParty): string {
@@ -1226,95 +1274,131 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
     };
   }
 
-  async function chargeBulk(ctx: FinanceContext, body: unknown) {
+  /**
+   * Toplu tahakkukun dondurulmus plani (yazmaz): asenkron is bu satirlari saklar ve parca parca
+   * `postBulkLine` ile yazar. Senkron `chargeBulk` ayni plani ve ayni satir yazimini kullanir;
+   * bu yuzden ayni `idempotencyKey` iki yol arasinda guvenle paylasilir (kalem anahtari
+   * `<key>_<unitId>`, parmak izi ayni).
+   */
+  async function planBulkJob(ctx: FinanceContext, body: unknown) {
     const o = asObject(body);
     const key = reqKey(o);
     const plan = await planBulk(ctx, o);
-    const { party, totalAmount, distributionKey, date, dueDate, description, shares } = plan;
-    const units = plan.included;
-    if (units.length === 0) {
+    if (plan.included.length === 0) {
       throw new FinanceError(
         'unprocessable',
         plan.exempt.length ? 'Kapsamdaki tum bagimsiz bolumler bu gider kaleminden muaf' : 'Tahakkuk icin aktif bagimsiz bolum yok',
       );
     }
-    await ensureSystemAccounts(ctx);
+    const spec: BulkDuesSpec = {
+      idempotencyKey: key,
+      batchId: `${compact(plan.date)}-${key}`,
+      liableParty: plan.party,
+      totalAmount: plan.totalAmount,
+      distributionKey: plan.distributionKey,
+      date: plan.date,
+      dueDate: plan.dueDate,
+      description: plan.description,
+      incomeAccountId: plan.incomeAccountId,
+      scopeFp: plan.scopeFp,
+      ...(plan.expenseCategory ? { expenseCategory: plan.expenseCategory } : {}),
+    };
+    const lines: BulkDuesLine[] = [];
+    plan.included.forEach((unit, i) => {
+      const amount = plan.shares[i] ?? 0;
+      if (amount < 1) return; // cok kucuk pay: 0 kurus borc yazilmaz
+      lines.push({ unitId: unit.unitId, unitNumber: unit.number, amount, party: plan.targets[i]?.party ?? plan.party, vacant: plan.targets[i]?.vacant ?? false });
+    });
+    return { spec, lines, exempt: plan.exempt, vacant: plan.vacant, unitCount: plan.included.length };
+  }
 
-    const batchId = `${compact(date)}-${key}`;
-    const results: {
-      unitId: string;
-      amount: Kurus;
-      transactionId: string;
-      replayed: boolean;
-      liableParty: LiableParty;
-      vacant: boolean;
-      coOwnerParts?: { userId: string; amount: Kurus }[];
-    }[] = [];
-    for (const [i, unit] of units.entries()) {
-      const amount = shares[i] ?? 0;
-      if (amount < 1) continue; // cok kucuk pay: 0 kurus borc yazilmaz
-      const liable = plan.targets[i]?.party ?? party;
-      const r = await postDues(ctx, {
-        idemId: `${key}_${unit.unitId}`,
-        fp: fingerprint({ op: 'bulk', unitId: unit.unitId, party, amount, date, dueDate, description, distributionKey, totalAmount, ...plan.scopeFp }),
-        unitId: unit.unitId,
-        unitNumber: unit.number,
-        incomeAccountId: plan.incomeAccountId,
-        party: liable,
-        vacant: plan.targets[i]?.vacant ?? false,
-        amount: toKurus(amount),
-        date,
-        dueDate,
-        description,
-        batchId,
-        // Kalem basina olay, kalemin defter kaydiyla ayni atomik yazimda: istek yarida kesilse
-        // de yazilan her kalemin olayi vardir. Bildirim tarafi `batchId` ile kullanici bazinda
-        // tek ozet halinde birlestirir.
-        event: (tx) => ({
-          eventId: `DUE_GENERATED:${tx.transactionId}`,
-          type: 'DUE_GENERATED',
-          apartmentId: ctx.apartmentId,
-          actorId: ctx.userId,
-          groupKey: unit.unitId,
-          payload: {
-            mode: 'bulk',
-            batchId,
-            date,
-            dueDate,
-            description,
-            liableParty: party,
-            totalAmount: toKurus(amount),
-            items: [{ unitId: unit.unitId, amount: toKurus(amount), transactionId: tx.transactionId, liableParty: liable }],
-          },
-        }),
-      });
-      results.push({
-        unitId: unit.unitId,
-        amount: toKurus(amount),
-        transactionId: r.transaction.transactionId,
-        replayed: r.replayed,
-        liableParty: r.liableParty,
-        vacant: r.vacant,
-        ...(r.coOwnerParts ? { coOwnerParts: r.coOwnerParts } : {}),
-      });
+  /** Toplu tahakkukun tek kalemi (idempotent). Senkron ve asenkron yol ayni fonksiyonu kullanir. */
+  async function postBulkLine(ctx: FinanceContext, spec: BulkDuesSpec, line: BulkDuesLine): Promise<BulkDuesLineResult> {
+    const amount = toKurus(line.amount);
+    const { idempotencyKey: key, batchId, liableParty: party, totalAmount, distributionKey, date, dueDate, description } = spec;
+    const r = await postDues(ctx, {
+      idemId: `${key}_${line.unitId}`,
+      fp: fingerprint({ op: 'bulk', unitId: line.unitId, party, amount, date, dueDate, description, distributionKey, totalAmount, ...spec.scopeFp }),
+      unitId: line.unitId,
+      unitNumber: line.unitNumber,
+      incomeAccountId: spec.incomeAccountId,
+      party: line.party,
+      vacant: line.vacant,
+      amount,
+      date,
+      dueDate,
+      description,
+      batchId,
+      // Kalem basina olay, kalemin defter kaydiyla ayni atomik yazimda: istek yarida kesilse
+      // de yazilan her kalemin olayi vardir. Bildirim tarafi `batchId` ile kullanici bazinda
+      // tek ozet halinde birlestirir.
+      event: (tx) => ({
+        eventId: `DUE_GENERATED:${tx.transactionId}`,
+        type: 'DUE_GENERATED',
+        apartmentId: ctx.apartmentId,
+        actorId: ctx.userId,
+        groupKey: line.unitId,
+        payload: {
+          mode: 'bulk',
+          batchId,
+          date,
+          dueDate,
+          description,
+          liableParty: party,
+          totalAmount: amount,
+          items: [{ unitId: line.unitId, amount, transactionId: tx.transactionId, liableParty: line.party }],
+        },
+      }),
+    });
+    return {
+      unitId: line.unitId,
+      amount,
+      transactionId: r.transaction.transactionId,
+      replayed: r.replayed,
+      liableParty: r.liableParty,
+      vacant: r.vacant,
+      ...(r.coOwnerParts ? { coOwnerParts: r.coOwnerParts } : {}),
+    };
+  }
+
+  /** Is basinda bir kez: sistem hesaplari (gelir hesabi dahil) hazir olsun. */
+  async function prepareBulkPosting(ctx: FinanceContext): Promise<void> {
+    await ensureSystemAccounts(ctx);
+  }
+
+  /**
+   * Senkron toplu tahakkuk (kucuk kapsam). `SYNC_BULK_UNITS` ustu kapsam HTTP isteginde
+   * calistirilmaz (`bulk_too_large`); arka plan isi (`POST /api/finance/dues/jobs`) kullanilir.
+   * `allowLarge`: zamanlanmis gorev worker'i gibi istek suresi siniri olmayan cagiranlar.
+   */
+  async function chargeBulk(ctx: FinanceContext, body: unknown, opts: { allowLarge?: boolean } = {}) {
+    const { spec, lines, exempt, vacant, unitCount } = await planBulkJob(ctx, body);
+    if (!opts.allowLarge && unitCount > SYNC_BULK_UNITS) {
+      throw new BulkTooLargeError(
+        unitCount,
+        `${unitCount} bagimsiz bolumlu toplu tahakkuk arka planda calisir (en fazla ${SYNC_BULK_UNITS} bolum aninda yazilir); POST /api/finance/dues/jobs kullanin`,
+      );
     }
+    await prepareBulkPosting(ctx);
+    const results: BulkDuesLineResult[] = [];
+    for (const line of lines) results.push(await postBulkLine(ctx, spec, line));
 
     // Tek ozet olay (bildirim): tum kalemler yazildiktan SONRA. Istek yarida kesilirse ozet
     // yazilmaz; ayni anahtarla tamamlama (replay dahil) TUM kalemlerle ozeti yazar. Kimlik
     // deterministik oldugundan tekrar eden istek ikinci ozet uretmez.
-    await recordDuesBatchSummary(ctx, { batchId, date, dueDate, description, liableParty: party, results });
+    await recordDuesBatchSummary(ctx, { batchId: spec.batchId, date: spec.date, dueDate: spec.dueDate, description: spec.description, liableParty: spec.liableParty, results });
 
     return {
-      batchId,
-      distributionKey,
-      totalAmount: toKurus(totalAmount),
+      batchId: spec.batchId,
+      distributionKey: spec.distributionKey,
+      totalAmount: toKurus(spec.totalAmount),
       distributedAmount: toKurus(results.reduce((s, r) => s + r.amount, 0)),
       count: results.length,
       replayed: results.length > 0 && results.every((r) => r.replayed),
       items: results,
-      ...(plan.expenseCategory ? { expenseCategory: plan.expenseCategory } : {}),
-      exempt: plan.exempt,
-      vacant: results.filter((r) => r.vacant).map((r) => plan.vacant.find((v) => v.unitId === r.unitId) ?? { unitId: r.unitId }),
+      ...(spec.expenseCategory ? { expenseCategory: spec.expenseCategory } : {}),
+      exempt,
+      vacant: results.filter((r) => r.vacant).map((r) => vacant.find((v) => v.unitId === r.unitId) ?? { unitId: r.unitId }),
     };
   }
 
@@ -2086,18 +2170,32 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
     assertPeriod(p.period);
     if (!p.plan?.enabled) return { status: 'skipped' as const, reason: 'plan_disabled' as const };
     const ctx: FinanceContext = { apartmentId, userId: SYSTEM_ACTOR };
-    const { first } = periodBounds(p.period);
-    const result = await chargeBulk(ctx, {
-      idempotencyKey: `auto-dues-${p.period}`,
-      liableParty: p.plan.liableParty,
-      totalAmount: p.plan.totalAmount,
-      distributionKey: p.plan.distributionKey,
-      date: first,
-      dueDate: `${p.period}-${String(p.dueDayOfMonth).padStart(2, '0')}`,
-      description: `${periodLabel(p.period)} aidatı`,
-      ...(p.plan.incomeAccountId ? { incomeAccountId: p.plan.incomeAccountId } : {}),
-    });
+    // Worker'da istek suresi siniri yok (300 sn); cok buyuk siteler icin zamanlayici bu istegi
+    // `autoDuesRequest` ile arka plan isine cevirir (bulkjobs).
+    const result = await chargeBulk(ctx, autoDuesBody(p.period, p.plan, p.dueDayOfMonth), { allowLarge: true });
     return { status: 'charged' as const, ...result };
+  }
+
+  /** Aylik aidat planinin toplu tahakkuk govdesi (senkron ve asenkron yol ayni anahtarla). */
+  function autoDuesBody(period: string, plan: MonthlyDuesPlan, dueDayOfMonth: number) {
+    const { first } = periodBounds(period);
+    return {
+      idempotencyKey: `auto-dues-${period}`,
+      liableParty: plan.liableParty,
+      totalAmount: plan.totalAmount,
+      distributionKey: plan.distributionKey,
+      date: first,
+      dueDate: `${period}-${String(dueDayOfMonth).padStart(2, '0')}`,
+      description: `${periodLabel(period)} aidatı`,
+      ...(plan.incomeAccountId ? { incomeAccountId: plan.incomeAccountId } : {}),
+    };
+  }
+
+  /** Zamanlayici icin: plan kapaliysa `undefined`, aciksa toplu tahakkuk govdesi. */
+  function autoDuesRequest(p: { period: string; plan: MonthlyDuesPlan | undefined; dueDayOfMonth: number }) {
+    assertPeriod(p.period);
+    if (!p.plan?.enabled) return undefined;
+    return autoDuesBody(p.period, p.plan, p.dueDayOfMonth);
   }
 
   /**
@@ -2882,6 +2980,10 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
     charge,
     chargeUnit,
     chargeBulk,
+    planBulkJob,
+    postBulkLine,
+    prepareBulkPosting,
+    autoDuesRequest,
     previewBulk,
     /** Finans 2.3: sayac donemi kalemi (hedef cari destekli) ve toplu ozet olayi. */
     chargeMeterLine,

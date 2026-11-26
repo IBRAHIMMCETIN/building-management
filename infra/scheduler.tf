@@ -216,6 +216,8 @@ resource "aws_lambda_function" "scheduler_worker" {
       # EMF metriklerinin `Stack` boyutu (operations.tf alarmlari ayni degeri bekler).
       METRICS_STACK                = local.name
       OUTBOX_SWEEP_MIN_AGE_SECONDS = tostring(local.outbox_sweep_min_age_seconds)
+      # Buyuk sitelerde aylik aidat arka plan isi olarak (bulk_jobs.tf).
+      BULK_JOBS_QUEUE_URL = aws_sqs_queue.bulk_jobs.url
     }, local.payments_env)
   }
 

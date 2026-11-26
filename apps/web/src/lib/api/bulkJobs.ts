@@ -1,0 +1,65 @@
+import { z } from 'zod';
+import { apiClient } from './client';
+
+/**
+ * Arka plan toplu isleri (buyuk toplu aidat tahakkuku, buyuk sayac donemi onayi).
+ *   GET  /api/jobs/:jobId         durum + ilerleme
+ *   POST /api/jobs/:jobId/retry   basarisiz / hatali biten isi yeniden baslatir
+ * Baslatan uclar 202 ve `{ mode: 'job', job }` doner.
+ */
+export const BULK_JOB_STATUSES = ['pending', 'running', 'completed', 'completed_with_errors', 'failed'] as const;
+export type BulkJobStatus = (typeof BULK_JOB_STATUSES)[number];
+export const TERMINAL_JOB_STATUSES: readonly BulkJobStatus[] = ['completed', 'completed_with_errors', 'failed'];
+
+export const bulkJobSchema = z.object({
+  jobId: z.string(),
+  kind: z.enum(['dues_bulk', 'meter_posting']),
+  status: z.enum(BULK_JOB_STATUSES),
+  phase: z.enum(['prepare', 'post', 'finalize']).optional(),
+  total: z.number().int(),
+  processed: z.number().int(),
+  succeeded: z.number().int(),
+  failed: z.number().int(),
+  written: z.number().int().default(0),
+  percent: z.number().int(),
+  failures: z.array(z.object({ unitId: z.string(), unitNumber: z.string().optional(), message: z.string() })).default([]),
+  result: z
+    .object({
+      batchId: z.string().optional(),
+      count: z.number().int().optional(),
+      distributedAmount: z.number().int().optional(),
+      exemptCount: z.number().int().optional(),
+      vacantCount: z.number().int().optional(),
+      posted: z.number().int().optional(),
+      written: z.number().int().optional(),
+      replayed: z.boolean().optional(),
+    })
+    .optional(),
+  error: z.object({ code: z.string(), message: z.string() }).passthrough().optional(),
+  params: z.record(z.string(), z.unknown()).default({}),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+  finishedAt: z.string().optional(),
+});
+export type BulkJob = z.infer<typeof bulkJobSchema>;
+
+export const jobAcceptedSchema = z.object({ mode: z.literal('job'), created: z.boolean().optional(), job: bulkJobSchema });
+export type JobAccepted = z.infer<typeof jobAcceptedSchema>;
+
+export const isTerminalJob = (job: Pick<BulkJob, 'status'> | undefined) => !!job && TERMINAL_JOB_STATUSES.includes(job.status);
+
+const enc = encodeURIComponent;
+
+export const bulkJobsApi = {
+  get: (jobId: string, signal?: AbortSignal) => apiClient.get(`/api/jobs/${enc(jobId)}`, { signal, schema: bulkJobSchema }),
+  retry: (jobId: string) => apiClient.post(`/api/jobs/${enc(jobId)}/retry`, undefined, { schema: bulkJobSchema }),
+};
+
+/** "İşleniyor: 420 / 1.250 bölüm (%34)" */
+export function progressText(job: Pick<BulkJob, 'processed' | 'total' | 'percent' | 'kind' | 'phase' | 'status'>): string {
+  if (job.status === 'pending') return 'Sıraya alındı, birazdan başlayacak…';
+  if (job.kind === 'meter_posting' && job.phase === 'prepare') return 'Dağıtım yeniden hesaplanıyor ve doğrulanıyor…';
+  if (job.kind === 'meter_posting' && job.phase === 'finalize' && job.status === 'running') return 'Tahakkuk yazıldı; özet ve sayaç imleçleri güncelleniyor…';
+  const fmt = (n: number) => n.toLocaleString('tr-TR');
+  return `İşleniyor: ${fmt(job.processed)} / ${fmt(job.total)} bölüm (%${job.percent})`;
+}

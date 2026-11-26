@@ -128,7 +128,7 @@ jobs:
       - run: npm run build:lambda --workspace apps/api
       - name: Paket kontrolu
         run: |
-          for f in api pre-token notification-worker scheduler-worker outbox-relay; do
+          for f in api pre-token notification-worker scheduler-worker bulk-worker outbox-relay; do
             test -s "apps/api/dist/lambda/$f.mjs" || { echo "::error::Eksik paket: $f.mjs"; exit 1; }
           done
           ls -la apps/api/dist/lambda

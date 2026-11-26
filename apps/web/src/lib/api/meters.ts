@@ -16,6 +16,7 @@ import {
 import { apiClient } from './client';
 import { signedDownloadSchema } from './documentModel';
 import { ApiError } from './errors';
+import { jobAcceptedSchema } from './bulkJobs';
 
 /*
  * Finans 2.3 sayac / endeks dagitimi (apps/api/src/modules/meters):
@@ -295,7 +296,10 @@ export const calculateSchema = z.discriminatedUnion('ok', [
   z.object({ ok: z.literal(false), period: periodSchema, blockers: z.array(blocker), warnings: z.array(warningItem).default([]) }),
 ]);
 
-export const approveSchema = z.object({ period: periodSchema, replayed: z.boolean(), posted: z.number().int(), written: z.number().int() });
+export const approveSyncSchema = z.object({ period: periodSchema, replayed: z.boolean(), posted: z.number().int(), written: z.number().int() });
+/** Kucuk donem: senkron sonuc. Buyuk donem (API `SYNC_POSTING_UNITS` ustu): 202 + arka plan isi. */
+export const approveSchema = z.union([jobAcceptedSchema, approveSyncSchema]);
+export type ApproveResult = z.infer<typeof approveSchema>;
 
 export const reversePreviewSchema = z.object({
   period: periodSchema,

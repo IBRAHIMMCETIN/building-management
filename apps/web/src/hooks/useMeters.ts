@@ -10,6 +10,7 @@ import {
   metersApi,
 } from '@/lib/api/meters';
 import type { Role } from '@/types/roles';
+import type { BulkJob } from '@/lib/api/bulkJobs';
 import { useAuth } from './useAuth';
 import { financeKeys } from './useFinance';
 
@@ -192,6 +193,29 @@ export function useApprovePeriod() {
       qc.invalidateQueries({ queryKey: financeKeys.all(apartmentId) });
     },
   });
+}
+
+/**
+ * Buyuk donem onayinin arka plan isi: onay karti ile "tahakkuk suruyor" karti arasinda paylasilir
+ * (donem `calculated` -> `posting` -> `posted` gecerken kart degisse de ilerleme kaybolmaz).
+ */
+export function usePeriodJob(periodId: string) {
+  const qc = useQueryClient();
+  const { apartmentId } = useMeterPermissions();
+  const key = ['bulk-job', 'meter-period', apartmentId, periodId] as const;
+  const { data } = useQuery<BulkJob | null>({ queryKey: key, queryFn: () => null, enabled: false, initialData: null, staleTime: Number.POSITIVE_INFINITY });
+  const set = (job: BulkJob | null) => qc.setQueryData(key, job);
+  return [data ?? null, set] as const;
+}
+
+/** Arka plan isi bitince sayac ve finans ekranlari tazelenir. */
+export function useRefreshAfterPosting() {
+  const qc = useQueryClient();
+  const { apartmentId } = useMeterPermissions();
+  return () => {
+    void qc.invalidateQueries({ queryKey: meterKeys.all(apartmentId) });
+    void qc.invalidateQueries({ queryKey: financeKeys.all(apartmentId) });
+  };
 }
 
 export function usePeriodLines(periodId: string | null, enabled = true) {

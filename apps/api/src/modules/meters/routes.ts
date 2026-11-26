@@ -3,7 +3,9 @@ import type { Authenticator } from '../../auth/claims.js';
 import { type Env, authenticateWith, handleError, publicView, readJson, requireRole } from '../../http/helpers.js';
 import { MANAGE_ROLES, type MeterContext, READING_READ_ROLES, READING_WRITE_ROLES, READ_ROLES } from './common.js';
 import type { MeterPortalService } from './portalView.js';
-import type { MeterPostingService } from './posting.js';
+import { type BulkJobService, jobView } from '../bulkjobs/service.js';
+import { asObject, reqString } from '../core/validation.js';
+import { type MeterPostingService, SYNC_POSTING_UNITS } from './posting.js';
 import type { MeterReadingService } from './readings.js';
 import type { MeterReversalService } from './reversal.js';
 import type { MeterService } from './service.js';
@@ -27,6 +29,8 @@ export type MeterRoutesDeps = {
   posting?: MeterPostingService;
   reversal?: MeterReversalService;
   portal?: MeterPortalService;
+  /** Buyuk donem onayi arka plan isi (SQS). Verilmezse onay senkron calisir. */
+  jobs?: Pick<BulkJobService, 'startMeterPosting'>;
 };
 
 /**
@@ -65,7 +69,7 @@ export type MeterRoutesDeps = {
  *   POST   /periods/:periodId/correction   { name? } -> geri alinan donemden duzeltilmis taslak (okumalar kopyalanir)
  *   GET    /periods/:periodId/lines/:unitId/statement   daire Sayac Dagitim Dokumu PDF (imzali link)
  */
-export function meterRoutes({ authenticate, service, posting, reversal, portal }: MeterRoutesDeps) {
+export function meterRoutes({ authenticate, service, posting, reversal, portal, jobs }: MeterRoutesDeps) {
   const r = new Hono<Env>();
   r.onError(handleError);
   r.use('*', authenticateWith(authenticate));
@@ -137,7 +141,19 @@ export function meterRoutes({ authenticate, service, posting, reversal, portal }
       return c.json({ ...out, period: publicView(out.period) });
     });
     r.post('/periods/:periodId/approve', manage, async (c) => {
-      const out = await posting.approve(ctxOf(c), p(c, 'periodId'), await readJson(c));
+      const body = await readJson(c);
+      const periodId = p(c, 'periodId');
+      // Buyuk donem (onizlemedeki bolum sayisi > SYNC_POSTING_UNITS): arka plan isi + 202.
+      if (jobs) {
+        const period = await posting.getPeriod(ctxOf(c), periodId);
+        const units = period.calc?.unitCount ?? 0;
+        if (units > SYNC_POSTING_UNITS && period.status !== 'posted') {
+          const calcHash = reqString(asObject(body), 'calcHash', 128);
+          const { job, created } = await jobs.startMeterPosting(ctxOf(c), periodId, calcHash);
+          return c.json({ mode: 'job', created, job: jobView(job) }, 202);
+        }
+      }
+      const out = await posting.approve(ctxOf(c), periodId, body);
       return c.json({ ...out, period: publicView(out.period) });
     });
     r.get('/periods/:periodId/lines', read, async (c) => {

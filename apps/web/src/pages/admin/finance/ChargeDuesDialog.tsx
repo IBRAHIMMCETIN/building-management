@@ -3,7 +3,8 @@ import { CheckCircle2 } from 'lucide-react';
 import { useEffect, useMemo } from 'react';
 import { useForm } from 'react-hook-form';
 import { Alert, Button, Dialog, FormField, Input, Select } from '@/components/ui';
-import { useChargeDues, useDuesPreview, useFinanceAccounts } from '@/hooks/useFinance';
+import { BulkJobProgress } from '@/components/BulkJobProgress';
+import { useChargeDues, useDuesPreview, useFinanceAccounts, useInvalidateFinance } from '@/hooks/useFinance';
 import { useIdempotencyKey } from '@/hooks/useIdempotencyKey';
 import { ApiError, errorMessage } from '@/lib/api/errors';
 import { type DuesBulkInput, EXPENSE_CATEGORIES, PARTY_LABELS, expenseCategoryLabel } from '@/lib/api/finance';
@@ -48,6 +49,7 @@ function initial(): ChargeForm {
 export function ChargeDuesDialog({ open, onClose }: Props) {
   const { options, activeCount, activeBlocks, blockName } = useUnitOptions();
   const charge = useChargeDues();
+  const invalidateFinance = useInvalidateFinance();
   const incomeAccounts = useFinanceAccounts('income');
   const [idempotencyKey, renewKey] = useIdempotencyKey();
   const form = useForm<ChargeForm, unknown, ChargeValues>({ resolver: zodResolver(chargeSchema), defaultValues: initial() });
@@ -140,11 +142,23 @@ export function ChargeDuesDialog({ open, onClose }: Props) {
   });
 
   const done = charge.data;
+  // Buyuk kapsam: API isi arka plana aldi (202). Pencere ilerlemeyi gosterir; kapatilsa da is surer.
+  const job = done?.mode === 'job' ? done.job : undefined;
   const landShareMissing = charge.error instanceof ApiError && /arsa payi/i.test(charge.error.message);
 
   return (
     <Dialog open={open} onClose={() => !charge.isPending && onClose()} title="Aidat tahakkuk et">
-      {done ? (
+      {job ? (
+        <div className="flex flex-col gap-4 py-2">
+          <p className="text-small text-muted">
+            {job.total.toLocaleString('tr-TR')} bölümlük toplu tahakkuk arka planda yazılıyor. Her bölüm ayrı ve tekrar güvenli kayıtla işlenir.
+          </p>
+          <BulkJobProgress job={job} onSettled={invalidateFinance} />
+          <Button className="self-end" onClick={onClose}>
+            Kapat
+          </Button>
+        </div>
+      ) : done && done.mode !== 'job' ? (
         <div className="flex flex-col items-center gap-3 py-2 text-center">
           <CheckCircle2 className="size-10 text-success" aria-hidden="true" />
           <p className="font-semibold">

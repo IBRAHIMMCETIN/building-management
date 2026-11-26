@@ -1481,3 +1481,45 @@ run "rejects_negative_bank_recon_threshold" {
 
   expect_failures = [var.bank_recon_diff_alarm_threshold]
 }
+
+run "bulk_jobs_queue_and_worker" {
+  command = plan
+
+  override_resource {
+    target          = aws_sqs_queue.bulk_jobs
+    override_during = plan
+    values = {
+      arn = "arn:aws:sqs:eu-central-1:123456789012:building-management-bulk-jobs"
+      id  = "https://sqs.eu-central-1.amazonaws.com/123456789012/building-management-bulk-jobs"
+      url = "https://sqs.eu-central-1.amazonaws.com/123456789012/building-management-bulk-jobs"
+    }
+  }
+
+  assert {
+    condition = (
+      aws_lambda_function.bulk_worker.handler == "bulk-worker.handler" &&
+      aws_lambda_function.bulk_worker.timeout == 300 &&
+      aws_sqs_queue.bulk_jobs.visibility_timeout_seconds >= 6 * aws_lambda_function.bulk_worker.timeout
+    )
+    error_message = "Toplu is worker'i 300 sn ve kuyruk gorunurlugu en az 6 kati olmali"
+  }
+  assert {
+    condition = (
+      aws_lambda_function.bulk_worker.environment[0].variables.BULK_JOBS_QUEUE_URL == "https://sqs.eu-central-1.amazonaws.com/123456789012/building-management-bulk-jobs" &&
+      aws_lambda_function.api.environment[0].variables.BULK_JOBS_QUEUE_URL == "https://sqs.eu-central-1.amazonaws.com/123456789012/building-management-bulk-jobs" &&
+      aws_lambda_function.scheduler_worker.environment[0].variables.BULK_JOBS_QUEUE_URL == "https://sqs.eu-central-1.amazonaws.com/123456789012/building-management-bulk-jobs"
+    )
+    error_message = "API, zamanlayici ve toplu is worker'i ayni kuyrugu kullanmali"
+  }
+  assert {
+    condition = (
+      aws_lambda_event_source_mapping.bulk_jobs.batch_size == 1 &&
+      contains(aws_lambda_event_source_mapping.bulk_jobs.function_response_types, "ReportBatchItemFailures")
+    )
+    error_message = "Toplu is kuyrugu tekli tuketim ve kismi hata raporuyla kurulmali"
+  }
+  assert {
+    condition     = toset(flatten([for st in data.aws_iam_policy_document.bulk_jobs_send.statement : st.actions])) == toset(["sqs:SendMessage"])
+    error_message = "Ureticilere yalnizca sqs:SendMessage verilmeli"
+  }
+}

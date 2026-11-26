@@ -221,6 +221,8 @@ resource "aws_lambda_function" "api" {
       METRICS_STACK = local.name
       # Faz B1: banka ekstresi karsi taraf IBAN HMAC anahtari (bank.tf).
       BANK_IBAN_MAC_KEY_ID = aws_kms_key.bank_iban_hmac.arn
+      # Buyuk toplu tahakkuk / sayac onayi arka plan isi (bulk_jobs.tf).
+      BULK_JOBS_QUEUE_URL = aws_sqs_queue.bulk_jobs.url
     }, local.payments_env)
   }
 

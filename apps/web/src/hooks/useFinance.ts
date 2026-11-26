@@ -92,7 +92,7 @@ export function useFinanceAccounts(type?: FinanceAccount['type']) {
  * Her defter yazimi ozeti, hareketleri, aidat durumunu ve hesap bakiyelerini etkiler:
  * finans anahtarinin tamami gecersiz kilinir (tek apartman, ucuz).
  */
-function useInvalidateFinance() {
+export function useInvalidateFinance() {
   const { apt } = useApt();
   const queryClient = useQueryClient();
   return () => queryClient.invalidateQueries({ queryKey: financeKeys.all(apt) });

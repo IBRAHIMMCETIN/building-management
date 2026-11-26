@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { jobAcceptedSchema } from './bulkJobs';
 import { apiClient } from './client';
 
 /*
@@ -233,6 +234,8 @@ const duesResultSchema = z.union([
     exempt: z.array(exemptUnitSchema).default([]),
     vacant: z.array(z.object({ unitId: z.string() })).default([]),
   }),
+  // Buyuk kapsam (API `SYNC_BULK_UNITS` ustu): 202 + arka plan isi; ilerleme /api/jobs/:jobId.
+  jobAcceptedSchema,
 ]);
 
 // ----- Faz B3.5: tedarikci borcu -----

@@ -8,9 +8,12 @@ import {
   useCreateCorrection,
   useMeterPermissions,
   usePeriod,
+  usePeriodJob,
   usePeriodLines,
+  useRefreshAfterPosting,
   useReversePeriod,
 } from '@/hooks/useMeters';
+import { BulkJobProgress } from '@/components/BulkJobProgress';
 import { useOpenDocument } from '@/hooks/useOpenDocument';
 import { type CalculateResult, type DistributionLine, type MeterPeriod, blockersOf, isStaleCalc, metersApi } from '@/lib/api/meters';
 import { errorMessage } from '@/lib/api/errors';
@@ -165,6 +168,8 @@ function CalculationCard({ period, unitLabel }: { period: MeterPeriod; unitLabel
   const { canManage } = useMeterPermissions();
   const calculate = useCalculatePeriod();
   const approve = useApprovePeriod();
+  const [job, setJob] = usePeriodJob(period.periodId);
+  const refresh = useRefreshAfterPosting();
   const [result, setResult] = useState<CalculateResult | null>(null);
   const [stale, setStale] = useState(false);
   const [confirming, setConfirming] = useState(false);
@@ -188,7 +193,13 @@ function CalculationCard({ period, unitLabel }: { period: MeterPeriod; unitLabel
 
   async function runApprove(calcHash: string) {
     try {
-      await approve.mutateAsync({ periodId: period.periodId, calcHash });
+      const r = await approve.mutateAsync({ periodId: period.periodId, calcHash });
+      // Buyuk donem: arka plan isi (202). Ilerleme bu kartta / "tahakkuk suruyor" kartinda izlenir.
+      if ('mode' in r && r.mode === 'job') {
+        setJob(r.job);
+        setConfirming(false);
+        return;
+      }
       setResult(null);
     } catch (err) {
       if (isStaleCalc(err)) {
@@ -211,6 +222,15 @@ function CalculationCard({ period, unitLabel }: { period: MeterPeriod; unitLabel
 
   const approveBlockers = blockersOf(approve.error);
   const lines = result?.ok ? result.lines : [];
+
+  if (job) {
+    return (
+      <Card className="flex flex-col gap-4">
+        <CardTitle>Tahakkuk yazılıyor</CardTitle>
+        <BulkJobProgress job={job} onSettled={refresh} />
+      </Card>
+    );
+  }
 
   return (
     <Card className="flex flex-col gap-4">
@@ -369,6 +389,16 @@ function LinesTable({ lines, unitLabel, onStatement, pendingId }: { lines: Distr
 function ResumePostingCard({ period }: { period: MeterPeriod }) {
   const { canManage } = useMeterPermissions();
   const approve = useApprovePeriod();
+  const [job, setJob] = usePeriodJob(period.periodId);
+  const refresh = useRefreshAfterPosting();
+  if (job) {
+    return (
+      <Card className="flex flex-col gap-3">
+        <CardTitle>Tahakkuk yazılıyor</CardTitle>
+        <BulkJobProgress job={job} onSettled={refresh} canRetry={canManage} />
+      </Card>
+    );
+  }
   return (
     <Card className="flex flex-col gap-3">
       <CardTitle>Tahakkuk sürüyor</CardTitle>
@@ -379,8 +409,17 @@ function ResumePostingCard({ period }: { period: MeterPeriod }) {
       {approve.isError && <Alert tone="danger">{errorMessage(approve.error)}</Alert>}
       {canManage && period.calc && (
         <div>
-          <Button onClick={() => approve.mutate({ periodId: period.periodId, calcHash: period.calc?.hash ?? '' })} loading={approve.isPending}>
-            Onayı tamamla
+          <Button
+            onClick={() =>
+              approve.mutate(
+                { periodId: period.periodId, calcHash: period.calc?.hash ?? '' },
+                // Buyuk donem: suren / yarida kalan is aynen doner, kaldigi yerden izlenir.
+                { onSuccess: (r) => ('mode' in r && r.mode === 'job' ? setJob(r.job) : undefined) },
+              )
+            }
+            loading={approve.isPending}
+          >
+            Onayı tamamla / ilerlemeyi göster
           </Button>
         </div>
       )}

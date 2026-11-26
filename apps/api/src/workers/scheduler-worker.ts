@@ -21,6 +21,9 @@ import { createOwnershipReader } from '../modules/ownership/reader.js';
 import { type MaintenanceService, createMaintenanceService } from '../modules/maintenance/service.js';
 import { type TicketService, createTicketService } from '../modules/tickets/service.js';
 import type { SqsBatchResponse, SqsEvent } from './notification-worker.js';
+import { createDynamoBulkJobRepository } from '../modules/bulkjobs/repository.js';
+import { loadBulkJobQueueFromEnv } from '../modules/bulkjobs/queue.js';
+import { type BulkJobService, createBulkJobService } from '../modules/bulkjobs/service.js';
 
 /**
  * Zamanlanmis gorev worker'i (SQS tuketicisi).
@@ -132,7 +135,12 @@ export type SiteOutcome =
 
 export type SchedulerDeps = {
   core: Pick<CoreRepository, 'listSiteIds' | 'getSite'>;
-  finance: Pick<FinanceService, 'autoChargeDues' | 'postLateFees' | 'dueReminders'>;
+  finance: Pick<FinanceService, 'autoChargeDues' | 'postLateFees' | 'dueReminders'> & Partial<Pick<FinanceService, 'autoDuesRequest'>>;
+  /**
+   * Buyuk sitelerde aylik aidat arka plan isi olarak (SQS `bulk-jobs`) acilir. null: kuyruk yok,
+   * tahakkuk bu worker'da senkron yazilir. Verilmezse `BULK_JOBS_QUEUE_URL`'den kurulur.
+   */
+  bulkJobs: Pick<BulkJobService, 'startDues'> | null;
   /** Finans 2.2: taksit plani temerrut taramasi (verilmezse ilk kullanimda kurulur). */
   plans: Pick<PlanService, 'checkDefaults'>;
   /** O1-3: talep otomatik kapanisi + SLA listesi ve bakim gorevi uretimi / ozet kalemleri. */
@@ -168,12 +176,27 @@ export function createSchedulerWorker(overrides: Partial<SchedulerDeps> = {}) {
     payments?: SchedulerDeps['payments'];
     payouts?: SchedulerDeps['payouts'];
     invoices?: SchedulerDeps['invoices'];
+    bulkJobs?: SchedulerDeps['bulkJobs'];
   } = {};
   const lazyOps: { outbox?: SchedulerDeps['outbox']; auditor?: SchedulerDeps['auditor']; auditChain?: SchedulerDeps['auditChain']; metrics?: MetricsEmitter } = {};
   const now = overrides.now ?? (() => new Date());
   const events = () => (lazy.events ??= overrides.events ?? createEventPublisherFromEnv());
   const finance = () =>
     (lazy.finance ??= overrides.finance ?? createFinanceService({ now, memberships: membershipRepository, ownership: createOwnershipReader() }));
+  const bulkJobs = (): SchedulerDeps['bulkJobs'] => {
+    if (lazy.bulkJobs !== undefined) return lazy.bulkJobs;
+    if (overrides.bulkJobs !== undefined) return (lazy.bulkJobs = overrides.bulkJobs);
+    const queue = loadBulkJobQueueFromEnv();
+    lazy.bulkJobs = queue
+      ? createBulkJobService({
+          repository: createDynamoBulkJobRepository(),
+          queue,
+          finance: createFinanceService({ now, memberships: membershipRepository, ownership: createOwnershipReader() }),
+          now,
+        })
+      : null;
+    return lazy.bulkJobs;
+  };
   const plans = () =>
     (lazy.plans ??=
       overrides.plans ??
@@ -339,11 +362,18 @@ export function createSchedulerWorker(overrides: Partial<SchedulerDeps> = {}) {
 
     switch (job) {
       case 'monthly_dues': {
-        const r = await finance().autoChargeDues(apartmentId, {
-          period: day.slice(0, 7),
-          plan: settings.monthlyDuesPlan,
-          dueDayOfMonth: settings.dueDayOfMonth,
-        });
+        const input = { period: day.slice(0, 7), plan: settings.monthlyDuesPlan, dueDayOfMonth: settings.dueDayOfMonth };
+        // Kuyruk varsa tahakkuk arka plan isinde parca parca yazilir (2.500+ bolum, 300 sn siniri
+        // yok). Ayni `auto-dues-<YYYY-MM>` anahtari: tekrar calisma ayni isi dondurur, cift borc yok.
+        const jobs = bulkJobs();
+        const toRequest = finance().autoDuesRequest;
+        if (jobs && toRequest) {
+          const request = toRequest(input);
+          if (!request) return { apartmentId, status: 'skipped', reason: 'plan_disabled' };
+          const started = await jobs.startDues({ apartmentId, userId: SYSTEM_ACTOR }, request);
+          return { apartmentId, status: 'done', detail: { jobId: started.job.jobId, jobStatus: started.job.status, created: started.created, total: started.job.total } };
+        }
+        const r = await finance().autoChargeDues(apartmentId, input);
         if (r.status === 'skipped') return { apartmentId, status: 'skipped', reason: r.reason };
         return { apartmentId, status: 'done', detail: { batchId: r.batchId, count: r.count, replayed: r.replayed } };
       }
