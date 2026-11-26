@@ -11,6 +11,7 @@
     "seed:admin": "tsx scripts/seed-admin.ts",
     "db:init": "tsx scripts/local-db.ts",
     "backfill:sites": "tsx scripts/backfill-site-directory.ts",
+    "backfill:expense-index": "tsx scripts/backfill-expense-index.ts",
     "fix:receivable-names": "tsx scripts/fix-receivable-names.ts"
   },
   "dependencies": {

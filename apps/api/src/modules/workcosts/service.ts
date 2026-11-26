@@ -45,7 +45,7 @@ export type WorkCostServiceDeps = {
   finance: Pick<FinanceService, 'recordExpense' | 'chargeUnit' | 'postWorkDocuments' | 'expenseInfo' | 'isReversed'>;
   source?: WorkCostSource;
   /** Baglanabilir gider listesi (Finans gider kayitlari). */
-  expenses?: Pick<FinanceRepository, 'listExpenses'>;
+  expenses?: Pick<FinanceRepository, 'listExpenses' | 'listRecentExpenses'>;
   now?: () => Date;
   newId?: () => string;
 };
@@ -479,7 +479,13 @@ export function createWorkCostService(deps: WorkCostServiceDeps) {
   async function expenseOptions(ctx: WorkCostContext, q: { from?: string } = {}) {
     const from = q.from && /^\d{4}-\d{2}-\d{2}$/.test(q.from) ? q.from : undefined;
     const repo = deps.expenses ?? financeRepository;
-    const [expenses, links] = await Promise.all([repo.listExpenses ? repo.listExpenses(ctx.apartmentId) : Promise.resolve([]), source.listLinks(ctx.apartmentId)]);
+    // En yeni 200 gider tarih dizininden (sinirli sorgu); dizini olmayan depolarda tam liste.
+    const loadExpenses = repo.listRecentExpenses
+      ? repo.listRecentExpenses(ctx.apartmentId, { limit: 200, ...(from ? { from } : {}) })
+      : repo.listExpenses
+        ? repo.listExpenses(ctx.apartmentId)
+        : Promise.resolve([]);
+    const [expenses, links] = await Promise.all([loadExpenses, source.listLinks(ctx.apartmentId)]);
     const linked = new Map(links.filter((l) => l.status === 'active').map((l) => [l.expenseId, l.target]));
     return {
       items: expenses

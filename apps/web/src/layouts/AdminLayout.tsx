@@ -11,6 +11,7 @@ import { ROLE_LABELS } from '@/types/roles';
 import { navItemsFor, panelTitleFor } from './adminNav';
 import { cn } from '@/lib/cn';
 import { UserMenu } from './UserMenu';
+import { PageSuspense } from '@/router/lazyPage';
 
 /** Masaustu yan menu ve mobil cekmece ayni listeyi kullanir. */
 function AdminNav({ onNavigate }: { onNavigate?: () => void }) {
@@ -112,7 +113,9 @@ export function AdminLayout() {
         <SupportBanner />
         <MfaGraceBanner />
         <main className="mx-auto w-full min-w-0 max-w-page flex-1 px-4 py-8 md:px-8">
-          <Outlet />
+          <PageSuspense>
+            <Outlet />
+          </PageSuspense>
         </main>
       </div>
 

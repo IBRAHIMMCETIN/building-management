@@ -61,7 +61,7 @@ locals {
       PAYMENTS_PROVIDERS       = join(",", local.payment_providers)
       DEFAULT_PAYMENT_PROVIDER = local.default_payment_provider
       PAYMENTS_API_BASE_URL    = aws_apigatewayv2_api.http.api_endpoint
-      WEB_APP_URL              = var.web_app_url
+      WEB_APP_URL              = local.web_app_url
       IYZICO_BASE_URL          = var.iyzico_base_url
       IYZICO_SECRET_ARN        = lookup(local.payments_secret_arns, "iyzico", "")
       PAYTR_SECRET_ARN         = lookup(local.payments_secret_arns, "paytr", "")
@@ -133,7 +133,7 @@ resource "aws_secretsmanager_secret" "payments" {
 
   lifecycle {
     precondition {
-      condition     = var.web_app_url != ""
+      condition     = local.web_app_url != ""
       error_message = "Online odeme acikken web_app_url zorunludur (odeme sonrasi donus adresi)."
     }
     precondition {

@@ -3,6 +3,7 @@ import { Outlet } from 'react-router';
 import { ApiStatus } from '@/components/ApiStatus';
 import { cn } from '@/lib/cn';
 import { BRAND_NAME } from '@/lib/brand';
+import { PageSuspense } from '@/router/lazyPage';
 
 export function AuthLayout({ wide = false }: { wide?: boolean }) {
   return (
@@ -12,7 +13,9 @@ export function AuthLayout({ wide = false }: { wide?: boolean }) {
         <span className="text-heading font-semibold text-text">{BRAND_NAME}</span>
       </div>
       <main className={cn('w-full', wide ? 'max-w-md' : 'max-w-sm')}>
-        <Outlet />
+        <PageSuspense>
+          <Outlet />
+        </PageSuspense>
       </main>
       <footer>
         <ApiStatus />

@@ -5,8 +5,9 @@
 #   bash scripts/ci/tf-init.sh <dev|prod>
 #
 # Gerekli: AWS kimlik bilgisi, AWS_REGION (detect-aws-region.sh), GITHUB_ENV.
-# Opsiyonel: TF_DIR (varsayilan infra); prod icin PROD_CORS_ALLOW_ORIGINS (JSON liste)
-# ve PROD_COGNITO_USER_POOL_TIER (LITE | ESSENTIALS).
+# Opsiyonel: TF_DIR (varsayilan infra).
+# Ortam ayarlari (CORS, Cognito katmani, MFA, odeme, alan adi...) dev.tfvars / prod.tfvars'ta.
+# -var-file degerleri TF_VAR_* degiskenlerini ezer; ALERT_EMAIL / SES_* bu yuzden tfvars'ta yok.
 #
 # dev ve prod state'leri ayri key'lerdedir (serverless-dev/ ve serverless/). Ikisini asla
 # karistirmayin: dev'de environment dev.tfvars'tan, prod'da TF_VAR_environment'tan gelir.
@@ -42,10 +43,12 @@ case "$target" in
       -backend-config="key=serverless/terraform.tfstate" \
       -backend-config="region=$AWS_REGION" \
       -backend-config="use_lockfile=true"
+    # Prod ayarlari repodaki prod.tfvars'tan (production_guardrails dahil); her plan'a eklenir.
+    # Eski PROD_CORS_ALLOW_ORIGINS / PROD_COGNITO_USER_POOL_TIER repo degiskenleri artik
+    # kullanilmaz (localhost'a dusen sessiz varsayilan kaldirildi).
     {
       echo "TF_VAR_environment=prod"
-      echo "TF_VAR_cors_allow_origins=${PROD_CORS_ALLOW_ORIGINS:-[\"http://localhost:5173\"]}"
-      echo "TF_VAR_cognito_user_pool_tier=${PROD_COGNITO_USER_POOL_TIER:-LITE}"
+      echo "TF_CLI_ARGS_plan=-var-file=prod.tfvars"
     } >> "$GITHUB_ENV"
     ;;
 

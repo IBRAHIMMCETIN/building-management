@@ -27,7 +27,7 @@ locals {
       SES_FROM_ADDRESS     = var.notification_from_address
     },
     var.ses_configuration_set != "" ? { SES_CONFIGURATION_SET = var.ses_configuration_set } : {},
-    var.web_app_url != "" ? { WEB_APP_URL = var.web_app_url } : {},
+    local.web_app_url != "" ? { WEB_APP_URL = local.web_app_url } : {},
   )
 }
 

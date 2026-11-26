@@ -13,9 +13,11 @@ name: Serverless deploy
 # AWS kimlik bilgileri (oncelik sirasiyla):
 #   1. OIDC: repo variable AWS_DEPLOY_ROLE_ARN (bkz. infra/github-oidc) - onerilen
 #   2. Secrets: AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY
-# Repo variable'lari: AWS_REGION (eu-north-1). Opsiyonel (iki ortam): ALERT_EMAIL,
-# SES_IDENTITY_ARN, SES_FROM_ADDRESS. Yalnizca prod: CORS_ALLOW_ORIGINS (JSON liste),
-# COGNITO_USER_POOL_TIER. dev'in ortam adi, CORS listesi vb. infra/dev.tfvars'tadir.
+# Repo variable'lari: AWS_REGION (eu-north-1). ALERT_EMAIL (prod'da ZORUNLU: production
+# environment variable olarak da tanimlanabilir; bos ise prod plan'i korkulukta durur),
+# SES_IDENTITY_ARN, SES_FROM_ADDRESS (SES dogrulaninca). Ortam ayarlari (CORS, MFA, odeme,
+# alan adi, Cognito katmani) infra/dev.tfvars ve infra/prod.tfvars'tadir; kontrol listesi
+# infra/PROD_DEPLOY.md.
 
 on:
   push:
@@ -68,13 +70,11 @@ env:
   TF_IN_AUTOMATION: "true"
   TF_INPUT: "false"
   # Iki ortamda ortak Terraform degiskenleri (bos repo variable -> variables.tf varsayilani).
-  # Ortama ozel olanlar (environment, CORS, Cognito katmani) scripts/ci/tf-init.sh'de ayarlanir.
+  # Ortama ozel olanlar dev.tfvars / prod.tfvars'tan (scripts/ci/tf-init.sh her plan'a ekler).
   TF_VAR_app_version: ${{ github.sha }}
   TF_VAR_alert_email: ${{ vars.ALERT_EMAIL }}
   TF_VAR_ses_identity_arn: ${{ vars.SES_IDENTITY_ARN }}
   TF_VAR_ses_from_address: ${{ vars.SES_FROM_ADDRESS }}
-  PROD_CORS_ALLOW_ORIGINS: ${{ vars.CORS_ALLOW_ORIGINS }}
-  PROD_COGNITO_USER_POOL_TIER: ${{ vars.COGNITO_USER_POOL_TIER }}
 
 jobs:
   # -------------------------------------------------------------------------
@@ -323,7 +323,9 @@ jobs:
           code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$url/api/portal/my-unit")
           [ "$code" = "401" ] || { echo "::error::Korumali uc $code dondu (401 bekleniyordu)"; exit 1; }
           # Web adresleri (https) API'ye tarayicidan erisebilmeli: CORS on kontrolu.
-          for origin in $(echo "$TF_VAR_cors_allow_origins" | jq -r '.[] | select(startswith("https://"))'); do
+          # Liste Terraform ciktisindan (tfvars + custom_domain); dev ve prod ayni yol.
+          origins=$(terraform -chdir=$TF_DIR output -json cors_allow_origins)
+          for origin in $(echo "$origins" | jq -r '.[] | select(startswith("https://"))'); do
             allow=$(curl -s -D - -o /dev/null --max-time 5 -X OPTIONS "$url/api/health" \
               -H "Origin: $origin" -H "Access-Control-Request-Method: GET" \
               | tr -d '\r' | grep -i '^access-control-allow-origin:' | cut -d' ' -f2-)

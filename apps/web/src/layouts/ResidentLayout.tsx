@@ -6,6 +6,7 @@ import { useActiveApartmentName } from '@/hooks/useActiveContextLabel';
 import { BRAND_NAME } from '@/lib/brand';
 import { cn } from '@/lib/cn';
 import { UserMenu } from './UserMenu';
+import { PageSuspense } from '@/router/lazyPage';
 
 type NavItem = { to: string; label: string; icon: ComponentType<{ className?: string }>; end?: boolean };
 
@@ -42,7 +43,9 @@ export function ResidentLayout() {
 
       <main className="mx-auto w-full max-w-content flex-1 px-4 pt-6 pb-24">
         <PortalUnitProvider>
-          <Outlet />
+          <PageSuspense>
+            <Outlet />
+          </PageSuspense>
         </PortalUnitProvider>
       </main>
 

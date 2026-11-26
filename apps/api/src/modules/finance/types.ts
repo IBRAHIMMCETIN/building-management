@@ -300,6 +300,9 @@ export type Expense = TableKeys & {
   link?: ExpenseWorkLink;
   createdAt: IsoDateTime;
   createdBy: string;
+  /** Tarih dizini (GSI1; `financeKeys.expenseIndex`). Eski kayitlara betikle eklenir. */
+  GSI1PK?: string;
+  GSI1SK?: string;
 };
 
 /** O1-4: masrafin bagli oldugu is (ariza talebi veya bakim gorevi). */

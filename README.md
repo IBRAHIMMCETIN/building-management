@@ -224,6 +224,8 @@ Serverless yığın `infra/` kök modülündedir:
 | `operations.tf` | Platform alarmları (EMF özel metrikleri, `BuildingManagement` / `Stack`): `LedgerDrift` (gecelik defter denetimi sapması), `OutboxSweepFailed`, `OutboxOldestPendingSeconds`, `BankReconDiff` (Faz B3: banka mutabakatında bekleyen satırlarla açıklanamayan fark, kuruş; eşik `bank_recon_diff_alarm_threshold`, varsayılan 0) |
 | `audit.tf` | Değiştirilemez denetim tablosu (yalnızca ekleme; güncelleme/silme IAM ve kaynak politikasında reddedilir), 10 yıl TTL, PITR |
 | `security_monitoring.tf` | Hassas uçlar için ayrı JWT rotaları + rota bazlı throttling; giriş hatası, MFA, API 5xx, denetim zinciri ve gece denetimi alarmları (bkz. [Güvenlik ve izleme](#güvenlik-ve-izleme)) |
+| `environment.tf` | Alan adı bağlama (`custom_domain`, `web_subdomain` → CORS + `web_app_url`) ve prod korkulukları (`production_guardrails`: MFA `enforce`, `alert_email` zorunlu, yalnızca https CORS, silme koruması, zamanlayıcı açık, canlı ödeme kilidi). Ortam dosyaları: `dev.tfvars`, `prod.tfvars`; prod kontrol listesi `infra/PROD_DEPLOY.md` |
+| `bulk_jobs.tf` | Arka plan toplu işleri: `bulk-jobs` kuyruğu + DLQ, `bulk-worker` Lambda, alarmlar |
 | `bank.tf` | Faz B1: banka ekstresi karşı taraf IBAN HMAC anahtarı (`HMAC_256`, `GENERATE_VERIFY_MAC`) ve alias `<yığın>-bank-iban-hmac`. HMAC anahtarlarında otomatik döndürme yoktur; anahtar silinmemeli (eski özetler eşleşmez) |
 
 Önemli değişkenler: `environment` (`prod` / `staging`), `alert_email`, `cors_allow_origins`, `cognito_user_pool_tier` (`LITE` / `ESSENTIALS`), `ses_identity_arn`, `ses_from_address`, `api_throttle_rate_limit`, `api_throttle_burst_limit`, `mfa_enforcement_mode`, `mfa_grace_period_days`; hassas rota sınırları ve güvenlik alarm eşikleri ([Güvenlik ve izleme](#güvenlik-ve-izleme)).
@@ -251,7 +253,7 @@ terraform -chdir=infra apply
 
 Web (Cloudflare Pages, Git entegrasyonu): `main`'e her push'ta Cloudflare kendisi derler ve yayınlar. Derleme değişkenleri Pages proje ayarlarındadır (**Production** → prod yığınının `frontend_env` çıktısı, **Preview** → dev yığınının). Canlı adres `serverless-deploy.yml`'deki varsayılan CORS listesindedir; sağlık kontrolü her deploy'da `https` adreslerinin API'ye CORS iznini doğrular.
 
-AWS erişimi tercihen OIDC ile sağlanır (`infra/github-oidc`, repo variable `AWS_DEPLOY_ROLE_ARN`). Opsiyonel repo variable'ları: `AWS_REGION`, `ALERT_EMAIL`, `CORS_ALLOW_ORIGINS` (JSON liste), `COGNITO_USER_POOL_TIER`, `SES_IDENTITY_ARN`, `SES_FROM_ADDRESS`.
+AWS erişimi tercihen OIDC ile sağlanır (`infra/github-oidc`, repo variable `AWS_DEPLOY_ROLE_ARN`). Repo variable'ları: `AWS_REGION`, `ALERT_EMAIL` (prod'da zorunlu; boşsa prod planı korkulukta durur), `SES_IDENTITY_ARN`, `SES_FROM_ADDRESS`. Ortam ayarları (CORS, MFA, ödeme, alan adı, Cognito katmanı) `infra/dev.tfvars` ve `infra/prod.tfvars`'tadır; eski `CORS_ALLOW_ORIGINS` / `COGNITO_USER_POOL_TIER` değişkenleri artık kullanılmaz. Prod: `infra/PROD_DEPLOY.md`.
 
 **Dağıtım yetkisi (en az yetki).** Bugün CI `github-deploy` IAM kullanıcısıyla çalışır. Politikanın tek kaynağı `infra/modules/deploy-policy` modülüdür; `infra/github-deploy-user` ve `infra/github-oidc` aynı modülü kullanır. Yığına yeni bir AWS kaynak türü eklendiğinde yetki bu modüle eklenir ve modül yönetici kimlik bilgileriyle elle yeniden uygulanır:
 
@@ -623,6 +625,7 @@ API Gateway sınırı istemci başına değil, rota başınadır: arka ucu ve ma
 
 ### Veri düzeltme betikleri
 
+- `npm run backfill:expense-index -w @bm/api -- --dry-run`: gider tarih dizini (GSI1 `EXPDATE#<apartmentId>`) gelmeden önce yazılmış giderlere dizin anahtarlarını ekler; gider seçicileri (sayaç dönemi faturası, talep masrafı bağlama) en yeni 200 gideri bu dizinden sınırlı sorguyla okur. Her ortamda dağıtımdan sonra bir kez; tekrar çalıştırılabilir, Scan yetkisi gerektirir (yönetici kimliği).
 - `npm run fix:receivable-names -w @bm/api -- --dry-run` (Faz 1): adında ham daire kimliği olan eski alacak hesaplarını `Daire <no> - Kat Maliki / Kiracı/Sakin / Kat Maliki (paydaş)` biçimine çevirir. Yalnızca hesap adı (+ sürüm) değişir; defter ve geçmiş açıklamalar olduğu gibi kalır. Tekrar çalıştırılabilir, Scan yetkisi gerektirir (yönetici kimliği).
 
 ### Sırada

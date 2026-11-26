@@ -142,3 +142,12 @@ output "bulk_worker_function_name" {
 output "bulk_jobs_queue_url" {
   value = aws_sqs_queue.bulk_jobs.url
 }
+
+# CI saglik kontrolu bu listeyle CORS on kontrolu yapar (dev ve prod ayni yol).
+output "cors_allow_origins" {
+  value = local.cors_allow_origins
+}
+
+output "web_app_url" {
+  value = local.web_app_url
+}

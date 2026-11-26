@@ -56,6 +56,15 @@ export const financeKeys = {
     PK: tenantPk(apartmentId),
     SK: skKey('EXP', expenseId),
   }),
+  /**
+   * Gider tarih dizini (GSI1): `GSI1PK = EXPDATE#<apartmentId>`, `GSI1SK = <YYYY-MM-DD>#<expenseId>`.
+   * Gider kimligi rastgele oldugundan ana tabloda tarih sirasi yoktur; secici listeler ("en yeni
+   * 200 gider") tum giderleri okumak yerine bu dizinden sinirli sorgu yapar.
+   */
+  expenseIndex: (apartmentId: string, date: string, expenseId: string) => ({
+    GSI1PK: `EXPDATE${KEY_SEPARATOR}${apartmentId}`,
+    GSI1SK: `${date}${KEY_SEPARATOR}${expenseId}`,
+  }),
   counter: (apartmentId: string, name: string): TableKeys => ({
     PK: tenantPk(apartmentId),
     SK: skKey('CTR', name),
@@ -534,8 +543,16 @@ export type FinanceRepository = {
   getTransaction(apartmentId: string, transactionId: string): Promise<Transaction | undefined>;
   getPayment(apartmentId: string, paymentId: string): Promise<Payment | undefined>;
   getExpense(apartmentId: string, expenseId: string): Promise<Expense | undefined>;
-  /** 2.3-5b: apartmanin gider kayitlari (sayac donemine fatura baglama secicisi). */
+  /**
+   * Apartmanin TUM gider kayitlari. Yillar icinde sinirsiz buyur: istek yolunda kullanmayin
+   * (yalnizca bakim betikleri / testler); secici listeler `listRecentExpenses` kullanir.
+   */
   listExpenses?(apartmentId: string): Promise<Expense[]>;
+  /**
+   * En yeni giderler (tarih azalan), en fazla `limit` (1-500); `from` verilirse o tarih ve sonrasi.
+   * GSI1 tarih dizininden okunur: maliyet gider sayisindan bagimsiz, `limit` ile sinirli.
+   */
+  listRecentExpenses?(apartmentId: string, q: { limit: number; from?: string }): Promise<Expense[]>;
   getIdempotency(apartmentId: string, id: string): Promise<IdempotencyRecord | undefined>;
   getCounter(apartmentId: string, name: string): Promise<number>;
 
@@ -781,6 +798,36 @@ export function createFinanceRepository(): FinanceRepository {
     getPayment: (apartmentId, id) => getTenantItem<Payment>(financeKeys.payment(apartmentId, id)),
     getExpense: (apartmentId, id) => getTenantItem<Expense>(financeKeys.expense(apartmentId, id)),
     listExpenses: (apartmentId) => queryTenantAll<Expense>(apartmentId, `EXP${KEY_SEPARATOR}`),
+    async listRecentExpenses(apartmentId, q) {
+      const limit = Math.max(1, Math.min(500, Math.floor(q.limit)));
+      const { client, tableName } = getDynamo();
+      const pk = financeKeys.expenseIndex(apartmentId, '', '').GSI1PK;
+      const items: Expense[] = [];
+      let startKey: QueryCommandOutput['LastEvaluatedKey'];
+      try {
+        do {
+          const out: QueryCommandOutput = await client.send(
+            new QueryCommand({
+              TableName: tableName,
+              IndexName: 'GSI1',
+              KeyConditionExpression: q.from ? 'GSI1PK = :pk AND GSI1SK >= :from' : 'GSI1PK = :pk',
+              ExpressionAttributeValues: { ':pk': pk, ...(q.from ? { ':from': q.from } : {}) },
+              ScanIndexForward: false,
+              Limit: limit - items.length,
+              ...(startKey ? { ExclusiveStartKey: startKey } : {}),
+            }),
+          );
+          for (const item of out.Items ?? []) {
+            // Dizin anahtari tenant'a ozel; yine de baska apartmanin kaydi asla donmez.
+            if ((item as Expense).siteId === apartmentId) items.push(item as Expense);
+          }
+          startKey = out.LastEvaluatedKey;
+        } while (startKey && items.length < limit);
+      } catch (err) {
+        throw toDataAccessError(err);
+      }
+      return items;
+    },
     getIdempotency: (apartmentId, id) =>
       getTenantItem<IdempotencyRecord>(financeKeys.idempotency(apartmentId, id)),
     async getCounter(apartmentId, name) {

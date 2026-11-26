@@ -1,6 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Copy, LogOut, ShieldCheck, Smartphone } from 'lucide-react';
-import { toDataURL } from 'qrcode';
 import { useEffect, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router';
 import { Alert, Button, Card, CardTitle, Spinner } from '@/components/ui';
@@ -19,9 +18,12 @@ function useQrDataUrl(uri: string | undefined) {
   useEffect(() => {
     if (!uri) return;
     let cancelled = false;
-    void toDataURL(uri, { margin: 1, width: 208, errorCorrectionLevel: 'M' }).then((url) => {
-      if (!cancelled) setDataUrl(url);
-    });
+    // qrcode yalnizca MFA kurulumunda gerekir: ayri parca olarak bu anda indirilir.
+    void import('qrcode')
+      .then(({ toDataURL }) => toDataURL(uri, { margin: 1, width: 208, errorCorrectionLevel: 'M' }))
+      .then((url) => {
+        if (!cancelled) setDataUrl(url);
+      });
     return () => {
       cancelled = true;
     };

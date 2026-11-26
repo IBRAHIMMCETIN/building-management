@@ -1523,3 +1523,75 @@ run "bulk_jobs_queue_and_worker" {
     error_message = "Ureticilere yalnizca sqs:SendMessage verilmeli"
   }
 }
+
+# ---------------------------------------------------------------------------
+# Prod korkuluklari ve alan adi baglama (environment.tf, prod.tfvars)
+# ---------------------------------------------------------------------------
+
+run "prod_guardrails_and_custom_domain" {
+  command = plan
+
+  variables {
+    production_guardrails = true
+    mfa_enforcement_mode  = "enforce"
+    alert_email           = "ops@example.com"
+    cors_allow_origins    = ["https://yonetimsistemim.pages.dev"]
+    web_app_url           = "https://yonetimsistemim.pages.dev"
+    custom_domain         = "yonetimsistemim.com"
+  }
+
+  assert {
+    condition     = length(terraform_data.production_guardrails) == 1
+    error_message = "Korkuluk prod.tfvars ile etkin olmali"
+  }
+  assert {
+    condition     = toset(output.cors_allow_origins) == toset(["https://yonetimsistemim.pages.dev", "https://app.yonetimsistemim.com"])
+    error_message = "custom_domain web adresini CORS listesine eklemeli (pages.dev gecis icin kalir)"
+  }
+  assert {
+    condition     = output.web_app_url == "https://app.yonetimsistemim.com" && aws_lambda_function.notification_worker.environment[0].variables.WEB_APP_URL == "https://app.yonetimsistemim.com"
+    error_message = "custom_domain acilinca web_app_url ozel alan adi olmali"
+  }
+  assert {
+    condition     = contains(aws_apigatewayv2_api.http.cors_configuration[0].allow_origins, "https://app.yonetimsistemim.com")
+    error_message = "API Gateway CORS ozel alan adini icermeli"
+  }
+}
+
+run "prod_guardrails_block_unsafe_defaults" {
+  command = plan
+
+  # MFA warn, alarm e-postasi yok, localhost CORS: prod plani baslamamali.
+  variables {
+    production_guardrails = true
+  }
+
+  expect_failures = [terraform_data.production_guardrails]
+}
+
+run "prod_guardrails_block_live_payments_without_domain" {
+  command = plan
+
+  variables {
+    production_guardrails = true
+    mfa_enforcement_mode  = "enforce"
+    alert_email           = "ops@example.com"
+    cors_allow_origins    = ["https://yonetimsistemim.pages.dev"]
+    web_app_url           = "https://yonetimsistemim.pages.dev"
+    payments_providers    = ["iyzico"]
+    iyzico_base_url       = "https://api.iyzipay.com"
+    payments_pos_rate_bps = 249
+  }
+
+  expect_failures = [terraform_data.production_guardrails]
+}
+
+run "rejects_invalid_custom_domain" {
+  command = plan
+
+  variables {
+    custom_domain = "https://yonetimsistemim.com/"
+  }
+
+  expect_failures = [var.custom_domain]
+}

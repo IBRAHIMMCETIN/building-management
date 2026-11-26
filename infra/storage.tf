@@ -98,7 +98,7 @@ resource "aws_s3_bucket_cors_configuration" "documents" {
   bucket = aws_s3_bucket.documents.id
   cors_rule {
     allowed_methods = ["GET", "PUT"]
-    allowed_origins = var.cors_allow_origins
+    allowed_origins = local.cors_allow_origins
     allowed_headers = ["content-type"]
     max_age_seconds = 3600
   }

@@ -63,7 +63,7 @@ export type MeterServiceDeps = {
   /** Yoksa (DOCUMENTS_BUCKET tanimsiz) fotograf uclari 503 doner. */
   store: DocumentStore | undefined;
   /** 2.3-5a: donemlere baglanan tedarikci faturalari (gider kayitlari). */
-  expenses: Pick<FinanceRepository, 'getExpense' | 'listExpenses'> & Partial<Pick<FinanceRepository, 'getAccount'>>;
+  expenses: Pick<FinanceRepository, 'getExpense' | 'listExpenses'> & Partial<Pick<FinanceRepository, 'getAccount' | 'listRecentExpenses'>>;
   now: () => Date;
   newId: () => string;
 };
@@ -854,10 +854,14 @@ export function createMeterService(overrides: Partial<MeterServiceDeps> = {}) {
    * yine donem olusturmadaki kosullu yazimdir.
    */
   async function listExpenseOptions(ctx: MeterContext, q: { from?: string } = {}) {
-    if (!deps.expenses.listExpenses) return [];
     const from = q.from && /^\d{4}-\d{2}-\d{2}$/.test(q.from) ? q.from : undefined;
+    // Tarih dizininden en yeni 200 gider (gider sayisindan bagimsiz maliyet); dizini olmayan
+    // depolarda (testler) eski tam liste yolu.
+    const recent = deps.expenses.listRecentExpenses;
+    const list = deps.expenses.listExpenses;
+    if (!recent && !list) return [];
     const [expenses, locks] = await Promise.all([
-      deps.expenses.listExpenses(ctx.apartmentId),
+      recent ? recent(ctx.apartmentId, { limit: 200, ...(from ? { from } : {}) }) : (list as NonNullable<typeof list>)(ctx.apartmentId),
       repo.list<MeterExpenseLock>(ctx.apartmentId, 'EXPDIST#'),
     ]);
     const lockedBy = new Map(locks.filter((l) => l.status === 'active').map((l) => [l.expenseId, l.periodId]));

@@ -1860,6 +1860,7 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
       });
       const expense: Expense = {
         ...financeKeys.expense(ctx.apartmentId, expenseId),
+        ...financeKeys.expenseIndex(ctx.apartmentId, date, expenseId),
         entityType: 'EXPENSE',
         expenseId,
         siteId: ctx.apartmentId,
@@ -2844,6 +2845,7 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
     });
     const expense: Expense = {
       ...financeKeys.expense(ctx.apartmentId, expenseId),
+      ...financeKeys.expenseIndex(ctx.apartmentId, p.date, expenseId),
       entityType: 'EXPENSE',
       expenseId,
       siteId: ctx.apartmentId,

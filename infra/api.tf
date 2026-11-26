@@ -351,7 +351,7 @@ resource "aws_apigatewayv2_api" "http" {
 
   # Preflight icin ayrica kimliksiz OPTIONS rotasi gerekir (bkz. cors_preflight rotasi).
   cors_configuration {
-    allow_origins = var.cors_allow_origins
+    allow_origins = local.cors_allow_origins
     allow_methods = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
     # x-cognito-access-token: MFA kurulumu (LITE'ta Authorization'da ID token gider);
     # x-support-session: platform_admin destek erisimi (G1).
