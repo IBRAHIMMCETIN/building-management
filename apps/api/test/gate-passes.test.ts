@@ -164,6 +164,32 @@ describe('misafir gecisi', () => {
     expect((await w.service.verifyPass(ctxs.guard, { code: own.shortCode })).pass.verdict).toBe('valid');
   });
 
+  it('devir gunu: onceki sakinin ayni gun olusan gecis, kurye ve kapi kayitlari yeni sakine gorunmez (zaman damgasi)', async () => {
+    const w = gateWorld();
+    const old = await w.pass();
+    const oldCourier = (await w.service.createCourier(ctxs.guard, { idempotencyKey: w.key(), unitId: 'u1', company: 'Getir' })).courier;
+    await w.service.passEntry(ctxs.guard, old.passId, { idempotencyKey: w.key() });
+    // Ayni gun devir: eski kiraci bugun son gun (hala oturuyor), yeni kiracinin uyeligi 10:00'da yazildi.
+    w.endsOn('tenant-u1', 'u1', '2026-11-27');
+    w.moveIn('new-tenant', 'u1', '2026-11-27', '2026-11-27T10:00:00.000Z');
+    const newTenant = { apartmentId: APT, userId: 'new-tenant', role: 'resident' };
+    w.at('2026-11-27T11:00:00.000Z');
+    expect((await w.service.listPasses(newTenant)).items).toEqual([]);
+    expect((await w.service.listCouriers(newTenant)).items).toEqual([]);
+    await expect(w.service.respondCourier(newTenant, oldCourier.courierId, { version: 1, decision: 'approve' })).rejects.toMatchObject({ code: 'not_found' });
+    expect((await w.service.listLog(newTenant)).items).toEqual([]);
+    // Eski kiraci devir gunu yeni gecis olustursa da yeni sakin gormez (ayni gun, baska uye).
+    const late = await w.pass(ctxs.tenant, { guestName: 'Geç Misafir' });
+    expect((await w.service.listPasses(newTenant)).items).toEqual([]);
+    await expect(w.service.revokePass(newTenant, late.passId, { version: 1 })).rejects.toMatchObject({ code: 'not_found' });
+    // Uyelikten sonra gelen kurye ve yeni sakinin kendi gecisi gorunur.
+    w.at('2026-11-27T12:00:00.000Z');
+    const fresh = (await w.service.createCourier(ctxs.guard, { idempotencyKey: w.key(), unitId: 'u1', company: 'Trendyol' })).courier;
+    const own = await w.pass(newTenant, { guestName: 'Yeni Misafir' });
+    expect((await w.service.listCouriers(newTenant)).items.map((c) => c.courierId)).toEqual([fresh.courierId]);
+    expect((await w.service.listPasses(newTenant)).items.map((p) => p.passId)).toEqual([own.passId]);
+  });
+
   it('Yeni QR olustur: jeton ve kod yenilenir, eskileri calismaz; yalnizca yanitta doner', async () => {
     const w = gateWorld();
     const p = await w.pass();

@@ -161,7 +161,8 @@ export type CreatePassInput = {
   plate?: string;
   note?: string;
 };
-export type CreateVehicleInput = { unitId: string; plate: string; note?: string };
+/** `ownerUserId`: yonetici kaydinda zorunlu (bolumde oturan uye); sakinde kendisi. */
+export type CreateVehicleInput = { unitId: string; plate: string; note?: string; ownerUserId?: string };
 export type UpdateVehicleInput = { version: number; status?: 'active' | 'inactive'; note?: string | null };
 export type ManualEntryInput = { idempotencyKey: string; direction: 'entry' | 'exit'; visitorName: string; unitId?: string; plate?: string; note?: string };
 
@@ -178,6 +179,7 @@ const logQuery = (f: GateLogFilter) => Object.fromEntries(Object.entries(f).filt
 /** Yonetim + guvenlik gorevlisi. */
 export const gateDeskApi = {
   units: (q: string, signal?: AbortSignal) => apiClient.get(`${G}/units`, { query: q ? { q } : undefined, signal, schema: z.object({ items: z.array(unitOptionSchema), total: z.number().optional() }) }),
+  unitResidents: (unitId: string, signal?: AbortSignal) => apiClient.get(`${G}/units/${enc(unitId)}/residents`, { signal, schema: z.object({ items: z.array(z.object({ userId: z.string(), name: z.string() })) }) }),
   lookupPlate: (q: string, signal?: AbortSignal) => apiClient.get(`${G}/plates`, { query: { q }, signal, schema: plateLookupSchema }),
   vehicles: (signal?: AbortSignal) => apiClient.get(`${G}/vehicles`, { signal, schema: vehicleList }),
   createVehicle: (input: CreateVehicleInput) => apiClient.post(`${G}/vehicles`, input, { schema: vehicleOne }),

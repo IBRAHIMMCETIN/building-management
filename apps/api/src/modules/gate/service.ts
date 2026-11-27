@@ -14,6 +14,8 @@ import { type CoreRepository, coreRepository } from '../core/repository.js';
 import type { Block, IsoDate, IsoDateTime, Unit } from '../core/types.js';
 import { type Obj, ValidationError, asObject, assertId, isIsoDate, reqEnum, reqInt, reqString } from '../core/validation.js';
 import { type PortalRepository, portalRepository } from '../portal/repository.js';
+import { type MembershipRepository, membershipRepository } from '../memberships/repository.js';
+import { type PersonRepository, personRepository } from '../residents/repository.js';
 import type { AuditDraft } from '../audit/log.js';
 import { GateError, type GateErrorCode } from './errors.js';
 import {
@@ -70,8 +72,12 @@ import {
 export type GateContext = { apartmentId: string; userId: string; role: string };
 
 type ActorKind = 'manager' | 'guard' | 'resident';
-/** `since`: sakinin bolumdeki (oturan) uyeliginin baslangici; bu tarihten onceki kayitlari gormez. */
-type GateActor = GateContext & { kind: ActorKind; unitIds: string[]; since: Map<string, IsoDate> };
+/**
+ * `since`: sakinin bolumdeki (oturan) uyeliginin baslangici. `ts` = max(baslangic gunu 00:00,
+ * uyelik kaydinin olusturulmasi): devir gunu onceki sakinin o gun olusturdugu kayitlar da gizli kalir.
+ */
+type Since = { day: IsoDate; ts: IsoDateTime };
+type GateActor = GateContext & { kind: ActorKind; unitIds: string[]; since: Map<string, Since> };
 
 const KIND_BY_ROLE: Record<string, ActorKind> = {
   apartment_manager: 'manager',
@@ -84,6 +90,9 @@ export type GateServiceDeps = {
   repo: GateRepository;
   core: Pick<CoreRepository, 'getUnit' | 'getBlock' | 'listUnits' | 'listBlocks'>;
   memberships: Pick<PortalRepository, 'listMemberships'>;
+  /** Yonetici arac sahibini secerken bolumun uyeleri ve adlari. */
+  unitMembers: Pick<MembershipRepository, 'list'>;
+  people: Pick<PersonRepository, 'get'>;
   roles: Pick<ApartmentRoleRepository, 'list'>;
   now: () => Date;
   newId: () => string;
@@ -103,6 +112,8 @@ export function createGateService(overrides: Partial<GateServiceDeps> = {}) {
     repo: gateRepository,
     core: coreRepository,
     memberships: portalRepository,
+    unitMembers: membershipRepository,
+    people: personRepository,
     roles: apartmentRoleRepository,
     now: () => new Date(),
     newId: () => randomUUID(),
@@ -125,21 +136,23 @@ export function createGateService(overrides: Partial<GateServiceDeps> = {}) {
    * Kullanicinin bugun OTURDUGU bolumler ve uyelik baslangici. Oturmayan malik ziyaretci / arac
    * kayitlarini yonetmez (kiraci her zaman oturur).
    */
-  async function residingUnits(apartmentId: string, userId: string): Promise<Map<string, IsoDate>> {
+  async function residingUnits(apartmentId: string, userId: string): Promise<Map<string, Since>> {
     const d = today();
-    const out = new Map<string, IsoDate>();
+    const out = new Map<string, Since>();
     for (const m of await deps.memberships.listMemberships(apartmentId, userId)) {
       if (m.apartmentId !== apartmentId || m.status !== 'active' || m.startDate > d || (m.endDate && m.endDate < d)) continue;
       if (m.relation !== 'tenant' && !m.residesInUnit) continue;
+      const dayStart = istanbulDayStart(m.startDate);
+      const ts = m.createdAt && m.createdAt > dayStart ? m.createdAt : dayStart;
       const prev = out.get(m.unitId);
-      if (!prev || m.startDate < prev) out.set(m.unitId, m.startDate);
+      if (!prev || ts < prev.ts) out.set(m.unitId, { day: m.startDate, ts });
     }
     return out;
   }
 
   /** Istek basina onbellekli "bu kullanici bu bolumde hala oturuyor mu" (gecis sahibi, arac sahibi). */
   function residency(apartmentId: string) {
-    const cache = new Map<string, Promise<Map<string, IsoDate>>>();
+    const cache = new Map<string, Promise<Map<string, Since>>>();
     return async (userId: string, unitId: string): Promise<boolean> => {
       let units = cache.get(userId);
       if (!units) {
@@ -153,7 +166,7 @@ export function createGateService(overrides: Partial<GateServiceDeps> = {}) {
   async function actorOf(ctx: GateContext): Promise<GateActor> {
     const kind = KIND_BY_ROLE[ctx.role];
     if (!kind) throw new GateError('forbidden', 'Bu rol güvenlik kapısı ekranlarını kullanamaz');
-    const since = kind === 'resident' ? await residingUnits(ctx.apartmentId, ctx.userId) : new Map<string, IsoDate>();
+    const since = kind === 'resident' ? await residingUnits(ctx.apartmentId, ctx.userId) : new Map<string, Since>();
     return { ...ctx, kind, unitIds: [...since.keys()], since };
   }
 
@@ -163,8 +176,26 @@ export function createGateService(overrides: Partial<GateServiceDeps> = {}) {
    */
   const residentSees = (actor: GateActor, unitId: string, createdAt: IsoDateTime) => {
     const since = actor.since.get(unitId);
-    return !!since && istanbulDay(new Date(createdAt)) >= since;
+    return !!since && createdAt >= since.ts;
   };
+
+  /**
+   * Sakin bir gecisi gorur / yonetir: kendisinin olusturdugu, ya da uyelik baslangicindan (zaman
+   * damgasi) SONRA ve baslangic gununden sonraki bir gunde, HALA oturan bir uye tarafindan
+   * olusturulmus olmali. Boylece devir gunu onceki sakinin gecisleri yeni sakine gorunmez.
+   */
+  async function residentSeesPass(actor: GateActor, p: GuestPass, resides: ReturnType<typeof residency>): Promise<boolean> {
+    const since = actor.since.get(p.unitId);
+    if (!since) return false;
+    if (p.createdBy === actor.userId) return true;
+    return p.createdAt >= since.ts && istanbulDay(new Date(p.createdAt)) > since.day && (await resides(p.createdBy, p.unitId));
+  }
+
+  /** Sakin bolumunde HALA oturan uyelerin araclarini gorur / yonetir (onceki sakinin araci gizli). */
+  async function residentSeesVehicle(actor: GateActor, v: Vehicle, resides: ReturnType<typeof residency>): Promise<boolean> {
+    if (!actor.since.has(v.unitId) || !v.ownerUserId) return false;
+    return v.ownerUserId === actor.userId || resides(v.ownerUserId, v.unitId);
+  }
 
   async function actorAs(ctx: GateContext, ...kinds: ActorKind[]): Promise<GateActor> {
     const actor = await actorOf(ctx);
@@ -297,12 +328,13 @@ export function createGateService(overrides: Partial<GateServiceDeps> = {}) {
   }
 
   /**
-   * Sahibi tasinmis araclar (sakinin ekledigi aracin sahibi artik bolumde oturmuyor). Bu araclar
-   * kayitta aktif kalsa da gorevliye pasif gorunur, sinira sayilmaz ve plakasi yeni sakine gecebilir.
-   * Yonetici kaydinda sahip yoktur: yonetim pasife alana kadar aktiftir.
+   * Sahibi tasinmis araclar (aracin sahibi -sakin kendisi ya da yoneticinin sectigi uye- artik
+   * bolumde oturmuyor). Bu araclar kayitta aktif kalsa da gorevliye pasif gorunur, sinira sayilmaz
+   * ve plakasi yeni sakine gecebilir.
    */
   async function ownersLeft(apartmentId: string, items: readonly Pick<Vehicle, 'unitId' | 'ownerUserId' | 'status'>[], resides = residency(apartmentId)): Promise<boolean[]> {
-    return Promise.all(items.map(async (v) => v.status === 'active' && !!v.ownerUserId && !(await resides(v.ownerUserId, v.unitId))));
+    // Sahipsiz arac (eski kayit) guvenli tarafta: sahibi tasinmis sayilir.
+    return Promise.all(items.map(async (v) => v.status === 'active' && (!v.ownerUserId || !(await resides(v.ownerUserId, v.unitId)))));
   }
 
   function vehicleView(v: Vehicle, labels: Map<string, string>, ownerLeft: boolean) {
@@ -326,7 +358,12 @@ export function createGateService(overrides: Partial<GateServiceDeps> = {}) {
   async function listVehicles(ctx: GateContext, q: Record<string, string | undefined> = {}) {
     const actor = await actorAs(ctx, 'manager', 'resident');
     let vehicles: Vehicle[];
-    if (actor.kind === 'resident') vehicles = (await vehiclesOfUnits(ctx.apartmentId, actor.unitIds)).filter((v) => residentSees(actor, v.unitId, v.createdAt));
+    if (actor.kind === 'resident') {
+      const resides = residency(ctx.apartmentId);
+      const all = await vehiclesOfUnits(ctx.apartmentId, actor.unitIds);
+      const seen = await Promise.all(all.map((v) => residentSeesVehicle(actor, v, resides)));
+      vehicles = all.filter((_, i) => seen[i]);
+    }
     else vehicles = (await repo.query<Vehicle>(ctx.apartmentId, { prefix: 'VEH#' })).items.filter((v) => v.entityType === 'GATE_VEHICLE');
     const status = q.status === 'active' || q.status === 'inactive' ? q.status : undefined;
     const term = q.q ? normalizePlate(q.q) : '';
@@ -395,6 +432,12 @@ export function createGateService(overrides: Partial<GateServiceDeps> = {}) {
     const plate = normalizePlate(reqString(o, 'plate', 20));
     if (!isTurkishPlate(plate)) throw new ValidationError('Plaka Türkiye plaka biçiminde olmalıdır (örnek: 34 ABC 123)', 'plate');
     const note = optText(o, 'note', 80);
+    // Arac daima bolumde OTURAN bir uyeye aittir: sakin kendisi, yonetici sahibini secer. Sahip
+    // tasininca arac gorevliye pasif gorunur ve sinira sayilmaz.
+    const ownerUserId = actor.kind === 'resident' ? ctx.userId : assertId(o.ownerUserId, 'ownerUserId');
+    if (actor.kind === 'manager' && !(await residency(ctx.apartmentId)(ownerUserId, unitId))) {
+      throw new ValidationError('Araç sahibi bu bağımsız bölümde oturan bir sakin olmalıdır', 'ownerUserId');
+    }
     const plateSk = gateKeys.plate(ctx.apartmentId, reversePlate(plate)).SK;
 
     for (let attempt = 1; ; attempt++) {
@@ -421,7 +464,7 @@ export function createGateService(overrides: Partial<GateServiceDeps> = {}) {
         plate,
         ...(note ? { note } : {}),
         status: 'active',
-        ...(actor.kind === 'resident' ? { ownerUserId: ctx.userId } : {}),
+        ownerUserId,
         createdAt: ts,
         createdBy: ctx.userId,
         createdByRole: ctx.role,
@@ -438,7 +481,7 @@ export function createGateService(overrides: Partial<GateServiceDeps> = {}) {
             { item: pointer(gateKeys.vehicleUnit(ctx.apartmentId, unitId, vehicleId), ctx.apartmentId, unitId, vehicleId, ts), condition: { kind: 'new' }, reason: 'exists' },
             { item: plateIndexOf(ctx, vehicle, ts), condition: plateCondition, reason: 'plate' },
           ],
-          audit: vehicleAudit(ctx, actor, 'gate.vehicle.create', vehicle, existing?.status === 'active' ? { replacedVehicleId: existing.vehicleId } : {}),
+          audit: vehicleAudit(ctx, actor, 'gate.vehicle.create', vehicle, { ownerUserId, ...(existing?.status === 'active' ? { replacedVehicleId: existing.vehicleId } : {}) }),
         });
         return { vehicle: vehicleView(vehicle, await labelsFor(ctx.apartmentId, [unitId]), false) };
       } catch (err) {
@@ -462,7 +505,7 @@ export function createGateService(overrides: Partial<GateServiceDeps> = {}) {
     const version = reqInt(o, 'version', 1, Number.MAX_SAFE_INTEGER);
     const current = await repo.get<Vehicle>(ctx.apartmentId, gateKeys.vehicle(ctx.apartmentId, vehicleId).SK);
     // Baska dairenin (veya uyelik baslangicindan onceki) araci sakine hic gorunmez: 404.
-    if (!current || (actor.kind === 'resident' && !residentSees(actor, current.unitId, current.createdAt))) throw new GateError('not_found', 'Araç bulunamadı');
+    if (!current || (actor.kind === 'resident' && !(await residentSeesVehicle(actor, current, residency(ctx.apartmentId))))) throw new GateError('not_found', 'Araç bulunamadı');
     if (current.version !== version) throw new GateError('conflict', 'Araç kaydı başka bir işlemle değişti; sayfayı yenileyin');
     const status: VehicleStatus = o.status === undefined ? current.status : reqEnum(o, 'status', ['active', 'inactive'] as const);
     const note = o.note === undefined ? current.note : optText(o, 'note', 80);
@@ -542,7 +585,7 @@ export function createGateService(overrides: Partial<GateServiceDeps> = {}) {
   async function requirePass(actor: GateActor, passId: string): Promise<GuestPass> {
     assertId(passId, 'passId');
     const pass = await repo.get<GuestPass>(actor.apartmentId, gateKeys.pass(actor.apartmentId, passId).SK);
-    if (!pass || pass.apartmentId !== actor.apartmentId || (actor.kind === 'resident' && !residentSees(actor, pass.unitId, pass.createdAt))) throw new GateError('not_found', 'Geçiş bulunamadı');
+    if (!pass || pass.apartmentId !== actor.apartmentId || (actor.kind === 'resident' && !(await residentSeesPass(actor, pass, residency(actor.apartmentId))))) throw new GateError('not_found', 'Geçiş bulunamadı');
     return pass;
   }
 
@@ -759,7 +802,10 @@ export function createGateService(overrides: Partial<GateServiceDeps> = {}) {
     let passes: GuestPass[];
     if (actor.kind === 'resident') {
       const refs = (await Promise.all(actor.unitIds.map((u) => repo.query<UnitPointer>(ctx.apartmentId, { prefix: gateKeys.passUnitPrefix(u), desc: true, limit: 50 })))).flatMap((r) => r.items.map((p) => p.refId));
-      passes = (await repo.getMany<GuestPass>(ctx.apartmentId, refs.map((id) => gateKeys.pass(ctx.apartmentId, id).SK))).filter((p) => residentSees(actor, p.unitId, p.createdAt));
+      const all = await repo.getMany<GuestPass>(ctx.apartmentId, refs.map((id) => gateKeys.pass(ctx.apartmentId, id).SK));
+      const resides = residency(ctx.apartmentId);
+      const seen = await Promise.all(all.map((p) => residentSeesPass(actor, p, resides)));
+      passes = all.filter((_, i) => seen[i]);
     } else {
       passes = (await repo.query<GuestPass>(ctx.apartmentId, { prefix: 'GPASS#', desc: true, limit: 200 })).items.filter((p) => p.entityType === 'GATE_PASS');
     }
@@ -1140,7 +1186,7 @@ export function createGateService(overrides: Partial<GateServiceDeps> = {}) {
       if (!actor.unitIds.includes(unitId)) throw new GateError('forbidden', 'Yalnızca oturduğunuz bağımsız bölümün kayıtlarını görebilirsiniz');
       // KVKK: bolumun onceki sakinlerinin donemi gosterilmez.
       const since = actor.since.get(unitId);
-      if (since && from < since) from = since;
+      if (since && from < since.day) from = since.day;
     } else if (unitId) assertId(unitId, 'unitId');
     if (to < from) return { items: [], from, to };
     const limit = Math.min(Math.max(Number(q.limit) || LOG_PAGE, 1), LOG_MAX_PAGE);
@@ -1152,7 +1198,9 @@ export function createGateService(overrides: Partial<GateServiceDeps> = {}) {
       limit,
       ...(q.cursor ? { cursor: q.cursor } : {}),
     });
-    const rows = page.items.filter((e) => e.apartmentId === ctx.apartmentId && (!kind || e.kind === kind));
+    // Sakin: uyelik baslangicindan (zaman damgasi) onceki kayitlar, devir gunu dahil, gosterilmez.
+    const sinceTs = actor.kind === 'resident' && unitId ? actor.since.get(unitId)?.ts : undefined;
+    const rows = page.items.filter((e) => e.apartmentId === ctx.apartmentId && (!kind || e.kind === kind) && (!sinceTs || e.at >= sinceTs));
     const [labels, people] = await Promise.all([labelsFor(ctx.apartmentId, rows.flatMap((e) => (e.unitId ? [e.unitId] : []))), actor.kind === 'resident' ? new Map<string, string>() : names(ctx.apartmentId)]);
     return { items: rows.map((e) => logView(actor, e, labels, people)), from, to, ...(page.cursor ? { nextCursor: page.cursor } : {}) };
   }
@@ -1180,6 +1228,20 @@ export function createGateService(overrides: Partial<GateServiceDeps> = {}) {
     return { items: items.slice(0, 50), total: items.length };
   }
 
+  /**
+   * Yonetici: bolumde bugun OTURAN uyeler (arac sahibi secimi). Yalnizca ad; e-posta / telefon yok.
+   */
+  async function unitResidents(ctx: GateContext, unitIdValue: string) {
+    const actor = await actorAs(ctx, 'manager');
+    const unitId = await requireUnit(actor, unitIdValue);
+    const resides = residency(ctx.apartmentId);
+    const members = (await deps.unitMembers.list(ctx.apartmentId, { unitId })).filter((m) => m.unitId === unitId);
+    const userIds = [...new Set(members.map((m) => m.userId))];
+    const current = (await Promise.all(userIds.map(async (u) => ((await resides(u, unitId)) ? u : undefined)))).filter((u): u is string => !!u);
+    const items = await Promise.all(current.map(async (userId) => ({ userId, name: (await deps.people.get(ctx.apartmentId, userId))?.fullName ?? 'Sakin' })));
+    return { items: items.sort((a, b) => a.name.localeCompare(b.name, 'tr')) };
+  }
+
   /** Sakin portali acilis bilgisi: oturdugu bolumler ve sinirlar. */
   async function portalOverview(ctx: GateContext) {
     const { items } = await listUnits(ctx, undefined);
@@ -1189,6 +1251,7 @@ export function createGateService(overrides: Partial<GateServiceDeps> = {}) {
   return {
     portalOverview,
     listUnits,
+    unitResidents,
     listVehicles,
     createVehicle,
     updateVehicle,

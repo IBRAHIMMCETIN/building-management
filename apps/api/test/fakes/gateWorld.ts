@@ -4,6 +4,7 @@ import type { ApartmentRole } from '../../src/modules/apartment-roles/types.js';
 import type { Block, Unit } from '../../src/modules/core/types.js';
 import { type GateContext, createGateService } from '../../src/modules/gate/service.js';
 import type { UnitMembership } from '../../src/modules/portal/types.js';
+import type { Person } from '../../src/modules/residents/repository.js';
 import { createFakeGateRepo } from './gateRepo.js';
 
 export const APT = 'apt-1';
@@ -52,6 +53,7 @@ export function gateWorld(opts: { codes?: string[] } = {}) {
     member(APT2, 'res-x', 'x1', 'tenant'),
   ];
   const roles = [role(APT, 'guard-1', 'security_guard', 'Ali Güvenlik'), role(APT, 'mgr', 'apartment_manager', 'Ayşe Yönetici')];
+  const people: Record<string, string> = { 'tenant-u1': 'Ayşe Kiracı', 'owner-u1': 'Mehmet Malik', 'owner-u2': 'Zeynep Malik' };
   let n = 0;
   let codes = 0;
   const service = createGateService({
@@ -63,6 +65,8 @@ export function gateWorld(opts: { codes?: string[] } = {}) {
       listBlocks: async (apt) => blocks.filter((b) => (b as unknown as { apartmentId: string }).apartmentId === apt),
     },
     memberships: { listMemberships: async (apt, userId) => memberships.filter((m) => m.apartmentId === apt && m.userId === userId) },
+    unitMembers: { list: async (apt, f = {}) => memberships.filter((m) => m.apartmentId === apt && (!f.unitId || m.unitId === f.unitId)) },
+    people: { get: async (apt, userId) => (people[userId] ? ({ apartmentId: apt, userId, fullName: people[userId] } as unknown as Person) : undefined) },
     roles: { list: async (apt) => roles.filter((r) => r.apartmentId === apt) },
     now: () => now,
     newId: () => `${String(++n).padStart(8, '0')}abcdefgh`,
@@ -96,9 +100,13 @@ export function gateWorld(opts: { codes?: string[] } = {}) {
   const moveOut = (userId: string, unitId: string, endDate: string) => {
     for (const m of memberships) if (m.userId === userId && m.unitId === unitId) Object.assign(m, { status: 'inactive', endDate });
   };
-  /** Yeni sakin (kiraci) `startDate`'ten itibaren. */
-  const moveIn = (userId: string, unitId: string, startDate: string) => {
-    memberships.push({ ...member(APT, userId, unitId, 'tenant'), startDate } as UnitMembership);
+  /** Devir gunu: uyelik bugun bitiyor ama henuz kapanmadi (hala oturuyor). */
+  const endsOn = (userId: string, unitId: string, endDate: string) => {
+    for (const m of memberships) if (m.userId === userId && m.unitId === unitId) Object.assign(m, { endDate });
   };
-  return { fake, service, at, call, key, pass, moveOut, moveIn };
+  /** Yeni sakin (kiraci) `startDate`'ten itibaren; `createdAt`: uyelik kaydinin yazildigi an (devir gunu). */
+  const moveIn = (userId: string, unitId: string, startDate: string, createdAt?: string) => {
+    memberships.push({ ...member(APT, userId, unitId, 'tenant'), startDate, ...(createdAt ? { createdAt } : {}) } as UnitMembership);
+  };
+  return { fake, service, at, call, key, pass, moveOut, moveIn, endsOn };
 }

@@ -2,9 +2,9 @@
  * Guvenlik kapisi: arac plakalari, misafir gecisleri (QR + kisa kod), kurye kayitlari ve kapi
  * gunlugu. Tek tablo, `PK = APT#<apartmentId>` (apartman JWT claim'inden):
  *
- *   VEH#<vehicleId>                        arac kaydi (surumlu; silinmez, `inactive` olur). Sakinin
- *                                          ekledigi aracta `ownerUserId`: sahibi dairede oturmuyorsa
- *                                          gorevliye pasif gorunur
+ *   VEH#<vehicleId>                        arac kaydi (surumlu; silinmez, `inactive` olur). Her aracin
+ *                                          sahibi (`ownerUserId`, bolumde oturan uye) vardir: sahibi
+ *                                          dairede oturmuyorsa gorevliye pasif gorunur
  *   VEHSLOT#<unitId>                       daire basina arac sinir kilidi (surumlu; es zamanli eklemede
  *                                          yalnizca biri kazanir)
  *   VEHU#<unitId>#<vehicleId>              daire -> arac isaretcisi (yalnizca eklenir)
@@ -56,7 +56,10 @@ export type Vehicle = TableKeys & {
   /** Gorevlinin gordugu kisa not (renk / marka); kisisel veri yazilmamali. */
   note?: string;
   status: VehicleStatus;
-  /** Sakinin kendi ekledigi arac: sahibi tasininca gorevliye pasif gorunur. Yonetici kaydinda yok. */
+  /**
+   * Aracin sahibi: bolumde oturan uye (sakin kendisi ya da yoneticinin sectigi). Sahip tasininca arac
+   * gorevliye pasif gorunur ve sinira sayilmaz. Alan yoksa (eski kayit) sahibi tasinmis sayilir.
+   */
   ownerUserId?: string;
   createdAt: IsoDateTime;
   createdBy: string;

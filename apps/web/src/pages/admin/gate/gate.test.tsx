@@ -40,7 +40,8 @@ vi.mock('@/hooks/useGate', () => ({
   useDeskActions: () => desk,
   useDeskCouriers: () => ({ data: { items: [], pollSeconds: 15 }, isPending: false, isError: false }),
   usePlateLookup: () => ({ isPending: true }),
-  useGateUnits: () => ({ data: [] }),
+  useGateUnits: () => ({ data: [{ unitId: 'u1', label: 'A Blok · Daire 5' }] }),
+  useUnitResidents: (unitId: string) => ({ isPending: false, data: unitId ? [{ userId: 'tenant-u1', name: 'Ayşe Kiracı' }] : [] }),
   useGateLog: () => ({ isPending: false, isError: false, data: { pages: [] }, hasNextPage: false }),
   useAllVehicles: () => ({ isPending: false, isError: false, data: { items: [], maxPerUnit: 4 } }),
   useManagerPasses: () => ({ isPending: false, isError: false, data: [] }),
@@ -200,6 +201,30 @@ describe('guvenlik kapisi ekrani', () => {
       if (prev.src) Object.defineProperty(HTMLMediaElement.prototype, 'srcObject', prev.src);
       else delete (HTMLMediaElement.prototype as unknown as { srcObject?: unknown }).srcObject;
     }
+  });
+  it('yonetici araci bolumde oturan sakin adina kaydeder (sahip secimi zorunlu)', async () => {
+    perms = { canUseDesk: true, canManage: true, isGuard: false };
+    await render(<GatePage />);
+    await click(button('Araçlar'));
+    const save = () => button('Aracı kaydet') as HTMLButtonElement;
+    expect(save().disabled).toBe(true);
+    const selects = () => [...container.querySelectorAll('select')] as HTMLSelectElement[];
+    const choose = async (el: HTMLSelectElement | undefined, value: string) => {
+      if (!el) throw new Error('secici yok');
+      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')?.set;
+      await act(async () => {
+        setter?.call(el, value);
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+      });
+    };
+    await choose(selects()[0], 'u1');
+    expect(container.textContent).toContain('Aracın sahibi');
+    expect(save().disabled).toBe(true);
+    await choose(selects()[1], 'tenant-u1');
+    const plateInput = [...container.querySelectorAll('input')].find((i) => i.className.includes('font-mono')) ?? null;
+    await type(plateInput, '34 abc 123');
+    await click(save());
+    expect(desk.createVehicle.mutate).toHaveBeenCalledWith({ unitId: 'u1', ownerUserId: 'tenant-u1', plate: '34ABC123' }, expect.anything());
   });
 });
 

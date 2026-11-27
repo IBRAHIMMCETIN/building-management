@@ -147,8 +147,14 @@ describe('arac kaydi', () => {
 
   it('yonetici tum bolumlere ekler / duzeltir (denetimli); sakin baskasinin aracina dokunamaz; surum kontrolu', async () => {
     const w = gateWorld();
-    const { vehicle } = await w.service.createVehicle(ctxs.mgr, { unitId: 'u2', plate: '35 A 1234' });
-    expect(w.fake.audits).toEqual([{ apartmentId: APT, action: 'gate.vehicle.create', target: { type: 'vehicle', id: vehicle.vehicleId }, details: { unitId: 'u2' } }]);
+    // Yonetici araci bolumde OTURAN bir uyeye baglar: sahipsiz veya oturmayan malik adina kayit yok.
+    await expect(w.service.createVehicle(ctxs.mgr, { unitId: 'u2', plate: '35 A 1234' })).rejects.toMatchObject({ field: 'ownerUserId' });
+    await expect(w.service.createVehicle(ctxs.mgr, { unitId: 'u1', ownerUserId: 'owner-u1', plate: '35 A 1234' })).rejects.toMatchObject({ field: 'ownerUserId', message: expect.stringContaining('oturan bir sakin') });
+    await expect(w.service.createVehicle(ctxs.mgr, { unitId: 'u2', ownerUserId: 'tenant-u1', plate: '35 A 1234' })).rejects.toMatchObject({ field: 'ownerUserId' });
+    const { vehicle } = await w.service.createVehicle(ctxs.mgr, { unitId: 'u2', ownerUserId: 'owner-u2', plate: '35 A 1234' });
+    expect(w.fake.audits).toEqual([{ apartmentId: APT, action: 'gate.vehicle.create', target: { type: 'vehicle', id: vehicle.vehicleId }, details: { unitId: 'u2', ownerUserId: 'owner-u2' } }]);
+    // Sahibi (u2 sakini) kendi listesinde gorur.
+    expect((await w.service.listVehicles(ctxs.other)).items.map((v) => v.plate)).toEqual(['35A1234']);
     await expect(w.service.updateVehicle(ctxs.tenant, vehicle.vehicleId, { version: 1, status: 'inactive' })).rejects.toMatchObject({ code: 'not_found' });
     await expect(w.service.updateVehicle(ctxs.mgr, vehicle.vehicleId, { version: 9, note: 'x' })).rejects.toMatchObject({ code: 'conflict' });
     const noted = await w.service.updateVehicle(ctxs.mgr, vehicle.vehicleId, { version: 1, note: 'Gri Renault' });
@@ -163,7 +169,7 @@ describe('arac kaydi', () => {
     expect((await w.service.listVehicles(ctxs.mgr, { unitId: 'u2' })).items).toHaveLength(1);
     expect((await w.service.listVehicles(ctxs.mgr, { q: 'abc' })).items).toHaveLength(1);
     // Var olmayan / pasif bolum.
-    await expect(w.service.createVehicle(ctxs.mgr, { unitId: 'u9', plate: '34ABC124' })).rejects.toMatchObject({ code: 'not_found' });
+    await expect(w.service.createVehicle(ctxs.mgr, { unitId: 'u9', ownerUserId: 'owner-u2', plate: '34ABC124' })).rejects.toMatchObject({ code: 'not_found' });
   });
 });
 
@@ -186,9 +192,30 @@ describe('arac: tasinma ve sinir (inceleme duzeltmeleri)', () => {
     expect((await w.service.lookupPlate(ctxs.guard, '34ABC123')).items[0]).toMatchObject({ active: true, unitLabel: 'A Blok · Daire 5' });
     expect(w.fake.items.get(`APT#${APT}|VEH#${old.vehicleId}`)).toMatchObject({ status: 'inactive', version: 2 });
     expect(w.fake.items.get(`APT#${APT}|VEH#${taken.vehicleId}`)).toMatchObject({ ownerUserId: 'new-tenant' });
-    // Yonetici kaydinin sahibi yoktur: yonetim pasife alana kadar aktif kalir.
-    const byMgr = (await w.service.createVehicle(ctxs.mgr, { unitId: 'u2', plate: '06AB1234' })).vehicle;
-    expect(w.fake.items.get(`APT#${APT}|VEH#${byMgr.vehicleId}`)).not.toHaveProperty('ownerUserId');
+  });
+
+  it('yoneticinin ekledigi arac sahibine baglidir: sahip tasininca pasif, sinira sayilmaz, yeni sakin gormez', async () => {
+    const w = gateWorld();
+    // Sahip secimi: yalnizca bolumde oturan uyeler (oturmayan malik yok), yalnizca ad.
+    expect(await w.service.unitResidents(ctxs.mgr, 'u1')).toEqual({ items: [{ userId: 'tenant-u1', name: 'Ayşe Kiracı' }] });
+    await expect(w.service.unitResidents(ctxs.guard, 'u1')).rejects.toMatchObject({ code: 'forbidden' });
+    expect((await w.call('GET', '/api/gate/units/u1/residents', ctxs.guard)).status).toBe(403);
+    expect((await w.call('GET', '/api/gate/units/u1/residents', ctxs.mgr)).json.items).toHaveLength(1);
+    const ids: string[] = [];
+    for (let i = 0; i < MAX_VEHICLES_PER_UNIT; i++) ids.push((await w.service.createVehicle(ctxs.mgr, { unitId: 'u1', ownerUserId: 'tenant-u1', plate: `34AB${100 + i}` })).vehicle.vehicleId);
+    expect(w.fake.items.get(`APT#${APT}|VEH#${ids[0]}`)).toMatchObject({ ownerUserId: 'tenant-u1', createdByRole: 'apartment_manager' });
+    // Sahibi kendi listesinde gorur ve yonetebilir.
+    expect((await w.service.listVehicles(ctxs.tenant)).items).toHaveLength(MAX_VEHICLES_PER_UNIT);
+    await expect(w.service.createVehicle(ctxs.tenant, { unitId: 'u1', plate: '34AB999' })).rejects.toMatchObject({ code: 'limit_reached' });
+    w.moveOut('tenant-u1', 'u1', '2026-11-26');
+    w.moveIn('new-tenant', 'u1', '2026-11-27');
+    const newTenant = { apartmentId: APT, userId: 'new-tenant', role: 'resident' };
+    expect((await w.service.lookupPlate(ctxs.guard, '34AB100')).items[0]).toMatchObject({ active: false });
+    expect((await w.service.listVehicles(newTenant)).items).toEqual([]);
+    await expect(w.service.updateVehicle(newTenant, ids[0] as string, { version: 1, status: 'inactive' })).rejects.toMatchObject({ code: 'not_found' });
+    // Onceki sahibin araclari yeni sakinin sinirina sayilmaz.
+    await w.service.createVehicle(newTenant, { unitId: 'u1', plate: '34AB999' });
+    expect((await w.service.listVehicles(ctxs.mgr, { unitId: 'u1' })).items.filter((v) => v.ownerLeft)).toHaveLength(MAX_VEHICLES_PER_UNIT);
   });
 
   it('bolum siniri es zamanli eklemede de asilmaz (VEHSLOT# surum kosulu)', async () => {
@@ -196,7 +223,7 @@ describe('arac: tasinma ve sinir (inceleme duzeltmeleri)', () => {
     for (let i = 0; i < MAX_VEHICLES_PER_UNIT - 1; i++) await w.service.createVehicle(ctxs.tenant, { unitId: 'u1', plate: `34AB${100 + i}` });
     const race = await Promise.allSettled([
       w.service.createVehicle(ctxs.tenant, { unitId: 'u1', plate: '34AB998' }),
-      w.service.createVehicle(ctxs.mgr, { unitId: 'u1', plate: '34AB999' }),
+      w.service.createVehicle(ctxs.mgr, { unitId: 'u1', ownerUserId: 'tenant-u1', plate: '34AB999' }),
     ]);
     expect(race.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
     expect(race.find((r) => r.status === 'rejected')).toMatchObject({ reason: { code: 'limit_reached' } });
