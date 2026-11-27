@@ -5,7 +5,7 @@ describe('sakin menusu: alt sekmeler ve "Diğer"', () => {
   it('ilk dort oge alt cubukta, kalanlar cekmecede', () => {
     const { primary, more } = splitResidentNav();
     expect(primary.map((n) => n.label)).toEqual(['Ana Sayfa', 'Borçlarım', 'Talepler', 'Duyurular']);
-    expect(more.map((n) => n.to)).toEqual(['/app/ziyaretci', '/app/rezervasyon', '/app/oylamalar', '/app/tuketim']);
+    expect(more.map((n) => n.to)).toEqual(['/app/ziyaretci', '/app/rezervasyon', '/app/oylamalar', '/app/tuketim', '/app/ihale']);
     expect(primary.length + more.length).toBe(RESIDENT_NAV.length);
   });
 
