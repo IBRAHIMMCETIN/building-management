@@ -7,7 +7,7 @@ import { apiClient } from './client';
  * yalnizca acikca secilen kategori doner, verilmeyen ACIK sayilir; ana anahtar kapaliysa hicbiri gitmez.
  * PUT yalnizca degisen kategoriyi gonderebilir: sunucu digerlerinde onceki secimi korur.
  */
-export const NOTIFICATION_CATEGORIES = ['finance', 'announcements', 'tickets', 'gate', 'reservations', 'polls'] as const;
+export const NOTIFICATION_CATEGORIES = ['finance', 'announcements', 'tickets', 'gate', 'reservations', 'polls', 'assemblies'] as const;
 export type NotificationCategory = (typeof NOTIFICATION_CATEGORIES)[number];
 
 const optionalFlag = z.boolean().optional();
@@ -21,6 +21,7 @@ export const notificationPreferencesSchema = z.object({
     gate: optionalFlag,
     reservations: optionalFlag,
     polls: optionalFlag,
+    assemblies: optionalFlag,
   }),
   updatedAt: z.string().optional(),
 });
@@ -42,6 +43,10 @@ export const NOTIFICATION_CATEGORY_META: Record<NotificationCategory, { label: s
   gate: { label: 'Ziyaretçi ve kurye', description: 'Kapıdaki kurye için onay isteği ve misafir geçişinizle yapılan girişler. Ziyaretçi ekranı açıkken kurye istekleri ayrıca kendiliğinden yenilenir.' },
   reservations: { label: 'Rezervasyon', description: 'Ortak alan rezervasyonunuzun onaylanması, reddedilmesi ve yönetim tarafından iptali (ücret iadesi dahil).' },
   polls: { label: 'Anket ve oylama', description: 'Yeni anket / oylama ve sonuç bildirimleri.' },
+  assemblies: {
+    label: 'Genel kurul',
+    description: 'Kat malikleri kurulu toplantı çağrıları (kat maliklerine). Bilgilendirme amaçlıdır; yasal çağrı yönetiminizce ayrıca yapılır.',
+  },
 };
 
 export const notificationPreferencesApi = {

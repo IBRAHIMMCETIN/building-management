@@ -1,9 +1,12 @@
-import { CalendarDays, DoorOpen, Gauge, Home, Megaphone, Receipt, Vote, Wrench } from 'lucide-react';
+import { CalendarDays, DoorOpen, Gauge, Home, Landmark, Megaphone, Receipt, Vote, Wrench } from 'lucide-react';
 import type { NavItem } from './adminNav';
 
 /**
  * Sakin portali menusu. Ilk PRIMARY_TABS oge alt sekme cubugunda; kalanlar "Diğer"
  * cekmecesinde (dar telefonda sekmeler sigsin, etiketler okunur kalsin).
+ *
+ * Genel Kurul ayri oge (yonetim menusundeki Oylamalar / Genel Kurul ayrimi gibi): oylamalar daire
+ * bazinda ve kiraciya da acik olabilir, genel kurul apartman geneli ve yalnizca kat maliklerine.
  */
 export const RESIDENT_NAV: readonly NavItem[] = [
   { to: '/app', label: 'Ana Sayfa', icon: Home, end: true },
@@ -13,6 +16,7 @@ export const RESIDENT_NAV: readonly NavItem[] = [
   { to: '/app/ziyaretci', label: 'Ziyaretçi', icon: DoorOpen },
   { to: '/app/rezervasyon', label: 'Rezervasyon', icon: CalendarDays },
   { to: '/app/oylamalar', label: 'Oylamalar', icon: Vote },
+  { to: '/app/genel-kurul', label: 'Genel Kurul', icon: Landmark },
   { to: '/app/tuketim', label: 'Tüketimim', icon: Gauge },
 ];
 
