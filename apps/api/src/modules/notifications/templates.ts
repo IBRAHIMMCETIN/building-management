@@ -64,18 +64,26 @@ export function formatDate(iso: unknown): string {
   return m ? `${m[3]}.${m[2]}.${m[1]}` : String(iso ?? '');
 }
 
-/**
- * ISO zaman damgasi -> "GG.AA.YYYY SS:DD" (Istanbul; Turkiye 2016'dan beri sabit UTC+03:00).
- * Gecersizse oldugu gibi.
- */
-export function formatDateTime(iso: unknown): string {
-  const ms = Date.parse(String(iso ?? ''));
-  if (Number.isNaN(ms)) return String(iso ?? '');
-  const t = new Date(ms + 3 * 3_600_000).toISOString();
-  return `${t.slice(8, 10)}.${t.slice(5, 7)}.${t.slice(0, 4)} ${t.slice(11, 16)}`;
-}
-
 const MONTHS = ['Ocak', 'Şubat', 'Mart', 'Nisan', 'Mayıs', 'Haziran', 'Temmuz', 'Ağustos', 'Eylül', 'Ekim', 'Kasım', 'Aralık'];
+
+const ISTANBUL_PARTS = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'Europe/Istanbul',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  hourCycle: 'h23',
+});
+
+/** ISO an -> Istanbul saatiyle "GG.AA.YYYY SS:DD" (`timeOnly`: "SS:DD"); gecersizse oldugu gibi. */
+export function formatDateTime(iso: unknown, timeOnly = false): string {
+  const ms = Date.parse(String(iso ?? ''));
+  if (!Number.isFinite(ms)) return String(iso ?? '');
+  const p = Object.fromEntries(ISTANBUL_PARTS.formatToParts(new Date(ms)).map((x) => [x.type, x.value]));
+  const time = `${p.hour}:${p.minute}`;
+  return timeOnly ? time : `${p.day}.${p.month}.${p.year} ${time}`;
+}
 
 /** YYYY-MM -> "Ekim 2026". */
 export function formatPeriod(period: unknown): string {
@@ -249,9 +257,126 @@ function spec(n: Notification, ctx: EmailContext): Spec | undefined {
       return ticketSpec(n, ctx);
     case 'operations_digest':
       return digestSpec(n);
+    // Guvenlik kapisi (portal 15 sn'de bir yenilemeye devam eder; e-posta ek kanaldir).
+    case 'gate_courier_arrived': {
+      const company = str(d.company);
+      return {
+        subject: `Kapıda kurye var - ${unit}`,
+        heading: 'Kapıda kuryeniz var',
+        preheader: `Yanıt için son saat ${formatDateTime(d.respondBy, true)}.`,
+        blocks: [
+          { kind: 'p', text: `Güvenlik, ${unit} için ${company ? `${company} kuryesi` : 'bir kurye'} kaydetti. Kuryenin içeri alınması için sakin portalından onaylayın veya reddedin.` },
+          { kind: 'rows', rows: [['Bağımsız bölüm', unit], ...(company ? [['Firma', company] as [string, string]] : []), ['Yanıt için son saat', formatDateTime(d.respondBy, true)]] },
+          { kind: 'note', text: 'Süresi içinde yanıt verilmezse istek düşer ve kurye içeri alınmaz. Onayınız 2 saat geçerlidir.' },
+        ],
+        cta: { label: 'Onayla veya reddet', path: 'ziyaretci' },
+      };
+    }
+    case 'gate_guest_entered': {
+      const single = d.entryMode === 'single';
+      return {
+        subject: `Misafiriniz giriş yaptı - ${unit}`,
+        heading: 'Misafir girişi kaydedildi',
+        preheader: `${formatDateTime(d.enteredAt)} - ${unit}`,
+        blocks: [
+          { kind: 'p', text: `${unit} için oluşturduğunuz misafir geçişiyle güvenlikten giriş yapıldı.` },
+          {
+            kind: 'rows',
+            rows: [
+              ['Giriş', formatDateTime(d.enteredAt)],
+              ['Geçiş türü', single ? 'Tek girişlik' : `Çok girişli (${num(d.entryCount)}. giriş)`],
+              ['Geçerlilik sonu', formatDate(d.validUntil)],
+              ['Bağımsız bölüm', unit],
+            ],
+          },
+          { kind: 'note', text: single ? 'Tek girişlik geçiş kullanıldı; yeni bir ziyaret için yeni geçiş oluşturun. Bu girişi beklemiyorsanız güvenliğe haber verin.' : 'Bu girişi beklemiyorsanız geçişi portaldan iptal edin ve güvenliğe haber verin.' },
+        ],
+        cta: { label: 'Geçişlerimi görüntüle', path: 'ziyaretci' },
+      };
+    }
+    case 'reservation_approved':
+    case 'reservation_rejected':
+    case 'reservation_cancelled':
+      return reservationSpec(n, ctx);
     default:
       return undefined;
   }
+}
+
+/** Iptal edilen rezervasyonda ucretin durumu (yonetim iptali). */
+function refundText(status: string, amount: string): string | undefined {
+  switch (status) {
+    case 'reversed':
+      return `${amount} iade edildi (ters kayıt hesabınıza işlendi)`;
+    case 'reversal_pending':
+      return `${amount} iadesi yönetim tarafından işleniyor`;
+    case 'resolved_manually':
+      return `${amount} yönetim tarafından ayrıca düzeltildi`;
+    case 'void':
+    case 'pending':
+      return 'Ücret tahakkuk edilmemişti; ödeme gerekmez';
+    default:
+      return undefined;
+  }
+}
+
+/** Ortak alan rezervasyonu: yonetimin onayi, reddi ve iptali (rezervasyonu yapan sakine). */
+function reservationSpec(n: Notification, ctx: EmailContext): Spec {
+  const d = n.data;
+  const unit = ctx.unitLabel(str(d.unitId));
+  const facility = str(d.facilityName) || 'Ortak alan';
+  const when = `${formatDate(d.date)} ${formatDateTime(d.start, true)}-${formatDateTime(d.end, true)}`;
+  const fee = num(d.feeKurus);
+  const rows: [string, string][] = [
+    ['Ortak alan', facility],
+    ['Tarih', formatDate(d.date)],
+    ['Saat', `${formatDateTime(d.start, true)}-${formatDateTime(d.end, true)}`],
+    ['Bağımsız bölüm', unit],
+  ];
+  const reason = str(d.reason);
+  const cta = { label: 'Rezervasyonlarım', path: 'rezervasyon' };
+  if (n.template === 'reservation_approved') {
+    const note = str(d.note);
+    return {
+      subject: `Rezervasyonunuz onaylandı: ${facility} ${formatDate(d.date)}`,
+      heading: 'Rezervasyonunuz onaylandı',
+      preheader: `${facility}, ${when}`,
+      blocks: [
+        { kind: 'p', text: `${unit} adına ${facility} için yaptığınız rezervasyon yönetim tarafından onaylandı.` },
+        { kind: 'rows', rows: [...rows, ...(fee > 0 ? [['Ücret', `${formatTL(fee)} (hesabınıza tahakkuk edildi)`] as [string, string]] : [])] },
+        ...(note ? [{ kind: 'p' as const, text: `Yönetimin notu: ${note}` }] : []),
+        { kind: 'note', text: 'Planınız değişirse rezervasyonu portaldan, alanın iptal süresi dolmadan iptal edebilirsiniz.' },
+      ],
+      cta,
+    };
+  }
+  if (n.template === 'reservation_rejected') {
+    return {
+      subject: `Rezervasyonunuz reddedildi: ${facility} ${formatDate(d.date)}`,
+      heading: 'Rezervasyon talebiniz reddedildi',
+      preheader: `${facility}, ${when}`,
+      blocks: [
+        { kind: 'p', text: `${unit} adına ${facility} için yaptığınız rezervasyon talebi yönetim tarafından reddedildi.` },
+        { kind: 'rows', rows },
+        ...(reason ? [{ kind: 'p' as const, text: `Gerekçe: ${reason}` }] : []),
+        { kind: 'note', text: `Seçtiğiniz saat aralığı yeniden rezervasyona açıldı.${fee > 0 ? ' Ücret tahakkuk edilmedi.' : ''}` },
+      ],
+      cta: { ...cta, label: 'Yeni rezervasyon yap' },
+    };
+  }
+  const refund = fee > 0 ? refundText(str(d.feeStatus), formatTL(fee)) : undefined;
+  return {
+    subject: `Rezervasyonunuz iptal edildi: ${facility} ${formatDate(d.date)}`,
+    heading: 'Rezervasyonunuz iptal edildi',
+    preheader: `${facility}, ${when}`,
+    blocks: [
+      { kind: 'p', text: `${unit} adına ${facility} için yaptığınız rezervasyon yönetim tarafından iptal edildi.` },
+      { kind: 'rows', rows: [...rows, ...(refund ? [['Ücret', refund] as [string, string]] : [])] },
+      ...(reason ? [{ kind: 'p' as const, text: `Gerekçe: ${reason}` }] : []),
+      ...(str(d.feeStatus) === 'reversal_pending' && fee > 0 ? [{ kind: 'note' as const, text: 'İade tamamlandığında tutar hesabınızda alacak olarak görünür; sorularınız için yönetimle iletişime geçebilirsiniz.' }] : []),
+    ],
+    cta,
+  };
 }
 
 const TICKET_STATUS_TEXT: Record<string, string> = {

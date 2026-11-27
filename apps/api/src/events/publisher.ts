@@ -37,6 +37,11 @@ export const EVENT_TYPES = [
   'TICKET_COMMENTED',
   'OPERATIONS_DIGEST',
   'POLL_PUBLISHED',
+  'GATE_COURIER_ARRIVED',
+  'GATE_GUEST_ENTERED',
+  'RESERVATION_APPROVED',
+  'RESERVATION_REJECTED',
+  'RESERVATION_CANCELLED',
 ] as const;
 export type EventType = (typeof EVENT_TYPES)[number];
 
@@ -180,6 +185,57 @@ export type OperationsDigestPayload = {
   autoClosed: number;
 };
 
+/**
+ * Guvenlik kapisi: gorevli bir bolum icin kurye kaydetti. Bolumde OTURAN guncel uyeler portalda
+ * onaylar / reddeder (portal 15 sn'de bir yenilemeye devam eder; bildirim ek kanaldir). Firma, not
+ * ve kuryeye ait bilgi tasinmaz: worker kurye kaydini okur (yanitlanmis / iptal / suresi dolmus
+ * kayit icin bildirim gitmez). KVKK: telefon numarasi hicbir yerde yok.
+ */
+export type GateCourierArrivedPayload = {
+  courierId: string;
+  unitId: string;
+  /** Yanit icin son an (kayittan `COURIER_RESPONSE_MINUTES` sonra). */
+  respondBy: IsoDateTime;
+};
+
+/**
+ * Misafir gecisiyle giris kaydedildi: gecisi OLUSTURAN sakine (hala bolumde oturuyorsa). Misafir
+ * adi, plaka ve not tasinmaz.
+ */
+export type GateGuestEnteredPayload = {
+  passId: string;
+  unitId: string;
+  /** Gecisi olusturan sakin (alici). */
+  hostUserId: string;
+  entryMode: 'single' | 'multi';
+  /** Bu giris dahil toplam giris sayisi. */
+  entryCount: number;
+  enteredAt: IsoDateTime;
+  validUntil: IsoDate;
+};
+
+/**
+ * Ortak alan rezervasyonu: yonetimin onayi, reddi veya iptali (sakin kendi iptalinde olay yok;
+ * otomatik onay yonetim karari degildir). Alici rezervasyonu yapan sakin (hala dairenin guncel
+ * uyesiyse). Ret / iptal gerekcesi ve yonetimin notu serbest metindir: TASINMAZ, worker
+ * rezervasyon kaydindan okur; ucret iadesinin guncel durumu da oradan (iptal yazildiktan sonra
+ * ters kayit ayri yazimla tamamlanir). `feeStatus` yazim anindaki durumdur (yedek).
+ */
+export type ReservationDecisionPayload = {
+  bookingId: string;
+  facilityId: string;
+  facilityName: string;
+  unitId: string;
+  /** Rezervasyonu yapan sakin (alici). */
+  bookerId: string;
+  date: IsoDate;
+  start: IsoDateTime;
+  end: IsoDateTime;
+  /** Ucret (kurus, tam sayi); 0 = ucretsiz. */
+  feeKurus: number;
+  feeStatus: string;
+};
+
 type PayloadByType = {
   DUE_GENERATED: DueGeneratedPayload;
   PAYMENT_RECEIVED: PaymentReceivedPayload;
@@ -194,6 +250,11 @@ type PayloadByType = {
   TICKET_COMMENTED: TicketEventPayload;
   OPERATIONS_DIGEST: OperationsDigestPayload;
   POLL_PUBLISHED: PollPublishedPayload;
+  GATE_COURIER_ARRIVED: GateCourierArrivedPayload;
+  GATE_GUEST_ENTERED: GateGuestEnteredPayload;
+  RESERVATION_APPROVED: ReservationDecisionPayload;
+  RESERVATION_REJECTED: ReservationDecisionPayload;
+  RESERVATION_CANCELLED: ReservationDecisionPayload;
 };
 
 export type DomainEvent<T extends EventType = EventType> = {

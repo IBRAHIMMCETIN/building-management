@@ -11,6 +11,7 @@
  *  - KVKK: sakin baska dairelerin rezervasyonlarini yalnizca dolu / bos dilim olarak gorur.
  */
 import { createHash, randomUUID } from 'node:crypto';
+import { type DomainEvent, buildEvent } from '../../events/publisher.js';
 import type { CoreRepository } from '../core/repository.js';
 import { coreRepository } from '../core/repository.js';
 import type { IsoDate, IsoDateTime } from '../core/types.js';
@@ -795,12 +796,46 @@ export function createReservationService(overrides: Partial<ReservationServiceDe
 
   const touch = (ctx: ReservationContext, b: Booking, ts: IsoDateTime) => ({ updatedAt: ts, updatedBy: ctx.userId, version: b.version + 1 });
 
+  type DecisionType = 'RESERVATION_APPROVED' | 'RESERVATION_REJECTED' | 'RESERVATION_CANCELLED';
+  /**
+   * Rezervasyonu yapana bildirim (transactional outbox): karari yazan islemle AYNI atomik yazimda.
+   * Her gecis bir kez olur (pending -> confirmed / rejected, aktif -> cancelled): kimlik deterministik.
+   * Gerekce / not tasinmaz (worker kayittan okur).
+   */
+  function decisionEvent(ctx: ReservationContext, type: DecisionType, b: Booking, at: IsoDateTime): DomainEvent {
+    return buildEvent(
+      {
+        eventId: `${type}:${b.bookingId}`,
+        type,
+        apartmentId: ctx.apartmentId,
+        actorId: ctx.userId,
+        groupKey: `${ctx.apartmentId}#${b.bookingId}`,
+        occurredAt: at,
+        payload: {
+          bookingId: b.bookingId,
+          facilityId: b.facilityId,
+          facilityName: b.facilityName,
+          unitId: b.unitId,
+          bookerId: b.createdBy,
+          date: b.date,
+          start: b.start,
+          end: b.end,
+          feeKurus: b.fee.amount,
+          feeStatus: b.fee.status,
+        },
+      },
+      deps.now,
+    );
+  }
+
   /**
    * `pending` -> `confirmed`. Ucretli rezervasyonda Finans `chargeUnit` (oturan alt carisi) ve
    * rezervasyon guncellemesi AYNI atomik yazimdadir (`replaceRecords`, surum kosullu); ucretsizde
    * yalnizca rezervasyon + denetim.
    */
   async function confirm(ctx: ReservationContext, booking: Booking, opts: { action: string; note?: string }): Promise<Booking> {
+    // Yonetici onayi sakine bildirilir; otomatik onay (sakin kendi isteminin sonucunu gorur) bildirim uretmez.
+    const notify = opts.action === 'reservation.approve';
     if (booking.fee.amount > 0) {
       if (!deps.finance) throw new ReservationError('unprocessable', 'Ücret tahakkuku için finans modülü gerekli');
       let confirmed: Booking | undefined;
@@ -850,6 +885,7 @@ export function createReservationService(overrides: Partial<ReservationServiceDe
             confirmed = next;
             return {
               replaceRecords: [{ item: next, expectedVersion: cur.version, label: 'reservation' }],
+              ...(notify ? { outbox: [decisionEvent(ctx, 'RESERVATION_APPROVED', next, transaction.createdAt)] } : {}),
               auditDetails: { reservation: { action: opts.action, bookingId: cur.bookingId, facilityId: cur.facilityId, unitId: cur.unitId, date: cur.date, start: timesOf(cur).startTime, liableParty: payer.liableParty } },
             };
           },
@@ -865,6 +901,7 @@ export function createReservationService(overrides: Partial<ReservationServiceDe
     await write(ctx.apartmentId, {
       at: ts,
       booking: { item: next, expectedVersion: booking.version },
+      ...(notify ? { outbox: [decisionEvent(ctx, 'RESERVATION_APPROVED', next, ts)] } : {}),
       audit: { apartmentId: ctx.apartmentId, action: opts.action, target: { type: 'reservation', id: booking.bookingId }, details: { facilityId: booking.facilityId, unitId: booking.unitId, date: booking.date, from: 'pending', to: 'confirmed' } },
     });
     return next;
@@ -945,6 +982,7 @@ export function createReservationService(overrides: Partial<ReservationServiceDe
       at: ts,
       booking: { item: next, expectedVersion: version },
       release: booking.slots.map((s) => lockOf(ctx.apartmentId, booking, s, ts)),
+      outbox: [decisionEvent(ctx, 'RESERVATION_REJECTED', next, ts)],
       audit: { apartmentId: ctx.apartmentId, action: 'reservation.reject', target: { type: 'reservation', id: bookingId }, reason, details: { facilityId: booking.facilityId, unitId: booking.unitId, date: booking.date } },
     });
     return { booking: adminView(next, deps.now()) };
@@ -1002,6 +1040,9 @@ export function createReservationService(overrides: Partial<ReservationServiceDe
       at: ts,
       booking: { item: next, expectedVersion: version },
       release: booking.slots.map((s) => lockOf(ctx.apartmentId, booking, s, ts)),
+      // Yonetim iptali sakine bildirilir (sakinin kendi iptalinde yok). Ucret iadesinin sonucu ayri
+      // yazimla gelir; worker guncel durumu kayittan okur.
+      ...(actor.kind === 'manager' ? { outbox: [decisionEvent(ctx, 'RESERVATION_CANCELLED', next, ts)] } : {}),
       audit: {
         apartmentId: ctx.apartmentId,
         action: 'reservation.cancel',

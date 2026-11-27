@@ -1,6 +1,7 @@
 /**
  * Bildirim modeli ve kanal arayuzu (worker ve kanallar arasinda ortak).
  */
+import type { NotificationCategory } from './categories.js';
 
 export type NotificationTemplate =
   | 'due_generated'
@@ -20,6 +21,13 @@ export type NotificationTemplate =
   | 'ticket_comment'
   /** Faz 3 (O1-3): gunluk operasyon ozeti (yonetim / gorevli). */
   | 'operations_digest'
+  /** Guvenlik kapisi: kurye onay istegi (oturan sakinler) ve misafir girisi (gecisi olusturan). */
+  | 'gate_courier_arrived'
+  | 'gate_guest_entered'
+  /** Ortak alan rezervasyonu: yonetimin onayi / reddi / iptali (rezervasyonu yapan sakin). */
+  | 'reservation_approved'
+  | 'reservation_rejected'
+  | 'reservation_cancelled'
   | `dues_reminder_${'upcoming' | 'overdue_1' | 'overdue_7' | 'plan_default'}`;
 
 /** Ozet bildirimlerdeki kalem satiri (kisisel veri yok). */
@@ -35,6 +43,11 @@ export type Notification = {
   apartmentId: string;
   userId: string;
   template: NotificationTemplate;
+  /**
+   * Tercih kategorisi (worker olay turunden doldurur; yoksa kanal sablon adindan cozer). Kullanici
+   * bu kategoriyi kapattiysa e-posta gitmez.
+   */
+  category?: NotificationCategory;
   /** Sablon degiskenleri; kisisel veri icermez (ad/e-posta kanal adaptorunde cozulur). */
   data: NotificationData;
 };

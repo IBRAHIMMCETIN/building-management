@@ -25,8 +25,10 @@ export type MeRoutesDeps = {
  * Buradan hicbir apartman verisi donmez; yalnizca kullanicinin kendi yetkileri.
  *
  *   GET /contexts  -> { userId, isPlatformAdmin, active, contexts[] }
- *   GET /notification-preferences -> { email: { enabled } }   (kayit yoksa varsayilan: acik)
- *   PUT /notification-preferences   { email: { enabled: boolean } }
+ *   GET /notification-preferences -> { email: { enabled, finance?, announcements?, tickets?, gate?,
+ *                                     reservations?, polls? } }   (kayit yoksa varsayilan: hepsi acik)
+ *   PUT /notification-preferences   { email: { enabled: boolean, <kategori>?: boolean } }
+ *                                   (verilmeyen kategoride onceki secim korunur)
  * Tercih kullanicinin kendisine aittir: kimlik JWT'den gelir, govdede kullanici kimligi yoktur.
  *
  * Zorunlu MFA (G2) kurulumu da buradadir; `MFA_REQUIRED` durumundaki kullanici yalnizca bu
