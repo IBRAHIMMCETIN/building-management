@@ -240,7 +240,7 @@ function Drill({ card, to, label, onOpen, pendingKey, disabled, align, children 
       aria-label={`${card.apartmentName}: ${label}`}
       aria-busy={pendingKey === `${card.apartmentId}|${to}` || undefined}
       onClick={() => onOpen({ apartmentId: card.apartmentId, role: card.role, to })}
-      className={`cursor-pointer rounded-sm hover:text-accent focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-wait disabled:opacity-60 ${align === 'right' ? 'text-right' : 'text-left'}`}
+      className={`rounded-sm underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-50 ${align === 'right' ? 'text-right' : 'text-left'}`}
     >
       {children}
     </button>
@@ -253,9 +253,9 @@ const Missing = () => (
   </span>
 );
 
-function CardMarks({ card }: { card: PortfolioCard }) {
+function CardMarks({ card, end = false }: { card: PortfolioCard; end?: boolean }) {
   return (
-    <span className="flex flex-wrap items-center gap-1.5">
+    <span className={`flex flex-wrap items-center gap-1.5 ${end ? 'justify-end' : ''}`}>
       <Badge>{ROLE_LABELS[card.role]}</Badge>
       {card.readOnly && <Badge tone="accent">Salt okunur</Badge>}
       {card.status === 'partial' && <Badge tone="warning">Eksik veri</Badge>}
@@ -266,13 +266,16 @@ function CardMarks({ card }: { card: PortfolioCard }) {
 
 function FailedNote({ card }: { card: PortfolioCard }) {
   if (card.status !== 'partial') return null;
-  return <span className="block text-xs text-muted">Okunamayan: {card.failed.map((s) => SECTION_LABELS[s]).join(', ')}</span>;
+  return <span className="block font-normal text-small text-muted">Okunamayan: {card.failed.map((s) => SECTION_LABELS[s]).join(', ')}</span>;
 }
 
-/** Hucre icerikleri: masaustu tablo ve mobil kart ayni metinleri kullanir. */
+/**
+ * Hucre icerikleri: masaustu tablo ve mobil kart ayni metinleri kullanir. Tutar sutunlari her
+ * gorunumde saga hizalidir (aile tablolari gibi); sayi / metin sutunlari tabloda sola.
+ */
 function cells(c: PortfolioCard, p: DrillProps) {
-  const d = (to: string, label: string, children: ReactNode) => (
-    <Drill card={c} to={to} label={label} {...p}>
+  const d = (to: string, label: string, children: ReactNode, align: DrillProps['align'] = p.align) => (
+    <Drill card={c} to={to} label={label} {...p} align={align}>
       {children}
     </Drill>
   );
@@ -283,10 +286,11 @@ function cells(c: PortfolioCard, p: DrillProps) {
           'aidat durumu',
           <>
             <span className="font-medium tabular-nums">{c.collection.collectionRatePct === undefined ? '—' : pct(c.collection.collectionRatePct)}</span>
-            <span className="block text-xs text-muted tabular-nums">
+            <span className="block text-small text-muted tabular-nums">
               {formatTRY(c.collection.collected)} / {formatTRY(c.collection.charged)}
             </span>
           </>,
+          'right',
         )
       : <Missing />,
     overdue: c.finance
@@ -295,8 +299,9 @@ function cells(c: PortfolioCard, p: DrillProps) {
           'vadesi geçmiş alacak',
           <>
             <span className={`font-medium tabular-nums ${c.finance.overdue > 0 ? 'text-warning' : ''}`}>{formatTRY(c.finance.overdue)}</span>
-            {c.finance.overdueUnitCount > 0 && <span className="block text-xs text-muted">{c.finance.overdueUnitCount} bölüm</span>}
+            {c.finance.overdueUnitCount > 0 && <span className="block text-small text-muted">{c.finance.overdueUnitCount} bölüm</span>}
           </>,
+          'right',
         )
       : <Missing />,
     funds: c.finance ? <span className="tabular-nums">{formatTRY(c.finance.totalFunds)}</span> : <Missing />,
@@ -306,7 +311,7 @@ function cells(c: PortfolioCard, p: DrillProps) {
           'açık talepler',
           <>
             <span className="font-medium tabular-nums">{c.tickets.openCount} açık</span>
-            <span className="block text-xs text-muted">
+            <span className="block text-small text-muted">
               {c.tickets.openByPriority.urgent} acil ·{' '}
               <span className={c.tickets.overdueCount > 0 ? 'text-danger' : undefined}>{c.tickets.overdueCount} SLA aşımı</span>
             </span>
@@ -319,12 +324,12 @@ function cells(c: PortfolioCard, p: DrillProps) {
           'bakım takvimi',
           <>
             <span className={`font-medium tabular-nums ${c.maintenance.overdueCount > 0 ? 'text-warning' : ''}`}>{c.maintenance.overdueCount} geciken</span>
-            <span className="block text-xs text-muted">{c.maintenance.dueThisWeekCount} bu hafta</span>
+            <span className="block text-small text-muted">{c.maintenance.dueThisWeekCount} bu hafta</span>
           </>,
         )
       : <Missing />,
     upcoming: (
-      <span className={`flex flex-col gap-0.5 text-xs ${p.align === 'right' ? 'items-end' : 'items-start'}`}>
+      <span className={`flex flex-col gap-0.5 ${p.align === 'right' ? 'items-end' : 'items-start'}`}>
         {c.equipment ? d(SCREENS.equipment, 'ekipman son tarihleri', <>{c.equipment.expiringCount} ekipman son tarihi</>) : <Missing />}
         {c.assemblies
           ? d(SCREENS.assemblies, 'genel kurul', <>{c.assemblies.nextAt ? `Genel kurul ${formatDateTime(c.assemblies.nextAt)}` : `${c.assemblies.upcomingCount} genel kurul`}</>)
@@ -363,9 +368,9 @@ function ApartmentList({ items, ...p }: ListProps) {
           <thead className="border-b border-border bg-surface-muted/50 text-xs tracking-wide text-muted uppercase">
             <tr>
               <th scope="col" className="px-4 py-3 font-medium">Apartman</th>
-              <th scope="col" className="px-4 py-3 font-medium">Tahsilat</th>
-              <th scope="col" className="px-4 py-3 font-medium">Vadesi geçmiş</th>
-              <th scope="col" className="px-4 py-3 font-medium">Kasa + banka</th>
+              <th scope="col" className="px-4 py-3 text-right font-medium">Tahsilat</th>
+              <th scope="col" className="px-4 py-3 text-right font-medium">Vadesi geçmiş</th>
+              <th scope="col" className="px-4 py-3 text-right font-medium">Kasa + banka</th>
               <th scope="col" className="px-4 py-3 font-medium">Talepler</th>
               <th scope="col" className="px-4 py-3 font-medium">Bakım</th>
               <th scope="col" className="px-4 py-3 font-medium">Yaklaşan</th>
@@ -377,17 +382,17 @@ function ApartmentList({ items, ...p }: ListProps) {
           <tbody className="divide-y divide-border text-text-secondary [&>tr]:transition-colors [&>tr:hover]:bg-surface-muted/40">
             {rows.map(({ c, x }) => (
               <tr key={c.apartmentId} className="align-top">
-                <th scope="row" className="px-4 py-3 font-normal">
-                  <span className="block font-semibold text-text">{c.apartmentName}</span>
-                  <span className="mt-1 block">
+                <th scope="row" className="px-4 py-3 font-semibold">
+                  {c.apartmentName}
+                  <span className="mt-1 block font-normal">
                     <CardMarks card={c} />
                   </span>
                   <FailedNote card={c} />
-                  {c.units && <span className="block text-xs text-muted">{c.units.count} bağımsız bölüm</span>}
+                  {c.units && <span className="block font-normal text-small text-muted">{c.units.count} bağımsız bölüm</span>}
                 </th>
-                <td className="px-4 py-3">{x.collection}</td>
-                <td className="px-4 py-3">{x.overdue}</td>
-                <td className="px-4 py-3">{x.funds}</td>
+                <td className="px-4 py-3 text-right">{x.collection}</td>
+                <td className="px-4 py-3 text-right">{x.overdue}</td>
+                <td className="px-4 py-3 text-right">{x.funds}</td>
                 <td className="px-4 py-3">{x.tickets}</td>
                 <td className="px-4 py-3">{x.maintenance}</td>
                 <td className="px-4 py-3">{x.upcoming}</td>
@@ -403,12 +408,12 @@ function ApartmentList({ items, ...p }: ListProps) {
       <ul className="flex flex-col gap-3 md:hidden" aria-label="Portföydeki apartmanlar">
         {rows.map(({ c, m }) => (
           <li key={c.apartmentId} className="rounded-xl border border-border bg-surface/60 p-5 shadow-sm backdrop-blur-sm transition-colors hover:border-border-strong">
-            <div className="flex flex-col gap-1.5">
+            <div className="flex items-start justify-between gap-3">
               <p className="font-semibold">{c.apartmentName}</p>
-              <CardMarks card={c} />
-              <FailedNote card={c} />
+              <CardMarks card={c} end />
             </div>
-            <dl className="mt-3 grid grid-cols-[auto_1fr] gap-x-3 gap-y-2 text-small">
+            <FailedNote card={c} />
+            <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-small">
               <dt className="text-muted">Tahsilat</dt>
               <dd className="text-right">{m.collection}</dd>
               <dt className="text-muted">Vadesi geçmiş</dt>

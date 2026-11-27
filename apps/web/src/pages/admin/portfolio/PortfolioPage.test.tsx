@@ -112,7 +112,7 @@ async function render(auth: Partial<AuthContextValue> = {}) {
   await flush();
   await flush();
   const table = () => host.querySelector('table') as HTMLTableElement;
-  const rowNames = () => [...table().querySelectorAll('tbody th[scope="row"] > span:first-child')].map((s) => s.textContent);
+  const rowNames = () => [...table().querySelectorAll('tbody th[scope="row"]')].map((th) => th.firstChild?.textContent);
   const button = (label: string) => host.querySelector(`button[aria-label="${label}"]`) as HTMLButtonElement | null;
   const text = (t: string) => [...host.querySelectorAll('button')].find((b) => b.textContent?.trim() === t) as HTMLButtonElement | undefined;
   return { host, value, table, rowNames, button, text, router, unmount: () => act(async () => root.unmount()) };
