@@ -73,7 +73,7 @@ export function useEquipmentSearch(term: string) {
 }
 
 /**
- * Bagli ekipman adlari (durumdan bagimsiz, `ids=`): hizmetten cikmis ekipman "(hizmet dışı)"
+ * Bagli ekipman adlari (durumdan bagimsiz, `ids=`): hizmetten cikmis ekipman "(hizmetten çıktı)"
  * ekiyle. Bulunamayan / yetkisiz kimlik icin `undefined` (arayuz "Ekipman kaydı" yazar).
  */
 export function useEquipmentNames(ids: readonly (string | null | undefined)[]) {

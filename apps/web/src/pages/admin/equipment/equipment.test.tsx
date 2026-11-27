@@ -81,7 +81,7 @@ describe('model ve semalar', () => {
     expect(daysLeftText(-5)).toBe('5 gün geçti');
     expect(equipmentLocationText({ blockId: 'b1', location: 'bodrum' }, () => 'A Blok')).toBe('A Blok · bodrum');
     expect(equipmentLocationText({}, () => undefined)).toBe('Site geneli');
-    expect(equipmentDisplayName({ name: 'Jeneratör', status: 'retired' })).toBe('Jeneratör (hizmet dışı)');
+    expect(equipmentDisplayName({ name: 'Jeneratör', status: 'retired' })).toBe('Jeneratör (hizmetten çıktı)');
     expect(equipmentDisplayName({ name: 'Jeneratör', status: 'out_of_service' })).toBe('Jeneratör');
   });
 
@@ -122,7 +122,7 @@ vi.mock('@/hooks/useEquipment', () => ({
   useArchiveEquipmentDocument: () => mutation(),
   useSaveEquipment: () => save,
   useEquipmentSearch: (term: string) => ({ data: search(term) }),
-  useEquipmentNames: () => (id: string) => (id === 'e-old' ? 'Eski jeneratör (hizmet dışı)' : undefined),
+  useEquipmentNames: () => (id: string) => (id === 'e-old' ? 'Eski jeneratör (hizmetten çıktı)' : undefined),
 }));
 vi.mock('@/hooks/useFinance', () => ({ useFinanceAccounts: () => ({ data: [{ accountId: 'sup-new', name: 'Kuzey Servis', type: 'payable', status: 'active' }] }) }));
 vi.mock('react-router', () => ({ Link: ({ children, to }: { children: unknown; to: string }) => <a href={to}>{children as never}</a> }));
@@ -240,11 +240,18 @@ describe('ekipman secimi ve tedarikci', () => {
     searchTerms = [];
     const onChange = vi.fn();
     await render(<EquipmentSelect label="Ekipman" value="e-old" onChange={onChange} />);
-    expect(container.textContent).toContain('60 kayıttan 2 tanesi gösteriliyor');
+    expect(container.textContent).toContain('60 kayıttan 2 tanesi gösteriliyor; aramayı daraltın.');
     const options = [...container.querySelectorAll('option')].map((o) => o.textContent);
-    expect(options).toEqual(['Bağlı değil', 'Eski jeneratör (hizmet dışı)', 'Ekipman 0', 'Ekipman 1']);
-    await type(container.querySelector('input[aria-label="Ekipman ara"]'), '42');
+    expect(options).toEqual(['Bağlı değil', 'Eski jeneratör (hizmetten çıktı)', 'Ekipman 0', 'Ekipman 1']);
+    // Arama kutusu listenin ustunde, gorunur etiketli; TicketList gibi Enter ile arar.
+    const form = container.querySelector('form') as HTMLFormElement;
+    expect(form.compareDocumentPosition(container.querySelector('select') as Node) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(form.querySelector('label')?.textContent).toBe('Ekipman ara (ad, marka, seri no)');
+    await type(form.querySelector('input'), '42');
+    expect(searchTerms.at(-1)).toBe('');
+    await act(async () => form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })));
     expect(searchTerms.at(-1)).toBe('42');
+    expect(container.textContent).not.toContain('kayıttan');
     expect([...container.querySelectorAll('option')].map((o) => o.textContent)).toContain('Ekipman 42');
     const select = container.querySelector('select') as HTMLSelectElement;
     await act(async () => {
@@ -252,6 +259,10 @@ describe('ekipman secimi ve tedarikci', () => {
       select.dispatchEvent(new Event('change', { bubbles: true }));
     });
     expect(onChange).toHaveBeenCalledWith('e42', expect.objectContaining({ name: 'Ekipman 42' }));
+    // Sonuc yoksa projenin bos sonuc ifadesi.
+    await type(form.querySelector('input'), 'yok-boyle');
+    await act(async () => form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })));
+    expect(container.textContent).toContain('Bu aramaya uyan ekipman yok.');
   });
 
   it('pasif tedarikci carisi secili kalir; cari degisince firma adi yenilenir', async () => {

@@ -126,9 +126,7 @@ export function NewTicketDialog({ open, onClose, onCreated }: { open: boolean; o
           </>
         )}
         {canUnit && (
-          <div className="sm:col-span-2">
-            <EquipmentSelect label="Ekipman (isteğe bağlı)" hint="Arıza ekipmanın geçmişinde ve masraf toplamında görünür." value={equipmentId} onChange={chooseEquipment} />
-          </div>
+          <EquipmentSelect className="sm:col-span-2" label="Ekipman (isteğe bağlı)" hint="Arıza ekipmanın geçmişinde ve masraf toplamında görünür." value={equipmentId} onChange={chooseEquipment} />
         )}
         <FormField label="Kategori">
           <Select value={category} onChange={(e) => setCategory(e.target.value as TicketCategory)}>

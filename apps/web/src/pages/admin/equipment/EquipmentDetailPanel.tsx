@@ -329,7 +329,7 @@ function HistorySection({ equipmentId, retired }: { equipmentId: string; retired
           {retired && history.data.templates.length > 0 && <LinkedTemplatesAlert templates={history.data.templates} />}
           <p className="text-small text-muted">
             Son {history.data.years ?? 5} yıl: {history.data.counts.tickets} arıza ({history.data.counts.openTickets} açık) · {history.data.counts.maintenance} bakım görevi ({history.data.counts.maintenanceDone} tamamlandı)
-            {history.data.templates.length ? ` · şablon: ${history.data.templates.map((t) => t.name).join(', ')}` : ''}
+            {history.data.templates.length && !retired ? ` · şablon: ${history.data.templates.map((t) => t.name).join(', ')}` : ''}
           </p>
           {canReadCosts && history.data.costs && <CostTable costs={history.data.costs} />}
           {history.data.items.length === 0 ? (

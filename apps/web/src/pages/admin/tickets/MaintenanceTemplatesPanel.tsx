@@ -206,9 +206,7 @@ function TemplateDialog({ template, onClose }: { template: MaintenanceTemplate |
         <FormField label="Ekipman / yer (isteğe bağlı)" hint="Örn. B Blok asansörü">
           <Input value={asset} onChange={(e) => setAsset(e.target.value)} maxLength={80} />
         </FormField>
-        <div className="sm:col-span-2">
-          <EquipmentSelect label="Ekipman kaydı (isteğe bağlı)" hint="Görevler ve görevden açılan arızalar ekipmanın geçmişinde görünür." value={equipmentId} onChange={(id) => setEquipmentId(id)} />
-        </div>
+        <EquipmentSelect className="sm:col-span-2" label="Ekipman kaydı (isteğe bağlı)" hint="Görevler ve görevden açılan arızalar ekipmanın geçmişinde görünür." value={equipmentId} onChange={(id) => setEquipmentId(id)} />
         <FormField label="Kategori" hint="Görevden açılan arızanın kategorisi.">
           <Select value={category} onChange={(e) => setCategory(e.target.value as TicketCategory)}>
             {TICKET_CATEGORIES.map((c) => (
