@@ -19,6 +19,7 @@ locals {
     "DUE_GENERATED", "PAYMENT_RECEIVED", "ANNOUNCEMENT_PUBLISHED", "LATE_FEE_POSTED", "DUES_REMINDER",
     "DUES_BATCH_SUMMARY", "METER_PERIOD_REVERSED",
     "TICKET_CREATED", "TICKET_ASSIGNED", "TICKET_STATUS_CHANGED", "TICKET_COMMENTED", "OPERATIONS_DIGEST",
+    "POLL_PUBLISHED",
   ]
   # Worker Lambda zaman asimi x 6 (AWS onerisi); worker 30 sn varsayilir.
   notification_visibility_timeout = 180

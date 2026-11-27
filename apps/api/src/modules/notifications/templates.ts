@@ -64,6 +64,17 @@ export function formatDate(iso: unknown): string {
   return m ? `${m[3]}.${m[2]}.${m[1]}` : String(iso ?? '');
 }
 
+/**
+ * ISO zaman damgasi -> "GG.AA.YYYY SS:DD" (Istanbul; Turkiye 2016'dan beri sabit UTC+03:00).
+ * Gecersizse oldugu gibi.
+ */
+export function formatDateTime(iso: unknown): string {
+  const ms = Date.parse(String(iso ?? ''));
+  if (Number.isNaN(ms)) return String(iso ?? '');
+  const t = new Date(ms + 3 * 3_600_000).toISOString();
+  return `${t.slice(8, 10)}.${t.slice(5, 7)}.${t.slice(0, 4)} ${t.slice(11, 16)}`;
+}
+
 const MONTHS = ['Ocak', 'Şubat', 'Mart', 'Nisan', 'Mayıs', 'Haziran', 'Temmuz', 'Ağustos', 'Eylül', 'Ekim', 'Kasım', 'Aralık'];
 
 /** YYYY-MM -> "Ekim 2026". */
@@ -209,6 +220,24 @@ function spec(n: Notification, ctx: EmailContext): Spec | undefined {
           { kind: 'note', text: 'Duyurunun tamamını sakin portalındaki Duyurular ekranında okuyabilirsiniz.' },
         ],
         cta: { label: 'Duyuruyu oku', path: 'announcements' },
+      };
+    case 'poll_published':
+      return {
+        subject: `Yeni oylama: ${str(d.title)}`,
+        heading: 'Yeni oylama',
+        preheader: str(d.title),
+        blocks: [
+          { kind: 'p', text: `Yönetim yeni bir oylama başlattı: ${str(d.title)}` },
+          { kind: 'rows', rows: [['Başlangıç', formatDateTime(d.opensAt)], ['Bitiş', formatDateTime(d.closesAt)]] },
+          {
+            kind: 'note',
+            text:
+              d.audience === 'owners'
+                ? 'Bu oylamada kat malikleri oy kullanır. Her bağımsız bölüm için tek oy sayılır; paydaşlardan birinin sonraki oyu öncekinin yerine geçer.'
+                : 'Her bağımsız bölüm için tek oy sayılır; dairenizden verilen sonraki oy öncekinin yerine geçer.',
+          },
+        ],
+        cta: { label: 'Oylamaya git', path: 'oylamalar' },
       };
     // Faz 3 (O1-2): ariza / talep. `link`: portal (sakin) veya admin (yonetim / gorevli).
     case 'ticket_created':
