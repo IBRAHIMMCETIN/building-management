@@ -90,7 +90,7 @@ export function gateWorld(opts: { codes?: string[] } = {}) {
       headers: { 'x-test-claims': JSON.stringify({ userId: ctx.userId, role: ctx.role, apartmentId: ctx.apartmentId }), ...(body ? { 'content-type': 'application/json' } : {}) },
       ...(body ? { body: JSON.stringify(body) } : {}),
     });
-    return { status: res.status, json: (await res.json()) as Record<string, any> };
+    return { status: res.status, headers: res.headers, json: (await res.json()) as Record<string, any> };
   };
   let k = 0;
   const key = () => `key-${++k}`;
@@ -108,5 +108,5 @@ export function gateWorld(opts: { codes?: string[] } = {}) {
   const moveIn = (userId: string, unitId: string, startDate: string, createdAt?: string) => {
     memberships.push({ ...member(APT, userId, unitId, 'tenant'), startDate, ...(createdAt ? { createdAt } : {}) } as UnitMembership);
   };
-  return { fake, service, at, call, key, pass, moveOut, moveIn, endsOn };
+  return { fake, service, at, call, key, pass, moveOut, moveIn, endsOn, memberships, now: () => now };
 }

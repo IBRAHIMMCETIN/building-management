@@ -22,6 +22,8 @@
  *   GLOG#<at>#<logId>                      kapi gunlugu (append-only, SILINMEZ, TTL yok)
  *   GLOGU#<unitId>#<at>#<logId>            daire kopyasi (sakin yalnizca kendi dairesini okur)
  *   GIDEM#<idempotencyKey>                 olusturma / giris-cikis idempotency kaydi
+ *   GTHR#<tur>#U#<userId>#<pencere>        dogrulama / plaka aramasi deneme sayaci, kullanici basina
+ *   GTHR#<tur>#A#<pencere>                 ayni, apartman basina (15 dk sabit pencere, TTL; throttle.ts)
  *
  * Hicbir kayit silinmez (API Lambda'sinin DeleteItem yetkisi yok); iptal, kullanildi, pasif birer
  * durumdur. QR yalnizca rastgele jeton tasir; kisisel veri icermez.
@@ -61,6 +63,8 @@ export type Vehicle = TableKeys & {
    * gorevliye pasif gorunur ve sinira sayilmaz. Alan yoksa (eski kayit) sahibi tasinmis sayilir.
    */
   ownerUserId?: string;
+  /** Sistem tarafindan pasife alindiysa nedeni (`taşınma`: sahibin uyeligi bitti; departures.ts). */
+  inactiveReason?: string;
   createdAt: IsoDateTime;
   createdBy: string;
   createdByRole: string;
@@ -115,6 +119,8 @@ export type GuestPass = TableKeys & {
   lastExitAt?: IsoDateTime;
   revokedAt?: IsoDateTime;
   revokedBy?: string;
+  /** Sistem iptali nedeni (`taşınma`: gecisi olusturan sakinin uyeligi bitti; departures.ts). */
+  revokeReason?: string;
   createdAt: IsoDateTime;
   createdBy: string;
   createdByRole: string;

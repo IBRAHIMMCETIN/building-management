@@ -47,6 +47,7 @@ export function PassesPanel() {
                   {p.plateDisplay && <span className="font-mono"> · {p.plateDisplay}</span>}
                 </span>
                 {p.lastEntryAt && <span className="text-xs text-muted">Son giriş: {formatDateTime(p.lastEntryAt)}</span>}
+                {p.revokeReason && <span className="text-xs text-muted">{p.revokeReason === 'taşınma' ? 'Geçişi oluşturan sakin taşındığı için otomatik iptal edildi' : `İptal nedeni: ${p.revokeReason}`}</span>}
               </span>
               {p.canRevoke &&
                 (confirmId === p.passId ? (

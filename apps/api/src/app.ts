@@ -399,7 +399,7 @@ export function createApp(config: AppConfig) {
   app.route('/api/reservations', reservationRoutes({ authenticate, service: reservationService }));
   const tenderService =
     config.tenderService ??
-    createTenderService({ documents: { promote: documentsService.promoteTenderQuote, sign: documentsService.signTenderDocument } });
+    createTenderService({ documents: { promote: documentsService.promoteTenderQuote, sign: documentsService.signTenderDocument }, finance: financeService });
   app.route('/api/tenders', tenderRoutes({ authenticate, service: tenderService }));
 
   // Yonetim firmasi portfoyu: kullanicinin yonettigi / denetledigi tum apartmanlarin ozetleri,
@@ -423,7 +423,7 @@ export function createApp(config: AppConfig) {
   app.route('/api/portfolio', portfolioRoutes({ authenticate, service: portfolioService }));
 
   // Guvenlik kapisi (yonetim + guvenlik; sakin portali `/api/portal`'dan once).
-  const gateService = config.gateService ?? createGateService();
+  const gateService = config.gateService ?? createGateService({ metrics });
   app.route('/api/gate', gateRoutes({ authenticate, service: gateService }));
   app.route('/api/portal/gate', gatePortalRoutes({ authenticate, service: gateService }));
   app.route('/api/portal/payments', paymentPortalRoutes({ authenticate, service: paymentsService }));

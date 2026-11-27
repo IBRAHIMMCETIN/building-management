@@ -54,6 +54,9 @@ const quoteId = (c: Context<Env>) => c.req.param('quoteId') ?? '';
  *   GET   /:id/quotes/:quoteId/document      ?history=<sira>  5 dk imzali link (denetci: yalnizca yayinlanmis ihale;
  *                                              `history`: degistirilmis onceki belge, yalnizca yonetim)
  *   POST  /:id/comments                      { idempotencyKey, body }   yonetim yaniti (yalnizca yayinda; `tender.comment` denetimi)
+ *   POST  /:id/expense                       { idempotencyKey, expenseAccountId?, creditAccountId?, amount?, date?, description?,
+ *                                              supplier?, invoiceNumber?, invoiceUpload? }  karardan Finans gideri (Finans gider
+ *                                              servisiyle; ihale basina bir gider, tekrar ayni sonuc; `ledger.expense` denetimi)
  * Belge yukleme: `POST /api/documents/invoice-uploads` (gider faturasiyla ayni sinirlar).
  */
 export function tenderRoutes({ authenticate, service }: TenderRoutesDeps) {
@@ -78,6 +81,10 @@ export function tenderRoutes({ authenticate, service }: TenderRoutesDeps) {
   r.get('/:id/quotes/:quoteId/document', requireRole(READ_ROLES), async (c) => c.json(await service.quoteDocument(ctxOf(c), id(c), quoteId(c), { history: c.req.query('history') })));
   r.post('/:id/comments', requireRole(WRITE_ROLES), async (c) => {
     const result = await service.comment(ctxOf(c), id(c), await readJson(c));
+    return c.json(result, result.replayed ? 200 : 201);
+  });
+  r.post('/:id/expense', requireRole(WRITE_ROLES), async (c) => {
+    const result = await service.createExpense(ctxOf(c), id(c), await readJson(c));
     return c.json(result, result.replayed ? 200 : 201);
   });
   return r;

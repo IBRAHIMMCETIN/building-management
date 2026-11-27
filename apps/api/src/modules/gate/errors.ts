@@ -1,5 +1,6 @@
 import type { Context } from 'hono';
 import { handleError } from '../../http/helpers.js';
+import { GateRateLimitError } from './throttle.js';
 
 export type GateErrorCode =
   | 'not_found'
@@ -52,5 +53,10 @@ export class GateError extends Error {
 /** Modul rotalarinin hata eslemesi: GateError burada, digerleri ortak `handleError`'da. */
 export function handleGateError(err: Error, c: Context) {
   if (err instanceof GateError) return c.json({ error: err.code, message: err.message }, err.httpStatus);
+  // Deneme siniri (throttle.ts): 429 + Retry-After (pencere sonuna kadar saniye).
+  if (err instanceof GateRateLimitError) {
+    c.header('Retry-After', String(err.retryAfterSeconds));
+    return c.json({ error: err.code, message: err.message, retryAfterSeconds: err.retryAfterSeconds }, 429);
+  }
   return handleError(err, c);
 }

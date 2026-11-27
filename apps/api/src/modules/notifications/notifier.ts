@@ -30,6 +30,11 @@ export type NotificationTemplate =
   | 'reservation_cancelled'
   /** Genel kurul: kat malikleri kurulu toplanti cagrisi (oy listesindeki malik kullanicilar). */
   | 'assembly_called'
+  /** Ihale: sakinlerle paylasim, karar, yayindan sonra iptal (apartman uyeleri) ve soruya yonetim yaniti (soran sakin). */
+  | 'tender_published'
+  | 'tender_decided'
+  | 'tender_cancelled'
+  | 'tender_replied'
   | `dues_reminder_${'upcoming' | 'overdue_1' | 'overdue_7' | 'plan_default'}`;
 
 /** Ozet bildirimlerdeki kalem satiri (kisisel veri yok). */

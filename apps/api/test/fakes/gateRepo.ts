@@ -12,6 +12,7 @@ export function createFakeGateRepo() {
   const items = new Map<string, Item>();
   const audits: AuditDraft[] = [];
   const writes: { puts: Item[] }[] = [];
+  const hits: { apt: string; sk: string; weight: number }[] = [];
   const k = (pk: string, sk: string) => `${pk}|${sk}`;
   const tick = () => new Promise<void>((r) => setTimeout(r, 0));
 
@@ -57,9 +58,24 @@ export function createFakeGateRepo() {
       writes.push({ puts: w.puts.map((p) => structuredClone(p.item) as Item) });
       if (w.audit) audits.push(w.audit);
     },
+    /** Deneme sayaci: gercek depodaki kosullu ADD ile ayni anlam (kosul bozulursa artmaz). */
+    async hit(apt, sk, weight, opts) {
+      await tick();
+      const key = k(`APT#${apt}`, sk);
+      const cur = items.get(key) as (Item & { count?: number; ttl?: number }) | undefined;
+      const count = cur?.count ?? 0;
+      if (opts.limit !== undefined && count >= opts.limit) return { ok: false, count: opts.limit };
+      items.set(key, { PK: `APT#${apt}`, SK: sk, entityType: 'GATE_THROTTLE', apartmentId: apt, count: count + weight, ttl: cur?.ttl ?? opts.ttl });
+      hits.push({ apt, sk, weight });
+      return { ok: true, count: count + weight };
+    },
+    async audit(draft) {
+      await tick();
+      audits.push(draft);
+    },
   };
 
   /** Bir on ekteki kayitlar (test incelemesi). */
   const byPrefix = (apt: string, prefix: string) => [...items.values()].filter((i) => i.PK === `APT#${apt}` && i.SK.startsWith(prefix)).sort((a, b) => a.SK.localeCompare(b.SK));
-  return { repo, items, audits, writes, byPrefix };
+  return { repo, items, audits, writes, hits, byPrefix };
 }

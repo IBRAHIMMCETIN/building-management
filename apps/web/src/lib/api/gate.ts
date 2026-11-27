@@ -72,7 +72,10 @@ export const myPassSchema = z.object({
 });
 export type MyPass = z.infer<typeof myPassSchema>;
 
-export const managerPassSchema = myPassSchema.omit({ token: true, shortCode: true, mine: true, note: true, lastExitAt: true, revokedAt: true, canRotate: true });
+export const managerPassSchema = myPassSchema
+  .omit({ token: true, shortCode: true, mine: true, note: true, lastExitAt: true, revokedAt: true, canRotate: true })
+  /** Sistem iptali nedeni (`taşınma`: gecisi olusturan sakinin uyeligi bitti). */
+  .extend({ revokeReason: z.string().optional() });
 export type ManagerPass = z.infer<typeof managerPassSchema>;
 
 /** Gorevli gorunumu: misafir, ev sahibi bolum, gecerlilik, karar. */

@@ -19,7 +19,9 @@ import { type PortalRepository, portalRepository } from '../portal/repository.js
 import { type MembershipRepository, membershipRepository } from '../memberships/repository.js';
 import { type PersonRepository, personRepository } from '../residents/repository.js';
 import type { AuditDraft } from '../audit/log.js';
+import { type MetricsEmitter, noopMetrics } from '../../observability/metrics.js';
 import { GateError, type GateErrorCode } from './errors.js';
+import { FAILED_CODE_PENALTY, FAILED_TOKEN_PENALTY, type GateThrottle, createGateThrottle } from './throttle.js';
 import {
   TOKEN_RE,
   VERDICT_MESSAGES,
@@ -96,6 +98,10 @@ export type GateServiceDeps = {
   unitMembers: Pick<MembershipRepository, 'list'>;
   people: Pick<PersonRepository, 'get'>;
   roles: Pick<ApartmentRoleRepository, 'list'>;
+  /** EMF: GateLockout (deneme siniri asimi; security_monitoring.tf alarmi). */
+  metrics: MetricsEmitter;
+  /** Dogrulama ve plaka aramasi deneme siniri; verilmezse `repo` sayaclariyla kurulur. */
+  throttle?: GateThrottle;
   now: () => Date;
   newId: () => string;
   newToken: () => string;
@@ -117,6 +123,7 @@ export function createGateService(overrides: Partial<GateServiceDeps> = {}) {
     unitMembers: membershipRepository,
     people: personRepository,
     roles: apartmentRoleRepository,
+    metrics: noopMetrics,
     now: () => new Date(),
     newId: () => randomUUID(),
     newToken: newPassToken,
@@ -124,6 +131,7 @@ export function createGateService(overrides: Partial<GateServiceDeps> = {}) {
     ...overrides,
   };
   const repo = deps.repo;
+  const throttle = deps.throttle ?? createGateThrottle({ store: repo, now: () => deps.now(), metrics: deps.metrics });
   const stamp = () => deps.now().toISOString();
   const today = () => istanbulDay(deps.now());
   const rand = (n: number) => deps.newId().replace(/[^A-Za-z0-9]/g, '').slice(0, n);
@@ -357,6 +365,7 @@ export function createGateService(overrides: Partial<GateServiceDeps> = {}) {
       plateDisplay: formatPlate(v.plate),
       ...(v.note ? { note: v.note } : {}),
       status: v.status,
+      ...(v.inactiveReason ? { inactiveReason: v.inactiveReason } : {}),
       /** Sahibi bolumden tasindi: gorevliye pasif gorunur. */
       ownerLeft,
       createdAt: v.createdAt,
@@ -532,6 +541,8 @@ export function createGateService(overrides: Partial<GateServiceDeps> = {}) {
       puts.push(await unitRoom(ctx, current.unitId, ts, vehicleId));
     }
     const next: Vehicle = { ...current, status, updatedAt: ts, updatedBy: ctx.userId, version: current.version + 1 };
+    // Sistemin (tasinma) koydugu neden yalnizca o pasif durum icindir.
+    if (status !== current.status) delete next.inactiveReason;
     if (note) next.note = note;
     else delete next.note;
     puts.push({ item: next, condition: { kind: 'match', fields: { version } }, reason: 'version' });
@@ -558,12 +569,14 @@ export function createGateService(overrides: Partial<GateServiceDeps> = {}) {
   /**
    * Gorevli / yonetici plaka sorgusu: tam plaka veya sondan en az 3 karakter. Tek `Query` (ters
    * plaka on eki), en fazla 10 sonuc. Yanit yalnizca bolum, kayit durumu ve arac notunu tasir.
-   * Sahibi bolumden tasinmis arac pasif gorunur (tasinma aninda ayri bir yazim gerekmez).
+   * Sahibi bolumden tasinmis arac okuma aninda pasif gorunur (gunluk tarama ayrica kaydi pasife alir: departures.ts).
    */
   async function lookupPlate(ctx: GateContext, input: string | undefined) {
     await actorAs(ctx, 'manager', 'guard');
     const q = plateQuery(input ?? '', PLATE_SEARCH_MIN);
     if (!q) throw new ValidationError(`Plaka araması en az ${PLATE_SEARCH_MIN} harf veya rakam olmalıdır`, 'q');
+    // Kullanici ve apartman basina deneme siniri (plaka -> bolum eslemesinin toplu taranmasina karsi).
+    await throttle.consume(ctx, 'plates');
     const { items } = await repo.query<PlateIndex>(ctx.apartmentId, { prefix: `${gateKeys.platePrefix}${reversePlate(q)}`, limit: PLATE_SEARCH_LIMIT * 2 });
     const found = items.filter((i) => i.entityType === 'GATE_PLATE');
     const left = await ownersLeft(ctx.apartmentId, found);
@@ -653,6 +666,7 @@ export function createGateService(overrides: Partial<GateServiceDeps> = {}) {
       ...(p.plate ? { plate: p.plate, plateDisplay: formatPlate(p.plate) } : {}),
       status: p.status,
       verdict,
+      ...(p.revokeReason ? { revokeReason: p.revokeReason } : {}),
       entryCount: p.entryCount,
       inside: p.inside,
       ...(p.lastEntryAt ? { lastEntryAt: p.lastEntryAt } : {}),
@@ -863,24 +877,31 @@ export function createGateService(overrides: Partial<GateServiceDeps> = {}) {
   async function verifyPass(ctx: GateContext, body: unknown) {
     await actorAs(ctx, 'manager', 'guard');
     const o = asObject(body);
+    const token = typeof o.token === 'string' && o.token ? o.token : undefined;
+    const rawCode = !token && typeof o.code === 'string' && o.code ? o.code : undefined;
+    if (!token && rawCode === undefined) throw new ValidationError('QR jetonu veya kısa kod gerekli', 'code');
+    const code = rawCode === undefined ? undefined : normalizeShortCode(rawCode);
+    if (rawCode !== undefined && !code) throw new ValidationError('Kod 8 karakter olmalıdır (örnek: K7M2-PQ4X)', 'code');
+    // Deneme siniri: her sorgu 1 puan; bulunamayan kisa kod ek ceza (kod tahmini hizla kilitlenir).
+    await throttle.consume(ctx, 'verify');
+    const notFound = async () => {
+      await throttle.penalize(ctx, 'verify', token ? FAILED_TOKEN_PENALTY : FAILED_CODE_PENALTY);
+      return new GateError('not_found', 'Geçiş bulunamadı');
+    };
     let passId: string | undefined;
     let matches: (p: GuestPass) => boolean;
-    if (typeof o.token === 'string' && o.token) {
-      if (!TOKEN_RE.test(o.token)) throw new GateError('not_found', 'Geçiş bulunamadı');
-      const h = tokenHash(o.token);
+    if (token) {
+      if (!TOKEN_RE.test(token)) throw await notFound();
+      const h = tokenHash(token);
       passId = (await repo.get<PassTokenIndex>(ctx.apartmentId, gateKeys.passToken(ctx.apartmentId, h).SK))?.passId;
       matches = (p) => p.tokenHash === h;
-    } else if (typeof o.code === 'string' && o.code) {
-      const code = normalizeShortCode(o.code);
-      if (!code) throw new ValidationError('Kod 8 karakter olmalıdır (örnek: K7M2-PQ4X)', 'code');
-      const h = codeHash(ctx.apartmentId, code);
+    } else {
+      const h = codeHash(ctx.apartmentId, code as string);
       passId = (await repo.get<PassCodeIndex>(ctx.apartmentId, gateKeys.passCode(ctx.apartmentId, h).SK))?.passId;
       matches = (p) => p.codeHash === h;
-    } else {
-      throw new ValidationError('QR jetonu veya kısa kod gerekli', 'code');
     }
     const pass = passId ? await repo.get<GuestPass>(ctx.apartmentId, gateKeys.pass(ctx.apartmentId, passId).SK) : undefined;
-    if (!pass || pass.apartmentId !== ctx.apartmentId || !matches(pass)) throw new GateError('not_found', 'Geçiş bulunamadı');
+    if (!pass || pass.apartmentId !== ctx.apartmentId || !matches(pass)) throw await notFound();
     return { pass: guardPassView(pass, await labelsFor(ctx.apartmentId, [pass.unitId]), await verdictOf(pass, residency(ctx.apartmentId))) };
   }
 
