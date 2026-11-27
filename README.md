@@ -352,6 +352,7 @@ Tüm uçlar `/api` altındadır. `GET /api/health` dışındakiler JWT ile korun
 | `tickets` | `/api/tickets` | Faz 3 O1 arıza / talep (yönetim, görevli, güvenlik, denetçi): `GET /` (filtreler: `status`, `assignee=me\|none\|<id>`, `category`, `priority`, `unitId`, `blockId`, `overdue`, `q`, `from`/`to`, `cursor`), `GET /board` (durum sütunları + SLA özeti), `GET /assignees`, `POST /` `{ idempotencyKey, title, description, category, priority?, location, photos? }`, `GET\|PATCH /:id`, `POST /:id/assign\|status\|comments`, `POST /photos/upload-url`, `GET /:id/photos/:photoId`, `GET /similar`. Masraf (O1-4; yönetim yazar, denetçi okur): `GET\|POST /:id/costs` (`mode: expense` yeni gider / `mode: link` var olan gider), `POST /:id/costs/:expenseId/unlink` `{ reason }`, `POST /:id/charges` `{ idempotencyKey, confirm: true, liableParty, amount, dueDate }` (daire içi talepte daireye yansıtma), `GET /costs/expense-options` |
 | `portal/tickets` | `/api/portal/tickets` | Sakin: açtığım + dairemin talepleri (yalnızca herkese açık olaylar), `POST /` (öncelik seçilmez), `GET /similar`, `POST /:id/comments`, `POST /:id/confirm` `{ version, rating?, note? }`, `/reopen` `{ version, note }`, `/cancel` `{ version }`, fotoğraf yükleme / görüntüleme |
 | `maintenance` | `/api/maintenance` | Periyodik bakım: `GET /presets`, `GET\|POST /templates`, `GET\|PUT /templates/:id`, `POST /templates/:id/archive`, `GET /tasks`, `GET /calendar?month=`, `GET /tasks/:id`, `POST /tasks/:id/assign\|start\|complete\|skip\|ticket`, fotoğraflar; masraf uçları `/tasks/:id/costs` (talep ile aynı sözleşme). Görevler `maintenance_tasks` işiyle (04:10) idempotent üretilir; `ticket_maintenance` (07:30) çözülen talebi `autoCloseDays` sonra kapatır ve günlük operasyon özetini (`OPERATIONS_DIGEST`) yayınlar |
+| `reservations` | `/api/reservations`, `/api/portal/reservations` | Ortak alan rezervasyonu. Yönetim (yazma: `apartment_manager`, `management_company`; okuma: + `observer`): `GET\|POST /facilities` `{ idempotencyKey, name, description?, capacity, openingHours[{day,open,close}], slotMinutes (30/60/90/120/180/240), maxBookingMinutes (≤ 720), advanceDays, maxActivePerUnit, requiresApproval, cancelNoticeHours, blockIds?, feeKurus, incomeAccountId? }`, `PATCH /facilities/:id` `{ version, …, status?: active\|inactive }` (silme yok), `GET /bookings?facilityId=&from=&to=&status=` (Istanbul günleri, ≤ 62 gün), `GET /bookings/pending`, `GET /bookings/:id`, `POST /bookings/:id/approve` `{ version, note? }`, `/reject` `{ version, reason }`, `/cancel` `{ version, reason }` (yarım kalan ücret iadesini de yeniden dener). Sakin (`resident`): `GET /facilities` (blok kısıtı + dairelerim), `GET /facilities/:id/availability?date=` (dilimler `free\|busy\|mine\|past`; başka dairenin kimliği dönmez), `GET /bookings`, `POST /bookings` `{ idempotencyKey, facilityId, unitId, date, start: 'SS:DD', minutes, partySize?, note? }`, `POST /bookings/:id/cancel` `{ version }` |
 | `portal` | `/api/portal` | Sakin ekranı: `my-unit`, `my-dues`, `my-statement`, `my-receipts`, duyurular; Finans 2.2: `my-plans`, `offset-options`, `GET\|POST offset-requests` |
 | `metering` | `/api/metering` | Finans 2.3 sayaç / endeks dağıtımı (yazma: yönetici; okuma: + denetçi): sayaç sicili, değişim (`/swaps`, önizlemeli, geri alınabilir), dağıtım şablonları (hazır ısınma / su), dönemler, `POST /periods/:id/calculate` (önizleme + `calcHash`), `POST /periods/:id/approve` `{ calcHash }` (60 bölüme kadar senkron; üstü **202 + arka plan işi**), toplu ters kayıt ve düzeltilmiş dönem, daire dağıtım dökümü PDF, `GET /expenses` fatura seçicisi (gider tarih dizininden en yeni 200) |
 | `meter-readings` | `/api/meter-readings` | Okuma girişi (yönetici + `building_staff`): açık dönemler, okuma cetveli, `PUT /periods/:id`, CSV/Excel toplu okuma (`/import`, `dryRun`), fotoğraf kanıtı (S3 imzalı URL) |
@@ -725,6 +726,16 @@ API Gateway sınırı istemci başına değil, rota başınadır: arka ucu ve ma
 - [x] Web sayfa bazlı code-splitting (`React.lazy` + `Suspense`, yeni sürümde eksik parça için tek seferlik yenileme), vendor parçaları, `qrcode` dinamik yükleme
 - [x] Gider tarih dizini (GSI1 `EXPDATE#<apartmentId>`): `listRecentExpenses` ile sayaç fatura seçicisi ve talep masrafı seçicisi tüm giderleri okumaz; eski kayıtlar için `backfill:expense-index`
 
+**Ürün modülü — Ortak alan rezervasyonu (`feature/rezervasyon`)** (modül: `apps/api/src/modules/reservations/`)
+
+- [x] Ortak alan tanımı: kapasite, gün bazlı açılış saatleri (Europe/Istanbul, :00 / :30), dilim uzunluğu, en uzun süre, rezervasyon penceresi (gün), daire başına aktif rezervasyon sınırı, yönetici onayı, sakin iptal süresi (saat), blok kısıtı, ücret (kuruş) ve gelir hesabı; idempotent oluşturma, sürümlü güncelleme, silme yok (`status: inactive`)
+- [x] Çakışmasız rezervasyon: her alan + 30 dakikalık dilim için tek kilit öğesi (`RSLOT#<alan>#<başlangıç>`) `attribute_not_exists OR state = released` koşullu yazımla; eş zamanlı iki istekten yalnızca biri kazanır (409 `slot_taken`). Daire sayacı (`RGUARD#<alan>#<daire>`) aktif sınırını eş zamanlı isteklerde de korur. Rezervasyon + kilitler + sayaç + indeksler (`RBFAC#`, `RBUNIT#`) + idempotency (`RIDEM#`) + denetim tek `TransactWriteItems`; iptal / ret kilitleri `released` yapar. Yeni GSI yok
+- [x] Durumlar: `pending` (onaylı alan) → `confirmed` / `rejected` (gerekçe); sakin iptali alanın iptal süresi dolmadan, yönetici iptali gerekçeyle her zaman. Tüm geçişler denetim günlüğüne (`reservation.*`)
+- [x] Ücret: onayda Finans `chargeUnit` ile oturan alt carisine aidat benzeri tahakkuk (referans `RSV:<rezervasyon>`, son ödeme rezervasyon günü) ve rezervasyonun `confirmed` olması aynı atomik yazımda (`replaceRecords`, sürüm koşullu); onay gerektirmeyen ücretli alanda rezervasyonla birlikte, tahakkuk yapılamazsa yönetici onayına düşer. İptalde Finans `reverseTransaction` (idempotent `REV_<işlem>`); ters kayıt yapılamazsa `reversal_pending`, yönetici yeniden dener. Modül defter satırı yazmaz
+- [x] KVKK: sakin yalnızca kendi dairelerinin rezervasyonlarını görür; diğer daireler müsaitlikte yalnızca “dolu” dilimdir
+- [x] Web: yönetim **Rezervasyonlar** (`/admin/reservations`; gün / hafta takvimi, onay bekleyenler, ortak alan tanımı ve pasife alma, ayrıntıda onay / gerekçeli ret / iptal / iade yeniden deneme), sakin **Rezervasyon** (`/app/rezervasyon`; alan → tarih → boş dilim → süre → onay, Rezervasyonlarım ve iptal)
+- [x] Testler: `apps/api/test/reservations.test.ts`; web `lib/reservations/model.test.ts`, `pages/admin/reservations/schemas.test.ts`, `bookingDialog.test.tsx`, `pages/resident/reservations/myReservations.test.tsx`
+
 ### Veri düzeltme betikleri
 
 - `npm run backfill:expense-index -w @bm/api -- --verify` (P1-b): tüm gider kayıtlarının dizin anahtarlarını beklenen değerle karşılaştırır, hiçbir şey yazmaz; dizinsiz / uyuşmayan kayıt varsa çıkış kodu 2. Tarih aralıklı gider sorgusu (`GET /api/finance/expenses`) yalnızca dizindeki kayıtları görür.
@@ -756,7 +767,7 @@ API Gateway sınırı istemci başına değil, rota başınadır: arka ucu ve ma
 **Platform ve operasyon**
 
 - [ ] Eski soneksiz `building-management` (prod) yığını hakkında karar ve ilk `prod` sürümü
-- [ ] Ziyaretçi QR, anket/oylama, rezervasyon, ihale
+- [ ] Ziyaretçi QR, anket/oylama, ihale
 - [ ] Arıza & bakım v2: ekipman sicili (seri no, garanti, servis firması), görevlinin tahmini tutar notu
 - [ ] Yönetim firması portföyü, abonelik/lisans
 - [ ] Cloudflare Pages Terraform modülü
@@ -778,7 +789,8 @@ API Gateway sınırı istemci başına değil, rota başınadır: arka ucu ve ma
 
 - [ ] Y1 — Genel kurul / anket / oylama (oy ağırlığı hazırlığı `GET /api/ownership/voting-roll` mevcut)
 - [ ] Güvenlik görevlisi ekranları: plaka sorgu, misafir / kurye QR geçiş (rol var, ekran yok)
-- [ ] Rezervasyon (ortak alan), ihale
+- [ ] İhale
+- [ ] Rezervasyon devamı: sakine onay / ret / iptal bildirimi (outbox olayı, e-posta şablonu, SNS `notification_event_types` filtresi)
 - [ ] Yönetim firması portföyü (çoklu apartman paneli), abonelik / lisans
 - [ ] Otomasyon / kanallar: SMS / WhatsApp, rapor / OCR worker'ları
 
