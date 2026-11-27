@@ -84,6 +84,7 @@ export function ResidentLayout() {
               key={to}
               to={to}
               end={end}
+              onClick={() => setMoreOpen(false)}
               className={({ isActive }) =>
                 cn(
                   'flex items-center gap-3 rounded-md px-3 py-2.5 text-small text-muted hover:bg-surface-muted hover:text-text',
