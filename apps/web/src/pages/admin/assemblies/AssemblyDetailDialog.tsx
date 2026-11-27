@@ -21,7 +21,7 @@ import {
 import { errorMessage } from '@/lib/api/errors';
 import { formatBps, formatFraction } from '@/lib/api/pollModel';
 import { formatDate, formatDateTime } from '@/lib/dates';
-import { tallyIssue } from './schemas';
+import { attendanceInput, tallyIssue } from './schemas';
 
 type Props = { assemblyId: string | null; canWrite: boolean; onClose: () => void; onEdit: (a: Assembly) => void };
 
@@ -294,20 +294,12 @@ function AttendanceCell({ assemblyId, unit, persons }: { assemblyId: string; uni
   const ownerIds = new Set(unit.owners.map((o) => o.userId));
   const proxyChoices = persons.filter((p) => !ownerIds.has(p.userId));
 
-  const input: AttendanceInput | null =
-    mode === 'proxy'
-      ? proxyUser && proxyUser !== OTHER
-        ? { mode, proxyUserId: proxyUser }
-        : proxyName.trim().length >= 3
-          ? { mode, proxyName: proxyName.trim() }
-          : null
-      : mode === 'present'
-        ? { mode, ...(attendee ? { attendeeUserId: attendee } : {}) }
-        : { mode };
+  const coOwned = unit.owners.length > 1;
+  const input: AttendanceInput | null = attendanceInput({ mode, coOwned, attendee, proxyUserId: proxyUser === OTHER ? '' : proxyUser, proxyName: proxyUser === OTHER ? proxyName : '' });
   const savedKey = JSON.stringify(
     att ? { mode: att.mode, a: att.attendee?.userId ?? '', p: att.proxy?.userId ?? '', n: att.proxy && !att.proxy.userId ? att.proxy.name : '' } : { mode: 'absent', a: '', p: '', n: '' },
   );
-  const currentKey = JSON.stringify({ mode, a: mode === 'present' ? attendee : '', p: mode === 'proxy' && proxyUser !== OTHER ? proxyUser : '', n: mode === 'proxy' && proxyUser === OTHER ? proxyName.trim() : '' });
+  const currentKey = JSON.stringify({ mode, a: mode !== 'absent' ? attendee : '', p: mode === 'proxy' && proxyUser !== OTHER ? proxyUser : '', n: mode === 'proxy' && proxyUser === OTHER ? proxyName.trim() : '' });
   const dirty = savedKey !== currentKey;
   const label = `${unit.number}`;
 
@@ -320,9 +312,9 @@ function AttendanceCell({ assemblyId, unit, persons }: { assemblyId: string; uni
           </option>
         ))}
       </Select>
-      {mode === 'present' && unit.owners.length > 1 && (
-        <Select aria-label={`${label} katılan paydaş`} value={attendee} onChange={(e) => setAttendee(e.target.value)}>
-          <option value="">Temsilci paydaş (isteğe bağlı)</option>
+      {mode !== 'absent' && coOwned && (
+        <Select aria-label={`${label} temsilci paydaş`} value={attendee} invalid={!attendee} onChange={(e) => setAttendee(e.target.value)}>
+          <option value="">Temsilci paydaş seçin (zorunlu)</option>
           {unit.owners.map((o) => (
             <option key={o.userId} value={o.userId}>
               {o.name ?? 'Kayıtlı kişi'}

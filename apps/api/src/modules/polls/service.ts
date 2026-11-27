@@ -52,6 +52,8 @@ const STATUS_FILTERS = [...POLL_PHASES, 'all'] as const;
 const PORTAL_ROLES: readonly Role[] = ['resident'];
 /** Gizli oylama bu kadar bolum oy kullanmadan erken kapatilamaz (az oyla acilan sonuc bireysel oyu gosterir). */
 export const MIN_SECRET_CLOSE_VOTES = 3;
+/** Oy listesi dondurma gibi sistem islemlerinin aktoru (denetim kaydi). */
+const SYSTEM_ACTOR = 'system';
 
 export type PollContext = { apartmentId: string; userId: string };
 export type PollPortalContext = PollContext & { role: Role };
@@ -235,17 +237,28 @@ export function createPollService(overrides: Partial<PollServiceDeps> & Pick<Pol
    * Oy listesini dondurur: oylama `opensAt` anina geldiyse ve henuz dondurulmadiysa (planli yayinlanan
    * oylamanin ilk oyu / kapatilmasi). Kovalar oylama kaydiyla AYNI atomik yazimda; eszamanli ilk oyda
    * digerinin dondurdugu liste kullanilir. Okumalar hicbir zaman dondurmaz.
+   *
+   * Dondurma SISTEM islemidir: ilk oyu veren sakin denetim kaydina aktor olarak (istek bilgisiyle
+   * birlikte) yazilmaz ve oylamanin `updatedBy` / `updatedAt` alanlari degismez; gizli oylamada
+   * yonetim hicbir uctan ilk oyu kimin verdigini ogrenemez.
    */
-  async function ensureRoll(ctx: PollContext, p: Poll): Promise<Poll & { roll: RollMeta }> {
+  async function ensureRoll(p: Poll): Promise<Poll & { roll: RollMeta }> {
     if (p.roll) return p as Poll & { roll: RollMeta };
     const now = stamp();
     if (now < p.opensAt) throw new PollError('poll_closed', 'Oylama henüz başlamadı');
     const snapshot = snapshotOf(p, await liveRoll(p.apartmentId, p.rollDate), now);
-    const next: Poll = { ...p, roll: snapshot.meta, updatedAt: now, updatedBy: ctx.userId, version: p.version + 1 };
+    const next: Poll = { ...p, roll: snapshot.meta, version: p.version + 1 };
     try {
       await repo.update(next, p.version, {
         roll: snapshot.chunks,
-        audit: { apartmentId: p.apartmentId, action: 'poll.roll_freeze', target: { type: 'poll', id: p.pollId }, actorId: ctx.userId, details: { rollDate: p.rollDate, units: snapshot.meta.units } },
+        audit: {
+          apartmentId: p.apartmentId,
+          action: 'poll.roll_freeze',
+          target: { type: 'poll', id: p.pollId },
+          actorId: SYSTEM_ACTOR,
+          systemActor: true,
+          details: { rollDate: p.rollDate, units: snapshot.meta.units },
+        },
       });
       return next as Poll & { roll: RollMeta };
     } catch (err) {
@@ -440,7 +453,7 @@ export function createPollService(overrides: Partial<PollServiceDeps> & Pick<Pol
     }
     const votedUnits = (await repo.listVotes(ctx.apartmentId, loaded.pollId)).length;
     // Acilmis ama henuz oy almamis planli oylama: kesin sonucun paydasi kapanista dondurulur.
-    const current = phase === 'open' ? await ensureRoll(ctx, loaded) : loaded;
+    const current = phase === 'open' ? await ensureRoll(loaded) : loaded;
     const now = stamp();
     // Gizli oylama: cok az oyla erken kapatip sonucu acmak bireysel oyu ele verir.
     if (current.secret && phase === 'open' && votedUnits < MIN_SECRET_CLOSE_VOTES) {
@@ -630,7 +643,7 @@ export function createPollService(overrides: Partial<PollServiceDeps> & Pick<Pol
     const optionId = reqString(o, 'optionId', 16);
     if (!found.options.some((x) => x.optionId === optionId)) throw new ValidationError('Geçersiz seçenek', 'optionId');
     // Planli yayinlanan oylamada ilk oy (acilistan sonra) oy listesini dondurur; oy hakki dondurulmus listeden.
-    const p = await ensureRoll(ctx, found);
+    const p = await ensureRoll(found);
 
     const elig = await eligibility(p, r.unit, ctx.userId);
     if (!elig.relation) throw new PollError('not_eligible', elig.reason ?? 'Bu oylamada oy hakkınız yok');
@@ -670,7 +683,26 @@ export function createPollService(overrides: Partial<PollServiceDeps> & Pick<Pol
   }
 
 
-  return { create, list, get, update, publish, close, cancel, results, participation, portalList, portalDetail, vote };
+  /**
+   * Zamanlanmis is (`maintenance_tasks`, her gun): suresi dolmus (veya erken kapatilmis) ama hic
+   * oy almadigi icin oy listesi dondurulmamis oylamalari SISTEM olarak dondurur; kesin sonucun
+   * paydasi canli listede kalmaz. Acilmadan kapatilan oylama dondurulmaz (oy listesi gunu gelmedi).
+   */
+  async function freezeEnded(apartmentId: string): Promise<number> {
+    const nowIso = stamp();
+    const due = (await repo.list(apartmentId)).filter(
+      (p) =>
+        p.apartmentId === apartmentId &&
+        !p.roll &&
+        Boolean(p.publishedAt) &&
+        p.opensAt <= nowIso &&
+        (p.status === 'published' ? nowIso >= p.closesAt : p.status === 'closed' && (p.closedAt ?? p.closesAt) >= p.opensAt),
+    );
+    for (const p of due) await ensureRoll(p);
+    return due.length;
+  }
+
+  return { create, list, get, update, publish, close, cancel, results, participation, portalList, portalDetail, vote, freezeEnded };
 }
 
 export type PollService = ReturnType<typeof createPollService>;

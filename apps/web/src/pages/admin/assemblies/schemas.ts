@@ -1,5 +1,13 @@
 import { z } from 'zod';
-import { ASSEMBLY_KINDS, type Assembly, type AssemblyInput, MAX_AGENDA_ITEMS, SECOND_MEETING_MAX_DAYS } from '@/lib/api/assemblyModel';
+import {
+  ASSEMBLY_KINDS,
+  type Assembly,
+  type AssemblyInput,
+  type AttendanceInput,
+  type AttendanceMode,
+  MAX_AGENDA_ITEMS,
+  SECOND_MEETING_MAX_DAYS,
+} from '@/lib/api/assemblyModel';
 import { isoToIstanbulLocal, istanbulLocalToIso } from '@/lib/dates';
 
 /** Genel kurul formu: tarih <input type="datetime-local"> (Istanbul), gundem satirlari, ilk toplanti secimi. */
@@ -74,6 +82,19 @@ export function toInput(v: AssemblyValues, current?: Assembly): AssemblyInput {
       return prev?.description && prev.title === title.trim() ? { title: title.trim(), description: prev.description } : { title: title.trim() };
     }),
   };
+}
+
+/**
+ * Katilim girisi -> API govdesi; eksikse null (Kaydet kapali). Hisseli bolumde asaleten ve vekaleten
+ * katilimda paydaslarin temsilcisi zorunlu (oy KMK m.31 siniri icin o kisiye yazilir).
+ */
+export function attendanceInput(s: { mode: AttendanceMode; coOwned: boolean; attendee: string; proxyUserId: string; proxyName: string }): AttendanceInput | null {
+  if (s.mode === 'absent') return { mode: 'absent' };
+  if (s.coOwned && !s.attendee) return null;
+  const rep = s.attendee ? { attendeeUserId: s.attendee } : {};
+  if (s.mode === 'present') return { mode: 'present', ...rep };
+  if (s.proxyUserId) return { mode: 'proxy', ...rep, proxyUserId: s.proxyUserId };
+  return s.proxyName.trim().length >= 3 ? { mode: 'proxy', ...rep, proxyName: s.proxyName.trim() } : null;
 }
 
 /** Gundem sayimi: tam sayilar, toplam katilan (KMK m.31 sinirli) oyu asamaz; API de dogrular. */

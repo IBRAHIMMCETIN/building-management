@@ -381,9 +381,15 @@ export function createAssemblyService(overrides: Partial<AssemblyServiceDeps> = 
 
     let attendee: AssemblyAttendance['attendee'];
     let proxy: ProxyRef | undefined;
-    if (mode === 'present' && o.attendeeUserId !== undefined && o.attendeeUserId !== null) {
+    // Hisseli bolum: asaleten de vekaleten de paydaslarin temsilcisi (kisi) zorunlu; oy KMK m.31
+    // siniri icin o kisiye yazilir (temsilcisiz sayilan bolumle sinirdan kacilamaz).
+    const coOwned = entry.owners.length > 1;
+    if (mode !== 'absent' && (coOwned || (o.attendeeUserId !== undefined && o.attendeeUserId !== null))) {
+      if (coOwned && (o.attendeeUserId === undefined || o.attendeeUserId === null)) {
+        throw new ValidationError('Hisseli bölümde paydaşların temsilcisini (bölümün oyunu kullanan paydaş) seçin', 'attendeeUserId');
+      }
       const userId = reqString(o, 'attendeeUserId', 64);
-      if (!entry.owners.some((x) => x.userId === userId)) throw new ValidationError('Katılan kişi bu bölümün malikleri arasında değil', 'attendeeUserId');
+      if (!entry.owners.some((x) => x.userId === userId)) throw new ValidationError('Temsilci bu bölümün malikleri arasında değil', 'attendeeUserId');
       attendee = { userId };
     }
     if (mode === 'proxy') {
