@@ -12,6 +12,7 @@
  *  - Karsilastirma KDV dahil toplam uzerinden (model.ts); karar aninda secilen teklifin ozeti saklanir.
  */
 import { createHash, randomUUID } from 'node:crypto';
+import { type DomainEvent, buildEvent } from '../../events/publisher.js';
 import type { IsoDate } from '../core/types.js';
 import { type Obj, ValidationError, asObject, assertId, isIsoDate, reqEnum, reqInt, reqString } from '../core/validation.js';
 import type { SignedDownload } from '../documents/service.js';
@@ -500,7 +501,21 @@ export function createTenderService(overrides: Partial<TenderServiceDeps> = {}) 
     return { tender: await detailView(ctx, next, 'manager') };
   }
 
-  async function transition(ctx: TenderContext, tenderId: string, action: TenderAction, body: unknown, build: (t: Tender, o: Obj, ts: string) => { next: Partial<Tender>; details: Record<string, unknown>; reason?: string }) {
+  /**
+   * Sakinlere bildirim olayi (outbox; yalnizca kimlik). Olay kimligi gecis basina deterministik:
+   * yayin, karar ve iptal birer kez olur. Worker ihalenin guncel halini okur (bayat olay elenir).
+   */
+  type TenderNotice = 'TENDER_PUBLISHED' | 'TENDER_DECIDED' | 'TENDER_CANCELLED';
+  const tenderEvent = (ctx: TenderContext, type: TenderNotice, tenderId: string, ts: string): DomainEvent =>
+    buildEvent({ eventId: `${type}:${tenderId}`, type, apartmentId: ctx.apartmentId, actorId: ctx.userId, occurredAt: ts, payload: { tenderId } }, deps.now);
+
+  async function transition(
+    ctx: TenderContext,
+    tenderId: string,
+    action: TenderAction,
+    body: unknown,
+    build: (t: Tender, o: Obj, ts: string) => { next: Partial<Tender>; details: Record<string, unknown>; reason?: string; notify?: TenderNotice },
+  ) {
     managerOf(ctx);
     const o = asObject(body);
     const version = parseVersion(o);
@@ -509,9 +524,13 @@ export function createTenderService(overrides: Partial<TenderServiceDeps> = {}) 
     if (!to) throw new TenderError('invalid_state', INVALID_TRANSITION[action]);
     assertVersion(t, version);
     const ts = stamp();
-    const { next, details, reason } = build(t, o, ts);
+    const { next, details, reason, notify } = build(t, o, ts);
     const item: Tender = { ...t, ...next, status: to, ...touch(ctx, t, ts) };
-    await write(ctx, { tender: { item, expectedVersion: version }, audit: audit(ctx, `tender.${action}`, tenderId, { from: t.status, to, ...details }, reason) });
+    await write(ctx, {
+      tender: { item, expectedVersion: version },
+      audit: audit(ctx, `tender.${action}`, tenderId, { from: t.status, to, ...details }, reason),
+      ...(notify ? { outbox: [tenderEvent(ctx, notify, tenderId, ts)] } : {}),
+    });
     return { tender: await detailView(ctx, item, 'manager') };
   }
 
@@ -547,6 +566,7 @@ export function createTenderService(overrides: Partial<TenderServiceDeps> = {}) 
         next: { publishedAt: ts, publishedBy: ctx.userId, ...(shortfallReason ? { shortfallReason } : {}) },
         details: { quoteCount: r.activeQuotes, minQuotes: t.minQuotes, ...(shortfallReason ? { shortfall: true } : {}) },
         ...(shortfallReason ? { reason: shortfallReason } : {}),
+        notify: 'TENDER_PUBLISHED',
       };
     });
 
@@ -567,6 +587,7 @@ export function createTenderService(overrides: Partial<TenderServiceDeps> = {}) 
         next: { decision: { quoteId, reason, ...(reference ? { reference } : {}), supplierName: quote.supplierName, ...amounts, decidedAt: ts, decidedBy: ctx.userId } },
         details: { quoteId, supplierName: quote.supplierName, totalKurus: amounts.totalKurus, lowest, ...(reference ? { reference } : {}) },
         reason,
+        notify: 'TENDER_DECIDED',
       };
     });
 
@@ -575,7 +596,8 @@ export function createTenderService(overrides: Partial<TenderServiceDeps> = {}) 
     transition(ctx, tenderId, 'cancel', body, (t, o, ts) => {
       const reason = reqReason(o, 'reason', 10, 500);
       if (!CANCELLABLE_STATUSES.includes(t.status)) throw new TenderError('invalid_state', INVALID_TRANSITION.cancel);
-      return { next: { cancelledAt: ts, cancelledBy: ctx.userId, cancelReason: reason, cancelledFrom: t.status }, details: {}, reason };
+      // Sakinler yalnizca paylasilmis (yayindaki) ihalenin iptalini gorur ve e-postasini alir.
+      return { next: { cancelledAt: ts, cancelledBy: ctx.userId, cancelReason: reason, cancelledFrom: t.status }, details: {}, reason, ...(t.status === 'published' ? { notify: 'TENDER_CANCELLED' as const } : {}) };
     });
 
   // -------------------------------------------------------------------------
@@ -745,7 +767,13 @@ export function createTenderService(overrides: Partial<TenderServiceDeps> = {}) 
         comment: { item, requireStatus: 'published' },
         idempotency: idempotency(ctx, key, 'comment', tenderId, commentId, fp, ts),
         // Yonetim yaniti sakinlere yapilan resmi aciklamadir: denetime yazilir (metin degil, kimlik + uzunluk).
-        ...(audience === 'manager' ? { audit: audit(ctx, 'tender.comment', tenderId, { commentId, length: text.length }) } : {}),
+        // Acik sorularin yazarlarina e-posta (outbox; worker yorumlari okur).
+        ...(audience === 'manager'
+          ? {
+              audit: audit(ctx, 'tender.comment', tenderId, { commentId, length: text.length }),
+              outbox: [buildEvent({ eventId: `TENDER_REPLIED:${tenderId}:${commentId}`, type: 'TENDER_REPLIED', apartmentId: ctx.apartmentId, actorId: ctx.userId, occurredAt: ts, payload: { tenderId, commentId } }, deps.now)],
+            }
+          : {}),
       });
     } catch (err) {
       if (err instanceof TenderConflictError && err.reason === 'duplicate' && (await replayOf(ctx, key, 'comment', fp))) return { ...(await result()), replayed: true };

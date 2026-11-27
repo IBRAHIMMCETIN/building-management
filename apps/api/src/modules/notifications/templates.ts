@@ -311,9 +311,78 @@ function spec(n: Notification, ctx: EmailContext): Spec | undefined {
       return reservationSpec(n, ctx);
     case 'assembly_called':
       return assemblyCallSpec(n);
+    case 'tender_published':
+    case 'tender_decided':
+    case 'tender_cancelled':
+    case 'tender_replied':
+      return tenderSpec(n);
     default:
       return undefined;
   }
+}
+
+/** Ihale: sakinlerle paylasim, karar ve yayindan sonra iptal (uyeler); soruya yonetim yaniti (soran sakin). */
+function tenderSpec(n: Notification): Spec {
+  const d = n.data;
+  const title = str(d.title) || 'İhale';
+  const id = str(d.tenderId);
+  const cta = { label: 'İhaleyi görüntüle', path: id ? `ihale/${encodeURIComponent(id)}` : 'ihale' };
+  if (n.template === 'tender_published') {
+    const count = num(d.quoteCount);
+    const lowest = typeof d.lowestTotalKurus === 'number' ? formatTL(d.lowestTotalKurus) : undefined;
+    return {
+      subject: `İhale teklifleri paylaşıldı: ${title}`,
+      heading: 'İhale teklifleri paylaşıldı',
+      preheader: `${count} teklif${lowest ? `, en düşük ${lowest} (KDV dahil)` : ''}`,
+      blocks: [
+        { kind: 'p', text: `Yönetim "${title}" işi için alınan teklifleri sakinlerle paylaştı. Teklifleri yan yana inceleyebilir, belgelerini açabilir ve sorularınızı ihale sayfasından yönetime iletebilirsiniz.` },
+        { kind: 'rows', rows: [['İş', title], ['Teklif sayısı', String(count)], ...(lowest ? [['En düşük teklif (KDV dahil)', lowest] as [string, string]] : [])] },
+        ...(d.shortfall === 'true' ? [{ kind: 'note' as const, text: 'Asgari teklif sayısına ulaşılamadı; yönetimin gerekçesini ihale sayfasında görebilirsiniz.' }] : []),
+      ],
+      cta: { ...cta, label: 'Teklifleri incele' },
+    };
+  }
+  if (n.template === 'tender_decided') {
+    const supplier = str(d.supplierName);
+    const total = formatTL(num(d.totalKurus));
+    const reference = str(d.reference);
+    const reason = str(d.reason);
+    return {
+      subject: `İhale sonuçlandı: ${title}`,
+      heading: 'İhale karara bağlandı',
+      preheader: `${supplier}, ${total} (KDV dahil)`,
+      blocks: [
+        { kind: 'p', text: `Sakinlerle paylaşılan "${title}" ihalesi karara bağlandı.` },
+        { kind: 'rows', rows: [['Seçilen firma', supplier], ['Tutar (KDV dahil)', total], ...(reference ? [['Karar referansı', reference] as [string, string]] : [])] },
+        ...(reason ? [{ kind: 'p' as const, text: `Gerekçe: ${reason}` }] : []),
+      ],
+      cta,
+    };
+  }
+  if (n.template === 'tender_cancelled') {
+    const reason = str(d.reason);
+    return {
+      subject: `İhale iptal edildi: ${title}`,
+      heading: 'İhale iptal edildi',
+      preheader: title,
+      blocks: [
+        { kind: 'p', text: `Sakinlerle paylaşılan "${title}" ihalesi yönetim tarafından iptal edildi.` },
+        ...(reason ? [{ kind: 'p' as const, text: `Gerekçe: ${reason}` }] : []),
+      ],
+      cta,
+    };
+  }
+  return {
+    subject: `Sorunuz yanıtlandı: ${title}`,
+    heading: 'Yönetim sorunuzu yanıtladı',
+    preheader: title,
+    blocks: [
+      { kind: 'p', text: `"${title}" ihalesine yazdığınız soruya yönetim yanıt verdi.` },
+      ...(str(d.reply) ? [{ kind: 'note' as const, text: `Yanıt: ${str(d.reply)}` }] : []),
+      { kind: 'note', text: 'Tüm sorular ve yanıtlar ihale sayfasında diğer sakinlere adınız olmadan görünür.' },
+    ],
+    cta: { ...cta, label: 'Yanıtı görüntüle' },
+  };
 }
 
 /** E-posta nezaketen gonderilir: KMK m.29'daki cagri usulunun yerine gecmez (README "Hukuki yorum"). */

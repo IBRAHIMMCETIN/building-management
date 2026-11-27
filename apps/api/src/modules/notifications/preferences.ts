@@ -14,11 +14,11 @@ import { NOTIFICATION_CATEGORIES, type NotificationCategory, isNotificationCateg
  * sakinin tercihini degistiremez. Kisisel veri tasimaz (yalnizca acik/kapali + zaman damgasi).
  *
  * Kategori bazli e-posta (bkz. `categories.ts`): `email.finance | announcements | tickets | gate |
- * reservations | polls | assemblies`; yalnizca acikca secilenler saklanir, verilmeyen kategori ACIK
+ * reservations | polls | assemblies | tenders`; yalnizca acikca secilenler saklanir, verilmeyen kategori ACIK
  * sayilir. Ana anahtar (`enabled`) kapaliysa hicbiri gitmez.
  *
  * Kayit duz ozniteliklerdir (`emailEnabled`, `ticketEmails` (O1-2 ile ayni ad), `emailFinance`,
- * `emailAnnouncements`, `emailGate`, `emailReservations`, `emailPolls`, `emailAssemblies`). Guncelleme
+ * `emailAnnouncements`, `emailGate`, `emailReservations`, `emailPolls`, `emailAssemblies`, `emailTenders`). Guncelleme
  * OKUMADAN yalnizca gonderilen alanlari `SET` eder (UpdateExpression): iki cihazin es zamanli kismi
  * guncellemesi birbirini ezmez; eski sekme yalnizca degistirdigi alani gonderdigi icin ana anahtari geri acamaz.
  */
@@ -46,6 +46,7 @@ export const CATEGORY_ATTRIBUTES: Record<NotificationCategory, string> = {
   reservations: 'emailReservations',
   polls: 'emailPolls',
   assemblies: 'emailAssemblies',
+  tenders: 'emailTenders',
 };
 
 /** Yalnizca bilinen kategoriler, yalnizca boolean degerler (sira sabit). */
@@ -114,7 +115,7 @@ export function createDynamoPreferencesRepository(): PreferencesRepository {
 
 /**
  * PUT govdesi: `{ email: { enabled?, finance?, announcements?, tickets?, gate?, reservations?, polls?,
- * assemblies?: boolean } }`; en az bir alan zorunlu, bilinmeyen alan reddedilir. Verilmeyen alan degismez.
+ * assemblies?, tenders?: boolean } }`; en az bir alan zorunlu, bilinmeyen alan reddedilir. Verilmeyen alan degismez.
  */
 export function parsePreferences(body: unknown): PreferencesInput {
   const o = asObject(body);

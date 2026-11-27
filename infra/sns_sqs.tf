@@ -23,6 +23,7 @@ locals {
     "GATE_COURIER_ARRIVED", "GATE_GUEST_ENTERED",
     "RESERVATION_APPROVED", "RESERVATION_REJECTED", "RESERVATION_CANCELLED",
     "ASSEMBLY_CALLED",
+    "TENDER_PUBLISHED", "TENDER_DECIDED", "TENDER_CANCELLED", "TENDER_REPLIED",
   ]
   # Worker Lambda zaman asimi x 6 (AWS onerisi); worker 30 sn varsayilir.
   notification_visibility_timeout = 180

@@ -1,3 +1,4 @@
+import type { DomainEvent } from '../../src/events/publisher.js';
 import type { AuditDraft } from '../../src/modules/audit/log.js';
 import { TenderConflictError, type TenderRepository, type TenderWrite } from '../../src/modules/tenders/repository.js';
 import type { Tender, TenderComment, TenderIdempotency } from '../../src/modules/tenders/types.js';
@@ -9,6 +10,7 @@ export function createFakeTenderRepo() {
   const store = new Map<string, Doc>();
   const audits: AuditDraft[] = [];
   const writes: TenderWrite[] = [];
+  const outbox: DomainEvent[] = [];
   const k = (o: { PK: string; SK: string }) => `${o.PK}|${o.SK}`;
   const get = <T>(key: { PK: string; SK: string }) => {
     const v = store.get(k(key));
@@ -44,10 +46,12 @@ export function createFakeTenderRepo() {
         const t = store.get(`${pk}|TENDER#${w.comment.item.tenderId}`);
         if (!t || t.status !== w.comment.requireStatus) throw new TenderConflictError('status');
       }
+      if ((w.outbox ?? []).some((e) => outbox.some((o) => o.eventId === e.eventId))) throw new TenderConflictError('version');
       const put = (d: Doc) => store.set(k(d), structuredClone(d));
       if (w.idempotency) put(w.idempotency as unknown as Doc);
       if (w.tender) put(w.tender.item as unknown as Doc);
       if (w.comment) put(w.comment.item as unknown as Doc);
+      for (const e of w.outbox ?? []) outbox.push(structuredClone(e));
       if (w.audit) audits.push(w.audit);
       writes.push(structuredClone(w));
     },
@@ -57,6 +61,7 @@ export function createFakeTenderRepo() {
     store,
     audits,
     writes,
+    outbox,
     beforeNextWrite: (hook: () => Promise<void>) => {
       beforeWrite = hook;
     },
