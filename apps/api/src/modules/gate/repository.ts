@@ -1,7 +1,8 @@
-import { TransactionCanceledException } from '@aws-sdk/client-dynamodb';
-import { BatchGetCommand, QueryCommand, type QueryCommandOutput, type TransactWriteCommandInput } from '@aws-sdk/lib-dynamodb';
+import { ConditionalCheckFailedException, TransactionCanceledException } from '@aws-sdk/client-dynamodb';
+import { BatchGetCommand, QueryCommand, type QueryCommandOutput, type TransactWriteCommandInput, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { getDynamo, getTenantItem, tenantPk, toDataAccessError } from '../../config/dynamodb.js';
-import { type AuditDraft, sendWithAudit } from '../audit/log.js';
+import { type AuditDraft, appendAudit, sendWithAudit } from '../audit/log.js';
+import type { ThrottleStore } from './throttle.js';
 import type { TableKeys } from '../core/types.js';
 import { ValidationError } from '../core/validation.js';
 
@@ -45,7 +46,7 @@ export type GateQuery = {
   cursor?: string;
 };
 
-export type GateRepository = {
+export type GateRepository = ThrottleStore & {
   get<T>(apartmentId: string, sk: string): Promise<T | undefined>;
   getMany<T>(apartmentId: string, sks: readonly string[]): Promise<T[]>;
   query<T>(apartmentId: string, q: GateQuery): Promise<{ items: T[]; cursor?: string }>;
@@ -148,6 +149,34 @@ export function createGateRepository(): GateRepository {
         }
         throw toDataAccessError(err);
       }
+    },
+    /**
+     * Deneme sayaci (throttle.ts): `ADD count :w`, TTL ilk yazimda. `limit` verilirse yalnizca
+     * `count < limit` iken; kosul bozulursa `ok: false` (sayac artmaz, kayit buyumez).
+     */
+    async hit(apartmentId, sk, weight, opts) {
+      const { client, tableName } = getDynamo();
+      const limited = opts.limit !== undefined;
+      try {
+        const out = await client.send(
+          new UpdateCommand({
+            TableName: tableName,
+            Key: { PK: tenantPk(apartmentId), SK: sk },
+            UpdateExpression: 'ADD #count :w SET #et = :et, #apt = :apt, #ttl = if_not_exists(#ttl, :ttl)',
+            ...(limited ? { ConditionExpression: 'attribute_not_exists(#count) OR #count < :limit' } : {}),
+            ExpressionAttributeNames: { '#count': 'count', '#et': 'entityType', '#apt': 'apartmentId', '#ttl': 'ttl' },
+            ExpressionAttributeValues: { ':w': weight, ':et': 'GATE_THROTTLE', ':apt': apartmentId, ':ttl': opts.ttl, ...(limited ? { ':limit': opts.limit } : {}) },
+            ReturnValues: 'UPDATED_NEW',
+          }),
+        );
+        return { ok: true, count: Number(out.Attributes?.count ?? weight) };
+      } catch (err) {
+        if (err instanceof ConditionalCheckFailedException) return { ok: false, count: opts.limit ?? 0 };
+        throw toDataAccessError(err);
+      }
+    },
+    async audit(draft) {
+      await appendAudit(draft);
     },
   };
 }

@@ -399,7 +399,7 @@ export function createApp(config: AppConfig) {
 
 
   // Guvenlik kapisi (yonetim + guvenlik; sakin portali `/api/portal`'dan once).
-  const gateService = config.gateService ?? createGateService();
+  const gateService = config.gateService ?? createGateService({ metrics });
   app.route('/api/gate', gateRoutes({ authenticate, service: gateService }));
   app.route('/api/portal/gate', gatePortalRoutes({ authenticate, service: gateService }));
   app.route('/api/portal/payments', paymentPortalRoutes({ authenticate, service: paymentsService }));

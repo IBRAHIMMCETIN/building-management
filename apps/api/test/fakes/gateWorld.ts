@@ -90,7 +90,7 @@ export function gateWorld(opts: { codes?: string[] } = {}) {
       headers: { 'x-test-claims': JSON.stringify({ userId: ctx.userId, role: ctx.role, apartmentId: ctx.apartmentId }), ...(body ? { 'content-type': 'application/json' } : {}) },
       ...(body ? { body: JSON.stringify(body) } : {}),
     });
-    return { status: res.status, json: (await res.json()) as Record<string, any> };
+    return { status: res.status, headers: res.headers, json: (await res.json()) as Record<string, any> };
   };
   let k = 0;
   const key = () => `key-${++k}`;
