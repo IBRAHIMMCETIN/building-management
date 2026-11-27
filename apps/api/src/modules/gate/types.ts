@@ -63,6 +63,8 @@ export type Vehicle = TableKeys & {
    * gorevliye pasif gorunur ve sinira sayilmaz. Alan yoksa (eski kayit) sahibi tasinmis sayilir.
    */
   ownerUserId?: string;
+  /** Sistem tarafindan pasife alindiysa nedeni (`taşınma`: sahibin uyeligi bitti; departures.ts). */
+  inactiveReason?: string;
   createdAt: IsoDateTime;
   createdBy: string;
   createdByRole: string;
@@ -117,6 +119,8 @@ export type GuestPass = TableKeys & {
   lastExitAt?: IsoDateTime;
   revokedAt?: IsoDateTime;
   revokedBy?: string;
+  /** Sistem iptali nedeni (`taşınma`: gecisi olusturan sakinin uyeligi bitti; departures.ts). */
+  revokeReason?: string;
   createdAt: IsoDateTime;
   createdBy: string;
   createdByRole: string;

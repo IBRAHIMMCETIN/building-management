@@ -365,6 +365,7 @@ export function createGateService(overrides: Partial<GateServiceDeps> = {}) {
       plateDisplay: formatPlate(v.plate),
       ...(v.note ? { note: v.note } : {}),
       status: v.status,
+      ...(v.inactiveReason ? { inactiveReason: v.inactiveReason } : {}),
       /** Sahibi bolumden tasindi: gorevliye pasif gorunur. */
       ownerLeft,
       createdAt: v.createdAt,
@@ -540,6 +541,8 @@ export function createGateService(overrides: Partial<GateServiceDeps> = {}) {
       puts.push(await unitRoom(ctx, current.unitId, ts, vehicleId));
     }
     const next: Vehicle = { ...current, status, updatedAt: ts, updatedBy: ctx.userId, version: current.version + 1 };
+    // Sistemin (tasinma) koydugu neden yalnizca o pasif durum icindir.
+    if (status !== current.status) delete next.inactiveReason;
     if (note) next.note = note;
     else delete next.note;
     puts.push({ item: next, condition: { kind: 'match', fields: { version } }, reason: 'version' });
@@ -566,7 +569,7 @@ export function createGateService(overrides: Partial<GateServiceDeps> = {}) {
   /**
    * Gorevli / yonetici plaka sorgusu: tam plaka veya sondan en az 3 karakter. Tek `Query` (ters
    * plaka on eki), en fazla 10 sonuc. Yanit yalnizca bolum, kayit durumu ve arac notunu tasir.
-   * Sahibi bolumden tasinmis arac pasif gorunur (tasinma aninda ayri bir yazim gerekmez).
+   * Sahibi bolumden tasinmis arac okuma aninda pasif gorunur (gunluk tarama ayrica kaydi pasife alir: departures.ts).
    */
   async function lookupPlate(ctx: GateContext, input: string | undefined) {
     await actorAs(ctx, 'manager', 'guard');
@@ -663,6 +666,7 @@ export function createGateService(overrides: Partial<GateServiceDeps> = {}) {
       ...(p.plate ? { plate: p.plate, plateDisplay: formatPlate(p.plate) } : {}),
       status: p.status,
       verdict,
+      ...(p.revokeReason ? { revokeReason: p.revokeReason } : {}),
       entryCount: p.entryCount,
       inside: p.inside,
       ...(p.lastEntryAt ? { lastEntryAt: p.lastEntryAt } : {}),

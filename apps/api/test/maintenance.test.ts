@@ -353,6 +353,7 @@ describe('zamanlayici isleri', () => {
       payouts: null,
       invoices: null,
       equipment: { digestItems: async () => ({ items: [], weekly: false }) },
+      gate: { sweep: async () => ({ candidates: 0, passesRevoked: 0, vehiclesDeactivated: 0, failed: 0 }) },
       now: () => new Date(T0),
       log: { info: () => {}, error: () => {} },
       ...over,
@@ -366,6 +367,15 @@ describe('zamanlayici isleri', () => {
     expect(maintenance.generate).toHaveBeenCalledWith(APT, TODAY);
     expect(polls.freezeEnded).toHaveBeenCalledWith(APT);
     expect(out).toEqual([{ apartmentId: APT, status: 'done', detail: { date: TODAY, templates: 2, created: 3, existing: 1 } }]);
+  });
+
+  it('maintenance_tasks: tasinanlarin kapi gecis / araclari sistem olarak pasife alinir (sonuc ayrintida)', async () => {
+    const maintenance = { generate: vi.fn(async () => ({ templates: 0, created: 0, existing: 0 })), digestItems: vi.fn() };
+    const gate = { sweep: vi.fn(async () => ({ candidates: 2, passesRevoked: 3, vehiclesDeactivated: 1, failed: 0 })) };
+    const worker = base({ maintenance, polls: { freezeEnded: vi.fn(async () => 0) }, gate, tickets: {} as never, events: createInMemoryEventPublisher() });
+    const out = await worker.runJob({ job: 'maintenance_tasks', scheduledTime: '2026-11-25T01:10:00Z' });
+    expect(gate.sweep).toHaveBeenCalledWith(APT, TODAY, 'system-scheduler');
+    expect(out[0]).toMatchObject({ status: 'done', detail: { gatePassesRevoked: 3, gateVehiclesDeactivated: 1 } });
   });
 
   it('maintenance_tasks: biten ve oy almamis oylamalarin oy listesi dondurulur (Y1)', async () => {

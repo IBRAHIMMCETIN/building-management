@@ -108,5 +108,5 @@ export function gateWorld(opts: { codes?: string[] } = {}) {
   const moveIn = (userId: string, unitId: string, startDate: string, createdAt?: string) => {
     memberships.push({ ...member(APT, userId, unitId, 'tenant'), startDate, ...(createdAt ? { createdAt } : {}) } as UnitMembership);
   };
-  return { fake, service, at, call, key, pass, moveOut, moveIn, endsOn };
+  return { fake, service, at, call, key, pass, moveOut, moveIn, endsOn, memberships, now: () => now };
 }
