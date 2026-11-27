@@ -67,7 +67,7 @@ export function NewTicketWizard() {
   };
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="mx-auto flex w-full max-w-2xl flex-col gap-4">
       <button type="button" onClick={() => (step === 0 ? navigate('/app/talepler') : setStep(step - 1))} className="inline-flex items-center gap-1 self-start text-small text-muted hover:text-text">
         <ArrowLeft className="size-4" aria-hidden="true" />
         {step === 0 ? 'Taleplerim' : 'Geri'}

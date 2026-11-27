@@ -7,6 +7,7 @@ import { PortalUnitProvider } from '@/context/PortalUnitContext';
 import { useActiveApartmentName, useIsActiveOwner } from '@/hooks/useActiveContextLabel';
 import { BRAND_NAME } from '@/lib/brand';
 import { cn } from '@/lib/cn';
+import type { NavItem } from './adminNav';
 import { isMoreActive, residentNavFor, splitResidentNav } from './residentNav';
 import { UserMenu } from './UserMenu';
 import { PageSuspense } from '@/router/lazyPage';
@@ -25,37 +26,92 @@ export function PortalBrand() {
   );
 }
 
+/** Masaustu yan menu ve mobil "Diğer" cekmecesi ayni listeyi kullanir (AdminLayout'taki AdminNav gibi). */
+function ResidentNavList({ items, label, onNavigate }: { items: readonly NavItem[]; label: string; onNavigate?: () => void }) {
+  return (
+    <nav aria-label={label} className="flex flex-col gap-1">
+      {items.map(({ to, label: itemLabel, icon: Icon, end }) => (
+        <NavLink
+          key={to}
+          to={to}
+          end={end}
+          onClick={onNavigate}
+          className={({ isActive }) =>
+            cn(
+              'flex items-center gap-3 rounded-md px-3 py-2.5 text-small text-muted hover:bg-surface-muted hover:text-text md:py-2',
+              isActive && 'bg-surface-muted font-medium text-text [&>svg]:text-accent',
+            )
+          }
+        >
+          <Icon className="size-4" aria-hidden="true" />
+          {itemLabel}
+        </NavLink>
+      ))}
+    </nav>
+  );
+}
+
 const tabClass = 'flex min-w-0 flex-col items-center gap-1 px-0.5 py-2 text-xs text-muted sm:text-small';
 
-/** Mobil oncelikli: ust bar + altta sekme cubugu (PWA'da ana ekrandan acilinca da rahat). */
+/** md (768px) ve ustu: kalici yan menu (yonetim paneliyle ayni). Alti: ust bar + alt sekme cubugu. */
+const DESKTOP_QUERY = '(min-width: 48rem)';
+
+/**
+ * Sakin portali. Masaustunde web sitesi duzeni: solda tum sayfalarin yan menusu, genis icerik
+ * (max-w-page). Telefonda: ust bar + altta sekme cubugu ve "Diğer" cekmecesi (PWA'da ana ekrandan
+ * acilinca da rahat).
+ */
 export function ResidentLayout() {
   const [moreOpen, setMoreOpen] = useState(false);
   const { pathname } = useLocation();
   // Genel Kurul yalnizca malik uyeligi olana (kiraciya menude gorunmez; API de 403 doner).
-  const { primary, more } = splitResidentNav(residentNavFor(useIsActiveOwner()));
+  const items = residentNavFor(useIsActiveOwner());
+  const { primary, more } = splitResidentNav(items);
   const moreActive = isMoreActive(pathname, more);
 
   // Sayfa degisince (geri tusu dahil) cekmece kapanir.
   useEffect(() => setMoreOpen(false), [pathname]);
 
-  return (
-    <div className="flex min-h-dvh flex-col">
-      <header className="sticky top-0 z-10 flex h-14 min-w-0 items-center justify-between gap-3 border-b border-border bg-surface px-4">
-        <PortalBrand />
-        <UserMenu />
-      </header>
+  // Ekran masaustu genisligine buyurse acik cekmece ortada kalmasin.
+  useEffect(() => {
+    const mq = window.matchMedia(DESKTOP_QUERY);
+    const onChange = (e: MediaQueryListEvent) => {
+      if (e.matches) setMoreOpen(false);
+    };
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
 
-      <main className="mx-auto w-full max-w-content flex-1 px-4 pt-6 pb-24">
-        <PortalUnitProvider>
-          <PageSuspense>
-            <Outlet />
-          </PageSuspense>
-        </PortalUnitProvider>
-      </main>
+  return (
+    <div className="flex min-h-dvh">
+      <aside className="sticky top-0 hidden h-dvh w-sidebar shrink-0 flex-col gap-4 overflow-y-auto border-r border-border bg-surface px-3 pb-4 md:flex">
+        <div className="flex h-16 items-center px-3">
+          <PortalBrand />
+        </div>
+        <ResidentNavList items={items} label="Sakin menüsü" />
+      </aside>
+
+      {/* Icerik sutunu: min-w-0 + overflow-x-clip -> genis icerik ust bari ve sutunu genisletemez. */}
+      <div className="flex min-w-0 flex-1 flex-col overflow-x-clip">
+        <header className="sticky top-0 z-10 flex h-14 w-full min-w-0 items-center justify-between gap-3 border-b border-border bg-surface px-4 md:h-16 md:justify-end md:px-6 lg:px-8">
+          <div className="min-w-0 md:hidden">
+            <PortalBrand />
+          </div>
+          <UserMenu sidebar />
+        </header>
+
+        <main className="mx-auto w-full min-w-0 max-w-page flex-1 px-4 pt-6 pb-24 md:px-8 md:py-8">
+          <PortalUnitProvider>
+            <PageSuspense>
+              <Outlet />
+            </PageSuspense>
+          </PortalUnitProvider>
+        </main>
+      </div>
 
       <nav
         aria-label="Sakin menüsü"
-        className="fixed inset-x-0 bottom-0 z-10 grid auto-cols-fr grid-flow-col border-t border-border bg-surface pb-[env(safe-area-inset-bottom)]"
+        className="fixed inset-x-0 bottom-0 z-10 grid auto-cols-fr grid-flow-col border-t border-border bg-surface pb-[env(safe-area-inset-bottom)] md:hidden"
       >
         {primary.map(({ to, label, icon: Icon, end }) => (
           <NavLink key={to} to={to} end={end} className={({ isActive }) => cn(tabClass, isActive && 'text-accent')}>
@@ -78,26 +134,8 @@ export function ResidentLayout() {
         )}
       </nav>
 
-      <Dialog open={moreOpen} onClose={() => setMoreOpen(false)} title="Diğer" variant="sheet">
-        <nav aria-label="Diğer sayfalar" className="flex flex-col gap-1">
-          {more.map(({ to, label, icon: Icon, end }) => (
-            <NavLink
-              key={to}
-              to={to}
-              end={end}
-              onClick={() => setMoreOpen(false)}
-              className={({ isActive }) =>
-                cn(
-                  'flex items-center gap-3 rounded-md px-3 py-2.5 text-small text-muted hover:bg-surface-muted hover:text-text',
-                  isActive && 'bg-surface-muted font-medium text-text [&>svg]:text-accent',
-                )
-              }
-            >
-              <Icon className="size-4" aria-hidden="true" />
-              {label}
-            </NavLink>
-          ))}
-        </nav>
+      <Dialog open={moreOpen} onClose={() => setMoreOpen(false)} title="Diğer" variant="sheet" className="md:hidden">
+        <ResidentNavList items={more} label="Diğer sayfalar" onNavigate={() => setMoreOpen(false)} />
       </Dialog>
     </div>
   );
