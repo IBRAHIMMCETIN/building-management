@@ -1,6 +1,7 @@
-import { Building2, Gauge, Home, Megaphone, Receipt, Wrench } from 'lucide-react';
+import { Gauge, Home, Megaphone, Receipt, Wrench } from 'lucide-react';
 import type { ComponentType } from 'react';
 import { NavLink, Outlet } from 'react-router';
+import { BrandMark } from '@/components/BrandMark';
 import { PortalUnitProvider } from '@/context/PortalUnitContext';
 import { useActiveApartmentName } from '@/hooks/useActiveContextLabel';
 import { BRAND_NAME } from '@/lib/brand';
@@ -26,7 +27,7 @@ export function PortalBrand() {
   const siteName = useActiveApartmentName();
   return (
     <div className="flex min-w-0 items-center gap-2" title={siteName ? `${siteName} · ${BRAND_NAME}` : BRAND_NAME}>
-      <Building2 className="size-5 shrink-0 text-accent" aria-hidden="true" />
+      <BrandMark className="size-7" />
       <span className="truncate font-semibold">{siteName ?? BRAND_NAME}</span>
     </div>
   );

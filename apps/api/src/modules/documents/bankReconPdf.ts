@@ -1,5 +1,6 @@
 import fontkit from '@pdf-lib/fontkit';
 import { PDFDocument, type PDFFont, type PDFPage, rgb } from 'pdf-lib';
+import { PDF_PRODUCER } from './brand.js';
 import { type PdfFonts, loadPdfFonts } from './fonts.js';
 import { formatDateTR, formatTRY } from './receiptPdf.js';
 
@@ -76,8 +77,8 @@ export async function renderBankReconPdf(data: BankReconPdfData, fonts?: PdfFont
   doc.setTitle(`Banka Mutabakat Raporu ${data.bankAccountName} ${periodText}`);
   doc.setSubject(`${data.apartmentName} - ${data.bankAccountName}`);
   doc.setAuthor(data.apartmentName);
-  doc.setCreator('Aidat Yönetim');
-  doc.setProducer('Aidat Yönetim');
+  doc.setCreator(PDF_PRODUCER);
+  doc.setProducer(PDF_PRODUCER);
   doc.setLanguage('tr-TR');
   doc.setCreationDate(generated);
   doc.setModificationDate(generated);
