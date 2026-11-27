@@ -116,12 +116,12 @@ const results = (over: Partial<PollResults> = {}): PollResults => ({
   final: true,
   weighting: 'per_unit',
   rollDate: '2026-11-09',
-  eligible: { units: 3, landShare: { numerator: 1200, denominator: 1200 } },
-  participation: { units: 3, unitsBps: 10000, landShare: { numerator: 1200, denominator: 1200 }, landShareBps: 10000 },
+  eligible: { units: 3, landShare: { numerator: '1200', denominator: '1200' } },
+  participation: { units: 3, unitsBps: 10000, landShare: { numerator: '1200', denominator: '1200' }, landShareBps: 10000 },
   tallyHidden: false,
   options: [
-    { optionId: 'o1', label: 'Evet', units: 2, unitsBps: 6667, landShare: { numerator: 360, denominator: 1200 }, landShareBps: 3000 },
-    { optionId: 'o2', label: 'Hayır', units: 1, unitsBps: 3333, landShare: { numerator: 840, denominator: 1200 }, landShareBps: 7000 },
+    { optionId: 'o1', label: 'Evet', units: 2, unitsBps: 6667, landShare: { numerator: '360', denominator: '1200' }, landShareBps: 3000 },
+    { optionId: 'o2', label: 'Hayır', units: 1, unitsBps: 3333, landShare: { numerator: '840', denominator: '1200' }, landShareBps: 7000 },
   ],
   winnerOptionId: 'o1',
   warnings: [],
@@ -144,6 +144,9 @@ describe('oylama modeli', () => {
     expect(optionBasisBps(yes!, 'per_unit')).toBe(6667);
     expect(optionBasisBps(yes!, 'land_share')).toBe(3000);
     expect(formatFraction({ numerator: 1200, denominator: 12000 })).toBe('1.200/12.000');
+    // BigInt metni: guvenli tam sayi sinirini asan paydalar da bicimlenir.
+    expect(formatFraction({ numerator: '1', denominator: '999999562000071147' })).toBe('1/999.999.562.000.071.147');
+    expect(() => pollResultsSchema.parse({ ...results(), eligible: { units: 3, landShare: { numerator: 1.5, denominator: 2 } } })).toThrow();
   });
 
   it('kendi oyum: hisseli bolumde baska paydasin gizli oyu secimsiz', () => {
@@ -157,7 +160,7 @@ describe('oylama modeli', () => {
   it('semalar: bilinmeyen evre reddedilir; gizli surerken secenekler opsiyonel', () => {
     expect(() => pollSchema.parse({ ...poll(), phase: 'archived' })).toThrow();
     expect(pollResultsSchema.parse({ ...results({ tallyHidden: true }), options: undefined, winnerOptionId: undefined }).options).toBeUndefined();
-    const portal = portalPollSchema.parse({ ...poll(), phase: 'open', unitId: 'u1', eligible: true, canVote: true, resultsAvailable: false });
+    const portal = portalPollSchema.parse({ ...poll(), phase: 'open', unitId: 'u1', eligible: true, canVote: true, resultsAvailable: false, resultsAfterVote: false });
     expect(portal.myVote).toBeUndefined();
   });
 

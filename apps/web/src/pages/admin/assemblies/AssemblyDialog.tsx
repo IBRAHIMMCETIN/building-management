@@ -1,20 +1,24 @@
 import { zodResolver } from '@hookform/resolvers/zod';
 import { Plus, X } from 'lucide-react';
-import { useEffect } from 'react';
+import { useEffect, useMemo } from 'react';
 import { useForm } from 'react-hook-form';
 import { Alert, Button, Dialog, FormField, Input, Select } from '@/components/ui';
-import { useSaveAssembly } from '@/hooks/useAssemblies';
-import { ASSEMBLY_KINDS, type Assembly, KIND_LABELS, MAX_AGENDA_ITEMS } from '@/lib/api/assemblies';
+import { useAssemblies, useSaveAssembly } from '@/hooks/useAssemblies';
+import { ASSEMBLY_KINDS, type Assembly, KIND_LABELS, MAX_AGENDA_ITEMS, SECOND_MEETING_MAX_DAYS, firstMeetingCandidates } from '@/lib/api/assemblies';
 import { errorMessage } from '@/lib/api/errors';
 import { applyApiFieldError } from '@/lib/api/formErrors';
-import { type AssemblyForm, type AssemblyValues, FORM_FIELDS, assemblyFormSchema, formDefaults, toInput } from './schemas';
+import { formatDateTime } from '@/lib/dates';
+import { type AssemblyForm, type AssemblyValues, FORM_FIELDS, formDefaults, makeAssemblyFormSchema, toInput } from './schemas';
 
 type Props = { open: boolean; onClose: () => void; assembly?: Assembly };
 
 /** Toplanti kaydi: tur, tarih-saat, yer / cevrim ici baglanti ve gundem (sayimdan once duzenlenir). */
 export function AssemblyDialog({ open, onClose, assembly }: Props) {
   const save = useSaveAssembly();
-  const form = useForm<AssemblyForm, unknown, AssemblyValues>({ resolver: zodResolver(assemblyFormSchema), defaultValues: formDefaults(assembly) });
+  const list = useAssemblies();
+  const candidates = useMemo(() => firstMeetingCandidates(list.data ?? [], assembly?.assemblyId), [list.data, assembly?.assemblyId]);
+  const schema = useMemo(() => makeAssemblyFormSchema(candidates), [candidates]);
+  const form = useForm<AssemblyForm, unknown, AssemblyValues>({ resolver: zodResolver(schema), defaultValues: formDefaults(assembly) });
   const { errors } = form.formState;
   const agenda = form.watch('agenda');
 
@@ -63,13 +67,24 @@ export function AssemblyDialog({ open, onClose, assembly }: Props) {
           <Input type="url" autoComplete="off" maxLength={500} placeholder="https://" {...form.register('onlineUrl')} />
         </FormField>
 
-        <label className="flex items-start gap-2">
-          <input type="checkbox" className="mt-1 size-4 accent-accent" {...form.register('secondMeeting')} />
-          <span>
-            <span className="block">İkinci toplantı</span>
-            <span className="block text-small text-muted">İlk toplantıda yeter sayı sağlanamadıysa (KMK m.30): toplantı yeter sayısı aranmaz.</span>
-          </span>
-        </label>
+        <FormField
+          label="İkinci toplantı mı?"
+          error={errors.firstMeetingId?.message}
+          hint={
+            candidates.length
+              ? `İlk toplantıda yeter sayı sağlanamadıysa (KMK m.30) o toplantıyı seçin: en geç ${SECOND_MEETING_MAX_DAYS} gün içinde, yeter sayı aranmaz.`
+              : 'Yeter sayısızlığı tutanağa geçmiş bir ilk toplantı yok.'
+          }
+        >
+          <Select disabled={candidates.length === 0} {...form.register('firstMeetingId')}>
+            <option value="">Hayır, ilk toplantı</option>
+            {candidates.map((c) => (
+              <option key={c.assemblyId} value={c.assemblyId}>
+                {KIND_LABELS[c.kind]} · {formatDateTime(c.scheduledAt)}
+              </option>
+            ))}
+          </Select>
+        </FormField>
 
         <fieldset className="flex flex-col gap-2">
           <legend className="text-small font-medium">Gündem</legend>

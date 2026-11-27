@@ -75,7 +75,14 @@ export function PollResultsDialog({ poll, onClose }: { poll: Poll | null; onClos
             </Button>
           </div>
         ) : (
-          <ParticipationTable poll={current} secret={participation.data.secret} rows={participation.data.items} />
+          participation.data.hidden ? (
+            <Alert>
+              Gizli oylama: hangi bölümün oy kullandığı oylamanın planlanan bitişine ({formatDateTime(participation.data.hiddenUntil ?? current.closesAt)}) kadar
+              gösterilmez. Şu ana kadar {participation.data.votedUnits} bölüm oy kullandı.
+            </Alert>
+          ) : (
+            <ParticipationTable poll={current} secret={participation.data.secret} rows={participation.data.items} />
+          )
         )}
 
         <div className="flex justify-end pt-2">

@@ -275,6 +275,7 @@ function ConfirmDialog({ confirm, onClose }: { confirm: Confirm; onClose: () => 
           <>
             <p className="text-small text-muted">
               Oylama bitiş zamanından önce kapatılır, yeni oy kabul edilmez ve sonuç kullanılan oylara göre kesinleşir. İşlem gerekçesiyle denetim günlüğüne yazılır.
+              {item.secret && item.phase === 'open' && ' Gizli oylama en az 3 bölüm oy kullanmadan erken kapatılamaz; hangi bölümün oy kullandığı planlanan bitişe kadar gizli kalır.'}
             </p>
             <FormField label="Kapatma gerekçesi" error={reasonError}>
               <Textarea maxLength={500} value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Örn. Kat malikleri kurulunda karar alındı" />

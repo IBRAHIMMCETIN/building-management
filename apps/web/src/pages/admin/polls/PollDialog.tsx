@@ -169,7 +169,9 @@ export function PollDialog({ open, onClose, poll }: Props) {
             <input type="checkbox" className="mt-1 size-4 accent-accent disabled:opacity-60" disabled={secret} {...form.register('resultsVisibleBeforeClose')} />
             <span>
               <span className="block">Oy verenler sonuçları oylama sürerken görebilsin</span>
-              <span className="block text-small text-muted">{secret ? 'Gizli oylamada kullanılamaz.' : 'Kapalıysa sonuçlar oylama bitince açıklanır.'}</span>
+              <span className="block text-small text-muted">
+                {secret ? 'Gizli oylamada kullanılamaz.' : 'Yalnızca bölümü oy kullanmış sakinler görür. Kapalıysa sonuçlar oylama bitince açıklanır.'}
+              </span>
             </span>
           </label>
           {errors.resultsVisibleBeforeClose?.message && <p className="text-small text-danger">{errors.resultsVisibleBeforeClose.message}</p>}

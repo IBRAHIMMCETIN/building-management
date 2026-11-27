@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { type AssemblyInput, type AttendanceMode, assembliesApi } from '@/lib/api/assemblies';
+import { type AssemblyInput, type AttendanceInput, assembliesApi } from '@/lib/api/assemblies';
 import type { Role } from '@/types/roles';
 import { useAuth } from './useAuth';
 import { unitKeys } from './useUnits';
@@ -54,9 +54,15 @@ export function useSaveAssembly() {
 export function useSetAttendance(id: string) {
   const invalidate = useInvalidate();
   return useMutation({
-    mutationFn: ({ unitId, ...input }: { unitId: string; mode: AttendanceMode; attendeeName?: string; proxyName?: string }) => assembliesApi.attendance(id, unitId, input),
+    mutationFn: ({ unitId, ...input }: { unitId: string } & AttendanceInput) => assembliesApi.attendance(id, unitId, input),
     onSettled: invalidate,
   });
+}
+
+/** Toplanti yeter sayisini tutanaga gecirir (saglanamadiysa ikinci toplantinin dayanagi). */
+export function useRecordQuorum(id: string) {
+  const invalidate = useInvalidate();
+  return useMutation({ mutationFn: (version: number) => assembliesApi.recordQuorum(id, version), onSettled: invalidate });
 }
 
 export function useRecordTally(id: string) {

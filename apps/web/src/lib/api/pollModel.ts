@@ -31,8 +31,11 @@ export type PollWeighting = (typeof POLL_WEIGHTINGS)[number];
 export const MIN_OPTIONS = 2;
 export const MAX_OPTIONS = 10;
 
-const fractionSchema = z.object({ numerator: z.number().int(), denominator: z.number().int() });
+/** Toplam kesirleri BigInt metni (API: paydalar cok farkli olsa da tasma yok). */
+export const fractionSchema = z.object({ numerator: z.string().regex(/^\d+$/), denominator: z.string().regex(/^\d+$/) });
 export type Fraction = z.infer<typeof fractionSchema>;
+/** Bolumun kendi arsa payi (tapudaki kesir). */
+const shareSchema = z.object({ numerator: z.number().int(), denominator: z.number().int() });
 
 const optionSchema = z.object({ optionId: z.string(), label: z.string() });
 export type PollOption = z.infer<typeof optionSchema>;
@@ -93,14 +96,18 @@ export const pollResultsSchema = z.object({
 });
 export type PollResults = z.infer<typeof pollResultsSchema>;
 
+/** Gizli oylamada `hidden`: hangi bolumun oy kullandigi planlanan bitise (`hiddenUntil`) kadar gizli. */
 export const participationSchema = z.object({
   secret: z.boolean(),
+  hidden: z.boolean(),
+  hiddenUntil: z.string().optional(),
+  votedUnits: z.number().int(),
   items: z.array(
     z.object({
       unitId: z.string(),
       blockId: z.string(),
       number: z.string(),
-      landShare: fractionSchema.optional(),
+      landShare: shareSchema.optional(),
       voted: z.boolean(),
       optionId: z.string().optional(),
       castAt: z.string().optional(),
@@ -133,6 +140,8 @@ export const portalPollSchema = z.object({
   ineligibleReason: z.string().optional(),
   myVote: z.object({ castByMe: z.boolean(), optionId: z.string().optional(), castAt: z.string().optional() }).optional(),
   resultsAvailable: z.boolean(),
+  /** Ara sonuc acik ama bolum henuz oy kullanmadi: oy verince gorulur. */
+  resultsAfterVote: z.boolean(),
   results: pollResultsSchema.optional(),
 });
 export type PortalPoll = z.infer<typeof portalPollSchema>;
@@ -197,7 +206,8 @@ export const WEIGHTING_HINTS: Record<PollWeighting, string> = {
 };
 
 /** "120/1200" (payda ortak; sadeleştirilmez, tapudaki gibi okunur). */
-export const formatFraction = (f: Fraction) => `${f.numerator.toLocaleString('tr-TR')}/${f.denominator.toLocaleString('tr-TR')}`;
+export const formatFraction = (f: Fraction | { numerator: number; denominator: number }) =>
+  `${BigInt(f.numerator).toLocaleString('tr-TR')}/${BigInt(f.denominator).toLocaleString('tr-TR')}`;
 
 export { formatBps };
 

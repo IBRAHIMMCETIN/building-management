@@ -121,7 +121,9 @@ function Detail({ poll: p }: { poll: PortalPoll }) {
         {p.results ? (
           <PollResultsView results={p.results} highlightOptionId={p.myVote?.castByMe ? p.myVote.optionId : undefined} />
         ) : (
-          <p className="text-small text-muted">Sonuçlar oylama bitince açıklanır.</p>
+          <p className="text-small text-muted">
+            {p.resultsAfterVote ? 'Ara sonuçlar dairenizin oyu kullanıldıktan sonra görünür.' : 'Sonuçlar oylama bitince açıklanır.'}
+          </p>
         )}
       </Card>
     </>
