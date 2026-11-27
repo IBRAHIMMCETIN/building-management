@@ -399,11 +399,14 @@ function digestSpec(n: Notification): Spec {
   const due = items(d.due);
   const overdue = items(d.overdue);
   const autoClosed = num(d.autoClosed);
+  // v2: ekipman garanti / sozlesme / periyodik kontrol tarihleri (yalnizca yonetim ozetinde).
+  const equipment = items(d.equipment);
   const parts = [
     sla.length ? `${sla.length} talep SLA süresini aştı` : '',
     overdue.length ? `${overdue.length} bakım gecikti` : '',
     due.length ? `${due.length} bakım yaklaşıyor` : '',
     autoClosed ? `${autoClosed} talep otomatik kapandı` : '',
+    equipment.length ? `${equipment.length} ekipman tarihi yaklaştı veya doldu` : '',
   ].filter(Boolean);
   const table = (title: string, list: NotificationItem[]): Block[] =>
     list.length ? [{ kind: 'table', head: [title, ''], rows: list.slice(0, 25).map((i) => [i.label, i.detail ?? '']) as [string, string][] }] : [];
@@ -416,7 +419,8 @@ function digestSpec(n: Notification): Spec {
       ...table('SLA süresi aşılan talepler', sla),
       ...table('Geciken bakımlar', overdue),
       ...table('Yaklaşan bakımlar (3 gün)', due),
-      ...(sla.length + due.length + overdue.length > 75 ? [{ kind: 'note', text: 'Listenin tamamı yönetim panelinde.' } as Block] : []),
+      ...table('Ekipman: garanti, sözleşme, periyodik kontrol (30 gün)', equipment),
+      ...(sla.length > 25 || due.length > 25 || overdue.length > 25 || equipment.length > 25 ? [{ kind: 'note', text: 'Listenin tamamı yönetim panelinde.' } as Block] : []),
     ],
     cta: { label: 'Arıza ve bakım ekranını aç', path: '../admin/tickets' },
   };

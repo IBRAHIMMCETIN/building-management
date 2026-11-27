@@ -352,6 +352,7 @@ describe('zamanlayici isleri', () => {
       payments: null,
       payouts: null,
       invoices: null,
+      equipment: { digestItems: async () => [] },
       now: () => new Date(T0),
       log: { info: () => {}, error: () => {} },
       ...over,
