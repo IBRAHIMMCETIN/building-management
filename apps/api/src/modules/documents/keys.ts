@@ -6,8 +6,11 @@ import type { IsoDate } from '../core/types.js';
  *   apartments/{apt}/receipts/{yyyy}/{mm}/{paymentId}-iptal.v{N}.pdf  ters kayitla iptal edilmis hali
  *   apartments/{apt}/invoices/{yyyy}/{mm}/{expenseId}.{ext}        gider faturasi
  *   apartments/{apt}/reports/{yyyy}/{mm}/bank-recon-...-{hash}.pdf  banka mutabakat raporu (B3.5)
+ *   apartments/{apt}/tenders/{tenderId}/quotes/{quoteId}/{uploadId}.{ext}  ihale teklif belgesi
+ *                                                                  (yukleme basina ayri anahtar:
+ *                                                                  degistirilen belge kayit olarak kalir)
  *   tmp/{apt}/invoice-uploads/{uploadId}                           tarayicidan yuklenen, henuz
- *                                                                  gidere baglanmamis dosya
+ *                                                                  gidere / teklife baglanmamis dosya
  *                                                                  (S3 yasam dongusu 1 gunde siler)
  * `tmp/` ayri bir kok onektir: yasam dongusu kurali onek ile calisir ve apartman kimligi
  * joker karakterle eslenemez.
@@ -52,6 +55,11 @@ export function pendingUploadKey(apartmentId: string, uploadId: string): string 
 
 export function invoiceKey(apartmentId: string, date: IsoDate, expenseId: string, extension: string): string {
   return `apartments/${apartmentId}/invoices/${ym(date)}/${expenseId}.${extension}`;
+}
+
+/** Ihale teklif belgesi (fatura yuklemesiyle ayni gecici alan ve sinirlar). */
+export function tenderQuoteKey(apartmentId: string, tenderId: string, quoteId: string, uploadId: string, extension: string): string {
+  return `apartments/${apartmentId}/tenders/${tenderId}/quotes/${quoteId}/${uploadId}.${extension}`;
 }
 
 /** Fatura olarak kabul edilen dosya turleri (icerik turu -> uzanti). */
