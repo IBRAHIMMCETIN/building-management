@@ -15,6 +15,8 @@ import { type GateRepository, gateRepository } from '../modules/gate/repository.
 import { type Courier, gateKeys } from '../modules/gate/types.js';
 import { type BookingSnapshot, isReservationEvent, reservationRecipients } from '../modules/reservations/notifications.js';
 import { type ReservationRepository, reservationRepository } from '../modules/reservations/repository.js';
+import { type AssemblyCallSnapshot, assemblyCallRecipients, isAssemblyEvent } from '../modules/assemblies/notifications.js';
+import { type AssemblyRepository, assemblyRepository } from '../modules/assemblies/repository.js';
 
 export type { DeliveryResult, Notification, NotificationTemplate, Notifier } from '../modules/notifications/notifier.js';
 export { createLogNotifier } from '../modules/notifications/notifier.js';
@@ -41,6 +43,8 @@ export { createLogNotifier } from '../modules/notifications/notifier.js';
  *       GATE_GUEST_ENTERED     -> gecisi olusturan sakin (hala oturuyorsa)  (modules/gate/notifications.ts)
  *       RESERVATION_*          -> rezervasyonu yapan sakin (hala uyeyse); gerekce ve ucret iadesinin
  *                                 guncel durumu rezervasyon kaydindan (modules/reservations/notifications.ts)
+ *       ASSEMBLY_CALLED        -> cagri kaydindaki malik kullanicilar (hala apartman uyesiyse); toplanti
+ *                                 iptal edildiyse / basladiysa kimse (modules/assemblies/notifications.ts)
  *  4. Her aliciya `Notifier` ile bildirim gonderilir: NOTIFICATION_CHANNEL=log (yapilandirilmis
  *     log) veya ses (e-posta; tercih, adres ve alici bazli tekrar korumasi kanal icinde, bkz.
  *     modules/notifications/email.ts). SMS / WhatsApp ayni arayuzle eklenecek.
@@ -115,7 +119,7 @@ const receives = (m: UnitMembership, item: { unitId: string; userId?: string }, 
  * Worker'in olay icin ayrica okudugu kayitlar (payload kisisel veri / serbest metin tasimaz).
  * `now`: zamana bagli kurallar (kurye yanit suresi); verilmezse su an.
  */
-export type NotificationRecords = { now?: Date; courier?: CourierSnapshot; booking?: BookingSnapshot };
+export type NotificationRecords = { now?: Date; courier?: CourierSnapshot; booking?: BookingSnapshot; assemblyCall?: AssemblyCallSnapshot };
 
 /** Olaydan alici bazli bildirimleri uretir (ayni kullaniciya ayni olay icin tek bildirim). */
 export function buildNotifications(
@@ -148,6 +152,15 @@ export function buildNotifications(
   }
   if (isReservationEvent(event)) {
     return reservationRecipients(event, memberships, day, records.booking).map((r) => ({
+      eventId: event.eventId,
+      apartmentId: event.apartmentId,
+      userId: r.userId,
+      template: r.template,
+      data: r.data,
+    }));
+  }
+  if (isAssemblyEvent(event)) {
+    return assemblyCallRecipients(event, memberships, day, records.now ?? new Date(), records.assemblyCall).map((r) => ({
       eventId: event.eventId,
       apartmentId: event.apartmentId,
       userId: r.userId,
@@ -304,6 +317,8 @@ export type WorkerDeps = {
   gate: Pick<GateRepository, 'get'>;
   /** Rezervasyon: gerekce / not ve ucret iadesinin guncel durumu. */
   reservations: Pick<ReservationRepository, 'getBooking'>;
+  /** Genel kurul cagrisi: cagri kaydi (alicilar) ve toplantinin guncel durumu. */
+  assemblies: Pick<AssemblyRepository, 'get' | 'getCall'>;
   notifier: Notifier;
   /** Olay daha once islendi mi? */
   isProcessed: (apartmentId: string, eventId: string) => Promise<boolean>;
@@ -325,6 +340,7 @@ export function createNotificationWorker(overrides: Partial<WorkerDeps> = {}) {
     roles: apartmentRoleRepository,
     gate: gateRepository,
     reservations: reservationRepository,
+    assemblies: assemblyRepository,
     notifier: overrides.notifier ?? createNotifierFromEnv(),
     isProcessed: async (apt, id) => Boolean(await getTenantItem(processedKey(apt, id))),
     markProcessed: async (apt, id, info) => {
@@ -368,6 +384,17 @@ export function createNotificationWorker(overrides: Partial<WorkerDeps> = {}) {
         booking:
           b && b.apartmentId === event.apartmentId
             ? { bookingId: b.bookingId, unitId: b.unitId, feeStatus: b.fee.status, ...(b.decisionNote ? { decisionNote: b.decisionNote } : {}), ...(b.cancelReason ? { cancelReason: b.cancelReason } : {}) }
+            : null,
+      };
+    }
+    if (isAssemblyEvent(event)) {
+      const { assemblyId, callSeq } = event.payload;
+      const [a, call] = await Promise.all([deps.assemblies.get(event.apartmentId, assemblyId), deps.assemblies.getCall(event.apartmentId, assemblyId, callSeq)]);
+      return {
+        now: deps.now(),
+        assemblyCall:
+          a && call && a.apartmentId === event.apartmentId && call.apartmentId === event.apartmentId
+            ? { assemblyId, seq: call.seq, status: a.status, scheduledAt: a.scheduledAt, recipientUserIds: call.recipientUserIds }
             : null,
       };
     }

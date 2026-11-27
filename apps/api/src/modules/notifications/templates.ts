@@ -28,6 +28,8 @@ type Block =
   | { kind: 'p'; text: string }
   | { kind: 'rows'; rows: [label: string, value: string][] }
   | { kind: 'table'; head: [string, string]; rows: [string, string][]; total?: [string, string] }
+  /** Numarali liste (genel kurul gundemi). */
+  | { kind: 'list'; title: string; items: string[] }
   | { kind: 'note'; text: string };
 
 type Spec = { subject: string; heading: string; preheader: string; blocks: Block[]; cta?: { label: string; path: string } };
@@ -298,9 +300,57 @@ function spec(n: Notification, ctx: EmailContext): Spec | undefined {
     case 'reservation_rejected':
     case 'reservation_cancelled':
       return reservationSpec(n, ctx);
+    case 'assembly_called':
+      return assemblyCallSpec(n);
     default:
       return undefined;
   }
+}
+
+/** E-posta nezaketen gonderilir: KMK m.29'daki cagri usulunun yerine gecmez (README "Hukuki yorum"). */
+export const ASSEMBLY_CALL_DISCLAIMER =
+  'Bu e-posta bilgilendirme amaçlıdır; Kat Mülkiyeti Kanunu m.29 uyarınca yapılması gereken çağrının (imza karşılığı tebliğ veya taahhütlü mektup) yerine geçmez.';
+
+/** Genel kurul cagrisi: tarih-saat (Istanbul), yer / baglanti, gundem ve (ilk toplantida) ikinci toplanti. */
+function assemblyCallSpec(n: Notification): Spec {
+  const d = n.data;
+  const kind = d.kind === 'extraordinary' ? 'Olağanüstü' : 'Olağan';
+  const second = d.secondMeeting === 'true';
+  const agenda = Array.isArray(d.agenda) ? (d.agenda as NotificationItem[]).map((i) => i.label) : [];
+  const when = formatDateTime(d.scheduledAt);
+  const place: [string, string][] = [
+    ['Tarih ve saat', `${when} (Türkiye saati)`],
+    ...(str(d.location) ? [['Yer', str(d.location)] as [string, string]] : []),
+    ...(str(d.onlineUrl) ? [['Çevrim içi bağlantı', str(d.onlineUrl)] as [string, string]] : []),
+  ];
+  const secondAt = str(d.secondMeetingAt);
+  const secondPlace = [str(d.secondMeetingLocation), str(d.secondMeetingUrl)].filter(Boolean).join(' · ');
+  return {
+    subject: `${d.resend === 'true' ? 'Güncellenen çağrı: ' : ''}Kat malikleri kurulu toplantısı - ${when}`,
+    heading: `${kind} kat malikleri kurulu toplantısı${second ? ' (ikinci toplantı)' : ''}`,
+    preheader: `${when} · ${agenda.length} gündem maddesi`,
+    blocks: [
+      {
+        kind: 'p',
+        text: second
+          ? 'İlk toplantıda yeter sayı sağlanamadığından kat malikleri kurulu aşağıdaki gündemle ikinci kez toplanacaktır. Bu toplantıda toplantı yeter sayısı aranmaz.'
+          : 'Kat malikleri kurulu aşağıdaki gündemle toplanacaktır. Toplantıya kendiniz katılabilir veya yazılı vekaletnameyle temsil edilebilirsiniz.',
+      },
+      ...(d.resend === 'true' ? [{ kind: 'note' as const, text: 'Bu çağrı, daha önce gönderilen çağrının güncellenmiş halidir; önceki e-postayı dikkate almayınız.' }] : []),
+      { kind: 'rows', rows: place },
+      { kind: 'list', title: 'Gündem', items: agenda },
+      ...(secondAt
+        ? [
+            {
+              kind: 'p' as const,
+              text: `İlk toplantıda yeter sayı sağlanamazsa ikinci toplantı ${formatDateTime(secondAt)} tarihinde${secondPlace ? ` (${secondPlace})` : ''} yapılacaktır; ikinci toplantıda toplantı yeter sayısı aranmaz (KMK m.29, m.30).`,
+            },
+          ]
+        : []),
+      { kind: 'note', text: ASSEMBLY_CALL_DISCLAIMER },
+    ],
+    cta: { label: 'Toplantı ayrıntıları', path: 'genel-kurul' },
+  };
 }
 
 /** Iptal edilen rezervasyonda ucretin durumu (yonetim iptali). */
@@ -527,6 +577,10 @@ function blockHtml(b: Block): string {
         : '';
       return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin:0 0 16px">${head}${rows}${total}</table>`;
     }
+    case 'list':
+      return `<p style="margin:16px 0 8px;font-size:14px;font-weight:600;color:${C.text}">${e(b.title)}</p><ol style="margin:0 0 16px;padding-left:22px;font-size:15px;line-height:1.55;color:${C.text}">${b.items
+        .map((i) => `<li style="margin:0 0 4px">${e(i)}</li>`)
+        .join('')}</ol>`;
   }
 }
 
@@ -539,6 +593,8 @@ function blockText(b: Block): string {
       return b.rows.map(([l, v]) => `${l}: ${v}`).join('\n');
     case 'table':
       return [...b.rows.map(([a, v]) => `- ${a}: ${v}`), ...(b.total ? [`${b.total[0]}: ${b.total[1]}`] : [])].join('\n');
+    case 'list':
+      return [`${b.title}:`, ...b.items.map((i, n) => `${n + 1}. ${i}`)].join('\n');
   }
 }
 

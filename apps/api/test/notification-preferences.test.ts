@@ -44,6 +44,7 @@ const SAMPLES: [Notification['template'], NotificationCategory][] = [
   ['gate_guest_entered', 'gate'],
   ['reservation_rejected', 'reservations'],
   ['poll_published' as Notification['template'], 'polls'],
+  ['assembly_called', 'assemblies'],
 ];
 
 describe('kategori cozumleme', () => {
@@ -52,6 +53,7 @@ describe('kategori cozumleme', () => {
     expect(categoryOfEvent('POLL_PUBLISHED')).toBe('polls');
     expect(categoryOfEvent('RESERVATION_CANCELLED')).toBe('reservations');
     expect(categoryOfEvent('OPERATIONS_DIGEST')).toBe('tickets');
+    expect(categoryOfEvent('ASSEMBLY_CALLED')).toBe('assemblies');
     for (const [template, category] of SAMPLES) expect(categoryOfTemplate(template), template).toBe(category);
     expect(categoryOfTemplate('unknown_x')).toBeUndefined();
   });
