@@ -17,6 +17,8 @@ import { gatePortalRoutes, gateRoutes } from './modules/gate/routes.js';
 import { type GateService, createGateService } from './modules/gate/service.js';
 import { maintenanceRoutes } from './modules/maintenance/routes.js';
 import { type MaintenanceService, createMaintenanceService } from './modules/maintenance/service.js';
+import { reservationPortalRoutes, reservationRoutes } from './modules/reservations/routes.js';
+import { type ReservationService, createReservationService } from './modules/reservations/service.js';
 import { type WorkCostService, createWorkCostService } from './modules/workcosts/service.js';
 import { ticketPortalRoutes } from './modules/tickets/portalRoutes.js';
 import { ticketRoutes } from './modules/tickets/routes.js';
@@ -152,6 +154,8 @@ export type AppConfig = {
   /** Faz 3 (O1-3): periyodik bakim. */
   maintenanceService?: MaintenanceService;
   workCostService?: WorkCostService;
+  /** Ortak alan rezervasyonu (ucret Finans `chargeUnit` / ters kayit ile). */
+  reservationService?: ReservationService;
   apartmentRoleService?: ApartmentRoleService;
   /** Guvenlik kapisi: plaka, misafir QR gecisi, kurye, kapi gunlugu. */
   gateService?: GateService;
@@ -363,6 +367,8 @@ export function createApp(config: AppConfig) {
     '/api/maintenance',
     maintenanceRoutes({ authenticate, service: config.maintenanceService ?? createMaintenanceService({ tickets: ticketService }), costs: workCostService }),
   );
+  const reservationService = config.reservationService ?? createReservationService({ finance: financeService });
+  app.route('/api/reservations', reservationRoutes({ authenticate, service: reservationService }));
 
 
   // Guvenlik kapisi (yonetim + guvenlik; sakin portali `/api/portal`'dan once).
@@ -373,6 +379,7 @@ export function createApp(config: AppConfig) {
   app.route('/api/portal/meters', meterPortalRoutes({ authenticate, service: meterPortalService }));
   // Faz 3 (O1-2): sakin ariza / talep (daha ozel yol, `/api/portal`'dan once).
   app.route('/api/portal/tickets', ticketPortalRoutes({ authenticate, service: ticketService }));
+  app.route('/api/portal/reservations', reservationPortalRoutes({ authenticate, service: reservationService }));
   app.route(
     '/api/portal',
     portalRoutes({

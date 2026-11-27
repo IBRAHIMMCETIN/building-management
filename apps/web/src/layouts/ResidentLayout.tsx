@@ -1,4 +1,4 @@
-import { DoorOpen, Gauge, Home, Megaphone, Receipt, Wrench } from 'lucide-react';
+import { CalendarDays, DoorOpen, Gauge, Home, Megaphone, Receipt, Wrench } from 'lucide-react';
 import type { ComponentType } from 'react';
 import { NavLink, Outlet } from 'react-router';
 import { BrandMark } from '@/components/BrandMark';
@@ -16,6 +16,7 @@ const NAV: NavItem[] = [
   { to: '/app/dues', label: 'Borçlarım', icon: Receipt },
   { to: '/app/talepler', label: 'Talepler', icon: Wrench },
   { to: '/app/ziyaretci', label: 'Ziyaretçi', icon: DoorOpen },
+  { to: '/app/rezervasyon', label: 'Rezervasyon', icon: CalendarDays },
   { to: '/app/tuketim', label: 'Tüketimim', icon: Gauge },
   { to: '/app/announcements', label: 'Duyurular', icon: Megaphone },
 ];
@@ -53,7 +54,7 @@ export function ResidentLayout() {
 
       <nav
         aria-label="Sakin menüsü"
-        className="fixed inset-x-0 bottom-0 z-10 grid grid-cols-6 border-t border-border bg-surface pb-[env(safe-area-inset-bottom)]"
+        className="fixed inset-x-0 bottom-0 z-10 grid auto-cols-fr grid-flow-col border-t border-border bg-surface pb-[env(safe-area-inset-bottom)]"
       >
         {NAV.map(({ to, label, icon: Icon, end }) => (
           <NavLink
@@ -65,7 +66,7 @@ export function ResidentLayout() {
             }
           >
             <Icon className="size-5" aria-hidden="true" />
-            {/* Alti sekme dar telefonda da tek satir: uzun etiket kirpilir. */}
+            {/* Sekmeler dar telefonda da tek satir: uzun etiket kirpilir. */}
             <span className="max-w-full truncate">{label}</span>
           </NavLink>
         ))}

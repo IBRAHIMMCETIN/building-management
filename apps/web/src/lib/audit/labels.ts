@@ -18,6 +18,7 @@ export const AUDIT_CATEGORIES = [
   { prefix: 'notification_preferences.', label: 'Bildirim tercihleri' },
   { prefix: 'ticket.', label: 'Arıza talepleri' },
   { prefix: 'maintenance.', label: 'Periyodik bakım' },
+  { prefix: 'reservation.', label: 'Ortak alan rezervasyonu' },
   { prefix: 'meters.', label: 'Sayaç ve endeks dağıtımı' },
 ] as const;
 
@@ -113,6 +114,15 @@ const EXACT: Record<string, string> = {
   'maintenance.task_skip': 'Bakım görevi atlandı',
   'maintenance.cost_link': 'Bakım görevine gider bağlandı',
   'maintenance.cost_unlink': 'Bakım görevinden gider bağı kaldırıldı',
+  // Ortak alan rezervasyonu
+  'reservation.facility_create': 'Ortak alan tanımlandı',
+  'reservation.facility_update': 'Ortak alan güncellendi',
+  'reservation.facility_deactivate': 'Ortak alan pasife alındı',
+  'reservation.facility_activate': 'Ortak alan yeniden açıldı',
+  'reservation.book': 'Rezervasyon yapıldı',
+  'reservation.approve': 'Rezervasyon onaylandı',
+  'reservation.reject': 'Rezervasyon reddedildi',
+  'reservation.cancel': 'Rezervasyon iptal edildi',
   // Finans 2.3 sayaç / endeks
   'meters.meter_create': 'Sayaç eklendi',
   'meters.meter_update': 'Sayaç güncellendi',
