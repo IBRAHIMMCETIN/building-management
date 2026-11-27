@@ -1,5 +1,5 @@
 import { zodResolver } from '@hookform/resolvers/zod';
-import { useEffect } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { useNavigate } from 'react-router';
 import { Alert, Button, Dialog, FormField, Input, Select, Textarea } from '@/components/ui';
@@ -15,9 +15,16 @@ import { TENDER_FORM_FIELDS, type TenderForm, type TenderValues, tenderDefaults,
 
 type Props = { open: boolean; onClose: () => void; tender?: Tender };
 
-/** Yeni ihale (taslak) veya taslak / toplama asamasindaki ihalenin bilgilerini duzenleme. */
+/**
+ * Yeni ihale (taslak) veya taslak / toplama asamasindaki ihalenin bilgilerini duzenleme. Form ve
+ * surum pencere acildiginda alinir (yeniden cekme formu ve 409 uyarisini silmez); 409 sonrasi
+ * ayni pencereden tekrar gonderilmez, pencere kapatilip yeniden acilmalidir.
+ */
 export function TenderDialog({ open, onClose, tender }: Props) {
   const save = useSaveTender();
+  const latest = useRef(tender);
+  latest.current = tender;
+  const [opened, setOpened] = useState<Tender | undefined>(tender);
   const navigate = useNavigate();
   const [key, renewKey] = useIdempotencyKey();
   const tickets = useTicketList({ limit: 50 });
@@ -26,32 +33,37 @@ export function TenderDialog({ open, onClose, tender }: Props) {
 
   useEffect(() => {
     if (!open) return;
+    setOpened(latest.current);
     save.reset();
     renewKey();
-    form.reset(tenderDefaults(tender));
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- yalnizca acilista
-  }, [open, tender]);
+    form.reset(tenderDefaults(latest.current));
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- yalnizca acilista (yeniden cekme formu sifirlamaz)
+  }, [open]);
+
+  const stale = save.error instanceof ApiError && save.error.status === 409 && save.error.code === 'conflict';
 
   const submit = form.handleSubmit(async (v) => {
+    if (stale) return;
     try {
-      const r = await save.mutateAsync({ ...(tender ? { id: tender.tenderId, version: tender.version } : {}), idempotencyKey: key, input: toTenderInput(v) });
+      // Acilistaki surum: arada degisen ihalenin uzerine eski alanlarla yazilmaz (409).
+      const r = await save.mutateAsync({ ...(opened ? { id: opened.tenderId, version: opened.version } : {}), idempotencyKey: key, input: toTenderInput(v) });
       onClose();
-      if (!tender) navigate(`/admin/tenders/${encodeURIComponent(r.tender.tenderId)}`);
+      if (!opened) navigate(`/admin/tenders/${encodeURIComponent(r.tender.tenderId)}`);
     } catch (err) {
       applyApiFieldError(err, form.setError, TENDER_FORM_FIELDS);
     }
   });
 
-  const conflict = save.error instanceof ApiError && save.error.status === 409;
   const close = () => !save.isPending && onClose();
   const ticketOptions = tickets.data?.items ?? [];
-  const linked = tender?.ticket;
+  const linked = opened?.ticket;
+  const minQuotesLocked = !!opened && opened.status !== 'draft';
 
   return (
-    <Dialog open={open} onClose={close} title={tender ? 'İhaleyi düzenle' : 'Yeni ihale'} variant="wide">
+    <Dialog open={open} onClose={close} title={opened ? 'İhaleyi düzenle' : 'Yeni ihale'} variant="wide">
       <form className="flex flex-col gap-4" noValidate onSubmit={submit}>
         {save.isError && !Object.values(errors).some((e) => e?.type === 'server') && (
-          <Alert tone="danger">{conflict ? 'İhale bu arada değiştirildi. Pencereyi kapatıp yeniden açın.' : errorMessage(save.error)}</Alert>
+          <Alert tone="danger">{stale ? 'İhale bu arada başka bir işlemle değişti; değişikliğiniz kaydedilmedi. Güncel bilgiyi görmek için pencereyi kapatıp yeniden açın.' : errorMessage(save.error)}</Alert>
         )}
         <FormField label="İşin adı" error={errors.title?.message}>
           <Input autoComplete="off" maxLength={120} placeholder="Örn. A Blok dış cephe mantolama" {...form.register('title')} />
@@ -72,8 +84,12 @@ export function TenderDialog({ open, onClose, tender }: Props) {
           <FormField label="Son teklif tarihi" error={errors.deadline?.message}>
             <Input type="date" min={istanbulToday()} {...form.register('deadline')} />
           </FormField>
-          <FormField label="Asgari teklif sayısı" error={errors.minQuotes?.message} hint="Altında yayınlamak için gerekçe istenir.">
-            <Input inputMode="numeric" {...form.register('minQuotes')} />
+          <FormField
+            label="Asgari teklif sayısı"
+            error={errors.minQuotes?.message}
+            hint={minQuotesLocked ? 'Teklif toplamaya başlandıktan sonra değiştirilemez.' : 'Altında yayınlamak için gerekçe istenir.'}
+          >
+            <Input inputMode="numeric" readOnly={minQuotesLocked} {...form.register('minQuotes')} />
           </FormField>
         </div>
         {(ticketOptions.length > 0 || linked) && (
@@ -97,8 +113,8 @@ export function TenderDialog({ open, onClose, tender }: Props) {
           <Button variant="ghost" onClick={close} disabled={save.isPending}>
             Vazgeç
           </Button>
-          <Button type="submit" loading={save.isPending}>
-            {tender ? 'Kaydet' : 'Taslağı oluştur'}
+          <Button type="submit" loading={save.isPending} disabled={stale}>
+            {opened ? 'Kaydet' : 'Taslağı oluştur'}
           </Button>
         </div>
       </form>

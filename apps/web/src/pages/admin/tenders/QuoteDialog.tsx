@@ -1,5 +1,5 @@
 import { zodResolver } from '@hookform/resolvers/zod';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { Alert, Button, Dialog, FormField, Input, Select, Textarea } from '@/components/ui';
 import { useIdempotencyKey } from '@/hooks/useIdempotencyKey';
@@ -20,9 +20,16 @@ const signatureOf = (f: File) => `${f.name}|${f.size}|${f.lastModified}`;
 /**
  * Teklif ekleme / duzeltme. Belge (PDF veya fotograf, en fazla 10 MB) gider faturasi akisiyla
  * dogrudan S3'e yuklenir; teklif kaydinda ihaleye tasinir. KDV dahil toplam canli onizlenir.
+ *
+ * Esitlik: form alanlari ve ihale surumu pencere ACILDIGINDA alinir; arkadaki yeniden cekme formu
+ * sifirlamaz. 409 (baska yonetici degistirdi) sonrasi ayni pencereden tekrar gonderilmez: eski
+ * alanlarla yeni surumun uzerine yazilmasin diye pencere kapatilip yeniden acilmalidir.
  */
 export function QuoteDialog({ open, onClose, tender, quote }: Props) {
   const save = useSaveQuote();
+  const latest = useRef({ tender, quote });
+  latest.current = { tender, quote };
+  const [opened, setOpened] = useState<{ version: number; quote?: Quote }>(() => ({ version: tender.version, quote }));
   const [key, renewKey] = useIdempotencyKey();
   const [file, setFile] = useState<File | null>(null);
   const [fileError, setFileError] = useState<string | null>(null);
@@ -37,15 +44,17 @@ export function QuoteDialog({ open, onClose, tender, quote }: Props) {
 
   useEffect(() => {
     if (!open) return;
+    const { tender: t, quote: q } = latest.current;
+    setOpened({ version: t.version, quote: q });
     save.reset();
     renewKey();
-    form.reset(quoteDefaults(quote));
+    form.reset(quoteDefaults(q));
     setFile(null);
     setFileError(null);
     setUploaded(null);
     setInputKey((k) => k + 1);
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- yalnizca acilista
-  }, [open, quote]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- yalnizca acilista (yeniden cekme formu sifirlamaz)
+  }, [open]);
 
   // Hata sonrasi form degisirse yeni istektir: ayni anahtarla farkli icerik 409 olurdu.
   useEffect(() => {
@@ -65,7 +74,10 @@ export function QuoteDialog({ open, onClose, tender, quote }: Props) {
     if (save.isError) renewKey();
   };
 
+  const stale = save.error instanceof ApiError && save.error.status === 409 && save.error.code === 'conflict';
+
   const submit = form.handleSubmit(async (v) => {
+    if (stale) return;
     let document: Uploaded['value'] | undefined;
     if (file) {
       const invalid = invoiceFileError(file);
@@ -89,7 +101,14 @@ export function QuoteDialog({ open, onClose, tender, quote }: Props) {
       }
     }
     try {
-      await save.mutateAsync({ tenderId: tender.tenderId, ...(quote ? { quoteId: quote.quoteId } : {}), version: tender.version, idempotencyKey: key, input: { ...toQuoteInput(v), ...(document ? { document } : {}) } });
+      await save.mutateAsync({
+        tenderId: tender.tenderId,
+        ...(opened.quote ? { quoteId: opened.quote.quoteId } : {}),
+        // Acilistaki surum: arada degisen ihalenin uzerine eski alanlarla yazilmaz (409).
+        version: opened.version,
+        idempotencyKey: key,
+        input: { ...toQuoteInput(v), ...(document ? { document } : {}) },
+      });
       onClose();
     } catch (err) {
       applyApiFieldError(err, form.setError, QUOTE_FORM_FIELDS, QUOTE_FIELD_MAP);
@@ -98,13 +117,13 @@ export function QuoteDialog({ open, onClose, tender, quote }: Props) {
 
   const busy = save.isPending || uploading;
   const close = () => !busy && onClose();
-  const conflict = save.error instanceof ApiError && save.error.status === 409;
+  const quoteAtOpen = opened.quote;
 
   return (
-    <Dialog open={open} onClose={close} title={quote ? 'Teklifi düzenle' : 'Teklif ekle'} variant="wide">
+    <Dialog open={open} onClose={close} title={quoteAtOpen ? 'Teklifi düzenle' : 'Teklif ekle'} variant="wide">
       <form className="flex flex-col gap-4" noValidate onSubmit={submit}>
         {save.isError && !Object.values(errors).some((e) => e?.type === 'server') && (
-          <Alert tone="danger">{conflict ? 'İhale bu arada değiştirildi. Pencereyi kapatıp yeniden açın.' : errorMessage(save.error)}</Alert>
+          <Alert tone="danger">{stale ? 'İhale bu arada başka bir işlemle değişti; değişikliğiniz kaydedilmedi. Güncel bilgiyi görmek için pencereyi kapatıp yeniden açın.' : errorMessage(save.error)}</Alert>
         )}
         <FormField label="Firma" error={errors.supplierName?.message}>
           <Input autoComplete="off" maxLength={120} {...form.register('supplierName')} />
@@ -149,9 +168,13 @@ export function QuoteDialog({ open, onClose, tender, quote }: Props) {
           <Textarea rows={3} maxLength={1000} {...form.register('notes')} />
         </FormField>
         <FormField
-          label={quote?.document ? 'Teklif belgesini değiştir (isteğe bağlı)' : 'Teklif belgesi'}
+          label={quoteAtOpen?.document ? 'Teklif belgesini değiştir (isteğe bağlı)' : 'Teklif belgesi'}
           error={fileError ?? undefined}
-          hint={quote?.document ? `Mevcut: ${quote.document.fileName}. Yeni dosya eskisinin yerine geçer; eskisi kayıtta kalır.` : 'PDF veya fotoğraf, en fazla 10 MB. Yayınlamak için her teklifin belgesi gerekir.'}
+          hint={
+            quoteAtOpen?.document
+              ? `Mevcut: ${quoteAtOpen.document.fileName}. Yeni dosya eskisinin yerine geçer; önceki belge silinmez, yönetim “Önceki belge” bağlantısıyla açabilir.`
+              : 'PDF veya fotoğraf, en fazla 10 MB. Yayınlamak için her teklifin belgesi gerekir.'
+          }
         >
           <Input
             key={inputKey}
@@ -165,8 +188,8 @@ export function QuoteDialog({ open, onClose, tender, quote }: Props) {
           <Button variant="ghost" onClick={close} disabled={busy}>
             Vazgeç
           </Button>
-          <Button type="submit" loading={busy} disabled={Boolean(file && invoiceFileError(file))}>
-            {quote ? 'Kaydet' : 'Teklifi ekle'}
+          <Button type="submit" loading={busy} disabled={stale || Boolean(file && invoiceFileError(file))}>
+            {quoteAtOpen ? 'Kaydet' : 'Teklifi ekle'}
           </Button>
         </div>
       </form>

@@ -1,9 +1,10 @@
-import { ArrowLeft, Ban, CheckCircle2, Gavel, Pencil, Plus, Send, Undo2 } from 'lucide-react';
+import { ArrowLeft, Ban, CheckCircle2, FileClock, Gavel, Pencil, Plus, Send, Undo2 } from 'lucide-react';
 import { useState } from 'react';
 import { Link, useParams } from 'react-router';
 import { QuoteComparison } from '@/components/tenders/QuoteComparison';
 import { TenderComments } from '@/components/tenders/TenderComments';
 import { Alert, Badge, Button, Card, CardTitle, Skeleton } from '@/components/ui';
+import { useOpenDocument } from '@/hooks/useOpenDocument';
 import { useTender, useTenderActions, useTenderPermissions } from '@/hooks/useTenders';
 import { errorMessage } from '@/lib/api/errors';
 import { type Quote, type Tender, tendersApi } from '@/lib/api/tenders';
@@ -36,7 +37,15 @@ type Open = null | 'edit' | 'quote' | 'publish' | 'decide' | 'cancel' | { edit: 
 function Detail({ tender: t }: { tender: Tender }) {
   const { canWrite } = useTenderPermissions();
   const actions = useTenderActions();
-  const [open, setOpen] = useState<Open>(null);
+  const [open, setOpenState] = useState<Open>(null);
+  // Diyalog acildigindaki ihale surumu: arada baska yonetici degistirirse islem 409 alir, yeni surumle
+  // sessizce tekrar denenmez (kullanici guncel ekrani gorup pencereyi yeniden acar).
+  const [openedVersion, setOpenedVersion] = useState(t.version);
+  const setOpen = (o: Open) => {
+    if (o !== null) setOpenedVersion(t.version);
+    setOpenState(o);
+  };
+  const oldDoc = useOpenDocument();
   const allowed = canWrite ? allowedActions(t.status) : [];
   const editable = canWrite && canEditQuotes(t.status);
   const close = () => setOpen(null);
@@ -148,22 +157,40 @@ function Detail({ tender: t }: { tender: Tender }) {
           tender={t}
           loadDocument={(quoteId) => tendersApi.document(t.tenderId, quoteId)}
           actions={
-            editable
+            canWrite
               ? (q) => (
-                  <span className="flex flex-wrap gap-1">
-                    <Button size="xs" variant="subtle" onClick={() => setOpen({ edit: q })}>
-                      <Pencil className="size-3.5" aria-hidden="true" />
-                      Düzenle
-                    </Button>
-                    <Button size="xs" variant="subtle" onClick={() => setOpen({ withdraw: q })}>
-                      <Undo2 className="size-3.5" aria-hidden="true" />
-                      Geri çek
-                    </Button>
+                  <span className="flex flex-col items-start gap-1">
+                    {editable && (
+                      <span className="flex flex-wrap gap-1">
+                        <Button size="xs" variant="subtle" onClick={() => setOpen({ edit: q })}>
+                          <Pencil className="size-3.5" aria-hidden="true" />
+                          Düzenle
+                        </Button>
+                        <Button size="xs" variant="subtle" onClick={() => setOpen({ withdraw: q })}>
+                          <Undo2 className="size-3.5" aria-hidden="true" />
+                          Geri çek
+                        </Button>
+                      </span>
+                    )}
+                    {q.documentHistory?.map((d, i) => (
+                      <Button
+                        key={`${d.replacedAt}-${d.fileName}`}
+                        size="xs"
+                        variant="subtle"
+                        title={`${d.fileName} · ${formatDateTime(d.replacedAt)} tarihinde değiştirildi`}
+                        loading={oldDoc.pendingId === `${q.quoteId}:${i}`}
+                        onClick={() => void oldDoc.open(`${q.quoteId}:${i}`, () => tendersApi.document(t.tenderId, q.quoteId, i))}
+                      >
+                        <FileClock className="size-3.5" aria-hidden="true" />
+                        Önceki belge {i + 1}
+                      </Button>
+                    ))}
                   </span>
                 )
               : undefined
           }
         />
+        {oldDoc.error && <p className="text-small text-danger">{oldDoc.error}</p>}
       </section>
 
       {t.publishedAt && (
@@ -186,9 +213,9 @@ function Detail({ tender: t }: { tender: Tender }) {
             onClose={close}
             tender={t}
             pending={actions.publish.isPending}
-            onConfirm={(shortfallReason) => actions.publish.mutateAsync({ id: t.tenderId, version: t.version, ...(shortfallReason ? { shortfallReason } : {}) })}
+            onConfirm={(shortfallReason) => actions.publish.mutateAsync({ id: t.tenderId, version: openedVersion, ...(shortfallReason ? { shortfallReason } : {}) })}
           />
-          <DecideDialog open={open === 'decide'} onClose={close} tender={t} pending={actions.decide.isPending} onConfirm={(v) => actions.decide.mutateAsync({ id: t.tenderId, version: t.version, ...v })} />
+          <DecideDialog open={open === 'decide'} onClose={close} tender={t} pending={actions.decide.isPending} onConfirm={(v) => actions.decide.mutateAsync({ id: t.tenderId, version: openedVersion, ...v })} />
           <ReasonDialog
             open={open === 'cancel'}
             onClose={close}
@@ -199,7 +226,7 @@ function Detail({ tender: t }: { tender: Tender }) {
             confirmLabel="İptal et"
             danger
             pending={actions.cancel.isPending}
-            onConfirm={(reason) => actions.cancel.mutateAsync({ id: t.tenderId, version: t.version, reason })}
+            onConfirm={(reason) => actions.cancel.mutateAsync({ id: t.tenderId, version: openedVersion, reason })}
           />
           <ReasonDialog
             open={typeof open === 'object' && open !== null && 'withdraw' in open}
@@ -214,7 +241,7 @@ function Detail({ tender: t }: { tender: Tender }) {
             pending={actions.withdrawQuote.isPending}
             onConfirm={(reason) => {
               const q = typeof open === 'object' && open !== null && 'withdraw' in open ? open.withdraw : undefined;
-              return q ? actions.withdrawQuote.mutateAsync({ id: t.tenderId, quoteId: q.quoteId, version: t.version, reason }) : Promise.resolve();
+              return q ? actions.withdrawQuote.mutateAsync({ id: t.tenderId, quoteId: q.quoteId, version: openedVersion, reason }) : Promise.resolve();
             }}
           />
         </>

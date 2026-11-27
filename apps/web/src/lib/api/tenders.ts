@@ -30,6 +30,8 @@ export const quoteSchema = z.object({
   warrantyMonths: z.number().optional(),
   notes: z.string().optional(),
   document: z.object({ fileName: z.string(), contentType: z.string(), size: z.number() }).optional(),
+  /** Yalnizca yonetim: yerine yenisi yuklenen onceki belgeler (eskiden yeniye). */
+  documentHistory: z.array(z.object({ fileName: z.string(), contentType: z.string(), size: z.number(), replacedAt: z.string(), replacedBy: z.string() })).optional(),
   status: z.enum(['active', 'withdrawn']),
   withdrawnAt: z.string().optional(),
   withdrawReason: z.string().optional(),
@@ -136,7 +138,9 @@ export const tendersApi = {
   addQuote: (id: string, input: QuoteInput & { idempotencyKey: string }) => apiClient.post(`${A}/${enc(id)}/quotes`, input, { schema: created.extend({ quoteId: z.string() }) }),
   updateQuote: (id: string, quoteId: string, input: Partial<QuoteInput> & { version: number }) => apiClient.patch(`${A}/${enc(id)}/quotes/${enc(quoteId)}`, input, { schema: one }),
   withdrawQuote: (id: string, quoteId: string, input: { version: number; reason: string }) => apiClient.post(`${A}/${enc(id)}/quotes/${enc(quoteId)}/withdraw`, input, { schema: one }),
-  document: (id: string, quoteId: string) => apiClient.get(`${A}/${enc(id)}/quotes/${enc(quoteId)}/document`, { schema: signedDownloadSchema }),
+  /** `history`: degistirilmis onceki belgenin sirasi (yalnizca yonetim). */
+  document: (id: string, quoteId: string, history?: number) =>
+    apiClient.get(`${A}/${enc(id)}/quotes/${enc(quoteId)}/document`, { query: history === undefined ? undefined : { history: String(history) }, schema: signedDownloadSchema }),
   comment: (id: string, input: { idempotencyKey: string; body: string }) => apiClient.post(`${A}/${enc(id)}/comments`, input, { schema: created }),
 };
 

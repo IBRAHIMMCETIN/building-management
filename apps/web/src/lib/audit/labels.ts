@@ -136,6 +136,7 @@ const EXACT: Record<string, string> = {
   'tender.publish': 'İhale sakinlerle paylaşıldı',
   'tender.decide': 'İhale karara bağlandı',
   'tender.cancel': 'İhale iptal edildi',
+  'tender.comment': 'İhaleye yönetim yanıtı yazıldı',
   // Finans 2.3 sayaç / endeks
   'meters.meter_create': 'Sayaç eklendi',
   'meters.meter_update': 'Sayaç güncellendi',
