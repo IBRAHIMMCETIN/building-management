@@ -4,9 +4,9 @@ import { AuthLayout } from '@/layouts/AuthLayout';
 import { ResidentLayout } from '@/layouts/ResidentLayout';
 import { LoginPage } from '@/pages/auth/LoginPage';
 import { ForbiddenPage, NotFoundPage, RouteErrorPage } from '@/pages/errors/ErrorPages';
-import { ADMIN_ROLES, APARTMENT_ADMIN_ROLES, AUDIT_ROLES, METER_READING_ROLES, METER_ROLES, MY_TASKS_ROLES, OFFICE_ROLES, PLATFORM_ROLES, RESIDENT_ROLES, SECURITY_ROLES, TEAM_ROLES, TICKET_ROLES } from '@/types/roles';
+import { ADMIN_ROLES, APARTMENT_ADMIN_ROLES, AUDIT_ROLES, GATE_ROLES, METER_READING_ROLES, METER_ROLES, MY_TASKS_ROLES, OFFICE_ROLES, PLATFORM_ROLES, RESIDENT_ROLES, SECURITY_ROLES, TEAM_ROLES, TICKET_ROLES } from '@/types/roles';
 import { RedirectIfAuthenticated, RequireRole, RequireSession, RootRedirect } from './guards';
-import { lazyPage } from './lazyPage';
+import { PageSuspense, lazyPage } from './lazyPage';
 
 // Sayfalar ayri parcalardir (giris ekrani ve hata sayfalari haric): rota acilinca indirilir.
 const AnnouncementsPage = lazyPage(() => import('@/pages/admin/announcements/AnnouncementsPage'), 'AnnouncementsPage');
@@ -15,6 +15,9 @@ const FinancePage = lazyPage(() => import('@/pages/admin/finance/FinancePage'), 
 const MetersPage = lazyPage(() => import('@/pages/admin/meters/MetersPage'), 'MetersPage');
 const MyTasksPage = lazyPage(() => import('@/pages/admin/staff/MyTasksPage'), 'MyTasksPage');
 const TicketsPage = lazyPage(() => import('@/pages/admin/tickets/TicketsPage'), 'TicketsPage');
+const GatePage = lazyPage(() => import('@/pages/admin/gate/GatePage'), 'GatePage');
+const MyGatePage = lazyPage(() => import('@/pages/resident/gate/MyGatePage'), 'MyGatePage');
+const GuestPassPage = lazyPage(() => import('@/pages/public/GuestPassPage'), 'GuestPassPage');
 const ReadingEntryPage = lazyPage(() => import('@/pages/admin/meters/ReadingEntryPage'), 'ReadingEntryPage');
 const ImportPage = lazyPage(() => import('@/pages/admin/import/ImportPage'), 'ImportPage');
 const AccountPage = lazyPage(() => import('@/pages/account/AccountPage'), 'AccountPage');
@@ -107,6 +110,11 @@ export const router = createBrowserRouter([
                 children: [{ path: 'tickets', element: <TicketsPage /> }],
               },
               {
+                // Guvenlik kapisi: gorevli kapi ekrani + yonetimin arac / gecis / gunluk ekranlari.
+                element: <RequireRole roles={GATE_ROLES} redirectHome />,
+                children: [{ path: 'gate', element: <GatePage /> }],
+              },
+              {
                 element: <RequireRole roles={MY_TASKS_ROLES} redirectHome />,
                 children: [{ path: 'my-tasks', element: <MyTasksPage /> }],
               },
@@ -153,6 +161,7 @@ export const router = createBrowserRouter([
               { index: true, element: <ResidentHomePage /> },
               { path: 'dues', element: <DuesPage /> },
               { path: 'tuketim', element: <ConsumptionPage /> },
+              { path: 'ziyaretci', element: <MyGatePage /> },
               // Faz 3 (O1-6): ariza / talep.
               { path: 'talepler', element: <MyTicketsPage /> },
               { path: 'talepler/yeni', element: <NewTicketWizard /> },
@@ -164,6 +173,15 @@ export const router = createBrowserRouter([
             ],
           },
         ],
+      },
+      // Misafire gonderilen gecis baglantisi: oturum gerektirmez, sunucuya istek atmaz (QR tarayicida).
+      {
+        path: 'gecis/:token',
+        element: (
+          <PageSuspense>
+            <GuestPassPage />
+          </PageSuspense>
+        ),
       },
       { path: '403', element: <ForbiddenPage /> },
       { path: '*', element: <NotFoundPage /> },

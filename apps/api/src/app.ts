@@ -13,6 +13,8 @@ import { type SupportService, createSupportService, withSupportAccess } from './
 import { apartmentRoleRoutes } from './modules/apartment-roles/routes.js';
 import { type ApartmentRoleService, createApartmentRoleService } from './modules/apartment-roles/service.js';
 import { type AnnouncementService, createAnnouncementService } from './modules/announcements/service.js';
+import { gatePortalRoutes, gateRoutes } from './modules/gate/routes.js';
+import { type GateService, createGateService } from './modules/gate/service.js';
 import { maintenanceRoutes } from './modules/maintenance/routes.js';
 import { type MaintenanceService, createMaintenanceService } from './modules/maintenance/service.js';
 import { type WorkCostService, createWorkCostService } from './modules/workcosts/service.js';
@@ -151,6 +153,8 @@ export type AppConfig = {
   maintenanceService?: MaintenanceService;
   workCostService?: WorkCostService;
   apartmentRoleService?: ApartmentRoleService;
+  /** Guvenlik kapisi: plaka, misafir QR gecisi, kurye, kapi gunlugu. */
+  gateService?: GateService;
   /**
    * Online odeme (Adim 8b). Verilmezse ortam degiskenlerinden (`loadPaymentsConfig`) kurulur;
    * PAYMENTS_PROVIDERS bossa online odeme kapalidir (P2: birden fazla saglayici + varsayilan). `fakePaymentProvider` yalnizca sahte
@@ -361,6 +365,10 @@ export function createApp(config: AppConfig) {
   );
 
 
+  // Guvenlik kapisi (yonetim + guvenlik; sakin portali `/api/portal`'dan once).
+  const gateService = config.gateService ?? createGateService();
+  app.route('/api/gate', gateRoutes({ authenticate, service: gateService }));
+  app.route('/api/portal/gate', gatePortalRoutes({ authenticate, service: gateService }));
   app.route('/api/portal/payments', paymentPortalRoutes({ authenticate, service: paymentsService }));
   app.route('/api/portal/meters', meterPortalRoutes({ authenticate, service: meterPortalService }));
   // Faz 3 (O1-2): sakin ariza / talep (daha ozel yol, `/api/portal`'dan once).

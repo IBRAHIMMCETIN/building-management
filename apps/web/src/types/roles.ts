@@ -60,6 +60,10 @@ export const SECURITY_ROLES = ['apartment_manager', 'management_company'] as con
 
 /** Faz 3 (O1) Ariza & Bakim (/admin/tickets): guvenlik yalnizca kendi talepleri; denetci salt okur. */
 export const TICKET_ROLES = ['apartment_manager', 'management_company', 'building_staff', 'security_guard', 'observer'] as const satisfies readonly Role[];
+/** Guvenlik kapisi (/admin/gate): guvenlik gorevlisi + yonetim. Denetci ve bina gorevlisi gormez (KVKK: en az erisim). */
+export const GATE_ROLES = ['apartment_manager', 'management_company', 'security_guard'] as const satisfies readonly Role[];
+/** Arac sicili, misafir gecisi listesi ve tum kapi gunlugu: yalnizca yonetim. */
+export const GATE_MANAGE_ROLES = ['apartment_manager', 'management_company'] as const satisfies readonly Role[];
 /** Gorevli "Islerim" (/admin/my-tasks). */
 export const MY_TASKS_ROLES = ['building_staff'] as const satisfies readonly Role[];
 

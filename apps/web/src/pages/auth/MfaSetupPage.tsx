@@ -1,9 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Copy, LogOut, ShieldCheck, Smartphone } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { useLocation, useNavigate } from 'react-router';
 import { Alert, Button, Card, CardTitle, Spinner } from '@/components/ui';
 import { useAuth } from '@/hooks/useAuth';
+import { useQrDataUrl } from '@/hooks/useQrDataUrl';
 import { errorMessage } from '@/lib/api/errors';
 import { beginTotpSetup, fetchMfaStatus, verifyTotp } from '@/lib/api/mfa';
 import { formatSecret, mfaGraceDaysLeft } from '@/lib/auth/mfa';
@@ -11,25 +12,6 @@ import { homePathForRole } from '@/types/roles';
 import { TotpForm } from './TotpForm';
 
 export const mfaStatusQueryKey = (userId: string | undefined) => ['me', 'mfa', userId] as const;
-
-/** otpauth URI -> QR (PNG data URL). Kutuphane yalnizca bu ekranda yuklenir. */
-function useQrDataUrl(uri: string | undefined) {
-  const [dataUrl, setDataUrl] = useState<string>();
-  useEffect(() => {
-    if (!uri) return;
-    let cancelled = false;
-    // qrcode yalnizca MFA kurulumunda gerekir: ayri parca olarak bu anda indirilir.
-    void import('qrcode')
-      .then(({ toDataURL }) => toDataURL(uri, { margin: 1, width: 208, errorCorrectionLevel: 'M' }))
-      .then((url) => {
-        if (!cancelled) setDataUrl(url);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [uri]);
-  return uri ? dataUrl : undefined;
-}
 
 /**
  * Iki adimli dogrulama (TOTP) kurulumu. Zorunlu MFA kapsamindaki rol (platform yoneticisi,
