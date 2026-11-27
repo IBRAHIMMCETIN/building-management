@@ -1,4 +1,4 @@
-import { useQueryClient } from '@tanstack/react-query';
+import { type QueryClient, useQueryClient } from '@tanstack/react-query';
 import { type ReactNode, createContext, useEffect, useMemo, useSyncExternalStore } from 'react';
 import { FullPageSpinner } from '@/components/ui';
 import { authAdapter } from '@/lib/auth';
@@ -37,6 +37,16 @@ export type AuthContextValue = {
 
 export const AuthContext = createContext<AuthContextValue | null>(null);
 
+/**
+ * Apartman / rol degisiminde onbellek: apartmana bagli her sey ve bekleyen mutasyonlar silinir; yalnizca
+ * ayni kullanicinin portfoyu (`['portfolio', sub]`, apartmandan bagimsiz, sunucu her istekte yetkiyi
+ * yeniden dogrular) kalir. Boylece portfoyden bir apartmana gecip geri donmek tum sayfalari yeniden yuklemez.
+ */
+export function clearForContextSwitch(queryClient: QueryClient, sub: string | undefined): void {
+  queryClient.getMutationCache().clear();
+  queryClient.removeQueries({ predicate: (q) => !(sub && q.queryKey[0] === 'portfolio' && q.queryKey[1] === sub) });
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient();
   const state = useSyncExternalStore(sessionManager.subscribe, sessionManager.getState);
@@ -74,7 +84,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       signOut: () => sessionManager.signOut().then(() => queryClient.clear()),
       requestPasswordReset: (email) => authAdapter.requestPasswordReset(email),
       confirmPasswordReset: (input) => authAdapter.confirmPasswordReset(input),
-      setActiveContext: (ctx) => sessionManager.setActiveContext(ctx).then(resetCache),
+      // Basarisiz secimde de temizlenir: oturum yeni (dogrulanamayan) token'la degismis olabilir, onceki
+      // apartmanin verisi kalmasin. Kullaniciya ozel portfoy onbellegi korunur (apartmandan bagimsiz).
+      setActiveContext: (ctx) => {
+        const sub = session?.claims.sub;
+        return sessionManager.setActiveContext(ctx).then(
+          (next) => {
+            clearForContextSwitch(queryClient, sub);
+            return next;
+          },
+          (err: unknown) => {
+            clearForContextSwitch(queryClient, sub);
+            throw err;
+          },
+        );
+      },
     };
   }, [session, state.mfaRequired, state.support, queryClient]);
 

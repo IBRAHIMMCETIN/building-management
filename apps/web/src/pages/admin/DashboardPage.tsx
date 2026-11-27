@@ -1,7 +1,7 @@
 import { AlertTriangle, ArrowRight, Lock } from 'lucide-react';
 import { useState } from 'react';
 import { Link } from 'react-router';
-import { Alert, Card, CardTitle, Skeleton } from '@/components/ui';
+import { Alert, Card, CardTitle, Kpi, Skeleton } from '@/components/ui';
 import { useAuth } from '@/hooks/useAuth';
 import { useFinancePermissions } from '@/hooks/useFinance';
 import { useFinanceDashboard } from '@/hooks/useFinancePeriods';
@@ -154,16 +154,6 @@ function FinanceOverview() {
         </Card>
       </div>
     </div>
-  );
-}
-
-function Kpi({ label, value, detail, warn }: { label: string; value: string; detail?: string; warn?: boolean }) {
-  return (
-    <Card className="flex flex-col gap-1">
-      <p className="text-small text-muted">{label}</p>
-      <p className={`text-2xl font-semibold tabular-nums ${warn ? 'text-warning' : ''}`}>{value}</p>
-      {detail && <p className="text-xs text-muted">{detail}</p>}
-    </Card>
   );
 }
 

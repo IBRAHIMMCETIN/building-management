@@ -1,6 +1,6 @@
-import { ArrowLeftRight, Building, CalendarDays, ClipboardPen, Contact, CreditCard, DoorOpen, FileText, FileUp, Gauge, Landmark, LayoutDashboard, ListChecks, Megaphone, Scale, ScrollText, Settings, ShieldCheck, Tag, UserCog, Users, Vote, Wallet, Wrench } from 'lucide-react';
+import { ArrowLeftRight, Briefcase, Building, CalendarDays, ClipboardPen, Contact, CreditCard, DoorOpen, FileText, FileUp, Gauge, Landmark, LayoutDashboard, ListChecks, Megaphone, Scale, ScrollText, Settings, ShieldCheck, Tag, UserCog, Users, Vote, Wallet, Wrench } from 'lucide-react';
 import type { ComponentType } from 'react';
-import { AUDIT_ROLES, EQUIPMENT_ROLES, GATE_ROLES, METER_READING_ROLES, METER_ROLES, MY_TASKS_ROLES, OFFICE_ROLES, type Role, SECURITY_ROLES, TEAM_ROLES, TICKET_ROLES, isPlatformRole } from '@/types/roles';
+import { AUDIT_ROLES, EQUIPMENT_ROLES, GATE_ROLES, METER_READING_ROLES, METER_ROLES, MY_TASKS_ROLES, OFFICE_ROLES, PORTFOLIO_ROLES, type Role, SECURITY_ROLES, TEAM_ROLES, TICKET_ROLES, isPlatformRole } from '@/types/roles';
 
 export type NavItem = {
   to: string;
@@ -11,10 +11,17 @@ export type NavItem = {
   roles?: readonly Role[];
   /** Sakin menusu: yalnizca aktif apartmanda malik uyeligi olana gorunur (yetki kontrolu yine API'de). */
   ownersOnly?: boolean;
+  /**
+   * Yonetim portfoyu: yalnizca en az iki apartmanda yonetici / yonetim firmasi / denetci olana
+   * gorunur (`usePortfolioAccess`; yetki kontrolu yine API'de).
+   */
+  portfolioOnly?: boolean;
 };
 
 /** Apartmana ozel yonetim menusu (aktif apartman baglami gerektirir). */
 export const APARTMENT_NAV: readonly NavItem[] = [
+  // Apartmanlar arasi ozet: tek apartmanin menusunden once.
+  { to: '/admin/portfolio', label: 'Portföy', icon: Briefcase, roles: PORTFOLIO_ROLES, portfolioOnly: true },
   { to: '/admin', label: 'Genel Bakış', icon: LayoutDashboard, end: true },
   { to: '/admin/my-tasks', label: 'İşlerim', icon: ListChecks, roles: MY_TASKS_ROLES },
   { to: '/admin/gate', label: 'Güvenlik Kapısı', icon: DoorOpen, roles: GATE_ROLES },
@@ -51,9 +58,9 @@ export const PLATFORM_NAV: readonly NavItem[] = [
  * her oge acik rol listesi tasir, boylece yeni eklenen bir ekran varsayilan olarak bina gorevlisi /
  * guvenlige acilmaz (router'daki `RequireRole` ayni listeleri kullanir).
  */
-export function navItemsFor(role: Role | undefined): readonly NavItem[] {
+export function navItemsFor(role: Role | undefined, portfolio = false): readonly NavItem[] {
   const items = isPlatformRole(role) ? PLATFORM_NAV : APARTMENT_NAV;
-  return items.filter((i) => !i.roles || (!!role && i.roles.includes(role)));
+  return items.filter((i) => (!i.roles || (!!role && i.roles.includes(role))) && (!i.portfolioOnly || portfolio));
 }
 
 export function panelTitleFor(role: Role | undefined): string {

@@ -4,7 +4,7 @@ import { AuthLayout } from '@/layouts/AuthLayout';
 import { ResidentLayout } from '@/layouts/ResidentLayout';
 import { LoginPage } from '@/pages/auth/LoginPage';
 import { ForbiddenPage, NotFoundPage, RouteErrorPage } from '@/pages/errors/ErrorPages';
-import { ADMIN_ROLES, APARTMENT_ADMIN_ROLES, AUDIT_ROLES, EQUIPMENT_ROLES, GATE_ROLES, METER_READING_ROLES, METER_ROLES, MY_TASKS_ROLES, OFFICE_ROLES, PLATFORM_ROLES, RESIDENT_ROLES, SECURITY_ROLES, TEAM_ROLES, TICKET_ROLES } from '@/types/roles';
+import { ADMIN_ROLES, APARTMENT_ADMIN_ROLES, AUDIT_ROLES, EQUIPMENT_ROLES, GATE_ROLES, METER_READING_ROLES, METER_ROLES, MY_TASKS_ROLES, OFFICE_ROLES, PLATFORM_ROLES, PORTFOLIO_ROLES, RESIDENT_ROLES, SECURITY_ROLES, TEAM_ROLES, TICKET_ROLES } from '@/types/roles';
 import { RedirectIfAuthenticated, RequireRole, RequireSession, RootRedirect } from './guards';
 import { PageSuspense, lazyPage } from './lazyPage';
 
@@ -13,6 +13,7 @@ const AnnouncementsPage = lazyPage(() => import('@/pages/admin/announcements/Ann
 const PollsPage = lazyPage(() => import('@/pages/admin/polls/PollsPage'), 'PollsPage');
 const AssembliesPage = lazyPage(() => import('@/pages/admin/assemblies/AssembliesPage'), 'AssembliesPage');
 const DashboardPage = lazyPage(() => import('@/pages/admin/DashboardPage'), 'DashboardPage');
+const PortfolioPage = lazyPage(() => import('@/pages/admin/portfolio/PortfolioPage'), 'PortfolioPage');
 const FinancePage = lazyPage(() => import('@/pages/admin/finance/FinancePage'), 'FinancePage');
 const MetersPage = lazyPage(() => import('@/pages/admin/meters/MetersPage'), 'MetersPage');
 const MyTasksPage = lazyPage(() => import('@/pages/admin/staff/MyTasksPage'), 'MyTasksPage');
@@ -100,6 +101,11 @@ export const router = createBrowserRouter([
                 // Apartmana ozel ekranlar; platform yoneticisi kendi acilis sayfasina yonlenir.
                 element: <RequireRole roles={APARTMENT_ADMIN_ROLES} redirectHome />,
                 children: [{ index: true, element: <DashboardPage /> }],
+              },
+              {
+                // Yonetim firmasi portfoyu: yonetici / yonetim firmasi / denetci (apartmanlar API'den).
+                element: <RequireRole roles={PORTFOLIO_ROLES} redirectHome />,
+                children: [{ path: 'portfolio', element: <PortfolioPage /> }],
               },
               {
                 // Ofis ekranlari: bina gorevlisi / guvenlik dogrudan URL ile girerse Genel Bakis'a doner.

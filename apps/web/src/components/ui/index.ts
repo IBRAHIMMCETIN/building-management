@@ -10,4 +10,5 @@ export { Badge } from './Badge';
 export { Select, type SelectProps } from './Select';
 export { Skeleton } from './Skeleton';
 export { FilterChips } from './FilterChips';
+export { Kpi } from './Kpi';
 export { Textarea, type TextareaProps } from './Textarea';

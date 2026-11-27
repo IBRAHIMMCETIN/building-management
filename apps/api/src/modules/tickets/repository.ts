@@ -44,7 +44,12 @@ export type TicketWrite = {
 
 export type TicketRepository = {
   get(apartmentId: string, ticketId: string): Promise<Ticket | undefined>;
-  list(apartmentId: string): Promise<Ticket[]>;
+  /**
+   * Apartmanin tum talepleri (pano, liste). `consistent: false`: yalnizca sayi gereken cagiran
+   * (yonetim portfoyu) icin eventually consistent okuma, okuma maliyeti yarisi. Durum indeksi yok:
+   * indeksler yalnizca eklenir (DeleteItem yetkisi yok), eski durum kayitlari silinemezdi.
+   */
+  list(apartmentId: string, opts?: { consistent?: boolean }): Promise<Ticket[]>;
   getMany(apartmentId: string, ticketIds: readonly string[]): Promise<Ticket[]>;
   /** Indeks on ekine gore talep kimlikleri (TKUNIT#/TKUSER#). Okuyan, talebin guncel haliyle suzer. */
   listIndexed(apartmentId: string, prefix: string): Promise<string[]>;
@@ -59,8 +64,8 @@ type TransactItem = NonNullable<TransactWriteCommandInput['TransactItems']>[numb
 export function createTicketRepository(): TicketRepository {
   const repo: TicketRepository = {
     get: (apartmentId, ticketId) => getTenantItem<Ticket>(ticketKeys.ticket(apartmentId, ticketId)),
-    async list(apartmentId) {
-      const items = await queryTenantAll<Ticket>(apartmentId, TICKET_PREFIX, { ConsistentRead: true });
+    async list(apartmentId, opts) {
+      const items = await queryTenantAll<Ticket>(apartmentId, TICKET_PREFIX, { ConsistentRead: opts?.consistent !== false });
       return items.filter((t) => t.entityType === 'TICKET' && t.apartmentId === apartmentId);
     },
     async getMany(apartmentId, ticketIds) {
