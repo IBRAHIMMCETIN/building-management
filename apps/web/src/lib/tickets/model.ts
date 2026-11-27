@@ -121,6 +121,7 @@ export const EVENT_LABELS: Record<string, string> = {
   cost_linked: 'Masraf bağlandı',
   cost_unlinked: 'Masraf bağı kaldırıldı',
   cost_charged: 'Daireye yansıtıldı',
+  estimate_set: 'Tahmini tutar notu',
 };
 
 /** S3 anahtarindan fotograf kimligi (API `photoIdOf` ile ayni: dosya adi, ilk nokta -> `_`). */

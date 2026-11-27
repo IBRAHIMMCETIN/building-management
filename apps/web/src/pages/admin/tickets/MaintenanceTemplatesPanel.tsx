@@ -51,6 +51,7 @@ export function MaintenanceTemplatesPanel({ onOpenTask: _onOpenTask }: { onOpenT
                   <p className="text-xs text-muted">
                     {CATEGORY_LABELS[t.category]}
                     {t.asset ? ` · ${t.asset}` : ''}
+                    {t.equipmentId ? ` · ekipman: ${labels.equipmentName(t.equipmentId) ?? 'kayıtlı'}` : ''}
                   </p>
                 </div>
                 <Badge tone="accent">
@@ -122,6 +123,7 @@ function TemplateDialog({ template, onClose }: { template: MaintenanceTemplate |
   const [name, setName] = useState(template?.name ?? '');
   const [category, setCategory] = useState<TicketCategory>(template?.category ?? 'other');
   const [asset, setAsset] = useState(template?.asset ?? '');
+  const [equipmentId, setEquipmentId] = useState(template?.equipmentId ?? '');
   const [every, setEvery] = useState(String(template?.schedule.every ?? 1));
   const [unit, setUnit] = useState<ScheduleUnit>(template?.schedule.unit ?? 'month');
   const [startDate, setStartDate] = useState(template?.schedule.startDate ?? istanbulToday());
@@ -133,6 +135,8 @@ function TemplateDialog({ template, onClose }: { template: MaintenanceTemplate |
   const [leadDays, setLeadDays] = useState(String(template?.leadDays ?? 7));
   const [legalNote, setLegalNote] = useState(template?.legalNote ?? '');
   const mutation = template ? update : create;
+  // Bagli ekipman hizmetten cikmis olabilir (secim listesinde yok): mevcut baglanti yine gosterilir.
+  const linkedMissing = !!template?.equipmentId && !labels.equipment.some((x) => x.equipmentId === template.equipmentId);
 
   const applyPreset = (id: string) => {
     setPreset(id);
@@ -164,6 +168,7 @@ function TemplateDialog({ template, onClose }: { template: MaintenanceTemplate |
       name: name.trim(),
       category,
       asset: asset.trim() || null,
+      equipmentId: equipmentId || null,
       schedule: { every: n, unit, startDate },
       checklist: checklist.map((c) => ({ text: c.text.trim(), required: c.required })),
       defaultAssigneeId: assignee || null,
@@ -200,6 +205,19 @@ function TemplateDialog({ template, onClose }: { template: MaintenanceTemplate |
         <FormField label="Ekipman / yer (isteğe bağlı)" hint="Örn. B Blok asansörü">
           <Input value={asset} onChange={(e) => setAsset(e.target.value)} maxLength={80} />
         </FormField>
+        <div className="sm:col-span-2">
+          <FormField label="Ekipman kaydı (isteğe bağlı)" hint="Görevler ve görevden açılan arızalar ekipmanın geçmişinde görünür.">
+            <Select value={equipmentId} onChange={(e) => setEquipmentId(e.target.value)}>
+              <option value="">Bağlı değil</option>
+              {linkedMissing && <option value={template?.equipmentId}>{labels.equipmentName(template?.equipmentId ?? '') ?? 'Mevcut ekipman'}</option>}
+              {labels.equipment.map((x) => (
+                <option key={x.equipmentId} value={x.equipmentId}>
+                  {x.name}
+                </option>
+              ))}
+            </Select>
+          </FormField>
+        </div>
         <FormField label="Kategori" hint="Görevden açılan arızanın kategorisi.">
           <Select value={category} onChange={(e) => setCategory(e.target.value as TicketCategory)}>
             {TICKET_CATEGORIES.map((c) => (

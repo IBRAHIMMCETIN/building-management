@@ -1,10 +1,12 @@
 import { Pencil, Send, UserCheck } from 'lucide-react';
 import { useEffect, useState } from 'react';
+import { Link } from 'react-router';
 import { PhotoPicker, uploadPhotos } from '@/components/tickets/PhotoPicker';
 import { PriorityBadge, SlaBadge, TicketStatusBadge } from '@/components/tickets/TicketBadges';
 import { TicketTimeline } from '@/components/tickets/TicketTimeline';
 import { Alert, Button, Dialog, FormField, Input, Select, Skeleton, Textarea } from '@/components/ui';
-import { useAssignTicket, useCommentTicket, useTicket, useTicketPermissions, useTransitionTicket, useUpdateTicket } from '@/hooks/useTickets';
+import { useEquipmentPermissions } from '@/hooks/useEquipment';
+import { useAssignTicket, useCommentTicket, useEstimateTicket, useTicket, useTicketPermissions, useTransitionTicket, useUpdateTicket } from '@/hooks/useTickets';
 import { errorMessage } from '@/lib/api/errors';
 import { type Ticket, ticketsApi } from '@/lib/api/tickets';
 import { formatDateTime } from '@/lib/dates';
@@ -20,6 +22,7 @@ import {
   locationText,
   noteRequired,
 } from '@/lib/tickets/model';
+import { EstimateCard } from './EstimateCard';
 import { WorkCostCard } from './WorkCostCard';
 import { type TicketLabels, useTicketLabels } from './shared';
 
@@ -42,7 +45,9 @@ export function TicketDetailPanel({ ticketId, onClose }: { ticketId: string | nu
 
 function TicketDetail({ ticket, events }: { ticket: Ticket; events: Parameters<typeof TicketTimeline>[0]['events'] }) {
   const p = useTicketPermissions();
+  const { canRead: canReadEquipment } = useEquipmentPermissions();
   const labels = useTicketLabels();
+  const estimate = useEstimateTicket(ticket.ticketId);
   const [action, setAction] = useState<TransitionAction | null>(null);
   const [editing, setEditing] = useState(false);
   const loadPhoto = (photoId: string) => ticketsApi.photo(ticket.ticketId, photoId);
@@ -67,6 +72,20 @@ function TicketDetail({ ticket, events }: { ticket: Ticket; events: Parameters<t
         <dd>{locationText(ticket.location, labels.unitLabel)}</dd>
         <dt className="text-muted">Kategori</dt>
         <dd>{CATEGORY_LABELS[ticket.category]}</dd>
+        {ticket.equipmentId && (
+          <>
+            <dt className="text-muted">Ekipman</dt>
+            <dd>
+              {canReadEquipment ? (
+                <Link to={`/admin/equipment?equipment=${encodeURIComponent(ticket.equipmentId)}`} className="text-accent underline-offset-2 hover:underline">
+                  {labels.equipmentName(ticket.equipmentId) ?? 'Ekipman kaydı'}
+                </Link>
+              ) : (
+                (labels.equipmentName(ticket.equipmentId) ?? 'Ekipman kaydı')
+              )}
+            </dd>
+          </>
+        )}
         <dt className="text-muted">Açılış</dt>
         <dd>{formatDateTime(ticket.createdAt)}</dd>
         <dt className="text-muted">SLA hedefi</dt>
@@ -96,11 +115,13 @@ function TicketDetail({ ticket, events }: { ticket: Ticket; events: Parameters<t
         </div>
       )}
 
+      <EstimateCard key={`estimate-${ticket.version}`} estimate={ticket.estimate} canEdit={ticket.canEstimate} version={ticket.version} mutation={estimate} nameOf={labels.nameOf} />
+
       {p.canReadCosts && <WorkCostCard target={{ kind: 'ticket', id: ticket.ticketId }} ticketStatus={ticket.status} />}
 
       <section className="flex flex-col gap-3">
         <h3 className="text-small font-semibold">Zaman çizelgesi</h3>
-        <TicketTimeline events={events} loadPhoto={loadPhoto} nameOf={labels.nameOf} />
+        <TicketTimeline events={events} loadPhoto={loadPhoto} nameOf={labels.nameOf} equipmentName={labels.equipmentName} />
       </section>
 
       {p.canCreate && ticket.status !== 'cancelled' && <CommentBox ticket={ticket} canInternal={p.canInternal} />}
@@ -268,9 +289,11 @@ function CommentBox({ ticket, canInternal }: { ticket: Ticket; canInternal: bool
 
 function EditDialog({ ticket, onClose }: { ticket: Ticket; onClose: () => void }) {
   const update = useUpdateTicket(ticket.ticketId);
+  const labels = useTicketLabels();
   const [title, setTitle] = useState(ticket.title);
   const [category, setCategory] = useState<TicketCategory>(ticket.category);
   const [priority, setPriority] = useState<TicketPriority>(ticket.priority);
+  const [equipmentId, setEquipmentId] = useState(ticket.equipmentId ?? '');
   const submit = () =>
     update.mutate(
       {
@@ -278,9 +301,12 @@ function EditDialog({ ticket, onClose }: { ticket: Ticket; onClose: () => void }
         ...(title.trim() !== ticket.title ? { title: title.trim() } : {}),
         ...(category !== ticket.category ? { category } : {}),
         ...(priority !== ticket.priority ? { priority } : {}),
+        ...(equipmentId !== (ticket.equipmentId ?? '') ? { equipmentId: equipmentId || null } : {}),
       },
       { onSuccess: onClose },
     );
+  // Bagli ekipman hizmetten cikmis olabilir (secim listesinde yok): mevcut baglanti yine gosterilir.
+  const linkedMissing = !!ticket.equipmentId && !labels.equipment.some((e) => e.equipmentId === ticket.equipmentId);
   return (
     <Dialog open onClose={onClose} title={`${ticket.number}: bilgileri düzelt`}>
       <div className="flex flex-col gap-4">
@@ -301,6 +327,17 @@ function EditDialog({ ticket, onClose }: { ticket: Ticket; onClose: () => void }
             {TICKET_PRIORITIES.map((x) => (
               <option key={x} value={x}>
                 {PRIORITY_LABELS[x]}
+              </option>
+            ))}
+          </Select>
+        </FormField>
+        <FormField label="Ekipman (isteğe bağlı)" hint="Arıza ekipmanın geçmişinde ve masraf toplamında görünür.">
+          <Select value={equipmentId} onChange={(e) => setEquipmentId(e.target.value)}>
+            <option value="">Bağlı değil</option>
+            {linkedMissing && <option value={ticket.equipmentId}>{labels.equipmentName(ticket.equipmentId ?? '') ?? 'Mevcut ekipman'}</option>}
+            {labels.equipment.map((e) => (
+              <option key={e.equipmentId} value={e.equipmentId}>
+                {e.name}
               </option>
             ))}
           </Select>

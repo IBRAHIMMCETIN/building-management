@@ -1,5 +1,6 @@
 import { keepPreviousData, useMutation, useQuery } from '@tanstack/react-query';
 import { type CompleteTaskInput, type TemplateInput, maintenanceApi } from '@/lib/api/maintenance';
+import type { EstimateInput } from '@/lib/api/tickets';
 import type { TicketPriority } from '@/lib/tickets/model';
 import { useInvalidateOperations, useTicketPermissions } from './useTickets';
 
@@ -65,6 +66,7 @@ export function useTaskActions(id: string) {
     start: useMutation({ mutationFn: (version: number) => maintenanceApi.start(id, version), ...opts }),
     complete: useMutation({ mutationFn: (input: CompleteTaskInput) => maintenanceApi.complete(id, input), ...opts }),
     skip: useMutation({ mutationFn: (v: { version: number; reason: string }) => maintenanceApi.skip(id, v), ...opts }),
+    estimate: useMutation({ mutationFn: (v: EstimateInput) => maintenanceApi.estimate(id, v), ...opts }),
     openTicket: useMutation({
       mutationFn: (v: { idempotencyKey: string; title?: string; description?: string; priority?: TicketPriority; photos?: string[] }) => maintenanceApi.openTicket(id, v),
       ...opts,

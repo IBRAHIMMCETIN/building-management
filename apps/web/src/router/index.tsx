@@ -4,7 +4,7 @@ import { AuthLayout } from '@/layouts/AuthLayout';
 import { ResidentLayout } from '@/layouts/ResidentLayout';
 import { LoginPage } from '@/pages/auth/LoginPage';
 import { ForbiddenPage, NotFoundPage, RouteErrorPage } from '@/pages/errors/ErrorPages';
-import { ADMIN_ROLES, APARTMENT_ADMIN_ROLES, AUDIT_ROLES, GATE_ROLES, METER_READING_ROLES, METER_ROLES, MY_TASKS_ROLES, OFFICE_ROLES, PLATFORM_ROLES, RESIDENT_ROLES, SECURITY_ROLES, TEAM_ROLES, TICKET_ROLES } from '@/types/roles';
+import { ADMIN_ROLES, APARTMENT_ADMIN_ROLES, AUDIT_ROLES, EQUIPMENT_ROLES, GATE_ROLES, METER_READING_ROLES, METER_ROLES, MY_TASKS_ROLES, OFFICE_ROLES, PLATFORM_ROLES, RESIDENT_ROLES, SECURITY_ROLES, TEAM_ROLES, TICKET_ROLES } from '@/types/roles';
 import { RedirectIfAuthenticated, RequireRole, RequireSession, RootRedirect } from './guards';
 import { PageSuspense, lazyPage } from './lazyPage';
 
@@ -17,6 +17,7 @@ const FinancePage = lazyPage(() => import('@/pages/admin/finance/FinancePage'), 
 const MetersPage = lazyPage(() => import('@/pages/admin/meters/MetersPage'), 'MetersPage');
 const MyTasksPage = lazyPage(() => import('@/pages/admin/staff/MyTasksPage'), 'MyTasksPage');
 const TicketsPage = lazyPage(() => import('@/pages/admin/tickets/TicketsPage'), 'TicketsPage');
+const EquipmentPage = lazyPage(() => import('@/pages/admin/equipment/EquipmentPage'), 'EquipmentPage');
 const GatePage = lazyPage(() => import('@/pages/admin/gate/GatePage'), 'GatePage');
 const MyGatePage = lazyPage(() => import('@/pages/resident/gate/MyGatePage'), 'MyGatePage');
 const GuestPassPage = lazyPage(() => import('@/pages/public/GuestPassPage'), 'GuestPassPage');
@@ -119,6 +120,11 @@ export const router = createBrowserRouter([
                 // Faz 3 (O1): ariza & bakim; gorevlinin mobil is listesi.
                 element: <RequireRole roles={TICKET_ROLES} redirectHome />,
                 children: [{ path: 'tickets', element: <TicketsPage /> }],
+              },
+              {
+                // Ariza & bakim v2: ekipman sicili (yonetim yazar; denetci ve bina gorevlisi okur).
+                element: <RequireRole roles={EQUIPMENT_ROLES} redirectHome />,
+                children: [{ path: 'equipment', element: <EquipmentPage /> }],
               },
               {
                 // Guvenlik kapisi: gorevli kapi ekrani + yonetimin arac / gecis / gunluk ekranlari.

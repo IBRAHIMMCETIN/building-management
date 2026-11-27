@@ -9,9 +9,10 @@ import { CATEGORY_LABELS, EVENT_LABELS, PRIORITY_LABELS, STATUS_LABELS, type Tic
 import { ROLE_LABELS, isRole } from '@/types/roles';
 import { PhotoGallery } from './PhotoGallery';
 
-const FIELD_LABELS: Record<string, string> = { title: 'Başlık', description: 'Açıklama', category: 'Kategori', priority: 'Öncelik', location: 'Konum' };
+const FIELD_LABELS: Record<string, string> = { title: 'Başlık', description: 'Açıklama', category: 'Kategori', priority: 'Öncelik', location: 'Konum', equipmentId: 'Ekipman' };
 
-function fieldValue(field: string, v: unknown): string {
+function fieldValue(field: string, v: unknown, equipmentName?: (id: string) => string | undefined): string {
+  if (field === 'equipmentId') return typeof v === 'string' ? (equipmentName?.(v) ?? 'Ekipman') : '—';
   if (field === 'category' && typeof v === 'string') return CATEGORY_LABELS[v as TicketCategory] ?? v;
   if (field === 'priority' && typeof v === 'string') return PRIORITY_LABELS[v as TicketPriority] ?? v;
   if (typeof v === 'string') return v.length > 60 ? `${v.slice(0, 60)}…` : v;
@@ -23,13 +24,15 @@ type Props = {
   loadPhoto: (photoId: string) => Promise<SignedDownload>;
   /** Kullanici kimligi -> ad (yonetim gorunumu). */
   nameOf?: (userId: string) => string | undefined;
+  /** v2: ekipman kimligi -> ad (yonetim gorunumu; "Bilgiler düzeltildi" olayinda). */
+  equipmentName?: (equipmentId: string) => string | undefined;
 };
 
 /**
  * Zaman cizelgesi (eskiden yeniye). Ic olaylar "Sakin görmez" etiketiyle ayri renkte; sakin
  * gorunumunde API yalnizca herkese acik olaylari dondurur.
  */
-export function TicketTimeline({ events, loadPhoto, nameOf }: Props) {
+export function TicketTimeline({ events, loadPhoto, nameOf, equipmentName }: Props) {
   if (!events.length) return <p className="text-small text-muted">Henüz kayıt yok.</p>;
   return (
     <ol className="flex flex-col gap-3" aria-label="Zaman çizelgesi">
@@ -55,7 +58,7 @@ export function TicketTimeline({ events, loadPhoto, nameOf }: Props) {
               <ul className="mt-1 text-xs text-muted">
                 {Object.entries(e.changes).map(([f, [from, to]]) => (
                   <li key={f}>
-                    {FIELD_LABELS[f] ?? f}: {fieldValue(f, from)} → {fieldValue(f, to)}
+                    {FIELD_LABELS[f] ?? f}: {fieldValue(f, from, equipmentName)} → {fieldValue(f, to, equipmentName)}
                   </li>
                 ))}
               </ul>

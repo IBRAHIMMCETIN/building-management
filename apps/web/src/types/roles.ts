@@ -64,6 +64,8 @@ export const TICKET_ROLES = ['apartment_manager', 'management_company', 'buildin
 export const GATE_ROLES = ['apartment_manager', 'management_company', 'security_guard'] as const satisfies readonly Role[];
 /** Arac sicili, misafir gecisi listesi ve tum kapi gunlugu: yalnizca yonetim. */
 export const GATE_MANAGE_ROLES = ['apartment_manager', 'management_company'] as const satisfies readonly Role[];
+/** Ariza & bakim v2 ekipman sicili (/admin/equipment): yonetim yazar; denetci ve bina gorevlisi okur. */
+export const EQUIPMENT_ROLES = ['apartment_manager', 'management_company', 'building_staff', 'observer'] as const satisfies readonly Role[];
 /** Gorevli "Islerim" (/admin/my-tasks). */
 export const MY_TASKS_ROLES = ['building_staff'] as const satisfies readonly Role[];
 

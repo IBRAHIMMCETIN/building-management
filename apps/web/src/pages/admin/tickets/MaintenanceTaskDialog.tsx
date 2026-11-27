@@ -1,5 +1,6 @@
 import { AlertTriangle, CheckCircle2, Play, UserCheck, Wrench, XCircle } from 'lucide-react';
 import { useState } from 'react';
+import { Link } from 'react-router';
 import { PhotoGallery } from '@/components/tickets/PhotoGallery';
 import { PhotoPicker, uploadPhotos } from '@/components/tickets/PhotoPicker';
 import { TaskStatusBadge } from '@/components/tickets/TicketBadges';
@@ -11,6 +12,7 @@ import { errorMessage } from '@/lib/api/errors';
 import { type MaintenanceTask, maintenanceApi } from '@/lib/api/maintenance';
 import { formatDate, formatDateTime } from '@/lib/dates';
 import { CATEGORY_LABELS, PRIORITY_LABELS, TICKET_PRIORITIES, type TicketPriority } from '@/lib/tickets/model';
+import { EstimateCard } from './EstimateCard';
 import { WorkCostCard } from './WorkCostCard';
 import { useTicketLabels } from './shared';
 
@@ -62,6 +64,16 @@ export function TaskBody({ task, onOpenTicket }: { task: MaintenanceTask; onOpen
       <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-small">
         <dt className="text-muted">Vade</dt>
         <dd>{formatDate(task.dueDate)}</dd>
+        {task.equipmentId && (
+          <>
+            <dt className="text-muted">Ekipman</dt>
+            <dd>
+              <Link to={`/admin/equipment?equipment=${encodeURIComponent(task.equipmentId)}`} className="text-accent underline-offset-2 hover:underline">
+                {labels.equipmentName(task.equipmentId) ?? 'Ekipman kaydı'}
+              </Link>
+            </dd>
+          </>
+        )}
         <dt className="text-muted">Görevli</dt>
         <dd>{task.assigneeId ? (labels.nameOf(task.assigneeId) ?? (task.assigneeId === p.userId ? 'Siz' : 'Görevli')) : 'Atanmamış'}</dd>
         {task.completedAt && (
@@ -167,6 +179,7 @@ export function TaskBody({ task, onOpenTicket }: { task: MaintenanceTask; onOpen
           ))}
         </p>
       )}
+      <EstimateCard estimate={task.estimate} canEdit={has('estimate')} version={task.version} mutation={act.estimate} nameOf={labels.nameOf} />
       {p.canReadCosts && <WorkCostCard target={{ kind: 'maintenance', id: task.taskId }} />}
     </div>
   );

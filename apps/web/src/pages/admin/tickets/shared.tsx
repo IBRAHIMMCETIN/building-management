@@ -1,26 +1,32 @@
 import { UserRound } from 'lucide-react';
 import { useMemo } from 'react';
 import { PriorityBadge, SlaBadge, TicketStatusBadge } from '@/components/tickets/TicketBadges';
+import { useEquipmentOptions } from '@/hooks/useEquipment';
 import { useAssignees } from '@/hooks/useTickets';
 import { useUnits } from '@/hooks/useUnits';
 import type { Ticket } from '@/lib/api/tickets';
 import { cn } from '@/lib/cn';
 import { CATEGORY_LABELS, locationText } from '@/lib/tickets/model';
 
-/** Daire numarasi ve gorevli adi cozumleyicileri (yonetim gorunumu). */
+/** Daire numarasi, gorevli adi ve (v2) ekipman adi cozumleyicileri (yonetim gorunumu). */
 export function useTicketLabels() {
   const units = useUnits();
   const assignees = useAssignees();
+  const equipment = useEquipmentOptions();
   return useMemo(() => {
     const unitMap = new Map((units.data?.items ?? []).map((u) => [u.unitId, u.number]));
     const people = new Map((assignees.data ?? []).map((a) => [a.userId, a.name]));
+    const equipmentMap = new Map((equipment.data ?? []).map((e) => [e.equipmentId, e.name]));
     return {
       unitLabel: (id: string) => unitMap.get(id),
       nameOf: (id: string) => people.get(id),
+      equipmentName: (id: string) => equipmentMap.get(id),
       units: units.data?.items ?? [],
       assignees: assignees.data ?? [],
+      /** Secim listeleri: hizmetteki ekipman (calisiyor + devre disi). */
+      equipment: equipment.data ?? [],
     };
-  }, [units.data, assignees.data]);
+  }, [units.data, assignees.data, equipment.data]);
 }
 
 export type TicketLabels = ReturnType<typeof useTicketLabels>;
