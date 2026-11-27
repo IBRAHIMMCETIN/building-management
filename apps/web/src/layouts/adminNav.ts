@@ -1,6 +1,6 @@
-import { ArrowLeftRight, Building, ClipboardPen, Contact, CreditCard, Gauge, FileText, FileUp, LayoutDashboard, ListChecks, Megaphone, ScrollText, Settings, ShieldCheck, UserCog, Users, Wallet, Wrench } from 'lucide-react';
+import { ArrowLeftRight, Building, ClipboardPen, Contact, CreditCard, DoorOpen, Gauge, FileText, FileUp, LayoutDashboard, ListChecks, Megaphone, ScrollText, Settings, ShieldCheck, UserCog, Users, Wallet, Wrench } from 'lucide-react';
 import type { ComponentType } from 'react';
-import { AUDIT_ROLES, METER_READING_ROLES, METER_ROLES, MY_TASKS_ROLES, OFFICE_ROLES, type Role, SECURITY_ROLES, TEAM_ROLES, TICKET_ROLES, isPlatformRole } from '@/types/roles';
+import { AUDIT_ROLES, GATE_ROLES, METER_READING_ROLES, METER_ROLES, MY_TASKS_ROLES, OFFICE_ROLES, type Role, SECURITY_ROLES, TEAM_ROLES, TICKET_ROLES, isPlatformRole } from '@/types/roles';
 
 export type NavItem = {
   to: string;
@@ -15,6 +15,7 @@ export type NavItem = {
 export const APARTMENT_NAV: readonly NavItem[] = [
   { to: '/admin', label: 'Genel Bakış', icon: LayoutDashboard, end: true },
   { to: '/admin/my-tasks', label: 'İşlerim', icon: ListChecks, roles: MY_TASKS_ROLES },
+  { to: '/admin/gate', label: 'Güvenlik Kapısı', icon: DoorOpen, roles: GATE_ROLES },
   { to: '/admin/units', label: 'Daireler', icon: Users, roles: OFFICE_ROLES },
   { to: '/admin/finance', label: 'Finans', icon: Wallet, roles: OFFICE_ROLES },
   { to: '/admin/tickets', label: 'Arıza & Bakım', icon: Wrench, roles: TICKET_ROLES },

@@ -87,8 +87,13 @@ describe('bina gorevlisi ve guvenlik menu izolasyonu', () => {
     expect(navItemsFor('building_staff').map((n) => n.label)).toEqual(['Genel Bakış', 'İşlerim', 'Arıza & Bakım', 'Sayaç Okuma']);
   });
 
-  it('guvenlik yalnizca Genel Bakis ve Ariza & Bakim gorur', () => {
-    expect(navItemsFor('security_guard').map((n) => n.to)).toEqual(['/admin', '/admin/tickets']);
+  it('guvenlik yalnizca Genel Bakis, Guvenlik Kapisi ve Ariza & Bakim gorur', () => {
+    expect(navItemsFor('security_guard').map((n) => n.to)).toEqual(['/admin', '/admin/gate', '/admin/tickets']);
+  });
+
+  it('guvenlik kapisi: guvenlik + yonetim; denetci ve bina gorevlisi gormez (KVKK)', () => {
+    for (const role of ['apartment_manager', 'management_company', 'security_guard'] as const) expect(navItemsFor(role).map((n) => n.to)).toContain('/admin/gate');
+    for (const role of ['observer', 'building_staff', 'platform_admin'] as const) expect(navItemsFor(role).map((n) => n.to)).not.toContain('/admin/gate');
   });
 
   it('ofis ekranlari yonetici, yonetim firmasi ve denetciye acik kalir', () => {
