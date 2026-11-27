@@ -36,6 +36,7 @@ export const FEE_STATUS_LABELS: Record<FeeStatus, string> = {
   void: 'Tahakkuk edilmedi',
   reversal_pending: 'İade bekliyor',
   reversed: 'İade edildi (ters kayıt)',
+  resolved_manually: 'Yönetim tarafından çözüldü',
 };
 
 /** Istanbul takvim gunu. */

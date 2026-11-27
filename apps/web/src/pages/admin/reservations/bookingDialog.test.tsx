@@ -12,7 +12,7 @@ HTMLDialogElement.prototype.showModal ??= function (this: HTMLDialogElement) {
 };
 
 const mutation = () => ({ isPending: false, isError: false, error: null, reset: vi.fn(), mutateAsync: vi.fn().mockResolvedValue({}) });
-const actions = { approve: mutation(), reject: mutation(), cancel: mutation() };
+const actions = { approve: mutation(), reject: mutation(), cancel: mutation(), resolveFee: mutation() };
 vi.mock('@/hooks/useReservations', () => ({ useBookingActions: () => actions }));
 
 const { BookingDialog } = await import('./BookingDialog');
@@ -95,5 +95,22 @@ describe('rezervasyon ayrintisi (yonetim)', () => {
     expect(container.textContent).toContain('Ücret iadesi (ters kayıt) yapılamadı');
     await click(byText('Ücret iadesini yeniden dene'));
     expect(actions.cancel.mutateAsync).toHaveBeenCalledWith({ id: 'b1', version: 1, reason: 'Arıza' });
+  });
+
+  it('iade yine yapilamazsa uyari gosterilir; Finans engelinde gerekceli elle cozum', async () => {
+    const stuck = booking({ status: 'cancelled', canApprove: false, canCancel: false, canRetryReversal: true, cancelReason: 'Arıza', fee: { amount: 20000, status: 'reversal_pending', error: 'Plan bağlı' } });
+    actions.cancel.mutateAsync.mockResolvedValueOnce({ booking: stuck, warning: 'Rezervasyon iptal edildi; ücret iadesi (ters kayıt) yapılamadı ve yönetimin iade kuyruğuna alındı.' });
+    await render(stuck);
+    await click(byText('Ücret iadesini yeniden dene'));
+    expect(container.textContent).toContain('iade kuyruğuna alındı');
+    expect(byText('Elle çözüldü olarak işaretle')).toBeUndefined();
+    container.remove();
+    await render(stuck);
+    await click(byText('Elle çözüldü olarak işaretle'));
+    const submit = [...container.querySelectorAll('button')].filter((b) => b.textContent === 'Elle çözüldü olarak işaretle').at(-1) as HTMLButtonElement;
+    expect(submit.disabled).toBe(true);
+    await type(container.querySelector('textarea'), 'Plan iptal edildi, elle mahsup');
+    await click(submit);
+    expect(actions.resolveFee.mutateAsync).toHaveBeenCalledWith({ id: 'b1', version: 1, reason: 'Plan iptal edildi, elle mahsup' });
   });
 });

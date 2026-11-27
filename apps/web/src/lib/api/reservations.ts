@@ -10,7 +10,7 @@ import { apiClient } from './client';
 
 export const BOOKING_STATUSES = ['pending', 'confirmed', 'rejected', 'cancelled'] as const;
 export type BookingStatus = (typeof BOOKING_STATUSES)[number];
-export const FEE_STATUSES = ['none', 'pending', 'charged', 'void', 'reversal_pending', 'reversed'] as const;
+export const FEE_STATUSES = ['none', 'pending', 'charged', 'void', 'reversal_pending', 'reversed', 'resolved_manually'] as const;
 export type FeeStatus = (typeof FEE_STATUSES)[number];
 export const SLOT_LENGTHS = [30, 60, 90, 120, 180, 240] as const;
 
@@ -49,6 +49,8 @@ const feeSchema = z.object({
   chargedAt: z.string().optional(),
   reversedAt: z.string().optional(),
   error: z.string().optional(),
+  resolvedNote: z.string().optional(),
+  resolvedAt: z.string().optional(),
 });
 
 const bookingBase = {
@@ -80,6 +82,7 @@ export const bookingSchema = z.object({
   blockId: z.string().optional(),
   fee: feeSchema,
   autoConfirm: z.boolean().optional(),
+  payer: z.object({ liableParty: z.enum(['occupant', 'owner']), relation: z.enum(['owner', 'tenant']) }).optional(),
   createdBy: z.string(),
   createdByRole: z.string(),
   decidedAt: z.string().optional(),
@@ -147,10 +150,12 @@ export const reservationsApi = {
   updateFacility: (id: string, input: Partial<FacilityInput> & { version: number; status?: 'active' | 'inactive' }) => apiClient.patch(`${A}/facilities/${enc(id)}`, input, { schema: oneFacility }),
   bookings: (q: { facilityId?: string; from: string; to: string }, signal?: AbortSignal) =>
     apiClient.get(`${A}/bookings`, { signal, query: q, schema: z.object({ from: z.string(), to: z.string(), items: z.array(bookingSchema) }) }),
-  pending: (signal?: AbortSignal) => apiClient.get(`${A}/bookings/pending`, { signal, schema: z.object({ items: z.array(bookingSchema), total: z.number() }) }),
+  pending: (signal?: AbortSignal) =>
+    apiClient.get(`${A}/bookings/pending`, { signal, schema: z.object({ items: z.array(bookingSchema), total: z.number(), reversals: z.array(bookingSchema) }) }),
   approve: (id: string, input: { version: number; note?: string }) => apiClient.post(`${A}/bookings/${enc(id)}/approve`, input, { schema: oneBooking }),
   reject: (id: string, input: { version: number; reason: string }) => apiClient.post(`${A}/bookings/${enc(id)}/reject`, input, { schema: oneBooking }),
-  cancel: (id: string, input: { version: number; reason: string }) => apiClient.post(`${A}/bookings/${enc(id)}/cancel`, input, { schema: oneBooking }),
+  cancel: (id: string, input: { version: number; reason: string }) => apiClient.post(`${A}/bookings/${enc(id)}/cancel`, input, { schema: oneBooking.extend({ warning: z.string().optional() }) }),
+  resolveFee: (id: string, input: { version: number; reason: string }) => apiClient.post(`${A}/bookings/${enc(id)}/fee-resolved`, input, { schema: oneBooking }),
 };
 
 export const portalReservationsApi = {
@@ -159,5 +164,6 @@ export const portalReservationsApi = {
     apiClient.get(`${P}/facilities/${enc(facilityId)}/availability`, { signal, query: { date }, schema: availabilitySchema }),
   bookings: (signal?: AbortSignal) => apiClient.get(`${P}/bookings`, { signal, schema: z.object({ upcoming: z.array(myBookingSchema), history: z.array(myBookingSchema) }) }),
   book: (input: CreateBookingInput) => apiClient.post(`${P}/bookings`, input, { schema: z.object({ booking: myBookingSchema, replayed: z.boolean(), warning: z.string().optional() }) }),
-  cancel: (id: string, input: { version: number; reason?: string }) => apiClient.post(`${P}/bookings/${enc(id)}/cancel`, input, { schema: z.object({ booking: myBookingSchema }) }),
+  cancel: (id: string, input: { version: number; reason?: string }) =>
+    apiClient.post(`${P}/bookings/${enc(id)}/cancel`, input, { schema: z.object({ booking: myBookingSchema, warning: z.string().optional() }) }),
 };

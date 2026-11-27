@@ -123,6 +123,12 @@ function SlotPicker({ facility, units, today, onBack, onDone }: PickerProps) {
   const start = startIndex === undefined ? undefined : slots[startIndex];
   const chosenMinutes = minutes ?? durations[0];
   const party = partySize.trim() ? Number(partySize) : undefined;
+
+  // Her yeni secim (daire, tarih, dilim, sure, kisi sayisi, not) yeni bir istektir: anahtar yenilenir.
+  // Ayni secimin tekrar gonderimi (ag hatasi, cift dokunma) ayni anahtari kullanir.
+  useEffect(() => {
+    renewKey();
+  }, [unitId, date, startIndex, chosenMinutes, partySize, note, renewKey]);
   const partyInvalid = party !== undefined && (!Number.isInteger(party) || party < 1 || party > facility.capacity);
 
   const submit = async () => {
@@ -255,6 +261,7 @@ function MyBookingsList() {
   const list = useMyBookings();
   const cancel = useCancelMyBooking();
   const [confirming, setConfirming] = useState<string>();
+  const [notice, setNotice] = useState<string>();
   if (list.isPending) return <Skeleton className="h-40" />;
   if (list.isError) return <Alert tone="danger">{errorMessage(list.error)}</Alert>;
   const { upcoming, history } = list.data;
@@ -287,7 +294,22 @@ function MyBookingsList() {
                 <Button size="sm" variant="ghost" onClick={() => setConfirming(undefined)} disabled={cancel.isPending}>
                   Vazgeç
                 </Button>
-                <Button size="sm" variant="danger" loading={cancel.isPending} onClick={() => cancel.mutate({ id: b.bookingId, version: b.version }, { onSuccess: () => setConfirming(undefined) })}>
+                <Button
+                  size="sm"
+                  variant="danger"
+                  loading={cancel.isPending}
+                  onClick={() =>
+                    cancel.mutate(
+                      { id: b.bookingId, version: b.version },
+                      {
+                        onSuccess: (r) => {
+                          setConfirming(undefined);
+                          setNotice(r.warning);
+                        },
+                      },
+                    )
+                  }
+                >
                   İptal et
                 </Button>
               </div>
@@ -316,6 +338,7 @@ function MyBookingsList() {
 
   return (
     <div className="flex flex-col gap-4">
+      {notice && <Alert tone="danger">{notice}</Alert>}
       {upcoming.length === 0 ? <p className="py-6 text-center text-small text-muted">Yaklaşan rezervasyonunuz yok.</p> : <ul className="flex flex-col gap-2">{upcoming.map(row)}</ul>}
       {history.length > 0 && (
         <section className="flex flex-col gap-2">

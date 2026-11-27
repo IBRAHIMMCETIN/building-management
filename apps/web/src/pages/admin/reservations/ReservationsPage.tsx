@@ -52,7 +52,7 @@ export function ReservationsPage() {
     );
   }
 
-  const pendingCount = pending.data?.total ?? 0;
+  const pendingCount = (pending.data?.total ?? 0) + (pending.data?.reversals.length ?? 0);
   const setTab = (id: TabId) => {
     const next = new URLSearchParams(params);
     if (id === 'calendar') next.delete('tab');
@@ -131,11 +131,29 @@ export function ReservationsPage() {
   );
 }
 
+/** Onay bekleyenler ve iadesi yapilamamis ucretler (yeniden deneme / elle cozum ayrintidan). */
 function PendingPanel({ query, unitLabel, onOpen }: { query: ReturnType<typeof usePendingBookings>; unitLabel: (id: string) => string; onOpen: (b: Booking) => void }) {
   if (query.isPending) return <Skeleton className="h-40" />;
   if (query.isError) return <Alert tone="danger">{errorMessage(query.error)}</Alert>;
-  const items = query.data.items;
-  if (!items.length) return <p className="py-10 text-center text-small text-muted">Onay bekleyen rezervasyon yok.</p>;
+  const { items, reversals } = query.data;
+  return (
+    <div className="flex flex-col gap-6">
+      {reversals.length > 0 && (
+        <section className="flex flex-col gap-2">
+          <h2 className="text-small font-semibold">Ücret iadesi bekleyenler</h2>
+          <p className="text-small text-muted">İptal edildi ancak ücretin ters kaydı yapılamadı. Ayrıntıdan yeniden deneyin veya Finans’ta düzelttiyseniz elle çözüldü olarak işaretleyin.</p>
+          <BookingRows items={reversals} unitLabel={unitLabel} onOpen={onOpen} />
+        </section>
+      )}
+      <section className="flex flex-col gap-2">
+        {reversals.length > 0 && <h2 className="text-small font-semibold">Onay bekleyenler</h2>}
+        {items.length ? <BookingRows items={items} unitLabel={unitLabel} onOpen={onOpen} /> : <p className="py-10 text-center text-small text-muted">Onay bekleyen rezervasyon yok.</p>}
+      </section>
+    </div>
+  );
+}
+
+function BookingRows({ items, unitLabel, onOpen }: { items: Booking[]; unitLabel: (id: string) => string; onOpen: (b: Booking) => void }) {
   return (
     <ul className="flex flex-col gap-2">
       {items.map((b) => (

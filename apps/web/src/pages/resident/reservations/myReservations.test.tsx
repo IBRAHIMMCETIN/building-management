@@ -78,7 +78,6 @@ vi.mock('@/hooks/useReservations', () => ({
   useCreateBooking: () => create,
   useCancelMyBooking: () => cancel,
 }));
-vi.mock('@/hooks/useIdempotencyKey', () => ({ useIdempotencyKey: () => ['key-1', vi.fn()] }));
 vi.mock('@/context/PortalUnitContext', () => ({ usePortalUnit: () => ({ unitId: undefined, selectUnit: vi.fn() }) }));
 
 const { MyReservationsPage } = await import('./MyReservationsPage');
@@ -118,8 +117,24 @@ describe('sakin rezervasyon ekrani', () => {
     expect([...duration.options].map((o) => o.textContent)).toEqual(['1 saat (10:00–11:00)', '2 saat (10:00–12:00)']);
     expect(container.textContent).toContain('₺150,00');
     await click(byText('Rezervasyonu onayla'));
-    expect(create.mutateAsync).toHaveBeenCalledWith({ idempotencyKey: 'key-1', facilityId: 'f1', unitId: 'u1', date: '2026-11-29', start: '10:00', minutes: 60 });
+    expect(create.mutateAsync).toHaveBeenCalledWith({ idempotencyKey: expect.any(String), facilityId: 'f1', unitId: 'u1', date: '2026-11-29', start: '10:00', minutes: 60 });
     expect(container.textContent).toContain('Rezervasyonunuz onaylandı');
+  });
+
+  it('idempotency anahtari: ayni secimin tekrari ayni anahtar; secim degisince yeni anahtar', async () => {
+    await render();
+    await click(byText('Toplantı Salonu'));
+    const slotAt = (t: string) => buttons().find((b) => b.textContent?.startsWith(t));
+    await click(slotAt('10:00'));
+    create.mutateAsync.mockRejectedValueOnce(new Error('ağ hatası')).mockRejectedValueOnce(new Error('ağ hatası')).mockRejectedValueOnce(new Error('ağ hatası'));
+    await click(byText('Rezervasyonu onayla'));
+    await click(byText('Rezervasyonu onayla'));
+    await click(slotAt('11:00'));
+    await click(byText('Rezervasyonu onayla'));
+    const keys = create.mutateAsync.mock.calls.map((c) => (c[0] as { idempotencyKey: string; start: string }).idempotencyKey);
+    expect(keys[0]).toBe(keys[1]);
+    expect(keys[2]).not.toBe(keys[1]);
+    expect((create.mutateAsync.mock.calls[2]?.[0] as { start: string }).start).toBe('11:00');
   });
 
   it('rezervasyonlarim: iptal onayi, ret gerekcesi ve ucret durumu', async () => {

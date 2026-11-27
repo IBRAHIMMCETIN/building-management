@@ -78,6 +78,7 @@ export function useBookingActions() {
     approve: useMutation({ mutationFn: (v: { id: string; version: number; note?: string }) => reservationsApi.approve(v.id, { version: v.version, ...(v.note ? { note: v.note } : {}) }), ...opts }),
     reject: useMutation({ mutationFn: (v: { id: string; version: number; reason: string }) => reservationsApi.reject(v.id, { version: v.version, reason: v.reason }), ...opts }),
     cancel: useMutation({ mutationFn: (v: { id: string; version: number; reason: string }) => reservationsApi.cancel(v.id, { version: v.version, reason: v.reason }), ...opts }),
+    resolveFee: useMutation({ mutationFn: (v: { id: string; version: number; reason: string }) => reservationsApi.resolveFee(v.id, { version: v.version, reason: v.reason }), ...opts }),
   };
 }
 

@@ -8,15 +8,20 @@ import { formatTRY } from '@/lib/money';
 import { BOOKING_STATUS_LABELS, BOOKING_STATUS_TONES, FEE_STATUS_LABELS, formatMinutes } from '@/lib/reservations/model';
 
 type Props = { booking: Booking | null; unitLabel: (id: string) => string; canWrite: boolean; onClose: () => void };
-type Mode = 'view' | 'approve' | 'reject' | 'cancel';
+type Mode = 'view' | 'approve' | 'reject' | 'cancel' | 'resolve';
 
 const ADMIN_FEE_LABELS = { ...FEE_STATUS_LABELS, charged: 'Oturanın carisine tahakkuk edildi' };
 
-/** Rezervasyon ayrintisi; onay (not), ret ve iptal (gerekce zorunlu), yarim kalan iadenin yeniden denenmesi. */
+/**
+ * Rezervasyon ayrintisi; onay (not), ret ve iptal (gerekce zorunlu), yarim kalan iadenin yeniden
+ * denenmesi ve Finans engelinde gerekceli "elle cozuldu" isareti. Iptal yazilip iade yapilamadiysa
+ * API uyari dondurur: diyalog uyariyi gosterir.
+ */
 export function BookingDialog({ booking, unitLabel, canWrite, onClose }: Props) {
   const actions = useBookingActions();
   const [mode, setMode] = useState<Mode>('view');
   const [text, setText] = useState('');
+  const [warning, setWarning] = useState<string>();
   const [last, setLast] = useState<Booking | null>(null);
 
   useEffect(() => {
@@ -24,25 +29,36 @@ export function BookingDialog({ booking, unitLabel, canWrite, onClose }: Props) 
     setLast(booking);
     setMode('view');
     setText('');
+    setWarning(undefined);
     actions.approve.reset();
     actions.reject.reset();
     actions.cancel.reset();
+    actions.resolveFee.reset();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- yalnizca yeni secimde
   }, [booking?.bookingId]);
 
   const b = booking ?? last;
   if (!b) return null;
-  const mutation = mode === 'approve' ? actions.approve : mode === 'reject' ? actions.reject : actions.cancel;
-  const pending = actions.approve.isPending || actions.reject.isPending || actions.cancel.isPending;
+  const mutation = mode === 'approve' ? actions.approve : mode === 'reject' ? actions.reject : mode === 'resolve' ? actions.resolveFee : actions.cancel;
+  const pending = actions.approve.isPending || actions.reject.isPending || actions.cancel.isPending || actions.resolveFee.isPending;
   const conflict = mutation.error instanceof ApiError && mutation.error.status === 409;
-  const reasonRequired = mode === 'reject' || mode === 'cancel';
+  const reasonRequired = mode === 'reject' || mode === 'cancel' || mode === 'resolve';
   const tooShort = reasonRequired && text.trim().length < 3;
 
   const run = async (m: Mode = mode) => {
     try {
       if (m === 'approve') await actions.approve.mutateAsync({ id: b.bookingId, version: b.version, ...(text.trim() ? { note: text.trim() } : {}) });
       else if (m === 'reject') await actions.reject.mutateAsync({ id: b.bookingId, version: b.version, reason: text.trim() });
-      else await actions.cancel.mutateAsync({ id: b.bookingId, version: b.version, reason: text.trim() || b.cancelReason || 'Ücret iadesi yeniden denendi' });
+      else if (m === 'resolve') await actions.resolveFee.mutateAsync({ id: b.bookingId, version: b.version, reason: text.trim() });
+      else {
+        const r = await actions.cancel.mutateAsync({ id: b.bookingId, version: b.version, reason: text.trim() || b.cancelReason || 'Ücret iadesi yeniden denendi' });
+        // Iptal yazildi ama iade yapilamadi: uyariyi goster (kayit iade kuyrugunda).
+        if (r.warning) {
+          setWarning(r.booking.fee.error ? `${r.warning} ${r.booking.fee.error}` : r.warning);
+          setMode('view');
+          return;
+        }
+      }
       onClose();
     } catch {
       // Hata diyalogda gosterilir; liste onSettled ile yenilenir.
@@ -56,7 +72,8 @@ export function BookingDialog({ booking, unitLabel, canWrite, onClose }: Props) 
     ['Saat', `${b.startTime}–${b.endTime} (${formatMinutes(b.minutes)})`],
     ...(b.partySize ? ([['Kişi sayısı', String(b.partySize)]] as [string, string][]) : []),
     ...(b.note ? ([['Sakin notu', b.note]] as [string, string][]) : []),
-    ['Ücret', b.fee.amount ? `${formatTRY(b.fee.amount)} · ${ADMIN_FEE_LABELS[b.fee.status]}` : 'Ücretsiz'],
+    ['Ücret', b.fee.amount ? `${formatTRY(b.fee.amount)} · ${ADMIN_FEE_LABELS[b.fee.status]}${b.payer ? ` · ${b.payer.liableParty === 'owner' ? 'kat maliki carisi' : 'oturan carisi'}` : ''}` : 'Ücretsiz'],
+    ...(b.fee.resolvedNote ? ([['Elle çözüm', b.fee.resolvedNote]] as [string, string][]) : []),
     ['Oluşturma', formatDateTime(b.createdAt)],
     ...(b.decisionNote ? ([[b.status === 'rejected' ? 'Ret gerekçesi' : 'Onay notu', b.decisionNote]] as [string, string][]) : []),
     ...(b.cancelledAt ? ([['İptal', `${formatDateTime(b.cancelledAt)} · ${b.cancelKind === 'manager' ? 'yönetim' : 'sakin'}${b.cancelReason ? ` · ${b.cancelReason}` : ''}`]] as [string, string][]) : []),
@@ -77,12 +94,18 @@ export function BookingDialog({ booking, unitLabel, canWrite, onClose }: Props) 
             </div>
           ))}
         </dl>
-        {b.fee.error && <Alert tone="danger">{b.fee.error}</Alert>}
+        {warning ? <Alert tone="danger">{warning}</Alert> : b.fee.error && <Alert tone="danger">{b.fee.error}</Alert>}
 
         {mode !== 'view' && (
           <FormField
-            label={mode === 'approve' ? 'Not (isteğe bağlı)' : mode === 'reject' ? 'Ret gerekçesi' : 'İptal gerekçesi'}
-            hint={reasonRequired ? 'Sakin bu gerekçeyi görür ve denetim günlüğüne yazılır.' : undefined}
+            label={mode === 'approve' ? 'Not (isteğe bağlı)' : mode === 'reject' ? 'Ret gerekçesi' : mode === 'resolve' ? 'Çözüm açıklaması' : 'İptal gerekçesi'}
+            hint={
+              mode === 'resolve'
+                ? 'Ters kayıt yapılamayan ücretin Finans’ta nasıl düzeltildiğini yazın; denetim günlüğüne yazılır.'
+                : reasonRequired
+                  ? 'Sakin bu gerekçeyi görür ve denetim günlüğüne yazılır.'
+                  : undefined
+            }
           >
             <Textarea rows={3} maxLength={300} value={text} onChange={(e) => setText(e.target.value)} />
           </FormField>
@@ -90,7 +113,14 @@ export function BookingDialog({ booking, unitLabel, canWrite, onClose }: Props) 
         {mode === 'cancel' && b.fee.status === 'charged' && <p className="text-small text-muted">Tahakkuk edilen ücret ters kayıtla iade edilir.</p>}
         {mutation.isError && <Alert tone="danger">{conflict ? 'Rezervasyon bu arada değişti. Liste yenilendi; kontrol edip tekrar deneyin.' : errorMessage(mutation.error)}</Alert>}
 
-        {canWrite && (
+        {canWrite && warning && (
+          <div className="flex justify-end pt-2">
+            <Button variant="ghost" onClick={onClose}>
+              Kapat
+            </Button>
+          </div>
+        )}
+        {canWrite && !warning && (
           <div className="flex flex-col-reverse gap-2 pt-2 sm:flex-row sm:justify-end">
             {mode === 'view' ? (
               <>
@@ -98,9 +128,14 @@ export function BookingDialog({ booking, unitLabel, canWrite, onClose }: Props) 
                   Kapat
                 </Button>
                 {b.canRetryReversal && (
-                  <Button variant="secondary" loading={actions.cancel.isPending} onClick={() => void run('cancel')}>
-                    Ücret iadesini yeniden dene
-                  </Button>
+                  <>
+                    <Button variant="secondary" onClick={() => setMode('resolve')}>
+                      Elle çözüldü olarak işaretle
+                    </Button>
+                    <Button variant="secondary" loading={actions.cancel.isPending} onClick={() => void run('cancel')}>
+                      Ücret iadesini yeniden dene
+                    </Button>
+                  </>
                 )}
                 {b.canCancel && (
                   <Button variant="secondary" onClick={() => setMode('cancel')}>
@@ -120,8 +155,16 @@ export function BookingDialog({ booking, unitLabel, canWrite, onClose }: Props) 
                   Vazgeç
                 </Button>
                 {!conflict && (
-                  <Button variant={mode === 'approve' ? 'primary' : 'danger'} loading={pending} disabled={tooShort} onClick={() => void run()}>
-                    {mode === 'approve' ? (b.fee.amount ? `Onayla ve ${formatTRY(b.fee.amount)} tahakkuk et` : 'Onayla') : mode === 'reject' ? 'Reddet' : 'Rezervasyonu iptal et'}
+                  <Button variant={mode === 'approve' || mode === 'resolve' ? 'primary' : 'danger'} loading={pending} disabled={tooShort} onClick={() => void run()}>
+                    {mode === 'approve'
+                      ? b.fee.amount
+                        ? `Onayla ve ${formatTRY(b.fee.amount)} tahakkuk et`
+                        : 'Onayla'
+                      : mode === 'reject'
+                        ? 'Reddet'
+                        : mode === 'resolve'
+                          ? 'Elle çözüldü olarak işaretle'
+                          : 'Rezervasyonu iptal et'}
                   </Button>
                 )}
               </>
