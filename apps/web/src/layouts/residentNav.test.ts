@@ -1,12 +1,19 @@
 import { describe, expect, it } from 'vitest';
-import { PRIMARY_TABS, RESIDENT_NAV, isMoreActive, splitResidentNav } from './residentNav';
+import { PRIMARY_TABS, RESIDENT_NAV, isMoreActive, residentNavFor, splitResidentNav } from './residentNav';
 
 describe('sakin menusu: alt sekmeler ve "Diğer"', () => {
   it('ilk dort oge alt cubukta, kalanlar cekmecede', () => {
     const { primary, more } = splitResidentNav();
     expect(primary.map((n) => n.label)).toEqual(['Ana Sayfa', 'Borçlarım', 'Talepler', 'Duyurular']);
-    expect(more.map((n) => n.to)).toEqual(['/app/ziyaretci', '/app/rezervasyon', '/app/oylamalar', '/app/tuketim', '/app/ihale']);
+    expect(more.map((n) => n.to)).toEqual(['/app/ziyaretci', '/app/rezervasyon', '/app/oylamalar', '/app/genel-kurul', '/app/tuketim', '/app/ihale']);
     expect(primary.length + more.length).toBe(RESIDENT_NAV.length);
+  });
+
+  it('Genel Kurul yalnizca malik uyeligi olana gorunur (kiraci menude gormez)', () => {
+    expect(residentNavFor(true).map((n) => n.to)).toContain('/app/genel-kurul');
+    expect(residentNavFor(false).map((n) => n.to)).not.toContain('/app/genel-kurul');
+    expect(residentNavFor(false)).toHaveLength(RESIDENT_NAV.length - 1);
+    expect(splitResidentNav(residentNavFor(false)).more.map((n) => n.to)).toEqual(['/app/ziyaretci', '/app/rezervasyon', '/app/oylamalar', '/app/tuketim', '/app/ihale']);
   });
 
   it('cekmeceye tek oge kalacaksa hepsi cubukta gosterilir', () => {
@@ -20,6 +27,7 @@ describe('sakin menusu: alt sekmeler ve "Diğer"', () => {
     expect(isMoreActive('/app/rezervasyon', more)).toBe(true);
     expect(isMoreActive('/app/ziyaretci/abc', more)).toBe(true);
     expect(isMoreActive('/app/oylamalar/poll-1', more)).toBe(true);
+    expect(isMoreActive('/app/genel-kurul/asm-1', more)).toBe(true);
     expect(isMoreActive('/app/ziyaretciler', more)).toBe(false);
     expect(isMoreActive('/app/dues', more)).toBe(false);
     expect(isMoreActive('/app', more)).toBe(false);

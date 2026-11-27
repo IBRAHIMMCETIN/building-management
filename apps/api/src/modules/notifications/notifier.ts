@@ -28,6 +28,8 @@ export type NotificationTemplate =
   | 'reservation_approved'
   | 'reservation_rejected'
   | 'reservation_cancelled'
+  /** Genel kurul: kat malikleri kurulu toplanti cagrisi (oy listesindeki malik kullanicilar). */
+  | 'assembly_called'
   | `dues_reminder_${'upcoming' | 'overdue_1' | 'overdue_7' | 'plan_default'}`;
 
 /** Ozet bildirimlerdeki kalem satiri (kisisel veri yok). */

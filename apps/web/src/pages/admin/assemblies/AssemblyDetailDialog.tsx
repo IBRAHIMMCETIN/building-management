@@ -1,12 +1,11 @@
 import { FileText, Pencil } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { Alert, Badge, Button, Card, CardTitle, Dialog, FormField, Input, Select, Skeleton, Textarea } from '@/components/ui';
-import { useAssembly, useCancelAssembly, useRecordQuorum, useRecordTally, useSetAttendance } from '@/hooks/useAssemblies';
+import { useAssembly, useCancelAssembly, useRecordQuorum, useSetAttendance } from '@/hooks/useAssemblies';
 import { useOpenDocument } from '@/hooks/useOpenDocument';
 import { useBlocks, usePeople } from '@/hooks/useUnits';
 import {
   ATTENDANCE_MODES,
-  type AgendaItem,
   type Assembly,
   type AssemblyUnit,
   type AttendanceInput,
@@ -15,26 +14,40 @@ import {
   MODE_LABELS,
   type Quorum,
   SECOND_MEETING_MAX_DAYS,
+  STATUS_LABELS,
+  STATUS_TONES,
   assembliesApi,
   quorumText,
 } from '@/lib/api/assemblies';
 import { errorMessage } from '@/lib/api/errors';
 import { formatBps, formatFraction } from '@/lib/api/pollModel';
 import { formatDate, formatDateTime } from '@/lib/dates';
-import { attendanceInput, tallyIssue } from './schemas';
+import { AgendaDecision } from './AgendaDecision';
+import { AssemblyCallCard } from './AssemblyCallCard';
+import { MinutesCard } from './MinutesCard';
+import { attendanceInput } from './schemas';
 
 type Props = { assemblyId: string | null; canWrite: boolean; onClose: () => void; onEdit: (a: Assembly) => void };
 
-/** Genel kurul ayrintisi: dondurulmus oy listesi, yeter sayi, gundem sayimlari, katilim ve hazirun. */
+/**
+ * Genel kurul ayrintisi: cagri, dondurulmus oy listesi, yeter sayi, gundem kararlari (gerekli
+ * cogunluk, duzeltme), tutanak ve kesinlestirme, katilim, hazirun / tutanak PDF'leri.
+ */
 export function AssemblyDetailDialog({ assemblyId, canWrite, onClose, onEdit }: Props) {
   const detail = useAssembly(assemblyId ?? undefined);
   const doc = useOpenDocument();
+  const blocks = useBlocks();
   const data = detail.data;
   const a = data?.assembly;
-  // Katilim, yeter sayi ve sayim toplanti basladiktan sonra girilir (API de reddeder).
+  // Katilim, yeter sayi, karar ve tutanak toplanti basladiktan sonra girilir (API de reddeder).
   const started = Boolean(a && Date.now() >= Date.parse(a.scheduledAt));
   const editable = canWrite && a?.status === 'planned';
   const live = editable && started;
+  // Ilk karardan sonra katilim donar (API de 409 doner).
+  const attendanceLocked = Boolean(a?.attendanceLockedAt || a?.agenda.some((i) => i.tally));
+  const blockNames = useMemo(() => new Map((blocks.data ?? []).map((b) => [b.blockId, b.name])), [blocks.data]);
+  const multiBlock = new Set((data?.units ?? []).map((u) => u.blockId)).size > 1;
+  const unitLabel = (u: AssemblyUnit) => `${multiBlock ? `${blockNames.get(u.blockId) ?? 'Blok'} · ` : ''}${u.number}`;
 
   return (
     <Dialog open={assemblyId !== null} onClose={onClose} title={a ? `${KIND_LABELS[a.kind]} · ${formatDateTime(a.scheduledAt)}` : 'Genel kurul'} variant="panel">
@@ -56,7 +69,7 @@ export function AssemblyDetailDialog({ assemblyId, canWrite, onClose, onEdit }: 
           <div key={a.assemblyId} className="flex flex-col gap-5">
             <div className="flex flex-col gap-2 text-small">
               <div className="flex flex-wrap items-center gap-2">
-                <Badge tone={a.status === 'cancelled' ? 'neutral' : 'accent'}>{a.status === 'cancelled' ? 'İptal edildi' : 'Planlandı'}</Badge>
+                <Badge tone={STATUS_TONES[a.status]}>{STATUS_LABELS[a.status]}</Badge>
                 {a.secondMeeting && <Badge tone="warning">İkinci toplantı</Badge>}
               </div>
               {a.location && <p>Yer: {a.location}</p>}
@@ -74,13 +87,27 @@ export function AssemblyDetailDialog({ assemblyId, canWrite, onClose, onEdit }: 
                   ? `${formatDateTime(a.roll.frozenAt)} itibarıyla donduruldu`
                   : 'henüz dondurulmadı (ön izleme); toplantı başladıktan sonraki ilk katılım, yeter sayı veya sayım kaydıyla dondurulur'}
               </p>
-              {editable && !started && <Alert>Katılım, yeter sayı ve sayım toplantı başladıktan sonra ({formatDateTime(a.scheduledAt)}) girilir. Hazirun cetveli şimdilik ön izlemedir.</Alert>}
+              {a.secondMeetingPlan && (
+                <p className="text-muted">
+                  Yeter sayı sağlanamazsa ikinci toplantı: {formatDateTime(a.secondMeetingPlan.scheduledAt)}
+                  {a.secondMeetingPlan.location ? ` · ${a.secondMeetingPlan.location}` : ''}
+                  {a.secondMeetingPlan.onlineUrl ? ` · ${a.secondMeetingPlan.onlineUrl}` : ''}
+                </p>
+              )}
+              {data.warnings.length > 0 && <Alert>{data.warnings.join(' ')}</Alert>}
+              {editable && !started && <Alert>Katılım, yeter sayı, karar ve tutanak toplantı başladıktan sonra ({formatDateTime(a.scheduledAt)}) girilir. Hazirun cetveli şimdilik ön izlemedir.</Alert>}
               {a.cancelReason && <p className="text-muted">İptal gerekçesi: {a.cancelReason}</p>}
               <div className="flex flex-wrap gap-2 pt-1">
                 <Button size="sm" variant="secondary" loading={doc.pendingId === a.assemblyId} onClick={() => void doc.open(a.assemblyId, () => assembliesApi.attendanceSheet(a.assemblyId))}>
                   <FileText className="size-4" aria-hidden="true" />
                   {data.rollFrozen ? 'Hazirun cetveli (PDF)' : 'Hazirun cetveli ön izleme (PDF)'}
                 </Button>
+                {data.rollFrozen && (
+                  <Button size="sm" variant="secondary" loading={doc.pendingId === 'minutes'} onClick={() => void doc.open('minutes', () => assembliesApi.minutesPdf(a.assemblyId))}>
+                    <FileText className="size-4" aria-hidden="true" />
+                    {a.status === 'held' ? 'Toplantı tutanağı (PDF)' : 'Tutanak taslağı (PDF)'}
+                  </Button>
+                )}
                 {editable && !data.rollFrozen && (
                   <Button size="sm" variant="subtle" onClick={() => onEdit(a)}>
                     <Pencil className="size-4" aria-hidden="true" />
@@ -91,22 +118,40 @@ export function AssemblyDetailDialog({ assemblyId, canWrite, onClose, onEdit }: 
               {doc.error && <Alert tone="danger">{doc.error}</Alert>}
             </div>
 
+            {(a.status !== 'cancelled' || (a.calls?.length ?? 0) > 0) && !started ? (
+              <AssemblyCallCard assembly={a} check={data.callCheck} outdated={data.callOutdated} canWrite={canWrite} />
+            ) : (
+              (a.calls?.length ?? 0) > 0 && <AssemblyCallCard assembly={a} outdated={false} canWrite={false} />
+            )}
+
             <QuorumCard assembly={a} quorum={data.quorum} editable={live} />
 
             <Card className="flex flex-col gap-3">
-              <CardTitle>Gündem ve sayım</CardTitle>
+              <CardTitle>Gündem ve kararlar</CardTitle>
               <ol className="flex flex-col gap-3">
                 {a.agenda.map((item, i) => (
                   <li key={item.itemId}>
-                    <AgendaRow index={i} item={item} assembly={a} quorum={data.quorum} canTally={live && data.quorum.met && a.quorumRecord?.met !== false} />
+                    <AgendaDecision
+                      index={i}
+                      item={item}
+                      assembly={a}
+                      quorum={data.quorum}
+                      units={data.units}
+                      records={data.decisions.filter((d) => d.itemId === item.itemId)}
+                      canTally={live && data.quorum.met && a.quorumRecord?.met !== false}
+                      canCorrect={canWrite && a.status !== 'cancelled'}
+                      unitLabel={unitLabel}
+                    />
                   </li>
                 ))}
               </ol>
             </Card>
 
-            <AttendanceTable assembly={a} units={data.units} editable={live} />
+            {started && data.rollFrozen && a.status !== 'cancelled' && <MinutesCard key={a.assemblyId} assembly={a} editable={live} />}
 
-            {editable && <CancelBox assembly={a} />}
+            <AttendanceTable assembly={a} units={data.units} editable={live && !attendanceLocked} locked={live && attendanceLocked} />
+
+            {editable && !a.agenda.some((i) => i.tally) && <CancelBox assembly={a} />}
           </div>
         )
       )}
@@ -140,7 +185,12 @@ function QuorumCard({ assembly: a, quorum: q, editable }: { assembly: Assembly; 
         </div>
       </dl>
       <Alert tone={q.met ? 'success' : 'info'}>{quorumText(q)}</Alert>
-      {q.met && <p className="text-small text-muted">Karar yeter sayısı: katılanların oy çokluğu (en az {q.decisionThreshold} kabul oyu; kişi başına en fazla {q.voteCap} oy).</p>}
+      {q.met && (
+        <p className="text-small text-muted">
+          Katılanların oy çokluğu aranan maddelerde en az {q.decisionThreshold} kabul oyu gerekir; nitelikli çoğunluk ve oybirliğinde payda bütün kat malikleridir ({q.totalUnits} bölüm). Kişi başına en
+          fazla {q.voteCap} oy.
+        </p>
+      )}
       {q.warnings.length > 0 && <Alert>{q.warnings.join(' · ')}</Alert>}
       {a.quorumRecord && (
         <p className="text-small">
@@ -168,57 +218,7 @@ function QuorumCard({ assembly: a, quorum: q, editable }: { assembly: Assembly; 
   );
 }
 
-function AgendaRow({ index, item, assembly, quorum, canTally }: { index: number; item: AgendaItem; assembly: Assembly; quorum: Quorum; canTally: boolean }) {
-  const record = useRecordTally(assembly.assemblyId);
-  const [values, setValues] = useState({ yes: String(item.tally?.yes ?? ''), no: String(item.tally?.no ?? ''), abstain: String(item.tally?.abstain ?? '') });
-  const [issue, setIssue] = useState<string | null>(null);
-  const parsed = { yes: Number(values.yes || 0), no: Number(values.no || 0), abstain: Number(values.abstain || 0) };
-
-  const save = async () => {
-    const problem = tallyIssue(parsed, quorum.presentVotes);
-    setIssue(problem);
-    if (problem) return;
-    try {
-      await record.mutateAsync({ itemId: item.itemId, version: assembly.version, ...parsed });
-    } catch {
-      // Hata satirda gosterilir.
-    }
-  };
-
-  return (
-    <div className="flex flex-col gap-2 rounded-lg border border-border px-3 py-2.5">
-      <div className="flex flex-wrap items-start justify-between gap-2">
-        <p className="font-medium break-words">
-          {index + 1}. {item.title}
-        </p>
-        {item.tally && <Badge tone={item.tally.decision === 'accepted' ? 'success' : 'danger'}>{item.tally.decision === 'accepted' ? 'Kabul edildi' : 'Reddedildi'}</Badge>}
-      </div>
-      {item.description && <p className="text-small text-muted">{item.description}</p>}
-      {item.tally && (
-        <p className="text-xs text-muted tabular-nums">
-          Kabul {item.tally.yes} · Ret {item.tally.no} · Çekimser {item.tally.abstain} · Katılan {item.tally.presentVotes} oy · {formatDateTime(item.tally.recordedAt)}
-        </p>
-      )}
-      {canTally && (
-        <div className="flex flex-wrap items-end gap-2">
-          {(['yes', 'no', 'abstain'] as const).map((k) => (
-            <div key={k} className="w-24">
-              <FormField label={k === 'yes' ? 'Kabul' : k === 'no' ? 'Ret' : 'Çekimser'}>
-                <Input type="number" inputMode="numeric" min={0} max={quorum.presentVotes} value={values[k]} onChange={(e) => setValues({ ...values, [k]: e.target.value })} />
-              </FormField>
-            </div>
-          ))}
-          <Button size="sm" loading={record.isPending} onClick={() => void save()}>
-            {item.tally ? 'Sayımı düzelt' : 'Sayımı kaydet'}
-          </Button>
-        </div>
-      )}
-      {(issue || record.isError) && <Alert tone="danger">{issue ?? errorMessage(record.error)}</Alert>}
-    </div>
-  );
-}
-
-function AttendanceTable({ assembly, units, editable }: { assembly: Assembly; units: AssemblyUnit[]; editable: boolean }) {
+function AttendanceTable({ assembly, units, editable, locked = false }: { assembly: Assembly; units: AssemblyUnit[]; editable: boolean; locked?: boolean }) {
   const blocks = useBlocks();
   const people = usePeople();
   const blockNames = useMemo(() => new Map((blocks.data ?? []).map((b) => [b.blockId, b.name])), [blocks.data]);
@@ -227,6 +227,7 @@ function AttendanceTable({ assembly, units, editable }: { assembly: Assembly; un
   return (
     <Card className="flex flex-col gap-3">
       <CardTitle>Katılım (hazirun)</CardTitle>
+      {locked && <Alert>Karar kaydedildi: katılım artık değiştirilemez (kararlar ve tutanak bu katılıma dayanır).</Alert>}
       <p className="text-small text-muted">
         Hisseli bölümü paydaşların seçtiği tek kişi temsil eder. Vekil (KMK m.31) yazılı vekaletnameyle katılır; 40 ve daha az bölümde en fazla iki kat malikini, üstünde oyların %5&apos;ini
         temsil edebilir.

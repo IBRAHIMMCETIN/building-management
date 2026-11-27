@@ -9,12 +9,14 @@
  *   gate           ziyaretci / kurye (kurye onay istegi, misafir girisi)
  *   reservations   ortak alan rezervasyonu (onay, ret, yonetim iptali)
  *   polls          anket / oylama
+ *   assemblies     genel kurul (kat malikleri kurulu toplanti cagrisi). Anketten ayri: anket
+ *                  e-postalarini kapatan malik toplanti cagrisini almaya devam edebilmeli (ve tersi).
  *
  * Kategori once olay turunden (worker), yoksa sablon adindan cozulur. Yeni olay / sablon, ait
  * oldugu kategorinin on ekiyle adlandirilmalidir; kategorisi cozulemeyen bildirim yalnizca ana
  * anahtara (`email.enabled`) tabidir.
  */
-export const NOTIFICATION_CATEGORIES = ['finance', 'announcements', 'tickets', 'gate', 'reservations', 'polls'] as const;
+export const NOTIFICATION_CATEGORIES = ['finance', 'announcements', 'tickets', 'gate', 'reservations', 'polls', 'assemblies'] as const;
 export type NotificationCategory = (typeof NOTIFICATION_CATEGORIES)[number];
 
 const EVENT_PREFIXES: [prefix: string, category: NotificationCategory][] = [
@@ -29,6 +31,7 @@ const EVENT_PREFIXES: [prefix: string, category: NotificationCategory][] = [
   ['GATE_', 'gate'],
   ['RESERVATION_', 'reservations'],
   ['POLL_', 'polls'],
+  ['ASSEMBLY_', 'assemblies'],
 ];
 
 const TEMPLATE_PREFIXES: [prefix: string, category: NotificationCategory][] = [
@@ -42,6 +45,7 @@ const TEMPLATE_PREFIXES: [prefix: string, category: NotificationCategory][] = [
   ['gate_', 'gate'],
   ['reservation_', 'reservations'],
   ['poll_', 'polls'],
+  ['assembly_', 'assemblies'],
 ];
 
 const byPrefix = (table: [string, NotificationCategory][], value: string) => table.find(([p]) => value.startsWith(p))?.[1];

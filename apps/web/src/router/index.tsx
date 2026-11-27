@@ -43,6 +43,8 @@ const PlatformPayoutsPage = lazyPage(() => import('@/pages/platform/payments/Pla
 const ResidentAnnouncementsPage = lazyPage(() => import('@/pages/resident/AnnouncementsPage'), 'ResidentAnnouncementsPage');
 const MyPollsPage = lazyPage(() => import('@/pages/resident/polls/MyPollsPage'), 'MyPollsPage');
 const MyPollDetailPage = lazyPage(() => import('@/pages/resident/polls/MyPollDetailPage'), 'MyPollDetailPage');
+const MyAssembliesPage = lazyPage(() => import('@/pages/resident/assemblies/MyAssembliesPage'), 'MyAssembliesPage');
+const MyAssemblyDetailPage = lazyPage(() => import('@/pages/resident/assemblies/MyAssemblyDetailPage'), 'MyAssemblyDetailPage');
 const ConsumptionPage = lazyPage(() => import('@/pages/resident/ConsumptionPage'), 'ConsumptionPage');
 const DuesPage = lazyPage(() => import('@/pages/resident/DuesPage'), 'DuesPage');
 const PaymentPage = lazyPage(() => import('@/pages/resident/payment/PaymentPage'), 'PaymentPage');
@@ -199,6 +201,9 @@ export const router = createBrowserRouter([
               // Y1: anket / oylama.
               { path: 'oylamalar', element: <MyPollsPage /> },
               { path: 'oylamalar/:pollId', element: <MyPollDetailPage /> },
+              // Genel kurul devami: kat maliklerine toplantilar, kararlar ve tutanak.
+              { path: 'genel-kurul', element: <MyAssembliesPage /> },
+              { path: 'genel-kurul/:assemblyId', element: <MyAssemblyDetailPage /> },
               { path: 'account', element: <AccountPage /> },
             ],
           },

@@ -4,10 +4,10 @@ import { NavLink, Outlet, useLocation } from 'react-router';
 import { BrandMark } from '@/components/BrandMark';
 import { Dialog } from '@/components/ui';
 import { PortalUnitProvider } from '@/context/PortalUnitContext';
-import { useActiveApartmentName } from '@/hooks/useActiveContextLabel';
+import { useActiveApartmentName, useIsActiveOwner } from '@/hooks/useActiveContextLabel';
 import { BRAND_NAME } from '@/lib/brand';
 import { cn } from '@/lib/cn';
-import { isMoreActive, splitResidentNav } from './residentNav';
+import { isMoreActive, residentNavFor, splitResidentNav } from './residentNav';
 import { UserMenu } from './UserMenu';
 import { PageSuspense } from '@/router/lazyPage';
 
@@ -31,7 +31,8 @@ const tabClass = 'flex min-w-0 flex-col items-center gap-1 px-0.5 py-2 text-xs t
 export function ResidentLayout() {
   const [moreOpen, setMoreOpen] = useState(false);
   const { pathname } = useLocation();
-  const { primary, more } = splitResidentNav();
+  // Genel Kurul yalnizca malik uyeligi olana (kiraciya menude gorunmez; API de 403 doner).
+  const { primary, more } = splitResidentNav(residentNavFor(useIsActiveOwner()));
   const moreActive = isMoreActive(pathname, more);
 
   // Sayfa degisince (geri tusu dahil) cekmece kapanir.

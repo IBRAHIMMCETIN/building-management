@@ -14,13 +14,13 @@ import { NOTIFICATION_CATEGORIES, type NotificationCategory, isNotificationCateg
  * sakinin tercihini degistiremez. Kisisel veri tasimaz (yalnizca acik/kapali + zaman damgasi).
  *
  * Kategori bazli e-posta (bkz. `categories.ts`): `email.finance | announcements | tickets | gate |
- * reservations | polls`; yalnizca acikca secilenler saklanir, verilmeyen kategori ACIK sayilir. Ana
- * anahtar (`enabled`) kapaliysa hicbiri gitmez.
+ * reservations | polls | assemblies`; yalnizca acikca secilenler saklanir, verilmeyen kategori ACIK
+ * sayilir. Ana anahtar (`enabled`) kapaliysa hicbiri gitmez.
  *
  * Kayit duz ozniteliklerdir (`emailEnabled`, `ticketEmails` (O1-2 ile ayni ad), `emailFinance`,
- * `emailAnnouncements`, `emailGate`, `emailReservations`, `emailPolls`). Guncelleme OKUMADAN yalnizca
- * gonderilen alanlari `SET` eder (UpdateExpression): iki cihazin es zamanli kismi guncellemesi
- * birbirini ezmez; eski sekme yalnizca degistirdigi alani gonderdigi icin ana anahtari geri acamaz.
+ * `emailAnnouncements`, `emailGate`, `emailReservations`, `emailPolls`, `emailAssemblies`). Guncelleme
+ * OKUMADAN yalnizca gonderilen alanlari `SET` eder (UpdateExpression): iki cihazin es zamanli kismi
+ * guncellemesi birbirini ezmez; eski sekme yalnizca degistirdigi alani gonderdigi icin ana anahtari geri acamaz.
  */
 
 export type EmailCategoryPreferences = Partial<Record<NotificationCategory, boolean>>;
@@ -45,6 +45,7 @@ export const CATEGORY_ATTRIBUTES: Record<NotificationCategory, string> = {
   gate: 'emailGate',
   reservations: 'emailReservations',
   polls: 'emailPolls',
+  assemblies: 'emailAssemblies',
 };
 
 /** Yalnizca bilinen kategoriler, yalnizca boolean degerler (sira sabit). */
@@ -112,8 +113,8 @@ export function createDynamoPreferencesRepository(): PreferencesRepository {
 }
 
 /**
- * PUT govdesi: `{ email: { enabled?, finance?, announcements?, tickets?, gate?, reservations?, polls?:
- * boolean } }`; en az bir alan zorunlu, bilinmeyen alan reddedilir. Verilmeyen alan degismez.
+ * PUT govdesi: `{ email: { enabled?, finance?, announcements?, tickets?, gate?, reservations?, polls?,
+ * assemblies?: boolean } }`; en az bir alan zorunlu, bilinmeyen alan reddedilir. Verilmeyen alan degismez.
  */
 export function parsePreferences(body: unknown): PreferencesInput {
   const o = asObject(body);

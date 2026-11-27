@@ -7,7 +7,7 @@ import { NOTIFICATION_CATEGORIES, NOTIFICATION_CATEGORY_META, categoryEnabled } 
 
 /**
  * Hesabim - bildirim tercihleri (`/api/me/notification-preferences`): e-posta ana anahtari ve kategori
- * bazli e-posta (aidat / tahsilat, duyuru, ariza, ziyaretci / kurye, rezervasyon, anket). Tercih
+ * bazli e-posta (aidat / tahsilat, duyuru, ariza, ziyaretci / kurye, rezervasyon, anket, genel kurul). Tercih
  * kullanici genelidir (tum apartmanlar); her degisiklik YALNIZCA degisen alani gonderir, sunucu
  * digerlerine dokunmaz (iki cihaz / eski sekme birbirini ezmez). Yonetim paneli ve sakin portali ayni
  * karti kullanir. Erisilebilirlik: ad sarmalayan <label>'dan, aciklama `aria-describedby` ile.
