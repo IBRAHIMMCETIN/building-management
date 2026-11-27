@@ -1,4 +1,5 @@
 import { zodResolver } from '@hookform/resolvers/zod';
+import { useMutation } from '@tanstack/react-query';
 import { CheckCircle2 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useForm } from 'react-hook-form';
@@ -8,10 +9,25 @@ import { useIdempotencyKey } from '@/hooks/useIdempotencyKey';
 import { INVOICE_ACCEPT, documentsApi, invoiceFileError } from '@/lib/api/documents';
 import { ApiError, errorMessage } from '@/lib/api/errors';
 import { applyApiFieldError } from '@/lib/api/formErrors';
-import { formatTRY } from '@/lib/money';
+import type { RecordExpenseInput } from '@/lib/api/finance';
+import { formatTRY, kurusToInput } from '@/lib/money';
 import { type ExpenseForm, type ExpenseValues, expenseSchema, todayIstanbul } from './schemas';
 
-type Props = { open: boolean; onClose: () => void };
+/** On dolum (ornek: karara baglanmis ihale). Tutar kurus. */
+export type ExpensePreset = { expenseAccountId?: string; amount?: number; date?: string; description?: string; supplier?: string };
+
+type Props = {
+  open: boolean;
+  onClose: () => void;
+  /** Acilista forma yazilir; kullanici degistirebilir. */
+  preset?: ExpensePreset;
+  /**
+   * Gider baska bir modulun ucundan kaydedilir (ornek: `POST /api/tenders/:id/expense`; ayni Finans
+   * gider servisi). Verilmezse `POST /api/finance/expenses`. Bu modda "Yeni gider" sunulmaz.
+   */
+  onRecord?: (input: RecordExpenseInput) => Promise<{ amount: number }>;
+  title?: string;
+};
 
 const FIELDS = ['expenseAccountId', 'creditAccountId', 'amount', 'date', 'description', 'supplier', 'invoiceNumber'] as const;
 
@@ -20,10 +36,14 @@ const PAYABLE = 'payable';
 type Uploaded = { signature: string; value: { uploadId: string; fileName: string } };
 const signatureOf = (f: File) => `${f.name}|${f.size}|${f.lastModified}`;
 
-export function ExpenseDialog({ open, onClose }: Props) {
+export function ExpenseDialog({ open, onClose, preset, onRecord, title = 'Gider kaydı ekle' }: Props) {
   const expenseAccounts = useFinanceAccounts('expense');
   const summary = useFinanceSummary();
-  const record = useRecordExpense();
+  const financeRecord = useRecordExpense();
+  const linkedRecord = useMutation({
+    mutationFn: async (input: RecordExpenseInput) => ({ expense: await (onRecord as NonNullable<Props['onRecord']>)(input) }),
+  });
+  const record = onRecord ? linkedRecord : financeRecord;
   const [idempotencyKey, renewKey] = useIdempotencyKey();
   // Fatura dosyasi: secilen dosya, ayni modal icinde yeniden denemede tekrar yuklenmesin diye
   // yukleme sonucu ve input'u sifirlamak icin anahtar.
@@ -33,9 +53,18 @@ export function ExpenseDialog({ open, onClose }: Props) {
   const [uploading, setUploading] = useState(false);
   const [fileInputKey, setFileInputKey] = useState(0);
 
+  const initial = (): ExpenseForm => ({
+    expenseAccountId: preset?.expenseAccountId ?? '',
+    creditAccountId: 'cash',
+    amount: preset?.amount ? kurusToInput(preset.amount) : '',
+    date: preset?.date ?? todayIstanbul(),
+    description: preset?.description ?? '',
+    supplier: preset?.supplier ?? '',
+    invoiceNumber: '',
+  });
   const form = useForm<ExpenseForm, unknown, ExpenseValues>({
     resolver: zodResolver(expenseSchema),
-    defaultValues: { expenseAccountId: '', creditAccountId: 'cash', amount: '', date: todayIstanbul(), description: '', supplier: '', invoiceNumber: '' },
+    defaultValues: initial(),
   });
   const { errors } = form.formState;
   const source = form.watch('creditAccountId');
@@ -45,7 +74,7 @@ export function ExpenseDialog({ open, onClose }: Props) {
     if (!open) return;
     record.reset();
     renewKey();
-    form.reset({ expenseAccountId: '', creditAccountId: 'cash', amount: '', date: todayIstanbul(), description: '', supplier: '', invoiceNumber: '' });
+    form.reset(initial());
     clearFile();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- yalnizca acilista
   }, [open]);
@@ -123,23 +152,25 @@ export function ExpenseDialog({ open, onClose }: Props) {
   const funds = summary.data?.fundsAccounts ?? [];
 
   return (
-    <Dialog open={open} onClose={() => !record.isPending && !uploading && onClose()} title="Gider kaydı ekle">
+    <Dialog open={open} onClose={() => !record.isPending && !uploading && onClose()} title={title}>
       {done ? (
         <div className="flex flex-col items-center gap-3 py-2 text-center">
           <CheckCircle2 className="size-10 text-success" aria-hidden="true" />
           <p className="font-semibold">{formatTRY(done.expense.amount)} gider kaydedildi</p>
           <div className="flex w-full flex-col-reverse gap-2 pt-2 sm:flex-row sm:justify-center">
-            <Button
-              variant="secondary"
-              onClick={() => {
-                record.reset();
-                renewKey();
-                form.reset({ ...form.getValues(), amount: '', description: '', supplier: '', invoiceNumber: '' });
-                clearFile();
-              }}
-            >
-              Yeni gider
-            </Button>
+            {!onRecord && (
+              <Button
+                variant="secondary"
+                onClick={() => {
+                  record.reset();
+                  renewKey();
+                  form.reset({ ...form.getValues(), amount: '', description: '', supplier: '', invoiceNumber: '' });
+                  clearFile();
+                }}
+              >
+                Yeni gider
+              </Button>
+            )}
             <Button onClick={onClose}>Tamam</Button>
           </div>
         </div>
