@@ -14,6 +14,7 @@
 import type { IsoDateTime } from '../core/types.js';
 import {
   ACTIVE_STATUSES,
+  TERMINAL_STATUSES,
   type Ticket,
   type TicketEvent,
   type TicketPriority,
@@ -89,6 +90,16 @@ export function canCreate(a: TicketActor, location: Ticket['location']): boolean
 }
 
 export const canEditFields = (a: TicketActor) => a.kind === 'manager';
+
+/**
+ * v2: tahmini tutar notu (bilgi amacli; deftere yazilmaz). Yonetim her acik / cozulmus talepte;
+ * gorevli kendisine atanan veya kendi actigi talepte. Kapanmis / iptal talepte degistirilemez.
+ * Gorme: `seesInternal` (yonetim, gorevli, denetci); sakin ve guvenlik hic gormez.
+ */
+export function canEstimate(a: TicketActor, t: Ticket): boolean {
+  if (TERMINAL_STATUSES.includes(t.status)) return false;
+  return a.kind === 'manager' || (a.kind === 'staff' && (t.assigneeId === a.userId || t.createdBy === a.userId));
+}
 
 /** Herkese acik yorum: goren herkes (denetci haric, salt okunur). Ic not: yonetici ve gorevli. */
 export function canComment(a: TicketActor, t: Ticket, visibility: 'public' | 'internal', settings: TicketSettings): boolean {

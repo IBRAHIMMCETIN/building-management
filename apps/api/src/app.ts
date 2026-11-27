@@ -19,6 +19,8 @@ import { pollPortalRoutes, pollRoutes } from './modules/polls/routes.js';
 import { assemblyRoutes } from './modules/assemblies/routes.js';
 import { type AssemblyService, createAssemblyService } from './modules/assemblies/service.js';
 import { type PollService, createPollService } from './modules/polls/service.js';
+import { equipmentRoutes } from './modules/equipment/routes.js';
+import { type EquipmentService, createEquipmentService } from './modules/equipment/service.js';
 import { maintenanceRoutes } from './modules/maintenance/routes.js';
 import { type MaintenanceService, createMaintenanceService } from './modules/maintenance/service.js';
 import { reservationPortalRoutes, reservationRoutes } from './modules/reservations/routes.js';
@@ -162,6 +164,8 @@ export type AppConfig = {
   /** Faz 3 (O1-3): periyodik bakim. */
   maintenanceService?: MaintenanceService;
   workCostService?: WorkCostService;
+  /** Ariza & bakim v2: ekipman sicili. */
+  equipmentService?: EquipmentService;
   /** Ortak alan rezervasyonu (ucret Finans `chargeUnit` / ters kayit ile). */
   reservationService?: ReservationService;
   apartmentRoleService?: ApartmentRoleService;
@@ -379,6 +383,8 @@ export function createApp(config: AppConfig) {
     '/api/maintenance',
     maintenanceRoutes({ authenticate, service: config.maintenanceService ?? createMaintenanceService({ tickets: ticketService }), costs: workCostService }),
   );
+  // Ariza & bakim v2: ekipman sicili (masraf iptal kontrolu Finans'tan).
+  app.route('/api/equipment', equipmentRoutes({ authenticate, service: config.equipmentService ?? createEquipmentService({ finance: financeService }) }));
   const reservationService = config.reservationService ?? createReservationService({ finance: financeService });
   app.route('/api/reservations', reservationRoutes({ authenticate, service: reservationService }));
 

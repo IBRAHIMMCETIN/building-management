@@ -18,6 +18,8 @@ import { coreRepository } from '../core/repository.js';
 import type { IsoDate } from '../core/types.js';
 import { type Obj, ValidationError, asObject, assertId, isIsoDate, optString, reqEnum, reqInt, reqString } from '../core/validation.js';
 import { type DocumentStore, createDocumentStoreFromEnv } from '../documents/store.js';
+import { type EquipmentLookup, resolveEquipmentLink } from '../equipment/links.js';
+import { equipmentRepository } from '../equipment/repository.js';
 import type { FinanceRepository } from '../finance/repository.js';
 import { financeRepository } from '../finance/repository.js';
 import { MAX_AMOUNT } from '../finance/service.js';
@@ -51,6 +53,8 @@ export type MaintenanceServiceDeps = {
   roles: Pick<ApartmentRoleRepository, 'list'>;
   core: Pick<CoreRepository, 'getBlock'>;
   accounts: Pick<FinanceRepository, 'getAccount'>;
+  /** v2: ekipman sicili (sablon baglantisi dogrulamasi, gorevden ariza yeri). */
+  equipment: EquipmentLookup;
   store: DocumentStore | undefined;
   now: () => Date;
   newId: () => string;
@@ -71,6 +75,7 @@ export function createMaintenanceService(overrides: Partial<MaintenanceServiceDe
     roles: apartmentRoleRepository,
     core: coreRepository,
     accounts: financeRepository,
+    equipment: equipmentRepository,
     store: 'store' in overrides ? overrides.store : createDocumentStoreFromEnv(),
     now: () => new Date(),
     newId: () => randomUUID(),
@@ -140,6 +145,7 @@ export function createMaintenanceService(overrides: Partial<MaintenanceServiceDe
       kind: t.kind,
       category: t.category,
       ...(t.asset ? { asset: t.asset } : {}),
+      ...(t.equipmentId ? { equipmentId: t.equipmentId } : {}),
       ...(t.blockIds?.length ? { blockIds: t.blockIds } : {}),
       checklist: t.checklist,
     };
@@ -224,11 +230,13 @@ export function createMaintenanceService(overrides: Partial<MaintenanceServiceDe
     const leadDays = o.leadDays === undefined ? (base?.leadDays ?? 7) : reqInt(o, 'leadDays', 0, 60);
     const asset = optText('asset', 120, base?.asset);
     const legalNote = optText('legalNote', 500, base?.legalNote ?? preset?.legalNote);
+    const { equipmentId } = await resolveEquipmentLink(deps.equipment, ctx.apartmentId, o.equipmentId, base?.equipmentId);
     return {
       name,
       kind: base?.kind ?? preset?.preset ?? 'custom',
       category,
       ...(asset ? { asset } : {}),
+      ...(equipmentId ? { equipmentId } : {}),
       ...(blockIds ? { blockIds } : {}),
       schedule: { every, unit, startDate },
       checklist,
@@ -362,7 +370,8 @@ export function createMaintenanceService(overrides: Partial<MaintenanceServiceDe
         out.push({ item: { ...t, status: 'cancelled', cancelReason: next ? 'Şablon takvimi değişti' : 'Şablon arşivlendi', ...touch(t) }, expectedVersion: t.version });
       } else if (next && wanted && (t.status === 'scheduled' || (t.status === 'cancelled' && !!t.cancelReason))) {
         const keepAssignee = t.assigneeId && t.assigneeId !== prev.defaultAssigneeId;
-        const { assigneeId: _a, cancelReason: _c, ...rest } = t;
+        // Sablondan kopyalanan istege bagli alanlar yeni sablondan gelir (kaldirilan alan gorevde kalmasin).
+        const { assigneeId: _a, cancelReason: _c, asset: _as, equipmentId: _eq, blockIds: _b, ...rest } = t;
         out.push({
           item: {
             ...rest,
@@ -444,6 +453,8 @@ export function createMaintenanceService(overrides: Partial<MaintenanceServiceDe
     if (open && (kind === 'manager' || mine)) out.push('complete');
     if (open && kind === 'manager') out.push('skip');
     if (t.status !== 'cancelled' && (kind === 'manager' || mine)) out.push('ticket');
+    // v2: tahmini tutar notu (yapilacak veya yapilmis gorevde; iptal / atlanmis haric).
+    if (t.status !== 'cancelled' && t.status !== 'skipped' && (kind === 'manager' || mine)) out.push('estimate');
     return out;
   }
 
@@ -486,6 +497,7 @@ export function createMaintenanceService(overrides: Partial<MaintenanceServiceDe
       .filter((t) => (statuses ? statuses.includes(t.status) : t.status !== 'cancelled'))
       .filter((t) => !assignee || (assignee === 'none' ? !t.assigneeId : t.assigneeId === assignee))
       .filter((t) => !q.templateId || t.templateId === q.templateId)
+      .filter((t) => !q.equipmentId || t.equipmentId === q.equipmentId)
       .filter((t) => q.overdue !== 'true' || (OPEN_TASK_STATUSES.includes(t.status) && t.dueDate < d))
       .sort((a, b) => a.dueDate.localeCompare(b.dueDate) || a.name.localeCompare(b.name, 'tr'));
     return { from, to, items: items.map((t) => taskView(t, ctx, settings)) };
@@ -622,6 +634,9 @@ export function createMaintenanceService(overrides: Partial<MaintenanceServiceDe
       .filter((r) => !r.ok)
       .map((r) => `- ${task.checklist.find((c) => c.id === r.id)?.text ?? r.id}${r.note ? `: ${r.note}` : ''}`)
       .join('\n');
+    // v2: gorevin ekipmani talebe de baglanir; yer metni yoksa ekipman adi kullanilir.
+    const equipment = task.equipmentId ? await deps.equipment.get(ctx.apartmentId, task.equipmentId) : undefined;
+    const area = task.asset ?? equipment?.name ?? task.name;
     const result = await deps.tickets.create(
       ctx,
       {
@@ -630,10 +645,10 @@ export function createMaintenanceService(overrides: Partial<MaintenanceServiceDe
         description: o.description ?? (failedText ? `Bakım kontrolünde sorun bulundu (${task.dueDate}):\n${failedText}` : `${task.name} (${task.dueDate}) sırasında tespit edildi.`),
         category: task.category,
         ...(o.priority !== undefined ? { priority: reqEnum(o, 'priority', TICKET_PRIORITIES) } : {}),
-        location: { kind: 'common', area: (task.asset ?? task.name).slice(0, 80), ...(task.blockIds?.length === 1 ? { blockId: task.blockIds[0] } : {}) },
+        location: { kind: 'common', area: area.slice(0, 80), ...(task.blockIds?.length === 1 ? { blockId: task.blockIds[0] } : {}) },
         ...(o.photos !== undefined ? { photos: o.photos } : {}),
       },
-      { maintenanceTaskId: task.taskId },
+      { maintenanceTaskId: task.taskId, ...(equipment ? { equipmentId: equipment.equipmentId } : {}) },
     );
     const ticketId = result.ticket.ticketId;
     for (let attempt = 1; ; attempt++) {
@@ -648,6 +663,34 @@ export function createMaintenanceService(overrides: Partial<MaintenanceServiceDe
       }
     }
     return result;
+  }
+
+  /**
+   * v2: gorevlinin tahmini tutar notu `{ version, amount: kurus | null, note? }` (yonetim veya
+   * gorevin gorevlisi). Bilgi amaclidir; Finans'a yazilmaz. Denetim kaydiyla ayni yazimda.
+   */
+  async function estimateTask(ctx: MaintenanceContext, taskId: string, body: unknown) {
+    const o = asObject(body);
+    const { task, settings } = await loadTask(ctx, taskId);
+    if (!taskActions(ctx, task, settings).includes('estimate')) {
+      const closed = task.status === 'cancelled' || task.status === 'skipped';
+      throw new TicketError(closed ? 'invalid_state' : 'forbidden', closed ? 'İptal edilmiş veya atlanmış göreve tahmini tutar girilemez' : 'Tahmini tutarı yalnızca yönetim ve görevin görevlisi girebilir');
+    }
+    guardVersion(task, o);
+    const clear = o.amount === null;
+    const amount = clear ? undefined : reqInt(o, 'amount', 0, MAX_AMOUNT);
+    const note = clear ? undefined : optString(o, 'note', 300)?.trim() || undefined;
+    if (clear && !task.estimate) return { task: taskView(task, ctx, settings) };
+    if (!clear && task.estimate?.amount === amount && task.estimate?.note === note) return { task: taskView(task, ctx, settings) };
+    const { estimate: previous, ...rest } = task;
+    const ts = stamp();
+    const next: MaintenanceTask = {
+      ...rest,
+      ...(amount !== undefined ? { estimate: { amount, ...(note ? { note } : {}), at: ts, by: ctx.userId, byRole: ctx.role } } : {}),
+      ...touch(ctx, task),
+    };
+    await saveTask(ctx, task, next, 'maintenance.task_estimate', { amount: amount ?? null, previous: previous?.amount ?? null });
+    return { task: taskView(next, ctx, settings) };
   }
 
   async function photoUploadUrl(ctx: MaintenanceContext, body: unknown) {
@@ -694,6 +737,7 @@ export function createMaintenanceService(overrides: Partial<MaintenanceServiceDe
     completeTask,
     skipTask,
     openTicket,
+    estimateTask,
     photoUploadUrl,
     photo,
     digestItems,

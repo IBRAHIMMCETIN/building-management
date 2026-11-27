@@ -8,7 +8,7 @@
  * Hicbir kayit silinmez (Lambda'larin DeleteItem yetkisi yok): sablon arsivlenir, artik istenmeyen
  * gelecek gorev `cancelled` olur.
  */
-import type { CostSummary } from '../workcosts/types.js';
+import type { CostSummary, StaffEstimate } from '../workcosts/types.js';
 import type { AuditFields, IsoDate, IsoDateTime, TableKeys } from '../core/types.js';
 import type { TicketCategory } from '../tickets/types.js';
 
@@ -31,8 +31,10 @@ export type MaintenanceTemplate = TableKeys &
     kind: string;
     /** Bakimdan acilan arizanin kategorisi ve (O1-4) varsayilan gider hesabi icin. */
     category: TicketCategory;
-    /** Ekipman / yer (orn. "B Blok asansoru"); ekipman sicili v2. */
+    /** Ekipman / yer metni (orn. "B Blok asansoru"). */
     asset?: string;
+    /** v2: ekipman sicili baglantisi (ayni apartman; gorevlere kopyalanir). */
+    equipmentId?: string;
     blockIds?: string[];
     schedule: MaintenanceSchedule;
     checklist: ChecklistItem[];
@@ -68,6 +70,11 @@ export type MaintenanceTask = TableKeys &
     kind: string;
     category: TicketCategory;
     asset?: string;
+    /**
+     * v2: gorev olusurken sablonun ekipmani (baslamamis gorevlerde sablonla guncellenir). Alan hic
+     * yoksa (eski gorev) ekipman gecmisi sablonun guncel baglantisini kullanir.
+     */
+    equipmentId?: string;
     blockIds?: string[];
     checklist: ChecklistItem[];
     status: TaskStatus;
@@ -86,6 +93,8 @@ export type MaintenanceTask = TableKeys &
     ticketIds: string[];
     /** O1-4: bagli masraflar. */
     costSummary?: CostSummary;
+    /** v2: gorevlinin tahmini tutar notu (bilgi amacli, deftere yazilmaz). */
+    estimate?: StaffEstimate;
   };
 
 export const maintenanceKeys = {

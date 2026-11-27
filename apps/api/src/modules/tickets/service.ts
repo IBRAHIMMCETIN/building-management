@@ -13,6 +13,9 @@ import { coreRepository } from '../core/repository.js';
 import type { IsoDate, IsoDateTime, Site } from '../core/types.js';
 import { type Obj, ValidationError, asObject, assertId, optString, reqEnum, reqInt, reqString } from '../core/validation.js';
 import { type DocumentStore, createDocumentStoreFromEnv } from '../documents/store.js';
+import { type EquipmentLookup, resolveEquipmentLink } from '../equipment/links.js';
+import { equipmentRepository } from '../equipment/repository.js';
+import { MAX_AMOUNT } from '../finance/service.js';
 import { type PortalRepository, portalRepository } from '../portal/repository.js';
 import { TicketError } from './errors.js';
 import {
@@ -25,6 +28,7 @@ import {
   canComment,
   canCreate,
   canEditFields,
+  canEstimate,
   canView,
   checkAssign,
   checkTransition,
@@ -62,6 +66,8 @@ export type TicketServiceDeps = {
   roles: Pick<ApartmentRoleRepository, 'list'>;
   /** O1-2: fotograf deposu (yoksa fotograf islemleri 503). */
   store: DocumentStore | undefined;
+  /** v2: ekipman sicili (baglanti dogrulamasi). */
+  equipment: EquipmentLookup;
   now: () => Date;
   newId: () => string;
 };
@@ -82,6 +88,7 @@ export function createTicketService(overrides: Partial<TicketServiceDeps> = {}) 
     core: coreRepository,
     memberships: portalRepository,
     roles: apartmentRoleRepository,
+    equipment: equipmentRepository,
     store: 'store' in overrides ? overrides.store : createDocumentStoreFromEnv(),
     now: () => new Date(),
     newId: () => randomUUID(),
@@ -198,6 +205,7 @@ export function createTicketService(overrides: Partial<TicketServiceDeps> = {}) 
       actions: availableActions(actor, t, { now, settings }),
       canAssign: checkAssign(actor, t, actor.kind === 'staff' ? actor.userId : null, settings).ok,
       canEdit: canEditFields(actor),
+      canEstimate: canEstimate(actor, t),
     };
     if (actor.kind !== 'resident' && actor.kind !== 'security') {
       // O1-4: masraflar yalnizca yonetim ve denetciye.
@@ -205,7 +213,8 @@ export function createTicketService(overrides: Partial<TicketServiceDeps> = {}) 
       const { costSummary: _cost, ...staffView } = base;
       return staffView;
     }
-    const { assigneeId, createdBy: _cb, updatedBy: _ub, costSummary: _cs, ...safe } = base;
+    // v2: tahmini tutar ve ekipman baglantisi sakin / guvenlik uclarina donmez.
+    const { assigneeId, createdBy: _cb, updatedBy: _ub, costSummary: _cs, estimate: _est, equipmentId: _eq, canEstimate: _ce, ...safe } = base;
     return { ...safe, assigned: !!assigneeId };
   }
 
@@ -244,8 +253,11 @@ export function createTicketService(overrides: Partial<TicketServiceDeps> = {}) 
    * cevirmez: ayni icerikse mevcut talep `replayed: true` ile doner, farkli icerikse 409.
    * Sakin oncelik belirleyemez (normal); yonetici sonradan duzeltir.
    */
-  /** `opts.maintenanceTaskId`: bakim gorevinden acilan ariza (O1-3; kaynak `maintenance`). */
-  async function create(ctx: TicketContext, body: unknown, opts: { maintenanceTaskId?: string } = {}) {
+  /**
+   * `opts.maintenanceTaskId`: bakim gorevinden acilan ariza (O1-3; kaynak `maintenance`).
+   * `opts.equipmentId`: gorevin ekipman baglantisi (v2; gorev kaydindan, ayni apartman).
+   */
+  async function create(ctx: TicketContext, body: unknown, opts: { maintenanceTaskId?: string; equipmentId?: string } = {}) {
     const [actor, settings] = await Promise.all([actorOf(ctx), settingsOf(ctx.apartmentId)]);
     const o = asObject(body);
     const key = assertId(o.idempotencyKey, 'idempotencyKey');
@@ -258,7 +270,14 @@ export function createTicketService(overrides: Partial<TicketServiceDeps> = {}) 
     if (!canCreate(actor, location)) {
       throw new TicketError('forbidden', location.kind === 'unit' ? 'Yalnızca üyesi olduğunuz daire için talep açabilirsiniz' : 'Talep açma yetkiniz yok');
     }
-    const fp = createHash('sha256').update(JSON.stringify({ title, description, category, priority, location, by: ctx.userId, photos: uploadIds })).digest('hex');
+    // v2: ekipman secimi yonetim ve gorevli ekranindadir (sakin ve guvenlik sicili gormez).
+    if (o.equipmentId !== undefined && o.equipmentId !== null && o.equipmentId !== '' && actor.kind !== 'manager' && actor.kind !== 'staff') {
+      throw new TicketError('forbidden', 'Ekipman seçimi yalnızca yönetim ve görevli içindir');
+    }
+    const equipmentId = opts.equipmentId ?? (await resolveEquipmentLink(deps.equipment, ctx.apartmentId, o.equipmentId)).equipmentId;
+    const fp = createHash('sha256')
+      .update(JSON.stringify({ title, description, category, priority, location, by: ctx.userId, photos: uploadIds, ...(equipmentId ? { equipmentId } : {}) }))
+      .digest('hex');
 
     const replay = async () => {
       const idem = await repo.getIdempotency(ctx.apartmentId, key);
@@ -290,6 +309,7 @@ export function createTicketService(overrides: Partial<TicketServiceDeps> = {}) 
         status: 'open',
         source: opts.maintenanceTaskId ? 'maintenance' : sourceOf(actor.kind),
         ...(opts.maintenanceTaskId ? { maintenanceTaskId: opts.maintenanceTaskId } : {}),
+        ...(equipmentId ? { equipmentId } : {}),
         createdByRole: ctx.role,
         dueAt: dueAtFor(ts, priority, settings),
         reopenCount: 0,
@@ -312,7 +332,7 @@ export function createTicketService(overrides: Partial<TicketServiceDeps> = {}) 
           outbox: [domainEvent('TICKET_CREATED', ctx, actor, ticket)],
           counter: { expected: counter },
           idempotency: { ...ticketKeys.idempotency(ctx.apartmentId, key), entityType: 'TICKET_IDEMPOTENCY', apartmentId: ctx.apartmentId, ticketId, fingerprint: fp, createdAt: ts },
-          audit: { apartmentId: ctx.apartmentId, action: 'ticket.create', target: { type: 'ticket', id: ticketId }, details: { number: ticket.number, category, priority, location: location.kind } },
+          audit: { apartmentId: ctx.apartmentId, action: 'ticket.create', target: { type: 'ticket', id: ticketId }, details: { number: ticket.number, category, priority, location: location.kind, ...(equipmentId ? { equipmentId } : {}) } },
         });
         return { ticket: ticketView(actor, ticket, settings), replayed: false };
       } catch (err) {
@@ -372,6 +392,7 @@ export function createTicketService(overrides: Partial<TicketServiceDeps> = {}) 
       .filter((t) => !q.priority || t.priority === q.priority)
       .filter((t) => !q.unitId || (t.location.kind === 'unit' && t.location.unitId === q.unitId))
       .filter((t) => !q.blockId || t.location.blockId === q.blockId)
+      .filter((t) => !q.equipmentId || t.equipmentId === q.equipmentId)
       .filter((t) => q.overdue !== 'true' || isOverdue(t, now))
       .filter((t) => !q.from || t.createdAt.slice(0, 10) >= q.from)
       .filter((t) => !q.to || t.createdAt.slice(0, 10) <= q.to)
@@ -419,7 +440,7 @@ export function createTicketService(overrides: Partial<TicketServiceDeps> = {}) 
 
   const touch = (ctx: TicketContext, t: Ticket, ts: IsoDateTime) => ({ updatedAt: ts, updatedBy: ctx.userId, version: t.version + 1 });
 
-  /** Yonetici: baslik, aciklama, kategori, oncelik (SLA yeniden hesaplanir), konum. */
+  /** Yonetici: baslik, aciklama, kategori, oncelik (SLA yeniden hesaplanir), konum, ekipman (v2; `null` kaldirir). */
   async function update(ctx: TicketContext, ticketId: string, body: unknown) {
     const o = asObject(body);
     const version = parseVersion(o);
@@ -439,6 +460,12 @@ export function createTicketService(overrides: Partial<TicketServiceDeps> = {}) 
     set('category', o.category === undefined ? undefined : reqEnum(o, 'category', TICKET_CATEGORIES));
     set('priority', o.priority === undefined ? undefined : reqEnum(o, 'priority', TICKET_PRIORITIES));
     set('location', o.location === undefined ? undefined : await parseLocation(ctx, o.location));
+    const link = await resolveEquipmentLink(deps.equipment, ctx.apartmentId, o.equipmentId, ticket.equipmentId);
+    if (link.equipmentId !== ticket.equipmentId) {
+      changes.equipmentId = [ticket.equipmentId ?? null, link.equipmentId ?? null];
+      if (link.equipmentId) next.equipmentId = link.equipmentId;
+      else delete next.equipmentId;
+    }
     if (!Object.keys(changes).length) return { ticket: ticketView(actor, ticket, settings) };
     if (changes.priority) next.dueAt = dueAtFor(ticket.createdAt, next.priority, settings);
 
@@ -455,6 +482,47 @@ export function createTicketService(overrides: Partial<TicketServiceDeps> = {}) 
       events: [newEvent(ctx, next, ts, { kind: 'field_changed', visibility: 'internal', changes })],
       putIndexes,
       audit: { apartmentId: ctx.apartmentId, action: 'ticket.update', target: { type: 'ticket', id: ticketId }, details: { number: ticket.number, fields: Object.keys(changes) } },
+    });
+    return { ticket: ticketView(actor, next, settings) };
+  }
+
+  /**
+   * v2: gorevlinin tahmini tutar notu `{ version, amount: kurus | null, note? }`. Yalnizca bilgi
+   * amaclidir: Finans'a / deftere hicbir kayit yazilmaz. Ic olay (`estimate_set`) ve denetim kaydi
+   * ayni yazimda; sakin ve guvenlik uclarina donmez. `amount: null` notu kaldirir.
+   */
+  async function estimate(ctx: TicketContext, ticketId: string, body: unknown) {
+    const o = asObject(body);
+    const version = parseVersion(o);
+    const { actor, settings, ticket } = await load(ctx, ticketId);
+    if (!canEstimate(actor, ticket)) {
+      const closed = TERMINAL_STATUSES.includes(ticket.status);
+      throw new TicketError(closed ? 'invalid_state' : 'forbidden', closed ? 'Kapanmış veya iptal edilmiş talebe tahmini tutar girilemez' : 'Tahmini tutarı yalnızca yönetim ve talebin görevlisi girebilir');
+    }
+    assertVersion(ticket, version);
+    const clear = o.amount === null;
+    const amount = clear ? undefined : reqInt(o, 'amount', 0, MAX_AMOUNT);
+    const note = clear ? undefined : optString(o, 'note', 300)?.trim() || undefined;
+    if (clear && !ticket.estimate) return { ticket: ticketView(actor, ticket, settings) };
+    if (!clear && ticket.estimate?.amount === amount && ticket.estimate?.note === note) return { ticket: ticketView(actor, ticket, settings) };
+    const ts = stamp();
+    const { estimate: previous, ...rest } = ticket;
+    const next: Ticket = {
+      ...rest,
+      ...(amount !== undefined ? { estimate: { amount, ...(note ? { note } : {}), at: ts, by: ctx.userId, byRole: ctx.role } } : {}),
+      ...touch(ctx, ticket, ts),
+    };
+    await write(ctx.apartmentId, {
+      at: ts,
+      ticket: next,
+      expectedVersion: version,
+      events: [newEvent(ctx, next, ts, { kind: 'estimate_set', visibility: 'internal', ...(amount !== undefined ? { amount } : {}), ...(note ? { body: note } : {}) })],
+      audit: {
+        apartmentId: ctx.apartmentId,
+        action: 'ticket.estimate',
+        target: { type: 'ticket', id: ticketId },
+        details: { number: ticket.number, amount: amount ?? null, previous: previous?.amount ?? null },
+      },
     });
     return { ticket: ticketView(actor, next, settings) };
   }
@@ -719,7 +787,7 @@ export function createTicketService(overrides: Partial<TicketServiceDeps> = {}) 
     return { autoClosed, conflicts, breached };
   }
 
-  return { create, list, board, get, update, assignees, assign, transition, comment, photoUploadUrl, photo, similar, runDaily, actorOf, settingsOf };
+  return { create, list, board, get, update, estimate, assignees, assign, transition, comment, photoUploadUrl, photo, similar, runDaily, actorOf, settingsOf };
 }
 
 export type TicketService = ReturnType<typeof createTicketService>;
