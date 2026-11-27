@@ -32,6 +32,9 @@ import { ticketPortalRoutes } from './modules/tickets/portalRoutes.js';
 import { ticketRoutes } from './modules/tickets/routes.js';
 import { type TicketService, createTicketService } from './modules/tickets/service.js';
 import { coreAdminRoutes, coreRoutes } from './modules/core/routes.js';
+import { coreRepository } from './modules/core/repository.js';
+import { portfolioRoutes } from './modules/portfolio/routes.js';
+import { type PortfolioService, createPortfolioService, createPortfolioSources } from './modules/portfolio/service.js';
 import { type CoreService, createCoreService } from './modules/core/service.js';
 import { documentRoutes } from './modules/documents/routes.js';
 import { type DocumentsService, createDocumentsService } from './modules/documents/service.js';
@@ -173,6 +176,8 @@ export type AppConfig = {
   /** Ihale / teklif toplama (teklif belgeleri documents servisiyle). */
   tenderService?: TenderService;
   apartmentRoleService?: ApartmentRoleService;
+  /** Yonetim firmasi portfoyu (testlerde sahte kaynaklarla). */
+  portfolioService?: PortfolioService;
   /** Guvenlik kapisi: plaka, misafir QR gecisi, kurye, kapi gunlugu. */
   gateService?: GateService;
   /**
@@ -384,12 +389,11 @@ export function createApp(config: AppConfig) {
   // O1-4: talep ve bakim gorevi masraflari (Finans baglantisi).
   const workCostService = config.workCostService ?? createWorkCostService({ finance: financeService });
   app.route('/api/tickets', ticketRoutes({ authenticate, service: ticketService, costs: workCostService }));
-  app.route(
-    '/api/maintenance',
-    maintenanceRoutes({ authenticate, service: config.maintenanceService ?? createMaintenanceService({ tickets: ticketService }), costs: workCostService }),
-  );
+  const maintenanceService = config.maintenanceService ?? createMaintenanceService({ tickets: ticketService });
+  app.route('/api/maintenance', maintenanceRoutes({ authenticate, service: maintenanceService, costs: workCostService }));
   // Ariza & bakim v2: ekipman sicili (masraf iptal kontrolu Finans'tan).
-  app.route('/api/equipment', equipmentRoutes({ authenticate, service: config.equipmentService ?? createEquipmentService({ finance: financeService }) }));
+  const equipmentService = config.equipmentService ?? createEquipmentService({ finance: financeService });
+  app.route('/api/equipment', equipmentRoutes({ authenticate, service: equipmentService }));
   const reservationService = config.reservationService ?? createReservationService({ finance: financeService });
   app.route('/api/reservations', reservationRoutes({ authenticate, service: reservationService }));
   const tenderService =
@@ -397,6 +401,24 @@ export function createApp(config: AppConfig) {
     createTenderService({ documents: { promote: documentsService.promoteTenderQuote, sign: documentsService.signTenderDocument } });
   app.route('/api/tenders', tenderRoutes({ authenticate, service: tenderService }));
 
+  // Yonetim firmasi portfoyu: kullanicinin yonettigi / denetledigi tum apartmanlarin ozetleri,
+  // mevcut servislerin salt okunur ozetlerinden (yeniden hesaplama yok).
+  const portfolioService =
+    config.portfolioService ??
+    createPortfolioService({
+      sources: createPortfolioSources({
+        core: coreRepository,
+        finance: financeService,
+        reports: reportService ?? createReportService({ ledger: financeService }),
+        tickets: ticketService,
+        maintenance: maintenanceService,
+        equipment: equipmentService,
+        polls: pollService,
+        assemblies: assemblyService,
+        tenders: tenderService,
+      }),
+    });
+  app.route('/api/portfolio', portfolioRoutes({ authenticate, service: portfolioService }));
 
   // Guvenlik kapisi (yonetim + guvenlik; sakin portali `/api/portal`'dan once).
   const gateService = config.gateService ?? createGateService();
