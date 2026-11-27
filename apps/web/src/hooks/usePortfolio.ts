@@ -6,8 +6,8 @@ import { useContexts } from './useContexts';
 
 export const portfolioKeys = { all: (userId: string) => ['portfolio', userId] as const };
 
-/** Istek basina apartman (API ust siniri 40). */
-export const PORTFOLIO_PAGE_SIZE = 20;
+/** Istek basina apartman (API varsayilani 12, ust siniri 24; Lambda suresine sigmasi icin). */
+export const PORTFOLIO_PAGE_SIZE = 12;
 
 const isPortfolioRole = (role: string | undefined): role is PortfolioRole => !!role && (PORTFOLIO_ROLES as readonly string[]).includes(role);
 
@@ -32,7 +32,10 @@ export function usePortfolio() {
     initialPageParam: '' as string,
     getNextPageParam: (last) => last.nextCursor,
     enabled: roleAllowed,
-    staleTime: 60_000,
+    // Pahali istek (apartman basina bircok okuma): sekmeye donunce yeniden yuklenmez; baglam degisiminde
+    // de korunur (`clearForContextSwitch`), apartmandan geri donunce sayfalar yeniden istenmez.
+    staleTime: 5 * 60_000,
+    refetchOnWindowFocus: false,
   });
 }
 
