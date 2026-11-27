@@ -15,6 +15,7 @@ const FinancePage = lazyPage(() => import('@/pages/admin/finance/FinancePage'), 
 const MetersPage = lazyPage(() => import('@/pages/admin/meters/MetersPage'), 'MetersPage');
 const MyTasksPage = lazyPage(() => import('@/pages/admin/staff/MyTasksPage'), 'MyTasksPage');
 const TicketsPage = lazyPage(() => import('@/pages/admin/tickets/TicketsPage'), 'TicketsPage');
+const ReservationsPage = lazyPage(() => import('@/pages/admin/reservations/ReservationsPage'), 'ReservationsPage');
 const ReadingEntryPage = lazyPage(() => import('@/pages/admin/meters/ReadingEntryPage'), 'ReadingEntryPage');
 const ImportPage = lazyPage(() => import('@/pages/admin/import/ImportPage'), 'ImportPage');
 const AccountPage = lazyPage(() => import('@/pages/account/AccountPage'), 'AccountPage');
@@ -40,6 +41,7 @@ const ResidentHomePage = lazyPage(() => import('@/pages/resident/ResidentHomePag
 const MyTicketDetailPage = lazyPage(() => import('@/pages/resident/tickets/MyTicketDetailPage'), 'MyTicketDetailPage');
 const MyTicketsPage = lazyPage(() => import('@/pages/resident/tickets/MyTicketsPage'), 'MyTicketsPage');
 const NewTicketWizard = lazyPage(() => import('@/pages/resident/tickets/NewTicketWizard'), 'NewTicketWizard');
+const MyReservationsPage = lazyPage(() => import('@/pages/resident/reservations/MyReservationsPage'), 'MyReservationsPage');
 
 export const router = createBrowserRouter([
   {
@@ -92,6 +94,8 @@ export const router = createBrowserRouter([
                   { path: 'units', element: <UnitsPage /> },
                   { path: 'finance', element: <FinancePage /> },
                   { path: 'announcements', element: <AnnouncementsPage /> },
+                  // Ortak alan rezervasyonu (denetci salt okur).
+                  { path: 'reservations', element: <ReservationsPage /> },
                   { path: 'import', element: <ImportPage /> },
                   { path: 'settings', element: <SettingsPage /> },
                 ],
@@ -157,6 +161,7 @@ export const router = createBrowserRouter([
               { path: 'talepler', element: <MyTicketsPage /> },
               { path: 'talepler/yeni', element: <NewTicketWizard /> },
               { path: 'talepler/:ticketId', element: <MyTicketDetailPage /> },
+              { path: 'rezervasyon', element: <MyReservationsPage /> },
               { path: 'odeme', element: <PaymentPage /> },
               { path: 'odeme/sonuc', element: <PaymentResultPage /> },
               { path: 'announcements', element: <ResidentAnnouncementsPage /> },
