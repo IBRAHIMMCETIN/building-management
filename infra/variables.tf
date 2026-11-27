@@ -253,6 +253,22 @@ variable "bulk_write_route_burst_limit" {
   default = 5
 }
 
+variable "gate_route_rate_limit" {
+  type        = number
+  default     = 10
+  description = "Guvenlik kapisi QR / kisa kod dogrulama ve plaka aramasi rotalari: saniyede ortalama istek (rota geneli; kullanici basina sinir uygulamada)."
+
+  validation {
+    condition     = var.gate_route_rate_limit >= 1
+    error_message = "gate_route_rate_limit en az 1 olmali."
+  }
+}
+
+variable "gate_route_burst_limit" {
+  type    = number
+  default = 20
+}
+
 # --- Guvenlik alarm esikleri (security_monitoring.tf) ---
 
 variable "signin_failure_alarm_threshold" {
@@ -271,6 +287,12 @@ variable "mfa_reset_alarm_threshold" {
   type        = number
   default     = 3
   description = "1 saatte bu sayiyi asan MFA sifirlama alarm uretir."
+}
+
+variable "gate_lockout_alarm_threshold" {
+  type        = number
+  default     = 3
+  description = "1 saatte bu sayida veya daha fazla guvenlik kapisi deneme kilitlenmesi (GateLockout) alarm uretir."
 }
 
 variable "api_5xx_alarm_threshold" {
