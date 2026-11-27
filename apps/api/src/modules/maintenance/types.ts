@@ -71,10 +71,11 @@ export type MaintenanceTask = TableKeys &
     category: TicketCategory;
     asset?: string;
     /**
-     * v2: gorev olusurken sablonun ekipmani (baslamamis gorevlerde sablonla guncellenir). Alan hic
-     * yoksa (eski gorev) ekipman gecmisi sablonun guncel baglantisini kullanir.
+     * v2: gorev olusurken sablonun ekipmani; v2'den itibaren HER gorevde acikca yazilir (`null`:
+     * bagli degil ya da ekipman hizmetten cikmis). Baslamamis gorevlerde sablonla guncellenir.
+     * Alan hic yoksa (v2 oncesi gorev) `taskEquipmentId` sablonun guncel baglantisini kullanir.
      */
-    equipmentId?: string;
+    equipmentId?: string | null;
     blockIds?: string[];
     checklist: ChecklistItem[];
     status: TaskStatus;
@@ -103,6 +104,17 @@ export const maintenanceKeys = {
 };
 export const TEMPLATE_PREFIX = 'MTPL#';
 export const TASK_PREFIX = 'MTASK#';
+
+/**
+ * v2: gorevin ekipmani - gecmis, `?equipmentId=` filtresi, gorunum ve gorevden ariza ayni kurali
+ * kullanir. Acik baglanti (`string` ya da `null`) her zaman onceliklidir; alan HIC yoksa (v2
+ * oncesi uretilmis gorev) sablonun guncel baglantisi gecerlidir. Boylece sablon yeniden
+ * baglandiginda v2 gorevlerinin gecmisi yerinden oynamaz.
+ */
+export function taskEquipmentId(task: Pick<MaintenanceTask, 'equipmentId'>, template: Pick<MaintenanceTemplate, 'equipmentId'> | undefined): string | undefined {
+  if (task.equipmentId !== undefined) return task.equipmentId ?? undefined;
+  return template?.equipmentId;
+}
 
 export const taskIdOf = (dueDate: IsoDate, templateId: string) => `${dueDate}_${templateId}`;
 export function parseTaskId(taskId: string): { dueDate: IsoDate; templateId: string } | undefined {

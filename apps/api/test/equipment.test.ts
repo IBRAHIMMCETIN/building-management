@@ -62,6 +62,7 @@ function world() {
     { accountId: 'exp-elevator', name: 'Asansör giderleri', type: 'expense', status: 'active' },
   ] as Account[];
   const reversed = new Set<string>();
+  const reversedCalls: string[][] = [];
   const core = {
     getSite: async () => site,
     getUnit: async (_a: string, id: string) => (id === 'u1' ? ({ unitId: 'u1', blockId: 'b1', status: 'active' } as Unit) : undefined),
@@ -73,7 +74,7 @@ function world() {
     accounts: { getAccount: async (_a, id) => accounts.find((a) => a.accountId === id) },
     tickets: fakeTickets.repo,
     maintenance: fakeMaint.repo,
-    finance: { isReversed: async (_c, txId) => reversed.has(txId) },
+    finance: { reversedTransactions: async (_c, ids) => { reversedCalls.push([...ids]); return new Set(ids.filter((id) => reversed.has(id))); } },
     store: docs.store,
     now: () => now,
     newId,
@@ -110,7 +111,7 @@ function world() {
     await docs.store.put(equipmentDocumentKeys.pending(APT, ctx.userId, r.uploadId), new Uint8Array(2048), contentType);
     return r;
   };
-  return { eq, fakeTickets, fakeMaint, docs, service, tickets, maintenance, elevator, ticket, upload, reversed, setNow: (iso: string) => (now = new Date(iso)) };
+  return { eq, fakeTickets, fakeMaint, docs, service, tickets, maintenance, elevator, ticket, upload, reversed, reversedCalls, accounts, setNow: (iso: string) => (now = new Date(iso)) };
 }
 
 describe('ekipman sicili', () => {
@@ -221,7 +222,7 @@ describe('son tarih hatirlatmalari (saf)', () => {
       ['b', 'warranty', '2026-11-10', true, -15],
       ['a', 'warranty', '2026-12-25', false, 30],
     ]);
-    expect(expiryItems([e({ nextInspectionDate: '2026-12-26' })], TODAY, 31)).toHaveLength(1);
+    expect(expiryItems([e({ nextInspectionDate: '2026-12-26' })], TODAY, { days: 31 })).toHaveLength(1);
   });
 
   it('GET /expiring gun parametresi; out_of_service dahil', async () => {
@@ -370,8 +371,11 @@ describe('ekipman gecmisi', () => {
     // Eski gorev: baglanti alani yok, sablon sonradan ekipmana baglandi -> gecmise sayilir.
     const { template } = await w.maintenance.createTemplate(ctxs.mgr, { preset: 'elevator_monthly', schedule: { startDate: '2026-10-25' }, defaultAssigneeId: 'staff-1' });
     const first = [...w.fakeMaint.items.values()].find((x): x is MaintenanceTask => x.entityType === 'MAINT_TASK') as MaintenanceTask;
+    // v2 oncesi gorevde baglanti alani HIC yoktur (v2 gorevleri `null` dahil acikca yazar).
+    const { equipmentId: _noLink, ...legacyBase } = first;
+    expect(first.equipmentId).toBeNull();
     const legacy: MaintenanceTask = {
-      ...first,
+      ...legacyBase,
       PK: `APT#${APT}`,
       SK: `MTASK#2026-10-25#${template.templateId}`,
       taskId: `2026-10-25_${template.templateId}`,
@@ -384,6 +388,8 @@ describe('ekipman gecmisi', () => {
     await w.maintenance.updateTemplate(ctxs.mgr, template.templateId, { version: 1, equipmentId: e.equipmentId });
 
     const h = await w.service.history(ctxs.mgr, e.equipmentId);
+    // Ters kayit kontrolu tum gecmis icin tek toplu okuma.
+    expect(w.reversedCalls).toEqual([['tx1', 'tx2', 'tx3', 'tm1']]);
     expect(h.counts).toEqual({ tickets: 1, openTickets: 1, maintenance: 3, maintenanceDone: 1 });
     expect(h.items.map((i) => [i.kind, i.date, i.status])).toEqual([
       ['maintenance', '2026-12-25', 'scheduled'],
@@ -602,5 +608,200 @@ describe('API uclari', () => {
     expect((await call('PUT', `/api/tickets/${t.ticketId}/estimate`, ctxs.observer, { version: 1, amount: 100 })).status).toBe(403);
     expect((await call('PUT', `/api/tickets/${t.ticketId}/estimate`, ctxs.mgr, { version: 1, amount: 100 })).json.ticket.estimate.amount).toBe(100);
     expect((await call('GET', `/api/tickets?equipmentId=${id}`, ctxs.mgr)).json.total).toBe(1);
+  });
+});
+
+describe('inceleme duzeltmeleri', () => {
+  const allOk = (task: { checklist: { id: string }[] }) => task.checklist.map((c) => ({ id: c.id, ok: true }));
+  const raw = (w: ReturnType<typeof world>, taskId: string) => w.fakeMaint.items.get(`MTASK#${taskId.slice(0, 10)}#${taskId.slice(11)}`) as MaintenanceTask;
+
+  it('gorev baglantisi acikca yazilir: yeniden baglama ve baglantisiz donem gecmisi tasimaz; filtre, gorunum, gecmis ve gorevden ariza ayni kurali kullanir', async () => {
+    const w = world();
+    const a = await w.elevator({ name: 'Asansör A' });
+    const b = (await w.service.create(ctxs.mgr, { name: 'Asansör B', category: 'elevator' })).equipment;
+    // Baglantisiz donem: sablon ekipmansiz; bugunku gorev tamamlanir.
+    const { template } = await w.maintenance.createTemplate(ctxs.mgr, { preset: 'elevator_monthly', schedule: { startDate: TODAY } });
+    const [t1, t2] = (await w.maintenance.listTasks(ctxs.mgr)).items;
+    expect(raw(w, t1?.taskId as string).equipmentId).toBeNull();
+    await w.maintenance.completeTask(ctxs.mgr, t1?.taskId as string, { version: 1, checklistResults: allOk(t1 as never) });
+    // Sablon A'ya baglanir: yalnizca baslamamis gorev (12-25) A olur; tamamlanmis bugunku gorev baglantisiz kalir.
+    await w.maintenance.updateTemplate(ctxs.mgr, template.templateId, { version: 1, equipmentId: a.equipmentId });
+    expect(raw(w, t1?.taskId as string).equipmentId).toBeNull();
+    expect(raw(w, t2?.taskId as string).equipmentId).toBe(a.equipmentId);
+    await w.maintenance.completeTask(ctxs.mgr, t2?.taskId as string, { version: 2, checklistResults: allOk(t2 as never) });
+    // v2 oncesi gorev (alan yok): sablonun GUNCEL baglantisina sayilir.
+    const { equipmentId: _x, ...base } = raw(w, t1?.taskId as string);
+    const legacy: MaintenanceTask = { ...base, SK: `MTASK#2026-10-25#${template.templateId}`, taskId: `2026-10-25_${template.templateId}`, dueDate: '2026-10-25' };
+    w.fakeMaint.items.set(legacy.SK, legacy);
+    // Yeniden baglama B: A'nin tamamlanmis gorevi A'da kalir.
+    await w.maintenance.updateTemplate(ctxs.mgr, template.templateId, { version: 2, equipmentId: b.equipmentId });
+    const ids = async (equipmentId: string) => (await w.service.history(ctxs.mgr, equipmentId)).items.map((i) => i.id);
+    expect(await ids(a.equipmentId)).toEqual([t2?.taskId]);
+    expect(await ids(b.equipmentId)).toEqual([legacy.taskId]);
+    // Liste filtresi ve gorunum ayni kurali kullanir.
+    const listed = async (equipmentId: string) => (await w.maintenance.listTasks(ctxs.mgr, { from: '2026-10-01', status: 'scheduled,in_progress,done', equipmentId })).items.map((t) => t.taskId);
+    expect(await listed(a.equipmentId)).toEqual([t2?.taskId]);
+    expect(await listed(b.equipmentId)).toEqual([legacy.taskId]);
+    expect((await w.maintenance.getTask(ctxs.mgr, legacy.taskId)).task.equipmentId).toBe(b.equipmentId);
+    expect((await w.maintenance.getTask(ctxs.mgr, t1?.taskId as string)).task).not.toHaveProperty('equipmentId');
+    // Gorevden ariza: eski gorev B'ye, baglantisiz donemdeki gorev hicbir ekipmana baglanmaz.
+    expect((await w.maintenance.openTicket(ctxs.mgr, legacy.taskId, { idempotencyKey: 'leg-1' })).ticket).toHaveProperty('equipmentId', b.equipmentId);
+    expect((await w.maintenance.openTicket(ctxs.mgr, t1?.taskId as string, { idempotencyKey: 'unl-1' })).ticket).not.toHaveProperty('equipmentId');
+    // Zamanlayicinin yeni gorevi B'yi acikca tasir.
+    w.setNow('2026-12-20T06:00:00.000Z');
+    await w.maintenance.generate(APT, '2026-12-20');
+    expect(raw(w, `2027-01-25_${template.templateId}`).equipmentId).toBe(b.equipmentId);
+  });
+
+  it('hizmetten cikan ekipman: yeni gorev ve gorevden ariza baglanmaz, sablon baglantisi gecmis icin kalir; durum yaniti bagli aktif sablonlari doner', async () => {
+    const w = world();
+    const e = await w.elevator();
+    const { template } = await w.maintenance.createTemplate(ctxs.mgr, { preset: 'elevator_monthly', schedule: { startDate: TODAY }, equipmentId: e.equipmentId });
+    const [t1] = (await w.maintenance.listTasks(ctxs.mgr)).items;
+    const r = await w.service.setStatus(ctxs.mgr, e.equipmentId, { version: 1, status: 'retired', note: 'Söküldü' });
+    expect(r.linkedTemplates).toEqual([{ templateId: template.templateId, name: 'Asansör aylık bakımı' }]);
+    expect(r.warning).toContain('1 aktif bakım şablonu');
+    expect(w.eq.audits.at(-1)).toMatchObject({ action: 'equipment.status', details: { linkedTemplates: [template.templateId] } });
+    // Zamanlayici yeni gorevi baglamaz; sablon baglantisi korunur.
+    w.setNow('2026-12-20T06:00:00.000Z');
+    await w.maintenance.generate(APT, '2026-12-20');
+    expect(raw(w, `2027-01-25_${template.templateId}`).equipmentId).toBeNull();
+    expect((await w.maintenance.getTemplate(ctxs.mgr, template.templateId)).template.equipmentId).toBe(e.equipmentId);
+    // Eski baglantili gorevden acilan ariza hizmet disi ekipmana baglanmaz.
+    expect((await w.maintenance.openTicket(ctxs.mgr, t1?.taskId as string, { idempotencyKey: 'ret-1' })).ticket).not.toHaveProperty('equipmentId');
+    // Gecmis korunur.
+    expect((await w.service.history(ctxs.mgr, e.equipmentId)).items.map((i) => i.id)).toContain(t1?.taskId);
+  });
+
+  it('tedarikci carisi: degismeyen pasif cari duzenlemeyi engellemez; cari degisince ad yeni cariden gelir', async () => {
+    const w = world();
+    w.accounts.push({ accountId: 'sup-kuzey', name: 'Kuzey Servis', type: 'payable', status: 'active' } as Account);
+    const e = await w.elevator({ serviceCompany: { supplierAccountId: 'sup-asansor', phone: '0212 555 00 00' } });
+    expect(e.serviceCompany?.name).toBe('Yıldız Asansör Ltd.');
+    // Cari Finans'ta pasife alindi: ayni cariyle baska alanlar duzenlenebilir (web her alani gonderir).
+    (w.accounts.find((a) => a.accountId === 'sup-asansor') as Account).status = 'inactive' as never;
+    const kept = await w.service.update(ctxs.mgr, e.equipmentId, { version: 1, notes: 'Anahtar yönetimde', serviceCompany: { supplierAccountId: 'sup-asansor', name: 'Yıldız Asansör Ltd.', phone: '0212 555 00 00' } });
+    expect(kept.equipment).toMatchObject({ notes: 'Anahtar yönetimde', serviceCompany: { supplierAccountId: 'sup-asansor' } });
+    // Yeni cari: ad acikca verilmediyse yeni carinin adi.
+    const switched = await w.service.update(ctxs.mgr, e.equipmentId, { version: 2, serviceCompany: { supplierAccountId: 'sup-kuzey' } });
+    expect(switched.equipment.serviceCompany).toEqual({ supplierAccountId: 'sup-kuzey', name: 'Kuzey Servis', phone: '0212 555 00 00' });
+    const named = await w.service.update(ctxs.mgr, e.equipmentId, { version: 3, serviceCompany: { supplierAccountId: 'sup-asansor', name: 'Elle ad' } }).catch((err: unknown) => err);
+    expect(named).toBeInstanceOf(ValidationError);
+    const explicit = await w.service.update(ctxs.mgr, e.equipmentId, { version: 3, serviceCompany: { supplierAccountId: null, name: 'Bağımsız servis' } });
+    expect(explicit.equipment.serviceCompany).toEqual({ name: 'Bağımsız servis', phone: '0212 555 00 00' });
+  });
+
+  it('gorevli yaniti: tedarikci cari kimligi ve bakim gorevi masraf ozeti yok', async () => {
+    const w = world();
+    const e = await w.elevator({ serviceCompany: { supplierAccountId: 'sup-asansor' } });
+    const staff = (await w.service.get(ctxs.staff1, e.equipmentId)).equipment;
+    expect(staff.serviceCompany).toEqual({ name: 'Yıldız Asansör Ltd.' });
+    expect((await w.service.list(ctxs.staff1)).items[0]?.serviceCompany).not.toHaveProperty('supplierAccountId');
+    expect((await w.service.get(ctxs.observer, e.equipmentId)).equipment.serviceCompany).toHaveProperty('supplierAccountId', 'sup-asansor');
+
+    await w.maintenance.createTemplate(ctxs.mgr, { preset: 'water_pump', schedule: { startDate: TODAY }, defaultAssigneeId: 'staff-1' });
+    const [task] = (await w.maintenance.listTasks(ctxs.mgr)).items;
+    const id = task?.taskId as string;
+    raw(w, id).costSummary = { total: 75000, expenseIds: ['x1'] };
+    expect((await w.maintenance.getTask(ctxs.mgr, id)).task).toHaveProperty('costSummary.total', 75000);
+    expect((await w.maintenance.getTask(ctxs.observer, id)).task).toHaveProperty('costSummary');
+    expect((await w.maintenance.getTask(ctxs.staff1, id)).task).not.toHaveProperty('costSummary');
+    expect(JSON.stringify(await w.maintenance.listTasks(ctxs.staff1))).not.toContain('costSummary');
+    expect(JSON.stringify(await w.maintenance.calendar(ctxs.staff1, { month: '2026-11' }))).not.toContain('costSummary');
+  });
+
+  it('gunluk ozet: her gun 30 gun ileri / geri; uzun suredir dolmus sozlesme ve kontrol yalnizca pazartesi', async () => {
+    const w = world();
+    await w.elevator({ warrantyEndDate: '2026-12-10', serviceContractEndDate: '2026-06-01', nextInspectionDate: '2026-11-10' });
+    const wed = await w.service.digestItems(APT, '2026-11-25');
+    expect(wed.weekly).toBe(false);
+    expect(wed.items.map((i) => i.kind)).toEqual(['inspection', 'warranty']);
+    const mon = await w.service.digestItems(APT, '2026-11-30');
+    expect(mon.weekly).toBe(true);
+    expect(mon.items.map((i) => [i.kind, i.expired])).toEqual([
+      ['contract', true],
+      ['inspection', true],
+      ['warranty', false],
+    ]);
+    // Yonetim ekrani tam listeyi her gun gosterir.
+    expect((await w.service.expiring(ctxs.mgr)).items.map((i) => i.kind)).toEqual(['contract', 'inspection', 'warranty']);
+  });
+
+  it('ozet olayi 100 kalemle sinirli; sayi ve konu kesilmeden onceki toplam, pazartesi basligi', async () => {
+    const many = Array.from({ length: 120 }, (_, i) => ({ equipmentId: `e${i}`, name: `Ekipman ${i}`, kind: 'contract' as const, date: '2026-12-01', expired: false }));
+    const events = createInMemoryEventPublisher();
+    const worker = createSchedulerWorker({
+      core: { listSiteIds: async () => [APT], getSite: async () => ({ siteId: APT, status: 'active', settings: defaultSiteSettings() }) as unknown as Site },
+      finance: {} as never,
+      plans: {} as never,
+      payments: null,
+      payouts: null,
+      invoices: null,
+      tickets: { runDaily: async () => ({ autoClosed: 0, conflicts: 0, breached: [] }) },
+      maintenance: { generate: async () => ({ templates: 0, created: 0, existing: 0 }), digestItems: async () => ({ dueSoon: [], overdue: [] }) },
+      equipment: { digestItems: async () => ({ items: many, weekly: true }) },
+      events,
+      now: () => new Date('2026-11-30T06:00:00.000Z'),
+      log: { info: () => {}, error: () => {} },
+    });
+    const out = await worker.runJob({ job: 'ticket_maintenance', scheduledTime: '2026-11-30T04:30:00Z' });
+    expect(out[0]).toMatchObject({ detail: { equipmentExpiring: 120 } });
+    const ev = events.published[0] as DomainEvent<'OPERATIONS_DIGEST'>;
+    expect(ev.payload.equipmentExpiring).toHaveLength(100);
+    expect(ev.payload).toMatchObject({ equipmentTotal: 120, equipmentWeekly: true });
+    const [mgr] = operationsDigestRecipients(ev, roles, '2026-11-30');
+    expect(mgr?.data).toMatchObject({ equipmentCount: 120 });
+    const mail = renderEmail({ eventId: 'e', apartmentId: APT, userId: 'mgr', template: 'operations_digest', data: mgr?.data ?? {} }, { siteName: 'Örnek', unitLabel: () => '', portalUrl: 'https://site.example/app' });
+    expect(mail?.subject).toContain('120 ekipman tarihi yaklaştı veya doldu');
+    expect(mail?.html).toContain('haftalık tam liste');
+    expect(mail?.text).toContain('Listenin tamamı yönetim panelinde.');
+  });
+
+  it('tahmini tutar: guncel gorevli; acan gorevli yalnizca talep atanmamisken; guvenlik hicbir yanitta gormez', async () => {
+    const w = world();
+    const t = await w.ticket(ctxs.staff1);
+    // Atanmamis: acan gorevli girebilir.
+    expect((await w.tickets.estimate(ctxs.staff1, t.ticketId, { version: 1, amount: 10000 })).ticket).toHaveProperty('estimate.amount', 10000);
+    await w.tickets.assign(ctxs.mgr, t.ticketId, { version: 2, assigneeId: 'staff-2' });
+    // Baskasina atandi: acan gorevli artik giremez (talebi gormeye devam eder), atanan girer.
+    expect((await w.tickets.get(ctxs.staff1, t.ticketId)).ticket).toMatchObject({ canEstimate: false });
+    await expect(w.tickets.estimate(ctxs.staff1, t.ticketId, { version: 3, amount: 1 })).rejects.toMatchObject({ code: 'forbidden', message: expect.stringContaining('güncel görevlisi') });
+    expect((await w.tickets.estimate(ctxs.staff2, t.ticketId, { version: 3, amount: 20000 })).ticket).toHaveProperty('estimate.amount', 20000);
+
+    // Guvenlik: kendi actigi talepte bile tahmini tutar donmez.
+    const g = await w.ticket(ctxs.guard, { title: 'Bariyer açılmıyor' });
+    await w.tickets.estimate(ctxs.mgr, g.ticketId, { version: 1, amount: 55500, note: 'Motor' });
+    const guardView = JSON.stringify([await w.tickets.get(ctxs.guard, g.ticketId), await w.tickets.list(ctxs.guard)]);
+    expect(guardView).not.toContain('55500');
+    expect(guardView).not.toContain('estimate');
+    expect(guardView).not.toContain('canEstimate');
+  });
+
+  it('ad cozumleme: ids= durumdan bagimsiz; en fazla 100 kimlik', async () => {
+    const w = world();
+    const a = await w.elevator();
+    const b = (await w.service.create(ctxs.mgr, { name: 'Eski jeneratör', category: 'generator' })).equipment;
+    await w.service.setStatus(ctxs.mgr, b.equipmentId, { version: 1, status: 'retired', note: 'Satıldı' });
+    expect((await w.service.list(ctxs.mgr)).items.map((e) => e.name)).toEqual(['A Blok asansörü']);
+    expect((await w.service.list(ctxs.staff1, { ids: `${a.equipmentId},${b.equipmentId}` })).items.map((e) => [e.name, e.status])).toEqual([
+      ['A Blok asansörü', 'active'],
+      ['Eski jeneratör', 'retired'],
+    ]);
+    await expect(w.service.list(ctxs.mgr, { ids: Array.from({ length: 101 }, (_, i) => `x${i}`).join(',') })).rejects.toBeInstanceOf(ValidationError);
+    await expect(w.service.list(ctxs.mgr, { ids: 'bad#id' })).rejects.toBeInstanceOf(ValidationError);
+  });
+
+  it('gecmis: talep satiri Istanbul gunu; varsayilan son 5 yil, years 1-10', async () => {
+    const w = world();
+    const e = await w.elevator();
+    w.setNow('2020-03-10T09:00:00.000Z');
+    const old = await w.ticket(ctxs.mgr, { equipmentId: e.equipmentId, title: 'Eski arıza' });
+    w.setNow('2026-11-25T22:30:00.000Z'); // Istanbul 26.11.2026 01:30
+    const late = await w.ticket(ctxs.mgr, { equipmentId: e.equipmentId });
+    const h = await w.service.history(ctxs.mgr, e.equipmentId);
+    expect(h).toMatchObject({ years: 5, from: '2021-11-27' });
+    expect(h.items.map((i) => [i.id, i.date])).toEqual([[late.ticketId, '2026-11-26']]);
+    expect((await w.service.history(ctxs.mgr, e.equipmentId, { years: '10' })).items.map((i) => i.id)).toEqual([late.ticketId, old.ticketId]);
+    await expect(w.service.history(ctxs.mgr, e.equipmentId, { years: '11' })).rejects.toBeInstanceOf(ValidationError);
   });
 });

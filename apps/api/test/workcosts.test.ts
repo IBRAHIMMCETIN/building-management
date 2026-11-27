@@ -200,6 +200,9 @@ describe('var olan masrafi baglama', () => {
     await w.finance.reverseTransaction(fctx, r.transactionId, { reason: 'Mükerrer fatura' });
     const view = await w.costs.costs(mgr, 'ticket', 'tk1');
     expect(view).toMatchObject({ total: 0, rechargeable: 0, items: [{ expenseId: r.expenseId, reversed: true }] });
+    // v2 ekipman gecmisi: toplu kontrol tekil kontrolle ayni sonucu verir (depo destegi yoksa tek tek).
+    expect(await w.finance.reversedTransactions(fctx, [r.transactionId, '20261101-yok', r.transactionId])).toEqual(new Set([r.transactionId]));
+    expect(await w.finance.reversedTransactions(fctx, [])).toEqual(new Set());
     // Ozet yazim anindaki haliyle kalir (defter append-only); denetim bulgusu yok.
     expect(w.summaryOf('TICKET#tk1').total).toBe(40000);
     expect(checkWorkCosts(w.snapshot())).toEqual([]);

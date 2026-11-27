@@ -20,14 +20,14 @@ import { financeRepository } from '../finance/repository.js';
 import type { FinanceService } from '../finance/service.js';
 import { type MaintenanceRepository, maintenanceRepository } from '../maintenance/repository.js';
 import { addDays } from '../maintenance/schedule.js';
-import { type MaintenanceTask, OPEN_TASK_STATUSES } from '../maintenance/types.js';
+import { type MaintenanceTask, OPEN_TASK_STATUSES, taskEquipmentId } from '../maintenance/types.js';
 import { TicketError } from '../tickets/errors.js';
 import { actorKindOf, canView } from '../tickets/model.js';
 import { type TicketRepository, ticketRepository } from '../tickets/repository.js';
 import { ticketSettingsOf } from '../tickets/service.js';
 import { ACTIVE_STATUSES, type Ticket } from '../tickets/types.js';
 import type { CostSummary } from '../workcosts/types.js';
-import { EXPIRY_WINDOW_DAYS, daysBetween, expiryItems, expiryItemsOf } from './expiry.js';
+import { EXPIRY_WINDOW_DAYS, daysBetween, expiryItems, expiryItemsOf, isMonday } from './expiry.js';
 import { EquipmentConflictError, type EquipmentRepository, equipmentRepository } from './repository.js';
 import {
   DOCUMENT_KINDS,
@@ -52,8 +52,8 @@ export type EquipmentServiceDeps = {
   accounts: Pick<FinanceRepository, 'getAccount'>;
   tickets: Pick<TicketRepository, 'list'>;
   maintenance: Pick<MaintenanceRepository, 'listTemplates' | 'listTasks'>;
-  /** Masraf iptal (ters kayit) kontrolu; verilmezse masraflar yazildigi haliyle sayilir. */
-  finance?: Pick<FinanceService, 'isReversed'>;
+  /** Masraf iptal (ters kayit) kontrolu, toplu (BatchGet); verilmezse masraflar yazildigi haliyle sayilir. */
+  finance?: Pick<FinanceService, 'reversedTransactions'>;
   store: DocumentStore | undefined;
   now: () => Date;
   newId: () => string;
@@ -61,10 +61,14 @@ export type EquipmentServiceDeps = {
 
 type Kind = 'manager' | 'staff' | 'observer';
 
-/** Gecmis penceresi: bugunden geriye 10 yil, ileriye 60 gun (planli bakimlar). */
-const HISTORY_YEARS = 10;
+/** Gecmis penceresi: varsayilan son 5 yil (`years` 1-10), ileriye 60 gun (planli bakimlar). */
+const HISTORY_DEFAULT_YEARS = 5;
+const HISTORY_MAX_YEARS = 10;
 const HISTORY_AHEAD_DAYS = 60;
 const MAX_PAGE = 200;
+/** `ids=` ile ad cozumleme (talep / sablon ekranlari; durumdan bagimsiz). */
+const MAX_IDS = 100;
+const istanbulDay = (iso: string): IsoDate => new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Istanbul' }).format(new Date(iso));
 const UPLOAD_ID = /^[a-f0-9]{24}_(pdf|jpg|png|webp|heic)$/;
 const PHONE = /^[0-9+()\s-]{5,30}$/;
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -151,10 +155,14 @@ export function createEquipmentService(overrides: Partial<EquipmentServiceDeps> 
 
   function view(ctx: EquipmentContext, e: Equipment) {
     const kind = kindOf(ctx);
-    const { PK: _pk, SK: _sk, documents, ...rest } = e;
+    const { PK: _pk, SK: _sk, documents, serviceCompany, ...rest } = e;
     const visible = documents.filter((d) => seesDocument(kind, d));
+    // Gorevli firma adini / iletisimini gorur; Finans cari baglantisi (tedarikci hesabi) yonetimindir.
+    const { supplierAccountId: _sup, ...publicService } = serviceCompany ?? {};
+    const service = kind === 'staff' ? publicService : serviceCompany;
     return {
       ...rest,
+      ...(service && Object.keys(service).length ? { serviceCompany: service } : {}),
       documents: visible.map(documentView),
       documentCount: visible.filter((d) => d.status === 'active').length,
       expiry: expiryItemsOf(e, today()),
@@ -184,19 +192,26 @@ export function createEquipmentService(overrides: Partial<EquipmentServiceDeps> 
     const o = asObject(value, 'serviceCompany');
     let supplierAccountId = current?.supplierAccountId;
     let supplierName: string | undefined;
+    let supplierChanged = false;
     if (o.supplierAccountId !== undefined) {
       if (o.supplierAccountId === null || o.supplierAccountId === '') supplierAccountId = undefined;
       else {
         const id = assertId(o.supplierAccountId, 'serviceCompany.supplierAccountId');
-        const acc = await deps.accounts.getAccount(ctx.apartmentId, id);
-        if (!acc || acc.type !== 'payable' || acc.status !== 'active') {
-          throw new ValidationError('serviceCompany.supplierAccountId aktif bir tedarikçi hesabı olmalı', 'serviceCompany.supplierAccountId');
+        // Degismeyen bagli cari yeniden dogrulanmaz (Finans'ta sonradan pasife alinmis olsa da diger
+        // alanlar duzenlenebilsin); yalnizca yeni baglanan cari aktif tedarikci olmali.
+        if (id !== current?.supplierAccountId) {
+          const acc = await deps.accounts.getAccount(ctx.apartmentId, id);
+          if (!acc || acc.type !== 'payable' || acc.status !== 'active') {
+            throw new ValidationError('serviceCompany.supplierAccountId aktif bir tedarikçi hesabı olmalı', 'serviceCompany.supplierAccountId');
+          }
+          supplierName = acc.name;
+          supplierChanged = true;
         }
         supplierAccountId = id;
-        supplierName = acc.name;
       }
     }
-    const name = text(o, 'name', 120, current?.name, 2) ?? supplierName;
+    // Cari degisti ve ad acikca verilmediyse yeni carinin adi; bos ad da carinin adina duser.
+    const name = (supplierChanged && o.name === undefined ? undefined : text(o, 'name', 120, current?.name, 2)) ?? supplierName;
     const phone = text(o, 'phone', 30, current?.phone);
     if (phone && !PHONE.test(phone)) throw new ValidationError('serviceCompany.phone geçerli bir telefon numarası olmalı', 'serviceCompany.phone');
     const email = text(o, 'email', 120, current?.email);
@@ -328,16 +343,38 @@ export function createEquipmentService(overrides: Partial<EquipmentServiceDeps> 
     const status = reqEnum(o, 'status', EQUIPMENT_STATUSES) as EquipmentStatus;
     const note = optString(o, 'note', 500)?.trim() || undefined;
     if (status === 'retired' && (!note || note.length < 3)) throw new ValidationError('Hizmetten çıkarma için açıklama gerekli (en az 3 karakter)', 'note');
-    if (status === current.status) return { equipment: view(ctx, current) };
+    const linked = await linkedTemplates(ctx.apartmentId, equipmentId);
+    if (status === current.status) return { equipment: view(ctx, current), linkedTemplates: linked };
     const ts = stamp();
     const { statusNote: _n, ...rest } = current;
     const next: Equipment = { ...rest, status, ...(note ? { statusNote: note } : {}), statusChangedAt: ts, updatedAt: ts, updatedBy: ctx.userId, version: version + 1 };
     await write(ctx.apartmentId, {
       item: next,
       expectedVersion: version,
-      audit: { apartmentId: ctx.apartmentId, action: 'equipment.status', target: { type: 'equipment', id: equipmentId }, ...(note ? { reason: note } : {}), details: { name: current.name, from: current.status, to: status } },
+      audit: {
+        apartmentId: ctx.apartmentId,
+        action: 'equipment.status',
+        target: { type: 'equipment', id: equipmentId },
+        ...(note ? { reason: note } : {}),
+        details: { name: current.name, from: current.status, to: status, ...(status === 'retired' && linked.length ? { linkedTemplates: linked.map((t) => t.templateId) } : {}) },
+      },
     });
-    return { equipment: view(ctx, next) };
+    // Hizmetten cikan ekipmana bagli aktif sablonlar baglantiyi gecmis icin korur ama yeni gorev
+    // baglanmaz; arayuz yoneticiye sablonlari gosterir (baska ekipmana tasima / arsivleme kararı).
+    return {
+      equipment: view(ctx, next),
+      linkedTemplates: linked,
+      ...(status === 'retired' && linked.length
+        ? { warning: `${linked.length} aktif bakım şablonu bu ekipmana bağlı; yeni görevler artık ekipmana bağlanmayacak. Şablonları başka ekipmana taşıyın veya arşivleyin.` }
+        : {}),
+    };
+  }
+
+  /** Ekipmana bagli aktif bakim sablonlari (durum degisikligi uyarisi ve gecmis ekrani). */
+  async function linkedTemplates(apartmentId: string, equipmentId: string) {
+    return (await deps.maintenance.listTemplates(apartmentId))
+      .filter((t) => t.status === 'active' && t.equipmentId === equipmentId)
+      .map((t) => ({ templateId: t.templateId, name: t.name }));
   }
 
   // -------------------------------------------------------------------------
@@ -347,12 +384,20 @@ export function createEquipmentService(overrides: Partial<EquipmentServiceDeps> 
   /**
    * Liste. Filtreler: `q` (ad, marka, model, seri no, konum), `category`, `status` (varsayilan
    * hizmette olanlar: active + out_of_service; `all` hepsi), `blockId`, `warrantyWithin=N`
-   * (garantisi bugun .. +N gun icinde bitenler), `expiring=true` (hatirlatmasi olanlar).
+   * (garantisi bugun .. +N gun icinde bitenler), `expiring=true` (hatirlatmasi olanlar),
+   * `ids=a,b` (en fazla 100; bagli kayitlarin adini durumdan bagimsiz cozmek icin, varsayilan `all`).
    */
   async function list(ctx: EquipmentContext, q: Record<string, string | undefined> = {}) {
     kindOf(ctx);
     if (q.category && !(EQUIPMENT_CATEGORIES as readonly string[]).includes(q.category)) throw new ValidationError('category geçersiz', 'category');
     if (q.status && q.status !== 'all' && !(EQUIPMENT_STATUSES as readonly string[]).includes(q.status)) throw new ValidationError('status geçersiz', 'status');
+    let ids: Set<string> | undefined;
+    if (q.ids !== undefined && q.ids !== '') {
+      const parts = q.ids.split(',').filter(Boolean);
+      if (parts.length > MAX_IDS) throw new ValidationError(`ids en fazla ${MAX_IDS} kimlik olabilir`, 'ids');
+      ids = new Set(parts.map((v) => assertId(v, 'ids')));
+    }
+    const status = q.status ?? (ids ? 'all' : undefined);
     let warrantyWithin: number | undefined;
     if (q.warrantyWithin !== undefined && q.warrantyWithin !== '') {
       warrantyWithin = Number(q.warrantyWithin);
@@ -365,7 +410,8 @@ export function createEquipmentService(overrides: Partial<EquipmentServiceDeps> 
     const all = await repo.list(ctx.apartmentId);
     const inService = all.filter((e) => e.status !== 'retired');
     const items = all
-      .filter((e) => (q.status === 'all' ? true : q.status ? e.status === q.status : e.status !== 'retired'))
+      .filter((e) => !ids || ids.has(e.equipmentId))
+      .filter((e) => (status === 'all' ? true : status ? e.status === status : e.status !== 'retired'))
       .filter((e) => !q.category || e.category === q.category)
       .filter((e) => !q.blockId || e.blockId === q.blockId)
       .filter((e) => warrantyWithin === undefined || (!!e.warrantyEndDate && e.warrantyEndDate >= d && daysBetween(d, e.warrantyEndDate) <= warrantyWithin))
@@ -382,12 +428,15 @@ export function createEquipmentService(overrides: Partial<EquipmentServiceDeps> 
     };
   }
 
-  /** Son tarih hatirlatmalari: onumuzdeki `days` gun (varsayilan 30) + tarihi gecenler. */
+  /**
+   * Son tarih hatirlatmalari (yonetim ekrani): onumuzdeki `days` gun (varsayilan 30) + son 30
+   * gunde dolanlar + servis sozlesmesi / periyodik kontrolun daha once dolmuslari.
+   */
   async function expiring(ctx: EquipmentContext, q: { days?: string } = {}) {
     kindOf(ctx);
     const days = q.days === undefined || q.days === '' ? EXPIRY_WINDOW_DAYS : Number(q.days);
     if (!Number.isSafeInteger(days) || days < 1 || days > 365) throw new ValidationError('days 1-365 olmalı', 'days');
-    return { days, items: expiryItems(await repo.list(ctx.apartmentId), today(), days) };
+    return { days, items: expiryItems(await repo.list(ctx.apartmentId), today(), { days }) };
   }
 
   async function get(ctx: EquipmentContext, equipmentId: string) {
@@ -395,63 +444,69 @@ export function createEquipmentService(overrides: Partial<EquipmentServiceDeps> 
     return { equipment: view(ctx, await load(ctx, equipmentId)) };
   }
 
-  /** Zamanlayici: gunluk operasyon ozeti icin hatirlatma kalemleri (yalnizca yonetime gider). */
+  /**
+   * Zamanlayici: gunluk operasyon ozeti kalemleri (yalnizca yonetime gider). Her gun: 30 gun
+   * icinde dolacak ve son 30 gunde dolmus olanlar; uzun suredir dolmus sozlesme / kontrol yalnizca
+   * pazartesi (`weekly`): ozet kendiliginden sessizlesir, haftada bir tam liste gider.
+   */
   async function digestItems(apartmentId: string, day: IsoDate) {
-    return expiryItems(await repo.list(apartmentId), day, EXPIRY_WINDOW_DAYS).map(({ daysLeft: _d, ...i }) => i);
+    const weekly = isMonday(day);
+    const items = expiryItems(await repo.list(apartmentId), day, { days: EXPIRY_WINDOW_DAYS, longExpired: weekly }).map(({ daysLeft: _d, ...i }) => i);
+    return { items, weekly };
   }
 
   // -------------------------------------------------------------------------
   // Gecmis: talepler, bakim gorevleri, masraflar
   // -------------------------------------------------------------------------
 
-  async function liveCosts(ctx: EquipmentContext, summary: CostSummary | undefined) {
-    const items = summary?.items ?? [];
-    return Promise.all(
-      items.map(async (i) => ({
-        date: i.date,
-        amount: i.amount,
-        description: i.description,
-        expenseId: i.expenseId,
-        reversed: deps.finance ? await deps.finance.isReversed(ctx, i.transactionId) : false,
-      })),
-    );
+  /** Masraf kalemleri; ters kayit durumu tum gecmis icin TEK toplu okumadan (`reversed`). */
+  function liveCosts(summary: CostSummary | undefined, reversed: ReadonlySet<string>) {
+    return (summary?.items ?? []).map((i) => ({ date: i.date, amount: i.amount, description: i.description, expenseId: i.expenseId, reversed: reversed.has(i.transactionId) }));
   }
 
   /**
-   * Ekipmana bagli talepler (`Ticket.equipmentId`) ve bakim gorevleri. Gorev, olustugu andaki
-   * baglantiyi (`MaintenanceTask.equipmentId`) tasir; baglanti alani olmayan eski gorevler
-   * sablonun guncel ekipmanina sayilir (ekipman sonradan baglandiginda gecmis de gorunsun).
-   * Masraflar (yonetim + denetci) Finans'taki ters kayitlar dusulerek yil bazinda toplanir.
+   * Ekipmana bagli talepler (`Ticket.equipmentId`) ve bakim gorevleri, son `years` yil (varsayilan
+   * 5, en fazla 10) + onumuzdeki 60 gun. Gorevin ekipmani `taskEquipmentId` kuraliyla (bakim
+   * listesi filtresi, gorev gorunumu ve gorevden ariza ile ayni): acik baglanti oncelikli, alan hic
+   * yoksa (v2 oncesi gorev) sablonun guncel baglantisi. Masraflar (yonetim + denetci) Finans'taki
+   * ters kayitlar dusulerek yil bazinda toplanir; ters kayit kontrolu tek toplu okumadir.
    */
-  async function history(ctx: EquipmentContext, equipmentId: string) {
+  async function history(ctx: EquipmentContext, equipmentId: string, q: { years?: string } = {}) {
     const kind = kindOf(ctx);
     const e = await load(ctx, equipmentId);
+    const years = q.years === undefined || q.years === '' ? HISTORY_DEFAULT_YEARS : Number(q.years);
+    if (!Number.isSafeInteger(years) || years < 1 || years > HISTORY_MAX_YEARS) throw new ValidationError(`years 1-${HISTORY_MAX_YEARS} olmalı`, 'years');
     const d = today();
+    const from = addDays(d, -365 * years);
     const seesCosts = kind !== 'staff';
     const [tickets, templates, tasks, site] = await Promise.all([
       deps.tickets.list(ctx.apartmentId),
       deps.maintenance.listTemplates(ctx.apartmentId),
-      deps.maintenance.listTasks(ctx.apartmentId, addDays(d, -365 * HISTORY_YEARS), addDays(d, HISTORY_AHEAD_DAYS)),
+      deps.maintenance.listTasks(ctx.apartmentId, from, addDays(d, HISTORY_AHEAD_DAYS)),
       deps.core.getSite(ctx.apartmentId),
     ]);
     const settings = ticketSettingsOf(site);
     const actor = { apartmentId: ctx.apartmentId, userId: ctx.userId, role: ctx.role, kind, unitIds: [] as string[] };
-    const templateEquipment = new Map(templates.map((t) => [t.templateId, t.equipmentId]));
-    const linkedTickets = tickets.filter((t: Ticket) => t.equipmentId === equipmentId && canView(actor, t, settings));
-    const taskEquipment = (t: MaintenanceTask) => ('equipmentId' in t ? t.equipmentId : templateEquipment.get(t.templateId));
+    const templateById = new Map(templates.map((t) => [t.templateId, t]));
+    const linkedTickets = tickets.filter((t: Ticket) => t.equipmentId === equipmentId && istanbulDay(t.createdAt) >= from && canView(actor, t, settings));
     const staffSees = (t: MaintenanceTask) => kind !== 'staff' || t.assigneeId === ctx.userId || (settings.staffSelfAssign && !t.assigneeId && OPEN_TASK_STATUSES.includes(t.status));
-    const linkedTasks = tasks.filter((t) => t.status !== 'cancelled' && taskEquipment(t) === equipmentId && staffSees(t));
+    const linkedTasks = tasks.filter((t) => t.status !== 'cancelled' && taskEquipmentId(t, templateById.get(t.templateId)) === equipmentId && staffSees(t));
+    const reversed =
+      seesCosts && deps.finance
+        ? await deps.finance.reversedTransactions(ctx, [...linkedTickets, ...linkedTasks].flatMap((x) => (x.costSummary?.items ?? []).map((i) => i.transactionId)))
+        : new Set<string>();
 
     type Row = Record<string, unknown> & { kind: 'ticket' | 'maintenance'; id: string; date: IsoDate };
     const rows: Row[] = [];
     const costs: { year: string; amount: number; kind: 'ticket' | 'maintenance' }[] = [];
     for (const t of linkedTickets) {
-      const live = seesCosts ? await liveCosts(ctx, t.costSummary) : [];
+      const live = seesCosts ? liveCosts(t.costSummary, reversed) : [];
       for (const c of live) if (!c.reversed) costs.push({ year: c.date.slice(0, 4), amount: c.amount, kind: 'ticket' });
       rows.push({
         kind: 'ticket',
         id: t.ticketId,
-        date: t.createdAt.slice(0, 10),
+        // Gorev satirlariyla ayni: Istanbul takvim gunu.
+        date: istanbulDay(t.createdAt),
         number: t.number,
         title: t.title,
         status: t.status,
@@ -463,12 +518,12 @@ export function createEquipmentService(overrides: Partial<EquipmentServiceDeps> 
       });
     }
     for (const t of linkedTasks) {
-      const live = seesCosts ? await liveCosts(ctx, t.costSummary) : [];
+      const live = seesCosts ? liveCosts(t.costSummary, reversed) : [];
       for (const c of live) if (!c.reversed) costs.push({ year: c.date.slice(0, 4), amount: c.amount, kind: 'maintenance' });
       rows.push({
         kind: 'maintenance',
         id: t.taskId,
-        date: t.completedAt ? new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Istanbul' }).format(new Date(t.completedAt)) : t.dueDate,
+        date: t.completedAt ? istanbulDay(t.completedAt) : t.dueDate,
         title: t.name,
         dueDate: t.dueDate,
         status: t.status,
@@ -481,10 +536,12 @@ export function createEquipmentService(overrides: Partial<EquipmentServiceDeps> 
     }
     rows.sort((a, b) => b.date.localeCompare(a.date) || String(b.id).localeCompare(String(a.id)));
 
-    const years = [...new Set(costs.map((c) => c.year))].sort().reverse();
+    const costYears = [...new Set(costs.map((c) => c.year))].sort().reverse();
     const total = (xs: typeof costs) => xs.reduce((s, c) => s + c.amount, 0);
     return {
       equipmentId,
+      years,
+      from,
       name: e.name,
       items: rows,
       counts: {
@@ -502,7 +559,7 @@ export function createEquipmentService(overrides: Partial<EquipmentServiceDeps> 
               total: total(costs),
               ticket: total(costs.filter((c) => c.kind === 'ticket')),
               maintenance: total(costs.filter((c) => c.kind === 'maintenance')),
-              byYear: years.map((year) => {
+              byYear: costYears.map((year) => {
                 const ys = costs.filter((c) => c.year === year);
                 return { year, total: total(ys), ticket: total(ys.filter((c) => c.kind === 'ticket')), maintenance: total(ys.filter((c) => c.kind === 'maintenance')), count: ys.length };
               }),

@@ -61,9 +61,10 @@ import { type BulkJobService, createBulkJobService } from '../modules/bulkjobs/s
  *                  sayesinde tekrar calismasi zararsizdir. Silme yapmaz.
  *   ticket_maintenance her gun 07:30 (O1-3): cozulup `autoCloseDays` gun onaylanmayan talepleri
  *                  kapatir (closeKind auto, bildirim outbox ile) ve yonetim / gorevliye gunluk
- *                  operasyon ozeti (`OPERATIONS_DIGEST`: SLA asimi, geciken ve yaklasan bakim; v2: 30 gun
- *                  icinde dolacak / dolmus ekipman garanti, servis sozlesmesi ve periyodik kontrol
- *                  tarihleri, yalnizca yonetime) yayinlar.
+ *                  operasyon ozeti (`OPERATIONS_DIGEST`: SLA asimi, geciken ve yaklasan bakim; v2:
+ *                  ekipman garanti, servis sozlesmesi ve periyodik kontrol tarihleri, yalnizca
+ *                  yonetime: her gun 30 gun icinde dolacak / son 30 gunde dolmus, pazartesi uzun
+ *                  suredir dolmus sozlesme ve kontroller de) yayinlar.
  *                  Olay kimligi gun bazli deterministiktir (tekrar teslimde bildirim bir kez).
  *   outbox_sweep   5 dakikada bir: esikten (varsayilan 2 dk) eski, hala bekleyen outbox
  *                  kayitlarini relay cekirdegiyle yeniden yayinlar (apartman dongusu yok; tek tur).
@@ -454,8 +455,9 @@ export function createSchedulerWorker(overrides: Partial<SchedulerDeps> = {}) {
       case 'ticket_maintenance': {
         const r = await tickets().runDaily(apartmentId);
         const m = await maintenance().digestItems(apartmentId, day);
-        // v2: ekipman son tarihleri (yalnizca yonetim ozetinde; ilk 100 kalem).
-        const eq = (await equipment().digestItems(apartmentId, day)).slice(0, 100);
+        // v2: ekipman son tarihleri (yalnizca yonetim ozetinde; olayda ilk 100 kalem, sayi kesilmeden).
+        const eqDigest = await equipment().digestItems(apartmentId, day);
+        const eq = eqDigest.items.slice(0, 100);
         const hasItems = r.breached.length > 0 || m.dueSoon.length > 0 || m.overdue.length > 0 || r.autoClosed > 0 || eq.length > 0;
         if (hasItems) {
           await events().publish(
@@ -471,7 +473,7 @@ export function createSchedulerWorker(overrides: Partial<SchedulerDeps> = {}) {
                   maintenanceDue: m.dueSoon,
                   maintenanceOverdue: m.overdue,
                   autoClosed: r.autoClosed,
-                  ...(eq.length ? { equipmentExpiring: eq } : {}),
+                  ...(eq.length ? { equipmentExpiring: eq, equipmentTotal: eqDigest.items.length, ...(eqDigest.weekly ? { equipmentWeekly: true } : {}) } : {}),
                 },
               },
               now,
@@ -488,7 +490,7 @@ export function createSchedulerWorker(overrides: Partial<SchedulerDeps> = {}) {
             slaBreached: r.breached.length,
             maintenanceDue: m.dueSoon.length,
             maintenanceOverdue: m.overdue.length,
-            equipmentExpiring: eq.length,
+            equipmentExpiring: eqDigest.items.length,
             digest: hasItems,
           },
         };

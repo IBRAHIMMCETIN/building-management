@@ -274,7 +274,14 @@ export function createTicketService(overrides: Partial<TicketServiceDeps> = {}) 
     if (o.equipmentId !== undefined && o.equipmentId !== null && o.equipmentId !== '' && actor.kind !== 'manager' && actor.kind !== 'staff') {
       throw new TicketError('forbidden', 'Ekipman seçimi yalnızca yönetim ve görevli içindir');
     }
-    const equipmentId = opts.equipmentId ?? (await resolveEquipmentLink(deps.equipment, ctx.apartmentId, o.equipmentId)).equipmentId;
+    // Gorevden gelen baglanti da ayni apartmanda ve hizmette olmali (hizmetten cikmissa baglanmaz).
+    const fromTask = opts.equipmentId ? await deps.equipment.get(ctx.apartmentId, opts.equipmentId) : undefined;
+    const equipmentId =
+      opts.equipmentId !== undefined
+        ? fromTask && fromTask.apartmentId === ctx.apartmentId && fromTask.status !== 'retired'
+          ? fromTask.equipmentId
+          : undefined
+        : (await resolveEquipmentLink(deps.equipment, ctx.apartmentId, o.equipmentId)).equipmentId;
     const fp = createHash('sha256')
       .update(JSON.stringify({ title, description, category, priority, location, by: ctx.userId, photos: uploadIds, ...(equipmentId ? { equipmentId } : {}) }))
       .digest('hex');
@@ -497,7 +504,7 @@ export function createTicketService(overrides: Partial<TicketServiceDeps> = {}) 
     const { actor, settings, ticket } = await load(ctx, ticketId);
     if (!canEstimate(actor, ticket)) {
       const closed = TERMINAL_STATUSES.includes(ticket.status);
-      throw new TicketError(closed ? 'invalid_state' : 'forbidden', closed ? 'Kapanmış veya iptal edilmiş talebe tahmini tutar girilemez' : 'Tahmini tutarı yalnızca yönetim ve talebin görevlisi girebilir');
+      throw new TicketError(closed ? 'invalid_state' : 'forbidden', closed ? 'Kapanmış veya iptal edilmiş talebe tahmini tutar girilemez' : 'Tahmini tutarı yalnızca yönetim ve talebin güncel görevlisi (atanmamış talepte açan görevli) girebilir');
     }
     assertVersion(ticket, version);
     const clear = o.amount === null;

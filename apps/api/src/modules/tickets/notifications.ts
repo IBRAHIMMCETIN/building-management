@@ -127,6 +127,8 @@ export function operationsDigestRecipients(event: DigestEvent, roles: readonly A
   type Equip = NonNullable<typeof p.equipmentExpiring>;
   const build = (userId: string, sla: typeof p.slaBreached, due: typeof p.maintenanceDue, overdue: typeof p.maintenanceOverdue, autoClosed: number, equipment: Equip) => {
     if (!sla.length && !due.length && !overdue.length && !autoClosed && !equipment.length) return;
+    // Olaydaki liste 100 kalemle sinirli; sayi kesilmeden onceki toplamdir.
+    const equipmentCount = equipment.length ? Math.max(p.equipmentTotal ?? 0, equipment.length) : 0;
     out.push({
       userId,
       template: 'operations_digest',
@@ -137,7 +139,8 @@ export function operationsDigestRecipients(event: DigestEvent, roles: readonly A
         dueCount: due.length,
         overdueCount: overdue.length,
         autoClosed,
-        equipmentCount: equipment.length,
+        equipmentCount,
+        ...(equipment.length && p.equipmentWeekly ? { equipmentWeekly: 1 } : {}),
         sla: sla.map((t) => ({ label: `${t.number} ${t.title}`, detail: `${PRIORITY_TEXT[t.priority] ?? t.priority} · hedef ${trDate(t.dueAt)}` })),
         due: due.map((t) => ({ label: t.name, detail: trDate(t.dueDate) })),
         overdue: overdue.map((t) => ({ label: t.name, detail: `vade ${trDate(t.dueDate)}` })),
