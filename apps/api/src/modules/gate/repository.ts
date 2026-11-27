@@ -22,7 +22,7 @@ export type GateCondition =
   | { kind: 'none' };
 
 /** Kosul bozulunca hangi is kuralinin cignendigi (servis anlamli hataya cevirir). */
-export type GateConflictReason = 'duplicate' | 'version' | 'plate' | 'code' | 'exists';
+export type GateConflictReason = 'duplicate' | 'version' | 'plate' | 'code' | 'exists' | 'slot';
 
 export type GatePut = { item: TableKeys & Record<string, unknown>; condition: GateCondition; reason: GateConflictReason };
 export type GateWrite = { puts: GatePut[]; audit?: AuditDraft };

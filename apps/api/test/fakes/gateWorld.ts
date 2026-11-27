@@ -92,5 +92,13 @@ export function gateWorld(opts: { codes?: string[] } = {}) {
   const key = () => `key-${++k}`;
   const pass = async (ctx: GateContext = ctxs.tenant, extra: Record<string, unknown> = {}) =>
     (await service.createPass(ctx, { idempotencyKey: key(), unitId: 'u1', guestName: 'Mehmet Misafir', validFrom: DAY, entryMode: 'single', ...extra })).pass;
-  return { fake, service, at, call, key, pass };
+  /** Tasinma: uyelik `endDate` ile biter (dun), durum pasif. */
+  const moveOut = (userId: string, unitId: string, endDate: string) => {
+    for (const m of memberships) if (m.userId === userId && m.unitId === unitId) Object.assign(m, { status: 'inactive', endDate });
+  };
+  /** Yeni sakin (kiraci) `startDate`'ten itibaren. */
+  const moveIn = (userId: string, unitId: string, startDate: string) => {
+    memberships.push({ ...member(APT, userId, unitId, 'tenant'), startDate } as UnitMembership);
+  };
+  return { fake, service, at, call, key, pass, moveOut, moveIn };
 }

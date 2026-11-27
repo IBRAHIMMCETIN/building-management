@@ -86,8 +86,15 @@ export function normalizeShortCode(input: string): string | undefined {
 export const newPassToken = (): string => randomBytes(18).toString('base64url');
 export const TOKEN_RE = /^[A-Za-z0-9_-]{24}$/;
 
-/** Jeton anahtarda acik yazilmaz: dizin anahtari jetonun SHA-256 ozetidir. */
+/** Jeton hicbir kayitta acik tutulmaz: dizin anahtari ve gecis kaydi yalnizca SHA-256 ozetini tasir. */
 export const tokenHash = (token: string) => createHash('sha256').update(token).digest('hex');
+
+/**
+ * Kisa kod da acik saklanmaz. Apartman kimligiyle tuzlanir (apartmanlar arasi hazir tablo yok);
+ * 40 bitlik kod cevrimdisi denemeye karsi tek basina koruma degildir, asil koruma kimlik dogrulamali
+ * gorevli ucu ve TTL'dir.
+ */
+export const codeHash = (apartmentId: string, code: string) => createHash('sha256').update(`${apartmentId}:${code}`).digest('hex');
 
 // ---------------------------------------------------------------------------
 // Istanbul takvimi (Turkiye 2016'dan beri sabit UTC+03:00)
@@ -114,7 +121,10 @@ export const indexTtl = (validUntil: IsoDate, graceDays: number) => Math.floor(D
 // Gecis karari
 // ---------------------------------------------------------------------------
 
-/** Iptal > kullanildi > suresi doldu > henuz baslamadi > gecerli. */
+/**
+ * Iptal > kullanildi > suresi doldu > henuz baslamadi > gecerli. Ev sahibinin tasinmasi
+ * (`host_left`) uyelik okumasi gerektirdigi icin serviste eklenir (`hostLeft`).
+ */
 export function passVerdict(p: Pick<GuestPass, 'status' | 'validFrom' | 'validUntil'>, today: IsoDate): PassVerdict {
   if (p.status === 'revoked') return 'revoked';
   if (p.status === 'used') return 'used';
@@ -128,12 +138,19 @@ export const VERDICT_MESSAGES: Record<Exclude<PassVerdict, 'valid'>, string> = {
   used: 'Bu tek girişlik geçiş daha önce kullanıldı',
   expired: 'Bu geçişin süresi doldu',
   not_yet_valid: 'Bu geçiş henüz başlamadı',
+  host_left: 'Geçiş sahibi artık bu dairede oturmuyor',
 };
 
+/** Gecerli / baslamamis gecisi olusturan sakin artik dairede oturmuyorsa karar `host_left`. */
+export function hostLeft(verdict: PassVerdict, hostResides: boolean): PassVerdict {
+  return !hostResides && (verdict === 'valid' || verdict === 'not_yet_valid') ? 'host_left' : verdict;
+}
+
 /**
- * Giris yalnizca karar `valid` iken (tek girislikte hic kullanilmamis); cikis misafir icerideyse
- * her zaman kaydedilebilir (gece yarisini gecen ziyaret, iceride iken iptal edilen gecis).
+ * Giris yalnizca karar `valid` iken ve misafir iceride degilken (cok girislikte de once cikis
+ * kaydedilmeli: kati kural). Cikis misafir icerideyse her zaman kaydedilebilir (gece yarisini gecen
+ * ziyaret, iceride iken iptal edilen gecis, tasinan ev sahibi).
  */
-export function passActions(p: Pick<GuestPass, 'status' | 'validFrom' | 'validUntil' | 'inside'>, today: IsoDate) {
-  return { canEnter: passVerdict(p, today) === 'valid', canExit: p.inside };
+export function passActions(p: Pick<GuestPass, 'inside'>, verdict: PassVerdict) {
+  return { canEnter: verdict === 'valid' && !p.inside, canExit: p.inside };
 }

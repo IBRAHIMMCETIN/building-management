@@ -90,6 +90,7 @@ export function gateRoutes({ authenticate, service }: GateRoutesDeps) {
  *   GET   /vehicles               POST /vehicles { unitId, plate, note? }   PATCH /vehicles/:id { version, status?, note? }
  *   GET   /passes?status=         POST /passes { idempotencyKey, unitId, guestName, validFrom, validUntil?, entryMode, plate?, note? }
  *   POST  /passes/:id/revoke      { version }
+ *   POST  /passes/:id/rotate      { version }  -> yeni QR jetonu + kisa kod (yalnizca bu yanitta; eskiler gecersiz)
  *   GET   /couriers               POST /couriers/:id/respond { version, decision: approve|decline, note? }
  *   GET   /log?unitId=&from=&to=&cursor=
  */
@@ -107,6 +108,7 @@ export function gatePortalRoutes({ authenticate, service }: GateRoutesDeps) {
     return c.json(result, result.replayed ? 200 : 201);
   });
   r.post('/passes/:id/revoke', async (c) => c.json(await service.revokePass(gateContext(c), id(c), await readJson(c))));
+  r.post('/passes/:id/rotate', async (c) => c.json(await service.rotatePass(gateContext(c), id(c), await readJson(c))));
   r.get('/couriers', async (c) => c.json(await service.listCouriers(gateContext(c), c.req.query())));
   r.post('/couriers/:id/respond', async (c) => c.json(await service.respondCourier(gateContext(c), id(c), await readJson(c))));
   r.get('/log', async (c) => c.json(await service.listLog(gateContext(c), c.req.query())));

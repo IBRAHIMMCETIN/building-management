@@ -20,6 +20,8 @@ import {
   TOKEN_RE,
   VERDICT_MESSAGES,
   addDays,
+  codeHash,
+  hostLeft,
   daySpan,
   formatPlate,
   indexTtl,
@@ -38,6 +40,7 @@ import {
 } from './model.js';
 import { GateConflictError, type GatePut, type GateRepository, gateRepository } from './repository.js';
 import {
+  COURIER_APPROVAL_VALID_MINUTES,
   COURIER_RESPONSE_MINUTES,
   type Courier,
   type EntryMode,
@@ -55,9 +58,11 @@ import {
   PLATE_SEARCH_MIN,
   type PassCodeIndex,
   type PassTokenIndex,
+  type PassVerdict,
   type PlateIndex,
   type UnitPointer,
   type Vehicle,
+  type VehicleSlot,
   type VehicleStatus,
   gateKeys,
 } from './types.js';
@@ -65,7 +70,8 @@ import {
 export type GateContext = { apartmentId: string; userId: string; role: string };
 
 type ActorKind = 'manager' | 'guard' | 'resident';
-type GateActor = GateContext & { kind: ActorKind; unitIds: string[] };
+/** `since`: sakinin bolumdeki (oturan) uyeliginin baslangici; bu tarihten onceki kayitlari gormez. */
+type GateActor = GateContext & { kind: ActorKind; unitIds: string[]; since: Map<string, IsoDate> };
 
 const KIND_BY_ROLE: Record<string, ActorKind> = {
   apartment_manager: 'manager',
@@ -115,25 +121,50 @@ export function createGateService(overrides: Partial<GateServiceDeps> = {}) {
   // Aktor, bolum etiketleri
   // -------------------------------------------------------------------------
 
+  /**
+   * Kullanicinin bugun OTURDUGU bolumler ve uyelik baslangici. Oturmayan malik ziyaretci / arac
+   * kayitlarini yonetmez (kiraci her zaman oturur).
+   */
+  async function residingUnits(apartmentId: string, userId: string): Promise<Map<string, IsoDate>> {
+    const d = today();
+    const out = new Map<string, IsoDate>();
+    for (const m of await deps.memberships.listMemberships(apartmentId, userId)) {
+      if (m.apartmentId !== apartmentId || m.status !== 'active' || m.startDate > d || (m.endDate && m.endDate < d)) continue;
+      if (m.relation !== 'tenant' && !m.residesInUnit) continue;
+      const prev = out.get(m.unitId);
+      if (!prev || m.startDate < prev) out.set(m.unitId, m.startDate);
+    }
+    return out;
+  }
+
+  /** Istek basina onbellekli "bu kullanici bu bolumde hala oturuyor mu" (gecis sahibi, arac sahibi). */
+  function residency(apartmentId: string) {
+    const cache = new Map<string, Promise<Map<string, IsoDate>>>();
+    return async (userId: string, unitId: string): Promise<boolean> => {
+      let units = cache.get(userId);
+      if (!units) {
+        units = residingUnits(apartmentId, userId);
+        cache.set(userId, units);
+      }
+      return (await units).has(unitId);
+    };
+  }
+
   async function actorOf(ctx: GateContext): Promise<GateActor> {
     const kind = KIND_BY_ROLE[ctx.role];
     if (!kind) throw new GateError('forbidden', 'Bu rol güvenlik kapısı ekranlarını kullanamaz');
-    let unitIds: string[] = [];
-    if (kind === 'resident') {
-      const d = today();
-      const ms = await deps.memberships.listMemberships(ctx.apartmentId, ctx.userId);
-      unitIds = [
-        ...new Set(
-          ms
-            .filter((m) => m.apartmentId === ctx.apartmentId && m.status === 'active' && m.startDate <= d && (!m.endDate || m.endDate >= d))
-            // Oturmayan malik ziyaretci / arac kayitlarini yonetmez (kiraci her zaman oturur).
-            .filter((m) => m.relation === 'tenant' || m.residesInUnit)
-            .map((m) => m.unitId),
-        ),
-      ];
-    }
-    return { ...ctx, kind, unitIds };
+    const since = kind === 'resident' ? await residingUnits(ctx.apartmentId, ctx.userId) : new Map<string, IsoDate>();
+    return { ...ctx, kind, unitIds: [...since.keys()], since };
   }
+
+  /**
+   * KVKK: sakin bolumun yalnizca KENDI uyelik baslangicindan sonraki kayitlarini gorur (yeni kiraci
+   * onceki sakinin misafirlerini, kuryelerini, araclarini ve kapi kayitlarini gormez).
+   */
+  const residentSees = (actor: GateActor, unitId: string, createdAt: IsoDateTime) => {
+    const since = actor.since.get(unitId);
+    return !!since && istanbulDay(new Date(createdAt)) >= since;
+  };
 
   async function actorAs(ctx: GateContext, ...kinds: ActorKind[]): Promise<GateActor> {
     const actor = await actorOf(ctx);
@@ -265,7 +296,16 @@ export function createGateService(overrides: Partial<GateServiceDeps> = {}) {
     return vehicles.filter((v) => v.apartmentId === apartmentId && unitIds.includes(v.unitId));
   }
 
-  function vehicleView(v: Vehicle, labels: Map<string, string>) {
+  /**
+   * Sahibi tasinmis araclar (sakinin ekledigi aracin sahibi artik bolumde oturmuyor). Bu araclar
+   * kayitta aktif kalsa da gorevliye pasif gorunur, sinira sayilmaz ve plakasi yeni sakine gecebilir.
+   * Yonetici kaydinda sahip yoktur: yonetim pasife alana kadar aktiftir.
+   */
+  async function ownersLeft(apartmentId: string, items: readonly Pick<Vehicle, 'unitId' | 'ownerUserId' | 'status'>[], resides = residency(apartmentId)): Promise<boolean[]> {
+    return Promise.all(items.map(async (v) => v.status === 'active' && !!v.ownerUserId && !(await resides(v.ownerUserId, v.unitId))));
+  }
+
+  function vehicleView(v: Vehicle, labels: Map<string, string>, ownerLeft: boolean) {
     return {
       vehicleId: v.vehicleId,
       unitId: v.unitId,
@@ -274,6 +314,8 @@ export function createGateService(overrides: Partial<GateServiceDeps> = {}) {
       plateDisplay: formatPlate(v.plate),
       ...(v.note ? { note: v.note } : {}),
       status: v.status,
+      /** Sahibi bolumden tasindi: gorevliye pasif gorunur. */
+      ownerLeft,
       createdAt: v.createdAt,
       updatedAt: v.updatedAt,
       createdByRole: v.createdByRole,
@@ -284,7 +326,7 @@ export function createGateService(overrides: Partial<GateServiceDeps> = {}) {
   async function listVehicles(ctx: GateContext, q: Record<string, string | undefined> = {}) {
     const actor = await actorAs(ctx, 'manager', 'resident');
     let vehicles: Vehicle[];
-    if (actor.kind === 'resident') vehicles = await vehiclesOfUnits(ctx.apartmentId, actor.unitIds);
+    if (actor.kind === 'resident') vehicles = (await vehiclesOfUnits(ctx.apartmentId, actor.unitIds)).filter((v) => residentSees(actor, v.unitId, v.createdAt));
     else vehicles = (await repo.query<Vehicle>(ctx.apartmentId, { prefix: 'VEH#' })).items.filter((v) => v.entityType === 'GATE_VEHICLE');
     const status = q.status === 'active' || q.status === 'inactive' ? q.status : undefined;
     const term = q.q ? normalizePlate(q.q) : '';
@@ -292,16 +334,18 @@ export function createGateService(overrides: Partial<GateServiceDeps> = {}) {
       .filter((v) => !q.unitId || v.unitId === q.unitId)
       .filter((v) => !status || v.status === status)
       .filter((v) => !term || v.plate.includes(term));
-    const labels = await labelsFor(ctx.apartmentId, list.map((v) => v.unitId));
+    const [labels, left] = await Promise.all([labelsFor(ctx.apartmentId, list.map((v) => v.unitId)), ownersLeft(ctx.apartmentId, list)]);
+    const leftOf = new Map(list.map((v, i) => [v.vehicleId, left[i] ?? false]));
     const collator = new Intl.Collator('tr', { numeric: true });
+    const effective = (v: Vehicle) => v.status === 'active' && !leftOf.get(v.vehicleId);
     // Aktifler once; bolum etiketine (A Blok · Daire 2 < Daire 10), sonra plakaya gore.
     list.sort(
       (a, b) =>
-        Number(b.status === 'active') - Number(a.status === 'active') ||
+        Number(effective(b)) - Number(effective(a)) ||
         collator.compare(labels.get(a.unitId) ?? '', labels.get(b.unitId) ?? '') ||
         a.plate.localeCompare(b.plate),
     );
-    return { items: list.map((v) => vehicleView(v, labels)), maxPerUnit: MAX_VEHICLES_PER_UNIT };
+    return { items: list.map((v) => vehicleView(v, labels, leftOf.get(v.vehicleId) ?? false)), maxPerUnit: MAX_VEHICLES_PER_UNIT };
   }
 
   function plateTakenError(existing: PlateIndex, unitId: string, actor: GateActor): GateError {
@@ -310,15 +354,40 @@ export function createGateService(overrides: Partial<GateServiceDeps> = {}) {
     return new GateError('plate_taken', actor.kind === 'manager' ? 'Bu plaka başka bir bağımsız bölüme kayıtlı; önce oradaki kaydı pasife alın' : 'Bu plaka sitede başka bir bağımsız bölüme kayıtlı; yönetimle iletişime geçin');
   }
 
-  async function assertUnitRoom(apartmentId: string, unitId: string, exceptVehicleId?: string) {
-    const active = (await vehiclesOfUnits(apartmentId, [unitId])).filter((v) => v.status === 'active' && v.vehicleId !== exceptVehicleId);
-    if (active.length >= MAX_VEHICLES_PER_UNIT) throw new GateError('limit_reached', `Bir bağımsız bölüme en fazla ${MAX_VEHICLES_PER_UNIT} aktif araç kaydedilebilir`);
+  /**
+   * Bolum basina arac siniri. Sayim gercek kayitlardan (sahibi tasinmis araclar haric); es zamanli
+   * eklemeler `VEHSLOT#<bolum>` kilidini surum kosuluyla yazar: ayni anda iki ekleme sinirin
+   * altinda saysa bile yalnizca biri yazilir, digeri yeniden sayar (`limit_reached`).
+   */
+  async function unitRoom(ctx: GateContext, unitId: string, at: IsoDateTime, exceptVehicleId?: string): Promise<GatePut> {
+    const [slot, vehicles] = await Promise.all([repo.get<VehicleSlot>(ctx.apartmentId, gateKeys.vehicleSlot(ctx.apartmentId, unitId).SK), vehiclesOfUnits(ctx.apartmentId, [unitId])]);
+    const candidates = vehicles.filter((v) => v.status === 'active' && v.vehicleId !== exceptVehicleId);
+    const left = await ownersLeft(ctx.apartmentId, candidates);
+    if (candidates.filter((_, i) => !left[i]).length >= MAX_VEHICLES_PER_UNIT) throw new GateError('limit_reached', `Bir bağımsız bölüme en fazla ${MAX_VEHICLES_PER_UNIT} aktif araç kaydedilebilir`);
+    const next: VehicleSlot = { ...gateKeys.vehicleSlot(ctx.apartmentId, unitId), entityType: 'GATE_VEHICLE_SLOT', apartmentId: ctx.apartmentId, unitId, version: (slot?.version ?? 0) + 1, updatedAt: at };
+    return { item: next, condition: slot ? { kind: 'match', fields: { version: slot.version } } : { kind: 'new' }, reason: 'slot' };
   }
 
   const vehicleAudit = (ctx: GateContext, actor: GateActor, action: string, v: Vehicle, details: Record<string, unknown>): AuditDraft | undefined =>
     actor.kind === 'manager' ? { apartmentId: ctx.apartmentId, action, target: { type: 'vehicle', id: v.vehicleId }, details: { unitId: v.unitId, ...details } } : undefined;
 
-  /** Plaka kaydi: Turk plaka bicimi; aktif plaka apartmanda tekil (kosullu yazim, yaris guvenli). */
+  const plateIndexOf = (ctx: GateContext, v: Pick<Vehicle, 'plate' | 'vehicleId' | 'unitId' | 'status' | 'note' | 'ownerUserId'>, at: IsoDateTime): PlateIndex => ({
+    ...gateKeys.plate(ctx.apartmentId, reversePlate(v.plate)),
+    entityType: 'GATE_PLATE',
+    apartmentId: ctx.apartmentId,
+    plate: v.plate,
+    vehicleId: v.vehicleId,
+    unitId: v.unitId,
+    status: v.status,
+    ...(v.ownerUserId ? { ownerUserId: v.ownerUserId } : {}),
+    ...(v.note ? { note: v.note } : {}),
+    updatedAt: at,
+  });
+
+  /**
+   * Plaka kaydi: Turk plaka bicimi; aktif plaka apartmanda tekil (kosullu yazim, yaris guvenli).
+   * Plaka, sahibi tasinmis bir araca kayitliysa yeni kayit onu devralir (eski arac pasife alinir).
+   */
   async function createVehicle(ctx: GateContext, body: unknown) {
     const actor = await actorAs(ctx, 'manager', 'resident');
     const o = asObject(body);
@@ -326,46 +395,63 @@ export function createGateService(overrides: Partial<GateServiceDeps> = {}) {
     const plate = normalizePlate(reqString(o, 'plate', 20));
     if (!isTurkishPlate(plate)) throw new ValidationError('Plaka Türkiye plaka biçiminde olmalıdır (örnek: 34 ABC 123)', 'plate');
     const note = optText(o, 'note', 80);
-    const existing = await repo.get<PlateIndex>(ctx.apartmentId, gateKeys.plate(ctx.apartmentId, reversePlate(plate)).SK);
-    if (existing?.status === 'active') throw plateTakenError(existing, unitId, actor);
-    await assertUnitRoom(ctx.apartmentId, unitId);
+    const plateSk = gateKeys.plate(ctx.apartmentId, reversePlate(plate)).SK;
 
-    const ts = stamp();
-    const vehicleId = sortableId(ts);
-    const vehicle: Vehicle = {
-      ...gateKeys.vehicle(ctx.apartmentId, vehicleId),
-      entityType: 'GATE_VEHICLE',
-      apartmentId: ctx.apartmentId,
-      vehicleId,
-      unitId,
-      plate,
-      ...(note ? { note } : {}),
-      status: 'active',
-      createdAt: ts,
-      createdBy: ctx.userId,
-      createdByRole: ctx.role,
-      updatedAt: ts,
-      updatedBy: ctx.userId,
-      version: 1,
-    };
-    const plateItem: PlateIndex = { ...gateKeys.plate(ctx.apartmentId, reversePlate(plate)), entityType: 'GATE_PLATE', apartmentId: ctx.apartmentId, plate, vehicleId, unitId, status: 'active', ...(note ? { note } : {}), updatedAt: ts };
-    try {
-      await repo.write(ctx.apartmentId, {
-        puts: [
-          { item: vehicle, condition: { kind: 'new' }, reason: 'exists' },
-          { item: pointer(gateKeys.vehicleUnit(ctx.apartmentId, unitId, vehicleId), ctx.apartmentId, unitId, vehicleId, ts), condition: { kind: 'new' }, reason: 'exists' },
-          { item: plateItem, condition: { kind: 'new_or', fields: { status: 'inactive' } }, reason: 'plate' },
-        ],
-        audit: vehicleAudit(ctx, actor, 'gate.vehicle.create', vehicle, {}),
-      });
-    } catch (err) {
-      if (err instanceof GateConflictError && err.reason === 'plate') {
-        const now = await repo.get<PlateIndex>(ctx.apartmentId, plateItem.SK);
-        throw now ? plateTakenError(now, unitId, actor) : new GateError('conflict', 'Plaka kaydı başka bir işlemle çakıştı; tekrar deneyin');
+    for (let attempt = 1; ; attempt++) {
+      const existing = await repo.get<PlateIndex>(ctx.apartmentId, plateSk);
+      const ts = stamp();
+      const puts: GatePut[] = [];
+      let plateCondition: GatePut['condition'] = { kind: 'new_or', fields: { status: 'inactive' } };
+      if (existing?.status === 'active') {
+        const [left] = await ownersLeft(ctx.apartmentId, [existing]);
+        if (!left) throw plateTakenError(existing, unitId, actor);
+        // Devralma: onceki sakinin araci pasife alinir; plaka dizini yalnizca hala o araca bagliysa yazilir.
+        const old = await repo.get<Vehicle>(ctx.apartmentId, gateKeys.vehicle(ctx.apartmentId, existing.vehicleId).SK);
+        if (old && old.status === 'active') puts.push({ item: { ...old, status: 'inactive', updatedAt: ts, updatedBy: ctx.userId, version: old.version + 1 }, condition: { kind: 'match', fields: { version: old.version } }, reason: 'plate' });
+        plateCondition = { kind: 'match', fields: { vehicleId: existing.vehicleId, status: 'active' } };
       }
-      throw err;
+      const slot = await unitRoom(ctx, unitId, ts);
+      const vehicleId = sortableId(ts);
+      const vehicle: Vehicle = {
+        ...gateKeys.vehicle(ctx.apartmentId, vehicleId),
+        entityType: 'GATE_VEHICLE',
+        apartmentId: ctx.apartmentId,
+        vehicleId,
+        unitId,
+        plate,
+        ...(note ? { note } : {}),
+        status: 'active',
+        ...(actor.kind === 'resident' ? { ownerUserId: ctx.userId } : {}),
+        createdAt: ts,
+        createdBy: ctx.userId,
+        createdByRole: ctx.role,
+        updatedAt: ts,
+        updatedBy: ctx.userId,
+        version: 1,
+      };
+      try {
+        await repo.write(ctx.apartmentId, {
+          puts: [
+            slot,
+            ...puts,
+            { item: vehicle, condition: { kind: 'new' }, reason: 'exists' },
+            { item: pointer(gateKeys.vehicleUnit(ctx.apartmentId, unitId, vehicleId), ctx.apartmentId, unitId, vehicleId, ts), condition: { kind: 'new' }, reason: 'exists' },
+            { item: plateIndexOf(ctx, vehicle, ts), condition: plateCondition, reason: 'plate' },
+          ],
+          audit: vehicleAudit(ctx, actor, 'gate.vehicle.create', vehicle, existing?.status === 'active' ? { replacedVehicleId: existing.vehicleId } : {}),
+        });
+        return { vehicle: vehicleView(vehicle, await labelsFor(ctx.apartmentId, [unitId]), false) };
+      } catch (err) {
+        // Ayni bolume es zamanli ekleme: sinir yeniden sayilir.
+        if (err instanceof GateConflictError && err.reason === 'slot' && attempt < WRITE_RETRIES) continue;
+        if (err instanceof GateConflictError && err.reason === 'slot') throw new GateError('conflict', 'Araç kaydı başka bir işlemle çakıştı; tekrar deneyin');
+        if (err instanceof GateConflictError && err.reason === 'plate') {
+          const now = await repo.get<PlateIndex>(ctx.apartmentId, plateSk);
+          throw now?.status === 'active' ? plateTakenError(now, unitId, actor) : new GateError('conflict', 'Plaka kaydı başka bir işlemle çakıştı; tekrar deneyin');
+        }
+        throw err;
+      }
     }
-    return { vehicle: vehicleView(vehicle, await labelsFor(ctx.apartmentId, [unitId])) };
   }
 
   /** Not duzeltme ve aktif / pasif (plaka degismez: yeni plaka = yeni kayit). */
@@ -375,31 +461,32 @@ export function createGateService(overrides: Partial<GateServiceDeps> = {}) {
     const o = asObject(body);
     const version = reqInt(o, 'version', 1, Number.MAX_SAFE_INTEGER);
     const current = await repo.get<Vehicle>(ctx.apartmentId, gateKeys.vehicle(ctx.apartmentId, vehicleId).SK);
-    // Baska dairenin araci sakine hic gorunmez: 404.
-    if (!current || (actor.kind === 'resident' && !actor.unitIds.includes(current.unitId))) throw new GateError('not_found', 'Araç bulunamadı');
+    // Baska dairenin (veya uyelik baslangicindan onceki) araci sakine hic gorunmez: 404.
+    if (!current || (actor.kind === 'resident' && !residentSees(actor, current.unitId, current.createdAt))) throw new GateError('not_found', 'Araç bulunamadı');
     if (current.version !== version) throw new GateError('conflict', 'Araç kaydı başka bir işlemle değişti; sayfayı yenileyin');
     const status: VehicleStatus = o.status === undefined ? current.status : reqEnum(o, 'status', ['active', 'inactive'] as const);
     const note = o.note === undefined ? current.note : optText(o, 'note', 80);
-    if (status === current.status && note === current.note) return { vehicle: vehicleView(current, await labelsFor(ctx.apartmentId, [current.unitId])) };
+    const labels = await labelsFor(ctx.apartmentId, [current.unitId]);
+    if (status === current.status && note === current.note) return { vehicle: vehicleView(current, labels, (await ownersLeft(ctx.apartmentId, [current]))[0] ?? false) };
 
     const index = await repo.get<PlateIndex>(ctx.apartmentId, gateKeys.plate(ctx.apartmentId, reversePlate(current.plate)).SK);
     const owned = index?.vehicleId === vehicleId;
+    const ts = stamp();
+    const puts: GatePut[] = [];
     if (status === 'active' && current.status === 'inactive') {
       if (index && index.status === 'active') throw plateTakenError(index, current.unitId, actor);
-      await assertUnitRoom(ctx.apartmentId, current.unitId, vehicleId);
+      puts.push(await unitRoom(ctx, current.unitId, ts, vehicleId));
     }
-    const ts = stamp();
     const next: Vehicle = { ...current, status, updatedAt: ts, updatedBy: ctx.userId, version: current.version + 1 };
     if (note) next.note = note;
     else delete next.note;
-    const puts: GatePut[] = [{ item: next, condition: { kind: 'match', fields: { version } }, reason: 'version' }];
-    const plateItem: PlateIndex = { ...gateKeys.plate(ctx.apartmentId, reversePlate(current.plate)), entityType: 'GATE_PLATE', apartmentId: ctx.apartmentId, plate: current.plate, vehicleId, unitId: current.unitId, status, ...(note ? { note } : {}), updatedAt: ts };
+    puts.push({ item: next, condition: { kind: 'match', fields: { version } }, reason: 'version' });
     if (status === 'active') {
       // Yeniden etkinlestirme: plaka bos ya da pasif olmali (yaris guvenli).
-      puts.push({ item: plateItem, condition: owned ? { kind: 'match', fields: { vehicleId, status: index?.status ?? 'inactive' } } : { kind: 'new_or', fields: { status: 'inactive' } }, reason: 'plate' });
+      puts.push({ item: plateIndexOf(ctx, next, ts), condition: owned ? { kind: 'match', fields: { vehicleId, status: index?.status ?? 'inactive' } } : { kind: 'new_or', fields: { status: 'inactive' } }, reason: 'plate' });
     } else if (owned) {
       // Plaka bu arac kaydina bagliysa guncel durum ve not dizine de yazilir.
-      puts.push({ item: plateItem, condition: { kind: 'match', fields: { vehicleId } }, reason: 'plate' });
+      puts.push({ item: plateIndexOf(ctx, next, ts), condition: { kind: 'match', fields: { vehicleId } }, reason: 'plate' });
     }
     try {
       await repo.write(ctx.apartmentId, {
@@ -407,37 +494,40 @@ export function createGateService(overrides: Partial<GateServiceDeps> = {}) {
         audit: vehicleAudit(ctx, actor, 'gate.vehicle.update', next, { from: current.status, to: status, noteChanged: note !== current.note }),
       });
     } catch (err) {
-      if (err instanceof GateConflictError && err.reason === 'version') throw new GateError('conflict', 'Araç kaydı başka bir işlemle değişti; sayfayı yenileyin');
+      if (err instanceof GateConflictError && (err.reason === 'version' || err.reason === 'slot')) throw new GateError('conflict', 'Araç kaydı başka bir işlemle değişti; sayfayı yenileyin');
       if (err instanceof GateConflictError && err.reason === 'plate') throw new GateError('plate_taken', 'Bu plaka bu arada başka bir bağımsız bölüme kaydedildi');
       throw err;
     }
-    return { vehicle: vehicleView(next, await labelsFor(ctx.apartmentId, [next.unitId])) };
+    return { vehicle: vehicleView(next, labels, false) };
   }
 
   /**
    * Gorevli / yonetici plaka sorgusu: tam plaka veya sondan en az 3 karakter. Tek `Query` (ters
    * plaka on eki), en fazla 10 sonuc. Yanit yalnizca bolum, kayit durumu ve arac notunu tasir.
+   * Sahibi bolumden tasinmis arac pasif gorunur (tasinma aninda ayri bir yazim gerekmez).
    */
   async function lookupPlate(ctx: GateContext, input: string | undefined) {
     await actorAs(ctx, 'manager', 'guard');
     const q = plateQuery(input ?? '', PLATE_SEARCH_MIN);
     if (!q) throw new ValidationError(`Plaka araması en az ${PLATE_SEARCH_MIN} harf veya rakam olmalıdır`, 'q');
     const { items } = await repo.query<PlateIndex>(ctx.apartmentId, { prefix: `${gateKeys.platePrefix}${reversePlate(q)}`, limit: PLATE_SEARCH_LIMIT * 2 });
-    const rows = items
-      .filter((i) => i.entityType === 'GATE_PLATE')
-      .sort((a, b) => Number(b.plate === q) - Number(a.plate === q) || Number(b.status === 'active') - Number(a.status === 'active') || a.plate.localeCompare(b.plate))
+    const found = items.filter((i) => i.entityType === 'GATE_PLATE');
+    const left = await ownersLeft(ctx.apartmentId, found);
+    const rows = found
+      .map((r, i) => ({ r, active: r.status === 'active' && !left[i] }))
+      .sort((a, b) => Number(b.r.plate === q) - Number(a.r.plate === q) || Number(b.active) - Number(a.active) || a.r.plate.localeCompare(b.r.plate))
       .slice(0, PLATE_SEARCH_LIMIT);
-    const labels = await labelsFor(ctx.apartmentId, rows.map((r) => r.unitId));
+    const labels = await labelsFor(ctx.apartmentId, rows.map(({ r }) => r.unitId));
     return {
       query: q,
       queryDisplay: formatPlate(q),
-      items: rows.map((r) => ({
+      items: rows.map(({ r, active }) => ({
         plate: r.plate,
         plateDisplay: formatPlate(r.plate),
         unitId: r.unitId,
         unitLabel: labels.get(r.unitId) ?? 'Bağımsız bölüm',
         registered: true,
-        active: r.status === 'active',
+        active,
         exact: r.plate === q,
         ...(r.note ? { note: r.note } : {}),
       })),
@@ -448,17 +538,28 @@ export function createGateService(overrides: Partial<GateServiceDeps> = {}) {
   // Misafir gecisleri
   // =========================================================================
 
+  /** Sakin yalnizca uyelik baslangicindan sonra kendi bolumune olusturulan gecisleri gorur / yonetir. */
   async function requirePass(actor: GateActor, passId: string): Promise<GuestPass> {
     assertId(passId, 'passId');
     const pass = await repo.get<GuestPass>(actor.apartmentId, gateKeys.pass(actor.apartmentId, passId).SK);
-    if (!pass || pass.apartmentId !== actor.apartmentId || (actor.kind === 'resident' && !actor.unitIds.includes(pass.unitId))) throw new GateError('not_found', 'Geçiş bulunamadı');
+    if (!pass || pass.apartmentId !== actor.apartmentId || (actor.kind === 'resident' && !residentSees(actor, pass.unitId, pass.createdAt))) throw new GateError('not_found', 'Geçiş bulunamadı');
     return pass;
   }
 
-  /** Sakin: QR jetonu ve kisa kod yalnizca hala kullanilabilir geciste doner. */
-  function residentPassView(actor: GateActor, p: GuestPass, labels: Map<string, string>) {
-    const verdict = passVerdict(p, today());
-    const shareable = verdict === 'valid' || verdict === 'not_yet_valid';
+  /** Karar: tarih / durum + gecisi olusturan sakin hala bolumde oturuyor mu. */
+  async function verdictOf(p: GuestPass, resides: ReturnType<typeof residency>): Promise<PassVerdict> {
+    const base = passVerdict(p, today());
+    return base === 'valid' || base === 'not_yet_valid' ? hostLeft(base, await resides(p.createdBy, p.unitId)) : base;
+  }
+
+  type Secret = { token: string; shortCode: string };
+
+  /**
+   * Sakin gorunumu. Jeton ve kisa kod kayitta TUTULMAZ (yalnizca ozetleri): yalnizca olusturma ve
+   * "Yeni QR olustur" yanitinda bir kez doner; listede yoktur.
+   */
+  function residentPassView(actor: GateActor, p: GuestPass, labels: Map<string, string>, verdict: PassVerdict, secret?: Secret) {
+    const usable = verdict === 'valid' || verdict === 'not_yet_valid';
     return {
       passId: p.passId,
       unitId: p.unitId,
@@ -471,7 +572,7 @@ export function createGateService(overrides: Partial<GateServiceDeps> = {}) {
       ...(p.note ? { note: p.note } : {}),
       status: p.status,
       verdict,
-      ...(shareable ? { token: p.token, shortCode: p.shortCode } : {}),
+      ...(secret && usable ? secret : {}),
       entryCount: p.entryCount,
       inside: p.inside,
       ...(p.lastEntryAt ? { lastEntryAt: p.lastEntryAt } : {}),
@@ -480,13 +581,13 @@ export function createGateService(overrides: Partial<GateServiceDeps> = {}) {
       createdAt: p.createdAt,
       mine: p.createdBy === actor.userId,
       canRevoke: p.status === 'active' && verdict !== 'expired',
+      canRotate: p.status === 'active' && usable,
       version: p.version,
     };
   }
 
   /** Yonetici: jeton / kod yok (paylasim sakinindir). */
-  function managerPassView(p: GuestPass, labels: Map<string, string>) {
-    const verdict = passVerdict(p, today());
+  function managerPassView(p: GuestPass, labels: Map<string, string>, verdict: PassVerdict) {
     return {
       passId: p.passId,
       unitId: p.unitId,
@@ -508,9 +609,7 @@ export function createGateService(overrides: Partial<GateServiceDeps> = {}) {
   }
 
   /** Gorevli: misafir adi, ev sahibi bolum, gecerlilik ve karar. Sakin kimligi yok. */
-  function guardPassView(p: GuestPass, labels: Map<string, string>) {
-    const d = today();
-    const verdict = passVerdict(p, d);
+  function guardPassView(p: GuestPass, labels: Map<string, string>, verdict: PassVerdict) {
     return {
       passId: p.passId,
       unitId: p.unitId,
@@ -522,13 +621,28 @@ export function createGateService(overrides: Partial<GateServiceDeps> = {}) {
       ...(p.plate ? { plate: p.plate, plateDisplay: formatPlate(p.plate) } : {}),
       ...(p.note ? { note: p.note } : {}),
       verdict,
-      ...(verdict === 'valid' ? {} : { message: VERDICT_MESSAGES[verdict] }),
+      ...(verdict === 'valid' ? (p.inside ? { message: 'Misafir içeride görünüyor; yeni giriş için önce çıkışını kaydedin' } : {}) : { message: VERDICT_MESSAGES[verdict] }),
       entryCount: p.entryCount,
       inside: p.inside,
       ...(p.lastEntryAt ? { lastEntryAt: p.lastEntryAt } : {}),
-      ...passActions(p, d),
+      ...passActions(p, verdict),
       version: p.version,
     };
+  }
+
+  /** Yeni jeton + kisa kod; dizin kayitlari yalnizca ozetle (TTL'li). */
+  function credentials(ctx: GateContext, passId: string, validUntil: IsoDate) {
+    const token = deps.newToken();
+    const shortCode = deps.newCode();
+    const ttl = indexTtl(validUntil, PASS_INDEX_GRACE_DAYS);
+    const hashes = { tokenHash: tokenHash(token), codeHash: codeHash(ctx.apartmentId, shortCode) };
+    const tokenItem: PassTokenIndex = { ...gateKeys.passToken(ctx.apartmentId, hashes.tokenHash), entityType: 'GATE_PASS_TOKEN', apartmentId: ctx.apartmentId, passId, ttl };
+    const codeItem: PassCodeIndex = { ...gateKeys.passCode(ctx.apartmentId, hashes.codeHash), entityType: 'GATE_PASS_CODE', apartmentId: ctx.apartmentId, passId, ttl };
+    const puts: GatePut[] = [
+      { item: tokenItem, condition: { kind: 'new' }, reason: 'code' },
+      { item: codeItem, condition: { kind: 'new' }, reason: 'code' },
+    ];
+    return { secret: { token, shortCode } as Secret, hashes, puts };
   }
 
   async function createPass(ctx: GateContext, body: unknown) {
@@ -548,22 +662,23 @@ export function createGateService(overrides: Partial<GateServiceDeps> = {}) {
     if (validUntil < validFrom) throw new ValidationError('Bitiş tarihi başlangıçtan önce olamaz', 'validUntil');
     if (daySpan(validFrom, validUntil) > MAX_PASS_DAYS) throw new ValidationError(`Bir geçiş en fazla ${MAX_PASS_DAYS} gün geçerli olabilir`, 'validUntil');
     const fp = fingerprint({ unitId, guestName, validFrom, validUntil, entryMode, plate, note, by: ctx.userId });
+    const labels = await labelsFor(ctx.apartmentId, [unitId]);
+    const resides = residency(ctx.apartmentId);
 
+    // Tekrar: jeton saklanmadigi icin yeniden gosterilmez ("Yeni QR olustur" ile yenilenir).
     const replay = async () => {
       const idem = await replayOf(ctx, key, 'pass', fp);
       if (!idem) return undefined;
       const pass = await requirePass(actor, idem.refId);
-      return { pass: residentPassView(actor, pass, await labelsFor(ctx.apartmentId, [unitId])), replayed: true };
+      return { pass: residentPassView(actor, pass, labels, await verdictOf(pass, resides)), replayed: true };
     };
     const prior = await replay();
     if (prior) return prior;
 
     const ts = stamp();
     const passId = sortableId(ts);
-    const ttl = indexTtl(validUntil, PASS_INDEX_GRACE_DAYS);
     for (let attempt = 1; ; attempt++) {
-      const token = deps.newToken();
-      const shortCode = deps.newCode();
+      const cred = credentials(ctx, passId, validUntil);
       const pass: GuestPass = {
         ...gateKeys.pass(ctx.apartmentId, passId),
         entityType: 'GATE_PASS',
@@ -577,8 +692,7 @@ export function createGateService(overrides: Partial<GateServiceDeps> = {}) {
         ...(plate ? { plate } : {}),
         ...(note ? { note } : {}),
         status: 'active',
-        token,
-        shortCode,
+        ...cred.hashes,
         entryCount: 0,
         inside: false,
         createdAt: ts,
@@ -588,19 +702,16 @@ export function createGateService(overrides: Partial<GateServiceDeps> = {}) {
         updatedBy: ctx.userId,
         version: 1,
       };
-      const tokenItem: PassTokenIndex = { ...gateKeys.passToken(ctx.apartmentId, tokenHash(token)), entityType: 'GATE_PASS_TOKEN', apartmentId: ctx.apartmentId, passId, ttl };
-      const codeItem: PassCodeIndex = { ...gateKeys.passCode(ctx.apartmentId, shortCode), entityType: 'GATE_PASS_CODE', apartmentId: ctx.apartmentId, passId, ttl };
       try {
         await repo.write(ctx.apartmentId, {
           puts: [
             { item: idemItem(ctx, key, 'pass', passId, fp, ts), condition: { kind: 'new' }, reason: 'duplicate' },
             { item: pass, condition: { kind: 'new' }, reason: 'exists' },
             { item: pointer(gateKeys.passUnit(ctx.apartmentId, unitId, passId), ctx.apartmentId, unitId, passId, ts), condition: { kind: 'new' }, reason: 'exists' },
-            { item: tokenItem, condition: { kind: 'new' }, reason: 'code' },
-            { item: codeItem, condition: { kind: 'new' }, reason: 'code' },
+            ...cred.puts,
           ],
         });
-        return { pass: residentPassView(actor, pass, await labelsFor(ctx.apartmentId, [unitId])), replayed: false };
+        return { pass: residentPassView(actor, pass, labels, await verdictOf(pass, resides), cred.secret), replayed: false };
       } catch (err) {
         if (err instanceof GateConflictError && err.reason === 'duplicate') {
           const r = await replay();
@@ -614,21 +725,52 @@ export function createGateService(overrides: Partial<GateServiceDeps> = {}) {
     }
   }
 
+  /**
+   * "Yeni QR olustur": jeton ve kisa kod yenilenir, eskileri hemen calismaz (gecis kaydindaki ozet
+   * degisir; eski dizin kaydi silinmez ama dogrulamada ozet uyusmaz). Yeni degerler yalnizca bu
+   * yanitta doner.
+   */
+  async function rotatePass(ctx: GateContext, passId: string, body: unknown) {
+    const actor = await actorAs(ctx, 'resident');
+    const version = reqInt(asObject(body), 'version', 1, Number.MAX_SAFE_INTEGER);
+    const pass = await requirePass(actor, passId);
+    const resides = residency(ctx.apartmentId);
+    const verdict = await verdictOf(pass, resides);
+    if (pass.status !== 'active' || !(verdict === 'valid' || verdict === 'not_yet_valid')) throw new GateError('invalid_state', 'Bu geçiş artık kullanılamaz; yeni geçiş oluşturun');
+    if (pass.version !== version) throw new GateError('conflict', 'Geçiş başka bir işlemle değişti; sayfayı yenileyin');
+    const labels = await labelsFor(ctx.apartmentId, [pass.unitId]);
+    for (let attempt = 1; ; attempt++) {
+      const cred = credentials(ctx, passId, pass.validUntil);
+      const ts = stamp();
+      const next: GuestPass = { ...pass, ...cred.hashes, updatedAt: ts, updatedBy: ctx.userId, version: pass.version + 1 };
+      try {
+        await repo.write(ctx.apartmentId, { puts: [{ item: next, condition: { kind: 'match', fields: { version, status: 'active' } }, reason: 'version' }, ...cred.puts] });
+        return { pass: residentPassView(actor, next, labels, verdict, cred.secret) };
+      } catch (err) {
+        if (err instanceof GateConflictError && err.reason === 'code' && attempt < WRITE_RETRIES) continue;
+        if (err instanceof GateConflictError) throw new GateError('conflict', 'Geçiş başka bir işlemle değişti; sayfayı yenileyin');
+        throw err;
+      }
+    }
+  }
+
   async function listPasses(ctx: GateContext, q: Record<string, string | undefined> = {}) {
     const actor = await actorAs(ctx, 'manager', 'resident');
     let passes: GuestPass[];
     if (actor.kind === 'resident') {
       const refs = (await Promise.all(actor.unitIds.map((u) => repo.query<UnitPointer>(ctx.apartmentId, { prefix: gateKeys.passUnitPrefix(u), desc: true, limit: 50 })))).flatMap((r) => r.items.map((p) => p.refId));
-      passes = (await repo.getMany<GuestPass>(ctx.apartmentId, refs.map((id) => gateKeys.pass(ctx.apartmentId, id).SK))).filter((p) => actor.unitIds.includes(p.unitId));
+      passes = (await repo.getMany<GuestPass>(ctx.apartmentId, refs.map((id) => gateKeys.pass(ctx.apartmentId, id).SK))).filter((p) => residentSees(actor, p.unitId, p.createdAt));
     } else {
       passes = (await repo.query<GuestPass>(ctx.apartmentId, { prefix: 'GPASS#', desc: true, limit: 200 })).items.filter((p) => p.entityType === 'GATE_PASS');
     }
-    const d = today();
-    const usable = (p: GuestPass) => ['valid', 'not_yet_valid'].includes(passVerdict(p, d));
+    const resides = residency(ctx.apartmentId);
+    const verdicts = new Map(await Promise.all(passes.map(async (p) => [p.passId, await verdictOf(p, resides)] as const)));
+    const usable = (p: GuestPass) => ['valid', 'not_yet_valid'].includes(verdicts.get(p.passId) ?? 'expired');
     const filter = q.status === 'active' ? usable : q.status === 'past' ? (p: GuestPass) => !usable(p) : () => true;
     const list = passes.filter((p) => !q.unitId || p.unitId === q.unitId).filter(filter).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
     const labels = await labelsFor(ctx.apartmentId, list.map((p) => p.unitId));
-    return { items: list.map((p) => (actor.kind === 'resident' ? residentPassView(actor, p, labels) : managerPassView(p, labels))) };
+    const verdict = (p: GuestPass) => verdicts.get(p.passId) ?? 'expired';
+    return { items: list.map((p) => (actor.kind === 'resident' ? residentPassView(actor, p, labels, verdict(p)) : managerPassView(p, labels, verdict(p)))) };
   }
 
   /** Sakin (kendi dairesi) veya yonetici (denetimli) iptal eder. Iceri girmis misafirin cikisi yine kaydedilir. */
@@ -637,8 +779,9 @@ export function createGateService(overrides: Partial<GateServiceDeps> = {}) {
     const version = reqInt(asObject(body), 'version', 1, Number.MAX_SAFE_INTEGER);
     const pass = await requirePass(actor, passId);
     const labels = await labelsFor(ctx.apartmentId, [pass.unitId]);
-    const view = (p: GuestPass) => (actor.kind === 'resident' ? residentPassView(actor, p, labels) : managerPassView(p, labels));
-    if (pass.status === 'revoked') return { pass: view(pass) };
+    const resides = residency(ctx.apartmentId);
+    const view = async (p: GuestPass) => (actor.kind === 'resident' ? residentPassView(actor, p, labels, await verdictOf(p, resides)) : managerPassView(p, labels, await verdictOf(p, resides)));
+    if (pass.status === 'revoked') return { pass: await view(pass) };
     if (pass.status !== 'active') throw new GateError('invalid_state', 'Kullanılmış geçiş iptal edilemez');
     if (pass.version !== version) throw new GateError('conflict', 'Geçiş başka bir işlemle değişti; sayfayı yenileyin');
     const ts = stamp();
@@ -652,33 +795,44 @@ export function createGateService(overrides: Partial<GateServiceDeps> = {}) {
       if (err instanceof GateConflictError) throw new GateError('conflict', 'Geçiş başka bir işlemle değişti; sayfayı yenileyin');
       throw err;
     }
-    return { pass: view(next) };
+    return { pass: await view(next) };
   }
 
-  /** QR jetonu veya kisa kodla gecis. Bulunamayan, baska apartmanin veya duzensiz girdi: 404. */
+  /**
+   * QR jetonu veya kisa kodla gecis. Dizin ozetle bulunur ve gecis kaydindaki GUNCEL ozetle
+   * karsilastirilir (yenilenmis eski jeton / kod calismaz). Bulunamayan, baska apartmanin veya
+   * duzensiz girdi: 404.
+   */
   async function verifyPass(ctx: GateContext, body: unknown) {
     await actorAs(ctx, 'manager', 'guard');
     const o = asObject(body);
     let passId: string | undefined;
+    let matches: (p: GuestPass) => boolean;
     if (typeof o.token === 'string' && o.token) {
       if (!TOKEN_RE.test(o.token)) throw new GateError('not_found', 'Geçiş bulunamadı');
-      passId = (await repo.get<PassTokenIndex>(ctx.apartmentId, gateKeys.passToken(ctx.apartmentId, tokenHash(o.token)).SK))?.passId;
+      const h = tokenHash(o.token);
+      passId = (await repo.get<PassTokenIndex>(ctx.apartmentId, gateKeys.passToken(ctx.apartmentId, h).SK))?.passId;
+      matches = (p) => p.tokenHash === h;
     } else if (typeof o.code === 'string' && o.code) {
       const code = normalizeShortCode(o.code);
       if (!code) throw new ValidationError('Kod 8 karakter olmalıdır (örnek: K7M2-PQ4X)', 'code');
-      passId = (await repo.get<PassCodeIndex>(ctx.apartmentId, gateKeys.passCode(ctx.apartmentId, code).SK))?.passId;
+      const h = codeHash(ctx.apartmentId, code);
+      passId = (await repo.get<PassCodeIndex>(ctx.apartmentId, gateKeys.passCode(ctx.apartmentId, h).SK))?.passId;
+      matches = (p) => p.codeHash === h;
     } else {
       throw new ValidationError('QR jetonu veya kısa kod gerekli', 'code');
     }
     const pass = passId ? await repo.get<GuestPass>(ctx.apartmentId, gateKeys.pass(ctx.apartmentId, passId).SK) : undefined;
-    if (!pass || pass.apartmentId !== ctx.apartmentId) throw new GateError('not_found', 'Geçiş bulunamadı');
-    return { pass: guardPassView(pass, await labelsFor(ctx.apartmentId, [pass.unitId])) };
+    if (!pass || pass.apartmentId !== ctx.apartmentId || !matches(pass)) throw new GateError('not_found', 'Geçiş bulunamadı');
+    return { pass: guardPassView(pass, await labelsFor(ctx.apartmentId, [pass.unitId]), await verdictOf(pass, residency(ctx.apartmentId))) };
   }
 
   /**
    * Giris / cikis kaydi. Gecis guncellemesi + gunluk kaydi + idempotency tek atomik yazim.
    * Tek girislik geciste kosul `status = active AND entryCount = 0`: iki gorevli ayni anda okutursa
-   * yalnizca biri kazanir, digeri yeniden okuyup "kullanildi" alir.
+   * yalnizca biri kazanir, digeri yeniden okuyup "kullanildi" alir. Kati kural: misafir icerideyken
+   * (cikisi kaydedilmeden) ikinci giris yazilmaz, cok girislikte de (`inside = false` kosulu).
+   * Gecisi olusturan sakin tasinmissa giris reddedilir (`pass_host_left`).
    */
   async function passMove(ctx: GateContext, passId: string, body: unknown, direction: GateDirection) {
     const actor = await actorAs(ctx, 'manager', 'guard');
@@ -688,12 +842,13 @@ export function createGateService(overrides: Partial<GateServiceDeps> = {}) {
     for (let attempt = 1; ; attempt++) {
       const pass = await requirePass(actor, passId);
       const labels = await labelsFor(ctx.apartmentId, [pass.unitId]);
+      const resides = residency(ctx.apartmentId);
       const prior = await replayOf(ctx, key, kind, fp);
-      if (prior) return { pass: guardPassView(pass, labels), replayed: true };
-      const d = today();
+      if (prior) return { pass: guardPassView(pass, labels, await verdictOf(pass, resides)), replayed: true };
+      const verdict = await verdictOf(pass, resides);
       if (direction === 'entry') {
-        const verdict = passVerdict(pass, d);
         if (verdict !== 'valid') throw new GateError(`pass_${verdict}` as GateErrorCode, VERDICT_MESSAGES[verdict]);
+        if (pass.inside) throw new GateError('already_inside', 'Misafir içeride görünüyor; yeni giriş için önce çıkışını kaydedin');
       } else if (!pass.inside) {
         throw new GateError('not_inside', 'Bu misafir için açık bir giriş kaydı yok');
       }
@@ -704,7 +859,7 @@ export function createGateService(overrides: Partial<GateServiceDeps> = {}) {
           : { ...pass, inside: false, lastExitAt: ts };
       Object.assign(next, { updatedAt: ts, updatedBy: ctx.userId, version: pass.version + 1 });
       const condition: Record<string, string | number | boolean> =
-        direction === 'entry' ? { version: pass.version, status: 'active', ...(pass.entryMode === 'single' ? { entryCount: 0 } : {}) } : { version: pass.version, inside: true };
+        direction === 'entry' ? { version: pass.version, status: 'active', inside: false, ...(pass.entryMode === 'single' ? { entryCount: 0 } : {}) } : { version: pass.version, inside: true };
       const log = logItems(ctx, ts, { direction, kind: 'guest', unitId: pass.unitId, passId, visitorName: pass.guestName, ...(pass.plate ? { plate: pass.plate } : {}) });
       try {
         await repo.write(ctx.apartmentId, {
@@ -714,7 +869,8 @@ export function createGateService(overrides: Partial<GateServiceDeps> = {}) {
             ...log.puts,
           ],
         });
-        return { pass: guardPassView(next, labels), log: logView(actor, log.entry, labels, new Map()), replayed: false };
+        const after = direction === 'entry' && next.status === 'used' ? 'used' : verdict;
+        return { pass: guardPassView(next, labels, after), log: logView(actor, log.entry, labels, new Map()), replayed: false };
       } catch (err) {
         // Yaris: guncel hali yeniden okunur (tek girislikte ikinci okutma "kullanildi" alir).
         if (err instanceof GateConflictError && (err.reason === 'version' || err.reason === 'duplicate') && attempt < WRITE_RETRIES) continue;
@@ -730,6 +886,9 @@ export function createGateService(overrides: Partial<GateServiceDeps> = {}) {
 
   const responseDeadline = (c: Courier) => new Date(Date.parse(c.createdAt) + COURIER_RESPONSE_MINUTES * 60_000).toISOString();
   const courierExpired = (c: Courier) => c.status === 'waiting' && deps.now().toISOString() > responseDeadline(c);
+  /** Onay sinirsiz degil: onaydan `COURIER_APPROVAL_VALID_MINUTES` sonra kurye iceri alinamaz. */
+  const enterDeadline = (c: Courier) => (c.respondedAt ? new Date(Date.parse(c.respondedAt) + COURIER_APPROVAL_VALID_MINUTES * 60_000).toISOString() : undefined);
+  const approvalExpired = (c: Courier) => c.status === 'approved' && !c.enteredAt && deps.now().toISOString() > (enterDeadline(c) ?? '');
 
   function courierView(actor: GateActor, c: Courier, labels: Map<string, string>) {
     const expired = courierExpired(c);
@@ -747,9 +906,10 @@ export function createGateService(overrides: Partial<GateServiceDeps> = {}) {
       ...(c.responseNote ? { responseNote: c.responseNote } : {}),
       ...(c.enteredAt ? { enteredAt: c.enteredAt } : {}),
       ...(c.exitedAt ? { exitedAt: c.exitedAt } : {}),
+      ...(c.status === 'approved' && !c.enteredAt ? { enterBy: enterDeadline(c), approvalExpired: approvalExpired(c) } : {}),
       createdAt: c.createdAt,
       canRespond: !desk && c.status === 'waiting' && !expired,
-      canEnter: desk && c.status === 'approved' && !c.enteredAt,
+      canEnter: desk && c.status === 'approved' && !c.enteredAt && !approvalExpired(c),
       canExit: desk && !!c.enteredAt && !c.exitedAt,
       canCancel: desk && (c.status === 'waiting' || c.status === 'approved') && !c.enteredAt,
       version: c.version,
@@ -759,7 +919,7 @@ export function createGateService(overrides: Partial<GateServiceDeps> = {}) {
   async function requireCourier(actor: GateActor, courierId: string): Promise<Courier> {
     assertId(courierId, 'courierId');
     const c = await repo.get<Courier>(actor.apartmentId, gateKeys.courier(actor.apartmentId, courierId).SK);
-    if (!c || c.apartmentId !== actor.apartmentId || (actor.kind === 'resident' && !actor.unitIds.includes(c.unitId))) throw new GateError('not_found', 'Kurye kaydı bulunamadı');
+    if (!c || c.apartmentId !== actor.apartmentId || (actor.kind === 'resident' && !residentSees(actor, c.unitId, c.createdAt))) throw new GateError('not_found', 'Kurye kaydı bulunamadı');
     return c;
   }
 
@@ -823,11 +983,11 @@ export function createGateService(overrides: Partial<GateServiceDeps> = {}) {
     let couriers: Courier[];
     if (actor.kind === 'resident') {
       const refs = (await Promise.all(actor.unitIds.map((u) => repo.query<UnitPointer>(ctx.apartmentId, { prefix: gateKeys.courierUnitPrefix(u), desc: true, limit: 20 })))).flatMap((r) => r.items.map((p) => p.refId));
-      couriers = (await repo.getMany<Courier>(ctx.apartmentId, refs.map((id) => gateKeys.courier(ctx.apartmentId, id).SK))).filter((c) => actor.unitIds.includes(c.unitId));
+      couriers = (await repo.getMany<Courier>(ctx.apartmentId, refs.map((id) => gateKeys.courier(ctx.apartmentId, id).SK))).filter((c) => residentSees(actor, c.unitId, c.createdAt));
     } else {
       couriers = (await repo.query<Courier>(ctx.apartmentId, { prefix: 'GCOUR#', desc: true, limit: 50 })).items.filter((c) => c.entityType === 'GATE_COURIER');
     }
-    const open = (c: Courier) => (c.status === 'waiting' && !courierExpired(c)) || (c.status === 'approved' && !c.exitedAt);
+    const open = (c: Courier) => (c.status === 'waiting' && !courierExpired(c)) || (c.status === 'approved' && !c.exitedAt && !approvalExpired(c));
     const list = couriers.filter((c) => q.status !== 'open' || open(c)).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
     const labels = await labelsFor(ctx.apartmentId, list.map((c) => c.unitId));
     return { items: list.map((c) => courierView(actor, c, labels)), pollSeconds: 15 };
@@ -883,6 +1043,7 @@ export function createGateService(overrides: Partial<GateServiceDeps> = {}) {
       if (c.status === 'waiting') throw new GateError('invalid_state', 'Daire sakini henüz onaylamadı');
       if (c.status !== 'approved') throw new GateError('invalid_state', c.status === 'declined' ? 'Daire sakini kuryeyi reddetti' : 'Kurye kaydı kapatıldı');
       if (c.enteredAt) throw new GateError('invalid_state', 'Kurye girişi zaten kaydedildi');
+      if (approvalExpired(c)) throw new GateError('approval_expired', `Onay ${COURIER_APPROVAL_VALID_MINUTES / 60} saatten eski; kuryeyi yeniden kaydedip sakinden yeni onay isteyin`);
     } else if (!c.enteredAt || c.exitedAt) {
       throw new GateError('not_inside', 'Bu kurye için açık bir giriş kaydı yok');
     }
@@ -977,6 +1138,9 @@ export function createGateService(overrides: Partial<GateServiceDeps> = {}) {
       unitId ??= actor.unitIds[0];
       if (!unitId) return { items: [], from, to };
       if (!actor.unitIds.includes(unitId)) throw new GateError('forbidden', 'Yalnızca oturduğunuz bağımsız bölümün kayıtlarını görebilirsiniz');
+      // KVKK: bolumun onceki sakinlerinin donemi gosterilmez.
+      const since = actor.since.get(unitId);
+      if (since && from < since) from = since;
     } else if (unitId) assertId(unitId, 'unitId');
     if (to < from) return { items: [], from, to };
     const limit = Math.min(Math.max(Number(q.limit) || LOG_PAGE, 1), LOG_MAX_PAGE);
@@ -1032,6 +1196,7 @@ export function createGateService(overrides: Partial<GateServiceDeps> = {}) {
     createPass,
     listPasses,
     revokePass,
+    rotatePass,
     verifyPass,
     passEntry: (ctx: GateContext, passId: string, body: unknown) => passMove(ctx, passId, body, 'entry'),
     passExit: (ctx: GateContext, passId: string, body: unknown) => passMove(ctx, passId, body, 'exit'),

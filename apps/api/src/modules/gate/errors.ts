@@ -11,6 +11,9 @@ export type GateErrorCode =
   | 'pass_used'
   | 'pass_expired'
   | 'pass_not_yet_valid'
+  | 'pass_host_left'
+  | 'already_inside'
+  | 'approval_expired'
   | 'not_inside'
   | 'invalid_state'
   | 'response_expired';
@@ -25,6 +28,9 @@ const HTTP_STATUS = {
   pass_used: 409,
   pass_expired: 409,
   pass_not_yet_valid: 409,
+  pass_host_left: 409,
+  already_inside: 409,
+  approval_expired: 409,
   not_inside: 409,
   invalid_state: 409,
   response_expired: 409,

@@ -2,7 +2,11 @@
  * Guvenlik kapisi: arac plakalari, misafir gecisleri (QR + kisa kod), kurye kayitlari ve kapi
  * gunlugu. Tek tablo, `PK = APT#<apartmentId>` (apartman JWT claim'inden):
  *
- *   VEH#<vehicleId>                        arac kaydi (surumlu; silinmez, `inactive` olur)
+ *   VEH#<vehicleId>                        arac kaydi (surumlu; silinmez, `inactive` olur). Sakinin
+ *                                          ekledigi aracta `ownerUserId`: sahibi dairede oturmuyorsa
+ *                                          gorevliye pasif gorunur
+ *   VEHSLOT#<unitId>                       daire basina arac sinir kilidi (surumlu; es zamanli eklemede
+ *                                          yalnizca biri kazanir)
  *   VEHU#<unitId>#<vehicleId>              daire -> arac isaretcisi (yalnizca eklenir)
  *   VPLATE#<ters plaka>                    plaka basina guncel kayit (bolum, durum, not). Ters yazim
  *                                          sondan eslesmeyi `begins_with` sorgusuna cevirir; aktif
@@ -10,7 +14,9 @@
  *   GPASS#<passId>                         misafir gecisi (surumlu)
  *   GPU#<unitId>#<passId>                  daire -> gecis isaretcisi
  *   GPTOK#<sha256(token)>                  QR jetonu dizini (TTL: gecerlilik + 7 gun)
- *   GPCODE#<kisa kod>                      kisa kod dizini (TTL ayni)
+ *   GPCODE#<sha256(apartman:kod)>          kisa kod dizini (TTL ayni). Jeton ve kod hicbir kayitta acik
+ *                                          tutulmaz; gecis kaydi yalnizca ozetleri tasir, yenilenince
+ *                                          eski dizin kaydi ozet uyusmadigi icin calismaz
  *   GCOUR#<courierId>                      kurye kaydi (surumlu)
  *   GCU#<unitId>#<courierId>               daire -> kurye isaretcisi
  *   GLOG#<at>#<logId>                      kapi gunlugu (append-only, SILINMEZ, TTL yok)
@@ -30,6 +36,8 @@ export const MAX_PASS_DAYS = 31;
 export const MAX_PASS_LEAD_DAYS = 90;
 /** Kuryeye bu kadar dakika icinde yanit verilmezse istek dusur (yanit verilemez). */
 export const COURIER_RESPONSE_MINUTES = 60;
+/** Sakin onayi bu kadar dakika gecerli; sonra kurye iceri alinamaz (yeniden kayit gerekir). */
+export const COURIER_APPROVAL_VALID_MINUTES = 120;
 /** Jeton / kisa kod dizini gecerlilik bitiminden bu kadar gun sonra (TTL) kendiliginden duser. */
 export const PASS_INDEX_GRACE_DAYS = 7;
 /** Plaka aramasi: sondan eslesmede en az karakter ve en fazla sonuc. */
@@ -48,6 +56,8 @@ export type Vehicle = TableKeys & {
   /** Gorevlinin gordugu kisa not (renk / marka); kisisel veri yazilmamali. */
   note?: string;
   status: VehicleStatus;
+  /** Sakinin kendi ekledigi arac: sahibi tasininca gorevliye pasif gorunur. Yonetici kaydinda yok. */
+  ownerUserId?: string;
   createdAt: IsoDateTime;
   createdBy: string;
   createdByRole: string;
@@ -55,6 +65,9 @@ export type Vehicle = TableKeys & {
   updatedBy: string;
   version: number;
 };
+
+/** Daire basina arac siniri kilidi: her ekleme / etkinlestirme surum kosuluyla yazar. */
+export type VehicleSlot = TableKeys & { entityType: 'GATE_VEHICLE_SLOT'; apartmentId: string; unitId: string; version: number; updatedAt: IsoDateTime };
 
 /** Plaka basina guncel durum (gorevli sorgusu tek Query ile buradan okur). */
 export type PlateIndex = TableKeys & {
@@ -64,6 +77,7 @@ export type PlateIndex = TableKeys & {
   vehicleId: string;
   unitId: string;
   status: VehicleStatus;
+  ownerUserId?: string;
   note?: string;
   updatedAt: IsoDateTime;
 };
@@ -71,7 +85,7 @@ export type PlateIndex = TableKeys & {
 export type EntryMode = 'single' | 'multi';
 export type PassStatus = 'active' | 'used' | 'revoked';
 /** Okuma anindaki karar: `expired` / `not_yet_valid` tarihten turetilir, saklanmaz. */
-export type PassVerdict = 'valid' | 'not_yet_valid' | 'expired' | 'used' | 'revoked';
+export type PassVerdict = 'valid' | 'not_yet_valid' | 'expired' | 'used' | 'revoked' | 'host_left';
 
 export type GuestPass = TableKeys & {
   entityType: 'GATE_PASS';
@@ -87,10 +101,10 @@ export type GuestPass = TableKeys & {
   /** Gorevlinin gordugu not. */
   note?: string;
   status: PassStatus;
-  /** Rastgele (crypto) QR jetonu: yalnizca daire sakinlerine doner. */
-  token: string;
-  /** Elle girilecek kisa kod (8 karakter, karisan harfler yok). */
-  shortCode: string;
+  /** QR jetonunun ozeti (jetonun kendisi yalnizca olusturma / yenileme yanitinda doner). */
+  tokenHash: string;
+  /** Kisa kodun (8 karakter) tuzlu ozeti. */
+  codeHash: string;
   entryCount: number;
   /** Iceride mi (son kayit giris). */
   inside: boolean;
@@ -176,13 +190,14 @@ export const gateKeys = {
   vehicle: (apt: string, id: string): TableKeys => ({ PK: pk(apt), SK: `VEH#${id}` }),
   vehicleUnit: (apt: string, unitId: string, id: string): TableKeys => ({ PK: pk(apt), SK: `VEHU#${unitId}#${id}` }),
   vehicleUnitPrefix: (unitId: string) => `VEHU#${unitId}#`,
+  vehicleSlot: (apt: string, unitId: string): TableKeys => ({ PK: pk(apt), SK: `VEHSLOT#${unitId}` }),
   plate: (apt: string, reversedPlate: string): TableKeys => ({ PK: pk(apt), SK: `VPLATE#${reversedPlate}` }),
   platePrefix: 'VPLATE#',
   pass: (apt: string, id: string): TableKeys => ({ PK: pk(apt), SK: `GPASS#${id}` }),
   passUnit: (apt: string, unitId: string, id: string): TableKeys => ({ PK: pk(apt), SK: `GPU#${unitId}#${id}` }),
   passUnitPrefix: (unitId: string) => `GPU#${unitId}#`,
   passToken: (apt: string, tokenHash: string): TableKeys => ({ PK: pk(apt), SK: `GPTOK#${tokenHash}` }),
-  passCode: (apt: string, code: string): TableKeys => ({ PK: pk(apt), SK: `GPCODE#${code}` }),
+  passCode: (apt: string, codeHash: string): TableKeys => ({ PK: pk(apt), SK: `GPCODE#${codeHash}` }),
   courier: (apt: string, id: string): TableKeys => ({ PK: pk(apt), SK: `GCOUR#${id}` }),
   courierUnit: (apt: string, unitId: string, id: string): TableKeys => ({ PK: pk(apt), SK: `GCU#${unitId}#${id}` }),
   courierUnitPrefix: (unitId: string) => `GCU#${unitId}#`,

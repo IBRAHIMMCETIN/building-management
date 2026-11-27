@@ -10,7 +10,7 @@ import { mockClient } from 'aws-sdk-client-mock';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { resetDynamoCache } from '../src/config/dynamodb.js';
 import { ValidationError } from '../src/modules/core/validation.js';
-import { tokenHash } from '../src/modules/gate/model.js';
+import { codeHash, tokenHash } from '../src/modules/gate/model.js';
 import { GateConflictError, createGateRepository, decodeCursor, encodeCursor } from '../src/modules/gate/repository.js';
 import { APT, DAY, T0, ctxs, gateWorld } from './fakes/gateWorld.js';
 
@@ -25,9 +25,20 @@ describe('misafir gecisi', () => {
     const tokenIdx = w.fake.byPrefix(APT, 'GPTOK#');
     expect(tokenIdx.map((i) => i.SK)).toEqual([`GPTOK#${tokenHash(p.token as string)}`]);
     expect(tokenIdx[0]).toMatchObject({ passId: p.passId, ttl: Math.floor(Date.parse('2026-12-06T21:00:00.000Z') / 1000) });
-    expect(w.fake.byPrefix(APT, 'GPCODE#')[0]).toMatchObject({ SK: `GPCODE#${p.shortCode}`, passId: p.passId });
-    // Ayni daireyi paylasan sakin gorur, baska daire ve oturmayan malik gormez.
-    expect((await w.service.listPasses(ctxs.tenant)).items.map((x) => x.passId)).toEqual([p.passId]);
+    expect(w.fake.byPrefix(APT, 'GPCODE#')[0]).toMatchObject({ SK: `GPCODE#${codeHash(APT, p.shortCode as string)}`, passId: p.passId });
+    // Jeton ve kod kayitta acik tutulmaz: yalnizca ozetler.
+    const stored = w.fake.byPrefix(APT, 'GPASS#')[0] as Record<string, unknown>;
+    expect(stored).not.toHaveProperty('token');
+    expect(stored).not.toHaveProperty('shortCode');
+    const everything = JSON.stringify([...w.fake.items.values()]);
+    expect(everything).not.toContain(p.token as string);
+    expect(everything).not.toContain(p.shortCode as string);
+    expect(stored).toMatchObject({ tokenHash: tokenHash(p.token as string), codeHash: codeHash(APT, p.shortCode as string) });
+    // Ayni daireyi paylasan sakin gorur (jetonsuz), baska daire ve oturmayan malik gormez.
+    const listed = (await w.service.listPasses(ctxs.tenant)).items;
+    expect(listed.map((x) => x.passId)).toEqual([p.passId]);
+    expect(listed[0]).not.toHaveProperty('token');
+    expect(listed[0]).toMatchObject({ canRotate: true });
     expect((await w.service.listPasses(ctxs.other)).items).toEqual([]);
     expect((await w.service.listPasses(ctxs.owner)).items).toEqual([]);
     // Yonetici jeton / kod gormez.
@@ -116,9 +127,13 @@ describe('misafir gecisi', () => {
     await expect(w.service.passEntry(ctxs.guard, multi.passId, { idempotencyKey: w.key() })).rejects.toMatchObject({ code: 'pass_not_yet_valid' });
     w.at('2026-11-28T08:00:00.000Z');
     await w.service.passEntry(ctxs.guard, multi.passId, { idempotencyKey: w.key() });
+    // Kati kural: cikis kaydedilmeden ikinci giris yok.
+    expect((await w.service.verifyPass(ctxs.guard, { token: multi.token })).pass).toMatchObject({ verdict: 'valid', canEnter: false, canExit: true, message: expect.stringContaining('önce çıkışını') });
+    await expect(w.service.passEntry(ctxs.guard2, multi.passId, { idempotencyKey: w.key() })).rejects.toMatchObject({ code: 'already_inside', httpStatus: 409 });
     await w.service.passExit(ctxs.guard, multi.passId, { idempotencyKey: w.key() });
     const again = await w.service.passEntry(ctxs.guard, multi.passId, { idempotencyKey: w.key() });
-    expect(again.pass).toMatchObject({ entryCount: 2, verdict: 'valid', canEnter: true, inside: true });
+    expect(again.pass).toMatchObject({ entryCount: 2, verdict: 'valid', canEnter: false, inside: true });
+    expect(w.fake.byPrefix(APT, 'GLOG#').map((e) => e.direction)).toEqual(['entry', 'exit', 'entry']);
     // 30.11 00:30 Istanbul: suresi doldu; iceride kalan misafirin cikisi yine kaydedilir.
     w.at('2026-11-29T21:30:00.000Z');
     expect((await w.service.verifyPass(ctxs.guard, { token: multi.token })).pass).toMatchObject({ verdict: 'expired', message: 'Bu geçişin süresi doldu', canEnter: false, canExit: true });
@@ -126,6 +141,45 @@ describe('misafir gecisi', () => {
     await w.service.passExit(ctxs.guard, multi.passId, { idempotencyKey: w.key() });
     expect((await w.service.listPasses(ctxs.tenant, { status: 'past' })).items).toHaveLength(1);
     expect((await w.service.listPasses(ctxs.tenant, { status: 'active' })).items).toHaveLength(0);
+  });
+
+  it('gecis sahibi tasininca gorevli reddeder; yeni kiraci onceki sakinin gecislerini gormez / yonetemez', async () => {
+    const w = gateWorld();
+    const p = await w.pass(ctxs.tenant, { entryMode: 'multi', validUntil: '2026-11-30' });
+    w.moveOut('tenant-u1', 'u1', '2026-11-26');
+    const seen = (await w.service.verifyPass(ctxs.guard, { token: p.token })).pass;
+    expect(seen).toMatchObject({ verdict: 'host_left', message: 'Geçiş sahibi artık bu dairede oturmuyor', canEnter: false });
+    await expect(w.service.passEntry(ctxs.guard, p.passId, { idempotencyKey: w.key() })).rejects.toMatchObject({ code: 'pass_host_left', message: 'Geçiş sahibi artık bu dairede oturmuyor' });
+    expect((await w.service.listPasses(ctxs.mgr)).items[0]).toMatchObject({ verdict: 'host_left' });
+    // Tasinan sakin artik bolume erisemez; yeni kiraci eski gecisi (misafir adi dahil) hic gormez.
+    expect((await w.service.listPasses(ctxs.tenant)).items).toEqual([]);
+    w.moveIn('new-tenant', 'u1', '2026-11-28');
+    w.at('2026-11-28T09:00:00.000Z');
+    const newTenant = { apartmentId: APT, userId: 'new-tenant', role: 'resident' };
+    expect((await w.service.listPasses(newTenant)).items).toEqual([]);
+    await expect(w.service.revokePass(newTenant, p.passId, { version: 1 })).rejects.toMatchObject({ code: 'not_found' });
+    await expect(w.service.rotatePass(newTenant, p.passId, { version: 1 })).rejects.toMatchObject({ code: 'not_found' });
+    // Yeni kiracinin kendi gecisi normal calisir.
+    const own = await w.pass(newTenant, { validFrom: '2026-11-28' });
+    expect((await w.service.verifyPass(ctxs.guard, { code: own.shortCode })).pass.verdict).toBe('valid');
+  });
+
+  it('Yeni QR olustur: jeton ve kod yenilenir, eskileri calismaz; yalnizca yanitta doner', async () => {
+    const w = gateWorld();
+    const p = await w.pass();
+    const rotated = (await w.service.rotatePass(ctxs.tenant, p.passId, { version: 1 })).pass;
+    expect(rotated.token).toMatch(/^[A-Za-z0-9_-]{24}$/);
+    expect(rotated.token).not.toBe(p.token);
+    expect(rotated.shortCode).not.toBe(p.shortCode);
+    await expect(w.service.verifyPass(ctxs.guard, { token: p.token })).rejects.toMatchObject({ code: 'not_found' });
+    await expect(w.service.verifyPass(ctxs.guard, { code: p.shortCode })).rejects.toMatchObject({ code: 'not_found' });
+    expect((await w.service.verifyPass(ctxs.guard, { token: rotated.token })).pass.passId).toBe(p.passId);
+    expect((await w.service.verifyPass(ctxs.guard, { code: rotated.shortCode })).pass.passId).toBe(p.passId);
+    await expect(w.service.rotatePass(ctxs.tenant, p.passId, { version: 1 })).rejects.toMatchObject({ code: 'conflict' });
+    await expect(w.service.rotatePass(ctxs.guard, p.passId, { version: 2 })).rejects.toMatchObject({ code: 'forbidden' });
+    await w.service.passEntry(ctxs.guard, p.passId, { idempotencyKey: w.key() });
+    await expect(w.service.rotatePass(ctxs.tenant, p.passId, { version: 3 })).rejects.toMatchObject({ code: 'invalid_state' });
+    expect((await w.call('POST', `/api/portal/gate/passes/${p.passId}/rotate`, ctxs.guard, { version: 3 })).status).toBe(403);
   });
 
   it('iptal: sakin (kendi dairesi) veya yonetici (denetimli); iptal edilen gecis reddedilir', async () => {
@@ -199,6 +253,33 @@ describe('kurye', () => {
     await expect(w.service.respondCourier(ctxs.tenant, c.courierId, { version: 1, decision: 'approve' })).rejects.toMatchObject({ code: 'response_expired' });
     await expect(w.service.createCourier(ctxs.tenant, { idempotencyKey: w.key(), unitId: 'u1' })).rejects.toMatchObject({ code: 'forbidden' });
     await expect(w.service.createCourier(ctxs.guard, { idempotencyKey: w.key(), unitId: 'u9' })).rejects.toMatchObject({ code: 'not_found' });
+  });
+  it('onayin suresi var: onaydan 2 saat sonra kurye iceri alinamaz, acik listeden duser', async () => {
+    const w = gateWorld();
+    const c = (await w.service.createCourier(ctxs.guard, { idempotencyKey: w.key(), unitId: 'u1', company: 'Getir' })).courier;
+    await w.service.respondCourier(ctxs.tenant, c.courierId, { version: 1, decision: 'approve' });
+    expect((await w.service.listCouriers(ctxs.guard, { status: 'open' })).items[0]).toMatchObject({ canEnter: true, approvalExpired: false, enterBy: '2026-11-27T11:00:00.000Z' });
+    w.at('2026-11-27T11:00:01.000Z');
+    expect((await w.service.listCouriers(ctxs.guard)).items[0]).toMatchObject({ canEnter: false, approvalExpired: true, canCancel: true });
+    expect((await w.service.listCouriers(ctxs.guard, { status: 'open' })).items).toEqual([]);
+    await expect(w.service.courierEntry(ctxs.guard, c.courierId, { idempotencyKey: w.key() })).rejects.toMatchObject({ code: 'approval_expired', httpStatus: 409 });
+  });
+
+  it('yeni sakin onceki sakinin kuryelerini ve kapi kayitlarini gormez (uyelik baslangici)', async () => {
+    const w = gateWorld();
+    const c = (await w.service.createCourier(ctxs.guard, { idempotencyKey: w.key(), unitId: 'u1' })).courier;
+    const p = await w.pass();
+    await w.service.passEntry(ctxs.guard, p.passId, { idempotencyKey: w.key() });
+    w.moveOut('tenant-u1', 'u1', '2026-11-27');
+    w.moveIn('new-tenant', 'u1', '2026-11-28');
+    w.at('2026-11-28T09:00:00.000Z');
+    const newTenant = { apartmentId: APT, userId: 'new-tenant', role: 'resident' };
+    expect((await w.service.listCouriers(newTenant)).items).toEqual([]);
+    await expect(w.service.respondCourier(newTenant, c.courierId, { version: 1, decision: 'approve' })).rejects.toMatchObject({ code: 'not_found' });
+    const log = await w.service.listLog(newTenant, { from: '2026-01-01' });
+    expect(log).toMatchObject({ from: '2026-11-28', items: [] });
+    // Yonetici donemin tamamini gorur.
+    expect((await w.service.listLog(ctxs.mgr, { from: '2026-11-27', unitId: 'u1' })).items).toHaveLength(1);
   });
 });
 

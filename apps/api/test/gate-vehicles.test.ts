@@ -9,7 +9,9 @@ import {
   SHORT_CODE_ALPHABET,
   addDays,
   daySpan,
+  codeHash,
   formatPlate,
+  hostLeft,
   indexTtl,
   isTurkishPlate,
   istanbulDay,
@@ -62,6 +64,8 @@ describe('plaka ve kod kurallari (saf)', () => {
     expect(normalizeShortCode('K7M2 PQ4')).toBeUndefined();
     expect(normalizeShortCode('K7M2PQ40')).toBeUndefined();
     expect(tokenHash('abc')).toMatch(/^[a-f0-9]{64}$/);
+    // Kisa kod apartmanla tuzlanir: ayni kod iki apartmanda farkli ozet.
+    expect(codeHash('apt-1', 'K7M2PQ4X')).not.toBe(codeHash('apt-2', 'K7M2PQ4X'));
   });
 
   it('Istanbul takvimi ve dizin TTL', () => {
@@ -82,8 +86,14 @@ describe('plaka ve kod kurallari (saf)', () => {
     expect(passVerdict(p, '2026-11-26')).toBe('not_yet_valid');
     expect(passVerdict({ ...p, status: 'used' }, '2026-11-29')).toBe('used');
     expect(passVerdict({ ...p, status: 'revoked' }, '2026-11-27')).toBe('revoked');
-    expect(passActions({ ...p, status: 'revoked', inside: true }, '2026-11-27')).toEqual({ canEnter: false, canExit: true });
-    expect(passActions(p, '2026-11-27')).toEqual({ canEnter: true, canExit: false });
+    expect(passActions({ inside: true }, 'revoked')).toEqual({ canEnter: false, canExit: true });
+    expect(passActions({ inside: false }, 'valid')).toEqual({ canEnter: true, canExit: false });
+    // Kati kural: iceride olan misafir (cok girisli de) cikis kaydedilmeden yeniden giremez.
+    expect(passActions({ inside: true }, 'valid')).toEqual({ canEnter: false, canExit: true });
+    expect(hostLeft('valid', false)).toBe('host_left');
+    expect(hostLeft('not_yet_valid', false)).toBe('host_left');
+    expect(hostLeft('expired', false)).toBe('expired');
+    expect(hostLeft('valid', true)).toBe('valid');
   });
 });
 
@@ -154,6 +164,44 @@ describe('arac kaydi', () => {
     expect((await w.service.listVehicles(ctxs.mgr, { q: 'abc' })).items).toHaveLength(1);
     // Var olmayan / pasif bolum.
     await expect(w.service.createVehicle(ctxs.mgr, { unitId: 'u9', plate: '34ABC124' })).rejects.toMatchObject({ code: 'not_found' });
+  });
+});
+
+describe('arac: tasinma ve sinir (inceleme duzeltmeleri)', () => {
+  it('sahibi tasinan arac gorevliye pasif gorunur, sinira sayilmaz; yeni sakin plakayi devralir', async () => {
+    const w = gateWorld();
+    const old = (await w.service.createVehicle(ctxs.tenant, { unitId: 'u1', plate: '34ABC123', note: 'Beyaz Fiat' })).vehicle;
+    w.moveOut('tenant-u1', 'u1', '2026-11-26');
+    const hit = (await w.service.lookupPlate(ctxs.guard, '34ABC123')).items[0];
+    expect(hit).toMatchObject({ registered: true, active: false });
+    // Yonetici listesinde isaretli.
+    expect((await w.service.listVehicles(ctxs.mgr)).items[0]).toMatchObject({ vehicleId: old.vehicleId, status: 'active', ownerLeft: true });
+    // Yeni kiraci: onceki sakinin aracini gormez, plakayi kendi adina kaydeder (devralma).
+    w.moveIn('new-tenant', 'u1', '2026-11-28');
+    w.at('2026-11-28T09:00:00.000Z');
+    const newTenant = { apartmentId: APT, userId: 'new-tenant', role: 'resident' };
+    expect((await w.service.listVehicles(newTenant)).items).toEqual([]);
+    await expect(w.service.updateVehicle(newTenant, old.vehicleId, { version: 1, status: 'inactive' })).rejects.toMatchObject({ code: 'not_found' });
+    const taken = (await w.service.createVehicle(newTenant, { unitId: 'u1', plate: '34 ABC 123' })).vehicle;
+    expect((await w.service.lookupPlate(ctxs.guard, '34ABC123')).items[0]).toMatchObject({ active: true, unitLabel: 'A Blok · Daire 5' });
+    expect(w.fake.items.get(`APT#${APT}|VEH#${old.vehicleId}`)).toMatchObject({ status: 'inactive', version: 2 });
+    expect(w.fake.items.get(`APT#${APT}|VEH#${taken.vehicleId}`)).toMatchObject({ ownerUserId: 'new-tenant' });
+    // Yonetici kaydinin sahibi yoktur: yonetim pasife alana kadar aktif kalir.
+    const byMgr = (await w.service.createVehicle(ctxs.mgr, { unitId: 'u2', plate: '06AB1234' })).vehicle;
+    expect(w.fake.items.get(`APT#${APT}|VEH#${byMgr.vehicleId}`)).not.toHaveProperty('ownerUserId');
+  });
+
+  it('bolum siniri es zamanli eklemede de asilmaz (VEHSLOT# surum kosulu)', async () => {
+    const w = gateWorld();
+    for (let i = 0; i < MAX_VEHICLES_PER_UNIT - 1; i++) await w.service.createVehicle(ctxs.tenant, { unitId: 'u1', plate: `34AB${100 + i}` });
+    const race = await Promise.allSettled([
+      w.service.createVehicle(ctxs.tenant, { unitId: 'u1', plate: '34AB998' }),
+      w.service.createVehicle(ctxs.mgr, { unitId: 'u1', plate: '34AB999' }),
+    ]);
+    expect(race.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    expect(race.find((r) => r.status === 'rejected')).toMatchObject({ reason: { code: 'limit_reached' } });
+    expect((await w.service.listVehicles(ctxs.tenant)).items.filter((v) => v.status === 'active')).toHaveLength(MAX_VEHICLES_PER_UNIT);
+    expect(w.fake.items.get(`APT#${APT}|VEHSLOT#u1`)).toMatchObject({ version: MAX_VEHICLES_PER_UNIT });
   });
 });
 
