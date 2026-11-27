@@ -53,13 +53,19 @@ export const sectionsFor = (role: PortfolioRole): PortfolioSection[] =>
   PORTFOLIO_SECTIONS.filter((s) => SECTION_ROLES[s].includes(role));
 
 /** Istek basina en fazla apartman (varsayilan / ust sinir) ve es zamanli apartman okumasi. */
-export const DEFAULT_PAGE_SIZE = 20;
-export const MAX_PAGE_SIZE = 40;
+export const DEFAULT_PAGE_SIZE = 12;
+export const MAX_PAGE_SIZE = 24;
 export const APARTMENT_CONCURRENCY = 4;
 /** Tek apartmanin bolumleri icin sure; asilirsa bolum `failed` olur (sayfa yine doner). */
-export const APARTMENT_TIMEOUT_MS = 8_000;
-/** Tum istek icin butce (API Gateway 30 sn): sonra baslayan apartmanlar okunmaz, `failed` doner. */
-export const REQUEST_BUDGET_MS = 22_000;
+export const APARTMENT_TIMEOUT_MS = 5_000;
+/**
+ * Istek butcesi Lambda'nin kalan suresinden turetilir (API Lambda zaman asimi 15 sn,
+ * `infra/variables.tf`): kalan sure - bu pay, yanitin serilestirilip donmesi icin. Butce bitince
+ * baslamamis apartmanlar okunmaz, suren bolumler o anki haliyle `failed` doner.
+ */
+export const LAMBDA_MARGIN_MS = 2_500;
+/** Lambda baglami yoksa (yerel Node sunucusu, testler) sabit ve temkinli butce. */
+export const FALLBACK_BUDGET_MS = 10_000;
 
 export type FinanceFigures = {
   cash: number;

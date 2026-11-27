@@ -3,7 +3,7 @@ import { etag } from 'hono/etag';
 import type { Authenticator } from '../../auth/claims.js';
 import { type Env, authenticateWith, handleError, requireRole } from '../../http/helpers.js';
 import type { PortfolioService } from './service.js';
-import { PORTFOLIO_ROLES } from './types.js';
+import { FALLBACK_BUDGET_MS, LAMBDA_MARGIN_MS, PORTFOLIO_ROLES } from './types.js';
 
 export type PortfolioRoutesDeps = { authenticate: Authenticator; service: PortfolioService };
 
@@ -36,8 +36,24 @@ export function portfolioRoutes({ authenticate, service }: PortfolioRoutesDeps) 
   r.get('/', etag(), async (c) => {
     c.header('cache-control', 'private, no-cache');
     c.header('vary', 'authorization');
-    return c.json(await service.list({ userId: c.get('claims').userId }, { limit: c.req.query('limit'), cursor: c.req.query('cursor') }));
+    return c.json(
+      await service.list(
+        { userId: c.get('claims').userId },
+        { limit: c.req.query('limit'), cursor: c.req.query('cursor') },
+        { deadline: requestDeadline(c.env) },
+      ),
+    );
   });
 
   return r;
+}
+
+/**
+ * Yanit son tarihi: Lambda'da kalan sure - `LAMBDA_MARGIN_MS` (API Lambda zaman asimi 15 sn; payi
+ * yanitin serilestirilmesine birakir). Lambda baglami yoksa (yerel Node, testler) `FALLBACK_BUDGET_MS`.
+ */
+export function requestDeadline(env: unknown, now = Date.now()): number {
+  const lambda = (env as { lambdaContext?: { getRemainingTimeInMillis?: () => number } } | undefined)?.lambdaContext;
+  const remaining = typeof lambda?.getRemainingTimeInMillis === 'function' ? lambda.getRemainingTimeInMillis() : undefined;
+  return now + (remaining !== undefined && Number.isFinite(remaining) ? Math.max(0, remaining - LAMBDA_MARGIN_MS) : FALLBACK_BUDGET_MS);
 }

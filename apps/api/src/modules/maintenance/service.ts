@@ -48,6 +48,12 @@ import {
 
 export type MaintenanceContext = { apartmentId: string; userId: string; role: string };
 
+/**
+ * Gorev listesinin varsayilan geriye bakma penceresi (gun). Genel Bakis'in "geciken bakim" sayisi
+ * (`/tasks?status=open&overdue=true`) ve yonetim portfoyu ayni pencereyi kullanir: ayni sayi.
+ */
+export const TASK_LIST_LOOKBACK_DAYS = 90;
+
 export type MaintenanceServiceDeps = {
   repo: MaintenanceRepository;
   tickets: Pick<TicketService, 'create' | 'settingsOf'>;
@@ -516,7 +522,7 @@ export function createMaintenanceService(overrides: Partial<MaintenanceServiceDe
   async function listTasks(ctx: MaintenanceContext, q: Record<string, string | undefined> = {}) {
     kindOf(ctx);
     const d = today();
-    const from = q.from ?? addDays(d, -90);
+    const from = q.from ?? addDays(d, -TASK_LIST_LOOKBACK_DAYS);
     const to = q.to ?? addDays(d, 60);
     if (!isIsoDate(from) || !isIsoDate(to)) throw new ValidationError('from / to YYYY-MM-DD olmalı', 'from');
     if (from > to) throw new ValidationError('from, to tarihinden sonra olamaz', 'from');
@@ -563,14 +569,19 @@ export function createMaintenanceService(overrides: Partial<MaintenanceServiceDe
   }
 
   /**
-   * Yalnizca sayilar (yonetim portfoyu), tek sorgu: geciken acik gorevler (takvimle ayni kural:
-   * son 1 yil, son gunu bugunden once) ve onumuzdeki 7 gunde (bugun dahil) son gunu gelen acik gorevler.
+   * Yalnizca sayilar (yonetim portfoyu), tek sorgu: geciken acik gorevler (Genel Bakis'in "geciken
+   * bakim" sayisiyla ayni kural: `GET /tasks?status=open&overdue=true` varsayilan penceresi, son
+   * `TASK_LIST_LOOKBACK_DAYS` gun, son gunu bugunden once) ve onumuzdeki 7 gunde (bugun dahil) son gunu
+   * gelen acik gorevler. Takvimin "geciken" listesi 1 yil geriye bakar; o ekran ayridir.
    */
   async function stats(ctx: MaintenanceContext) {
     kindOf(ctx);
     const d = today();
     const weekEnd = addDays(d, 6);
-    const [settings, tasks] = await Promise.all([deps.tickets.settingsOf(ctx.apartmentId), repo.listTasks(ctx.apartmentId, addDays(d, -365), weekEnd)]);
+    const [settings, tasks] = await Promise.all([
+      deps.tickets.settingsOf(ctx.apartmentId),
+      repo.listTasks(ctx.apartmentId, addDays(d, -TASK_LIST_LOOKBACK_DAYS), weekEnd),
+    ]);
     const open = tasks.filter((t) => OPEN_TASK_STATUSES.includes(t.status) && canSee(ctx, t, settings));
     return {
       overdueCount: open.filter((t) => t.dueDate < d).length,

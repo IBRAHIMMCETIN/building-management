@@ -263,6 +263,13 @@ const EDITABLE_ACCOUNT_TYPES = ['cash', 'bank', 'income', 'expense', 'payable'] 
 
 export type FinanceContext = { apartmentId: string; userId: string };
 
+/**
+ * Site geneli rapor verisi secenekleri (yonetim portfoyu). `skipSetup`: hazir hesaplar olusturulmaz
+ * (defter / hesap yazimi yok). `accounts` / `units`: ayni istekte bu apartman icin onceden okunmus
+ * listeler (ikinci kez sorgulanmaz).
+ */
+export type ReportDataOptions = { skipSetup?: boolean; accounts?: Account[]; units?: Unit[] };
+
 /** Online odemede alt cari basina tahsilat. `amount` alt cariye alacak yazilan toplamdir. */
 export type OnlinePaymentAllocation = {
   liableParty: LiableParty;
@@ -2152,17 +2159,16 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
    * Hesaplar ozetlerden ONCE tutarli okunur: ozetin gecerliligi bu surumlere gore denetlenir.
    * Bayat ozetler yalnizca kendi hesabinin satirlarindan yeniden uretilir.
    */
-  async function loadReportData(ctx: FinanceContext, asOf: IsoDate = today(), opts: { readOnly?: boolean } = {}) {
-    // Salt okunur cagiran (yonetim portfoyu): hazir hesaplar olusturulmaz, bayat ozet yazilmaz. Sonuc
-    // aynidir: eksik hazir hesabin bakiyesi sifirdir, bayat ozet yine hesabin satirlarindan uretilir.
-    if (!opts.readOnly) await ensureSystemAccounts(ctx);
-    const [accounts, units] = await Promise.all([repo.listAccounts(ctx.apartmentId), deps.core.listUnits(ctx.apartmentId)]);
-    const { cores } = await loadAccountCores(repo, ctx.apartmentId, accounts.filter(summarizable), {
-      asOf,
-      today: today(),
-      computedAt: stamp(),
-      ...(opts.readOnly ? { persist: false } : {}),
-    });
+  async function loadReportData(ctx: FinanceContext, asOf: IsoDate = today(), opts: ReportDataOptions = {}) {
+    // Yonetim portfoyu: hazir hesaplar olusturulmaz (sonuc ayni: eksik hazir hesabin bakiyesi sifir) ve
+    // ayni apartmanin diger bolumleriyle paylasilan hesap / bolum listesi kullanilir. Bayat alt cari
+    // ozeti her cagiranda oldugu gibi en iyi caba yazilir (turetilmis onbellek; yazilamazsa sonuc yine dogru).
+    if (!opts.skipSetup) await ensureSystemAccounts(ctx);
+    const [accounts, units] = await Promise.all([
+      opts.accounts ?? repo.listAccounts(ctx.apartmentId),
+      opts.units ?? deps.core.listUnits(ctx.apartmentId),
+    ]);
+    const { cores } = await loadAccountCores(repo, ctx.apartmentId, accounts.filter(summarizable), { asOf, today: today(), computedAt: stamp() });
     return { accounts, units, cores };
   }
 
@@ -2196,10 +2202,10 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
   }
 
   /**
-   * Kasa/banka bakiyeleri + alacak/gecikme ozeti. `readOnly`: yalnizca Query/GetItem/BatchGet
-   * (yonetim portfoyu birden cok apartmani okur; hazir hesap olusturma ve ozet onbellegi yazimi yok).
+   * Kasa/banka bakiyeleri + alacak/gecikme ozeti. `ReportDataOptions` (yonetim portfoyu): hazir hesap
+   * olusturma yok, onceden okunmus hesap / bolum listesi kullanilabilir.
    */
-  async function summary(ctx: FinanceContext, opts: { readOnly?: boolean } = {}) {
+  async function summary(ctx: FinanceContext, opts: ReportDataOptions = {}) {
     const [{ accounts, units, cores }, rate] = await Promise.all([loadReportData(ctx, today(), opts), lateFeeRate(ctx.apartmentId)]);
     return { asOf: today(), ...buildSummary(accounts, buildDuesStatusFromCores(units, coreEntries(accounts, cores), today(), rate)) };
   }

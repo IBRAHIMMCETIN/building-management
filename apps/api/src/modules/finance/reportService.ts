@@ -37,7 +37,7 @@ import { type FiscalRepository, fiscalRepository } from './periodRepository.js';
 import { type PeriodCheckSources, defaultPeriodSources } from './periods.js';
 import { type FinanceRepository, batchGetTransactions, financeRepository, queryAccountEntries } from './repository.js';
 import type { FinanceService } from './service.js';
-import type { Transaction } from './types.js';
+import type { Account, Transaction } from './types.js';
 
 export type ReportContext = { apartmentId: string; userId: string };
 
@@ -164,16 +164,20 @@ export function createReportService(overrides: Partial<ReportServiceDeps> & Pick
    * (site `ready` ise; yoksa donem islemlerinden - sonuc ayni). `paymentsIn`: ay -> kasa/banka
    * hesaplarina `payment` turu islemlerin borc satirlari toplami (Genel Bakis "tahsilat").
    * `opening: false`: acilis bakiyeleri okunmaz (bos); yalnizca aylik hareket gereken cagiranlar icin
-   * (gelir-gider toplamlari acilisi kullanmaz).
+   * (gelir-gider toplamlari acilisi kullanmaz). `accounts`: ayni istekte onceden okunmus hesap listesi.
    */
   async function loadActivity(
     apartmentId: string,
     fromMonth: string,
     toMonth: string,
-    opts: { opening?: boolean } = {},
+    opts: { opening?: boolean; accounts?: Account[] } = {},
   ): Promise<ReportActivity & { paymentsIn: Map<string, number> }> {
     const months = monthsBetween(fromMonth, toMonth);
-    const [accounts, periods, useMsum] = await Promise.all([deps.finance.listAccounts(apartmentId), deps.fiscal.listPeriods(apartmentId), monthSummaryReady(apartmentId)]);
+    const [accounts, periods, useMsum] = await Promise.all([
+      opts.accounts ?? deps.finance.listAccounts(apartmentId),
+      deps.fiscal.listPeriods(apartmentId),
+      monthSummaryReady(apartmentId),
+    ]);
     const closed = new Map(periods.filter((p) => p.status === 'closed').map((p) => [p.period, p]));
     const closingOf = (p: FiscalPeriod) => new Map(p.snapshot.rows.map((r) => [r.accountId, r.closing]));
     const fromStart = periodBounds(fromMonth).first;
@@ -465,9 +469,9 @@ export function createReportService(overrides: Partial<ReportServiceDeps> & Pick
    * Bu ayin tahakkuk / tahsilati: Genel Bakis'in `thisMonth` alaniyla ayni hesap, ama yalnizca bu
    * ayin hareketleri okunur (12 aylik seri, butce ve acilis yok). Yonetim portfoyu kullanir.
    */
-  async function collection(ctx: ReportContext): Promise<MonthCollection> {
+  async function collection(ctx: ReportContext, opts: { accounts?: Account[] } = {}): Promise<MonthCollection> {
     const current = today().slice(0, 7);
-    const activity = await loadActivity(ctx.apartmentId, current, current, { opening: false });
+    const activity = await loadActivity(ctx.apartmentId, current, current, { opening: false, ...(opts.accounts ? { accounts: opts.accounts } : {}) });
     const ie = buildIncomeExpense(activity);
     return monthCollection(current, ie.totals.income[0] ?? 0, activity.paymentsIn.get(current) ?? 0);
   }

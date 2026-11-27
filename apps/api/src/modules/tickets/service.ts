@@ -359,14 +359,14 @@ export function createTicketService(overrides: Partial<TicketServiceDeps> = {}) 
   // Okuma
   // -------------------------------------------------------------------------
 
-  async function visibleTickets(actor: TicketActor, settings: TicketSettings): Promise<Ticket[]> {
+  async function visibleTickets(actor: TicketActor, settings: TicketSettings, opts: { consistent?: boolean } = {}): Promise<Ticket[]> {
     let tickets: Ticket[];
     if (actor.kind === 'resident' || actor.kind === 'security') {
       const ids = new Set(await repo.listIndexed(actor.apartmentId, ticketKeys.userPrefix(actor.userId)));
       for (const unitId of actor.unitIds) for (const id of await repo.listIndexed(actor.apartmentId, ticketKeys.unitPrefix(unitId))) ids.add(id);
       tickets = ids.size ? await repo.getMany(actor.apartmentId, [...ids]) : [];
     } else {
-      tickets = await repo.list(actor.apartmentId);
+      tickets = await repo.list(actor.apartmentId, opts.consistent === false ? { consistent: false } : undefined);
     }
     return tickets.filter((t) => canView(actor, t, settings));
   }
@@ -437,14 +437,15 @@ export function createTicketService(overrides: Partial<TicketServiceDeps> = {}) 
   }
 
   /**
-   * Yalnizca sayilar (yonetim portfoyu): panoyla ayni gorunurluk ve SLA kurali, talep icerigi yok.
+   * Yalnizca sayilar (yonetim portfoyu): panoyla ayni okuma, gorunurluk ve SLA kurali, talep icerigi
+   * yok. Durum indeksi olmadigindan panodaki gibi tum talepler okunur; sayi icin eventually consistent.
    * `openByPriority`: cozum bekleyen (SLA isleyen) talepler; `overdueCount`: SLA'si asilanlar.
    */
   async function stats(ctx: TicketContext) {
     const [actor, settings] = await Promise.all([actorOf(ctx), settingsOf(ctx.apartmentId)]);
     if (actor.kind === 'resident' || actor.kind === 'security') throw new TicketError('forbidden', 'Pano yönetim ve görevli ekranıdır');
     const now = deps.now();
-    const active = (await visibleTickets(actor, settings)).filter((t) => ACTIVE_STATUSES.includes(t.status));
+    const active = (await visibleTickets(actor, settings, { consistent: false })).filter((t) => ACTIVE_STATUSES.includes(t.status));
     const openByPriority = Object.fromEntries(TICKET_PRIORITIES.map((p) => [p, active.filter((t) => t.priority === p).length])) as Record<TicketPriority, number>;
     return { openCount: active.length, openByPriority, overdueCount: active.filter((t) => isOverdue(t, now)).length };
   }

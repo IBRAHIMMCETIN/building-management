@@ -1,11 +1,13 @@
 import { type GrantItem, ROLE_PRECEDENCE, isCurrent, toGrants } from '../../auth/preTokenGeneration.js';
-import { mapLimit } from '../core/concurrency.js';
 import { ValidationError } from '../core/validation.js';
 import type { CoreRepository } from '../core/repository.js';
+import type { Unit } from '../core/types.js';
 import type { ExpiryItem } from '../equipment/types.js';
 import type { EquipmentService } from '../equipment/service.js';
+import type { FinanceRepository } from '../finance/repository.js';
 import type { FinanceService } from '../finance/service.js';
 import type { ReportService } from '../finance/reportService.js';
+import type { Account } from '../finance/types.js';
 import type { MaintenanceService } from '../maintenance/service.js';
 import type { PollService } from '../polls/service.js';
 import type { AssemblyService } from '../assemblies/service.js';
@@ -29,7 +31,7 @@ import {
   type PortfolioRole,
   type PortfolioSection,
   type PortfolioTotals,
-  REQUEST_BUDGET_MS,
+  FALLBACK_BUDGET_MS,
   type TenderFigures,
   type TicketFigures,
   sectionsFor,
@@ -54,9 +56,16 @@ export type PortfolioSources = {
   tenders(ctx: ApartmentReadContext): Promise<{ items: ReadonlyArray<{ status: string }> }>;
 };
 
-/** Gercek servislerden kaynaklar (app.ts). Tum yollar salt okunurdur (Query / GetItem / BatchGet). */
+/**
+ * Gercek servislerden kaynaklar (app.ts). Okumalar Query / GetItem / BatchGet'tir; tek yazim, finans
+ * ozetinin bayat alt cari ozetini en iyi caba geri yazmasidir (turetilmis onbellek, hatasi istegi
+ * bozmaz). Ayni apartmanin bolumleri hesap ve bolum listesini paylasir (kart basina bir kez okunur;
+ * ayni `ctx` nesnesi o kartin tum bolumlerine verilir).
+ */
 export function createPortfolioSources(s: {
   core: Pick<CoreRepository, 'listUnits'>;
+  /** Finans servisiyle ayni depo (hesap listesi bir kez okunup ozet ve tahsilata verilir). */
+  ledger: Pick<FinanceRepository, 'listAccounts'>;
   finance: Pick<FinanceService, 'summary'>;
   reports: Pick<ReportService, 'collection'>;
   tickets: Pick<TicketService, 'stats'>;
@@ -66,10 +75,19 @@ export function createPortfolioSources(s: {
   assemblies: Pick<AssemblyService, 'list'>;
   tenders: Pick<TenderService, 'list'>;
 }): PortfolioSources {
+  const shared = new WeakMap<ApartmentReadContext, { accounts?: Promise<Account[]>; units?: Promise<Unit[]> }>();
+  const memo = (ctx: ApartmentReadContext) => {
+    let m = shared.get(ctx);
+    if (!m) shared.set(ctx, (m = {}));
+    return m;
+  };
+  const accountsOf = (ctx: ApartmentReadContext) => (memo(ctx).accounts ??= s.ledger.listAccounts(ctx.apartmentId));
+  const unitsOf = (ctx: ApartmentReadContext) => (memo(ctx).units ??= s.core.listUnits(ctx.apartmentId));
   return {
-    units: async (ctx) => ({ count: (await s.core.listUnits(ctx.apartmentId)).filter((u) => u.siteId === ctx.apartmentId && u.status === 'active').length }),
+    units: async (ctx) => ({ count: (await unitsOf(ctx)).filter((u) => u.siteId === ctx.apartmentId && u.status === 'active').length }),
     finance: async (ctx) => {
-      const f = await s.finance.summary(ctx, { readOnly: true });
+      const [accounts, units] = await Promise.all([accountsOf(ctx), unitsOf(ctx)]);
+      const f = await s.finance.summary(ctx, { skipSetup: true, accounts, units });
       return {
         cash: f.cash,
         bank: f.bank,
@@ -81,7 +99,7 @@ export function createPortfolioSources(s: {
         payables: f.payables,
       };
     },
-    collection: (ctx) => s.reports.collection(ctx),
+    collection: async (ctx) => s.reports.collection(ctx, { accounts: await accountsOf(ctx) }),
     tickets: (ctx) => s.tickets.stats(ctx),
     maintenance: (ctx) => s.maintenance.stats(ctx),
     equipment: (ctx) => s.equipment.expiring(ctx, { days: '30' }),
@@ -219,16 +237,17 @@ export type PortfolioServiceDeps = {
   now: () => Date;
   concurrency: number;
   apartmentTimeoutMs: number;
-  requestBudgetMs: number;
+  /** Cagiran son tarih vermezse (Lambda disi) istek butcesi. */
+  fallbackBudgetMs: number;
   /** Bolum hatasi yalnizca sunucu gunlugune (apartman + bolum + hata adi); istemciye kod doner. */
   log: (entry: Record<string, unknown>) => void;
 };
 
-class SectionTimeout extends Error {
-  override name = 'SectionTimeout';
-}
+type PageApartment = EligibleApartment & { apartmentName: string };
 
 const istanbulDate = (d: Date) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Istanbul' }).format(d);
+
+const statusOf = (failed: number, total: number): PortfolioCard['status'] => (failed === 0 ? 'ok' : failed === total ? 'error' : 'partial');
 
 export function createPortfolioService(overrides: Partial<PortfolioServiceDeps> & Pick<PortfolioServiceDeps, 'sources'>) {
   const deps: PortfolioServiceDeps = {
@@ -236,36 +255,49 @@ export function createPortfolioService(overrides: Partial<PortfolioServiceDeps> 
     now: () => new Date(),
     concurrency: APARTMENT_CONCURRENCY,
     apartmentTimeoutMs: APARTMENT_TIMEOUT_MS,
-    requestBudgetMs: REQUEST_BUDGET_MS,
+    fallbackBudgetMs: FALLBACK_BUDGET_MS,
     log: (entry) => console.error(JSON.stringify(entry)),
     ...overrides,
   };
 
-  /** Kullanicinin bugun portfoyune giren apartmanlari (adla sirali). */
-  async function eligible(userId: string) {
+  /**
+   * Kullanicinin bugun portfoyune giren apartmanlari. Sira kararlidir: adi olanlar adla (Turkce),
+   * esitlikte kimlikle; site kaydi olmayan (adsiz) apartmanlar sonda, kimlikle.
+   */
+  async function eligible(userId: string): Promise<PageApartment[]> {
     const today = istanbulDate(deps.now());
     const candidates = candidateGrants(await deps.repo.grantItems(userId), today);
     const confirmed = confirmEligible(userId, candidates, await deps.repo.roleRecords(userId, candidates), today);
     const names = await deps.repo.siteNames(confirmed.map((c) => c.apartmentId));
     return confirmed
-      .map((c) => ({ ...c, apartmentName: names.get(c.apartmentId) ?? c.apartmentId }))
-      .sort((a, b) => a.apartmentName.localeCompare(b.apartmentName, 'tr') || a.apartmentId.localeCompare(b.apartmentId));
+      .map((c) => ({ ...c, named: names.has(c.apartmentId), apartmentName: names.get(c.apartmentId) ?? c.apartmentId }))
+      .sort(
+        (a, b) =>
+          Number(b.named) - Number(a.named) ||
+          (a.named ? a.apartmentName.localeCompare(b.apartmentName, 'tr') : 0) ||
+          a.apartmentId.localeCompare(b.apartmentId),
+      )
+      .map(({ named: _named, ...rest }) => rest);
   }
 
-  /** Sureyi asan veya hata veren bolum `failed` olur; digerleri doner (apartman bazinda yalitim). */
-  function within<T>(p: Promise<T>, ms: number): Promise<T> {
-    if (ms <= 0) return Promise.reject(new SectionTimeout());
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const timeout = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(new SectionTimeout()), ms);
-    });
-    return Promise.race([p, timeout]).finally(() => clearTimeout(timer));
+  function baseCard(apt: PageApartment): PortfolioCard {
+    return { apartmentId: apt.apartmentId, apartmentName: apt.apartmentName, role: apt.role, readOnly: apt.role === 'observer', status: 'ok', failed: [] };
   }
 
-  async function card(apt: EligibleApartment & { apartmentName: string }, userId: string, deadline: number): Promise<PortfolioCard> {
+  /** Butce bittigi icin hic okunmayan apartman: tum bolumler `failed` (istemci sonra yeniden dener). */
+  function skippedCard(apt: PageApartment): PortfolioCard {
+    deps.log({ msg: 'portfolio_apartment_skipped', apartmentId: apt.apartmentId, reason: 'request_budget' });
+    return { ...baseCard(apt), status: 'error', failed: [...sectionsFor(apt.role)] };
+  }
+
+  /**
+   * Apartmanin bolumlerini baslatir. `card`: tum bolumler bitince veya `budgetMs` dolunca (o anki
+   * haliyle; bitmeyenler `failed`). `settled`: alttaki okumalarin hepsi bittiginde (iptal edilemeyen
+   * okuma suruyorsa es zamanlilik yuvasi bos sayilmaz). `snapshot`: istek son tarihinde o anki kart.
+   */
+  function startCard(apt: PageApartment, userId: string, budgetMs: number) {
     const ctx: ApartmentReadContext = { apartmentId: apt.apartmentId, userId, role: apt.role };
     const sections = sectionsFor(apt.role);
-    const budget = Math.min(deps.apartmentTimeoutMs, deadline - Date.now());
     const nowIso = deps.now().toISOString();
     const read: Record<PortfolioSection, () => Promise<unknown>> = {
       units: () => deps.sources.units(ctx),
@@ -278,41 +310,113 @@ export function createPortfolioService(overrides: Partial<PortfolioServiceDeps> 
       assemblies: async () => assemblyFigures(await deps.sources.assemblies(ctx), nowIso),
       tenders: async () => tenderFigures((await deps.sources.tenders(ctx)).items),
     };
-    // Istek butcesi bittiyse apartman hic okunmaz (bolumler `failed`; istemci sonra yeniden dener).
-    const settled: PromiseSettledResult<unknown>[] =
-      budget <= 0
-        ? sections.map(() => ({ status: 'rejected', reason: new SectionTimeout() }))
-        : await Promise.allSettled(sections.map((s) => within(Promise.resolve().then(read[s]), budget)));
-    const out: PortfolioCard = {
-      apartmentId: apt.apartmentId,
-      apartmentName: apt.apartmentName,
-      role: apt.role,
-      readOnly: apt.role === 'observer',
-      status: 'ok',
-      failed: [],
-    };
-    settled.forEach((r, i) => {
-      const section = sections[i] as PortfolioSection;
-      if (r.status === 'fulfilled') {
-        (out as Record<string, unknown>)[section] = r.value;
-      } else {
+    type ErrorLike = { name?: string; code?: string } | undefined;
+    const values = new Map<PortfolioSection, unknown>();
+    const errors = new Map<PortfolioSection, ErrorLike>();
+    let frozen: PortfolioCard | undefined;
+    const snapshot = (): PortfolioCard => {
+      if (frozen) return frozen;
+      const out = baseCard(apt);
+      for (const section of sections) {
+        if (values.has(section)) {
+          (out as Record<string, unknown>)[section] = values.get(section);
+          continue;
+        }
         out.failed.push(section);
-        const err = r.reason as { name?: string; code?: string } | undefined;
+        const err: ErrorLike = errors.has(section) ? errors.get(section) : { name: 'SectionTimeout' };
         deps.log({ msg: 'portfolio_section_failed', apartmentId: apt.apartmentId, section, error: err?.name ?? 'Error', ...(err?.code ? { code: err.code } : {}) });
       }
+      out.status = statusOf(out.failed.length, sections.length);
+      frozen = out;
+      return out;
+    };
+    // Kart dondurulduktan sonra gelen sonuc yok sayilir.
+    const settled = Promise.all(
+      sections.map((s) =>
+        Promise.resolve()
+          .then(read[s])
+          .then(
+            (v) => {
+              if (!frozen) values.set(s, v);
+            },
+            (err: unknown) => {
+              if (!frozen) errors.set(s, err as ErrorLike);
+            },
+          ),
+      ),
+    ).then(() => undefined);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const card = new Promise<PortfolioCard>((resolve) => {
+      timer = setTimeout(() => resolve(snapshot()), budgetMs);
+      void settled.then(() => {
+        clearTimeout(timer);
+        resolve(snapshot());
+      });
     });
-    out.status = out.failed.length === 0 ? 'ok' : out.failed.length === sections.length ? 'error' : 'partial';
-    return out;
+    return { card, settled, snapshot };
   }
 
-  async function list(ctx: { userId: string }, q: { limit?: string; cursor?: string } = {}): Promise<PortfolioPage> {
+  /**
+   * Sinirli es zamanlilik: en fazla `concurrency` apartmanin okumasi ayni anda surer. Bir yuva, karti
+   * suresi dolsa bile alttaki okumalar bitene kadar dolu kalir (yeniden kullanilan servislerin SDK
+   * cagrilari iptal sinyali almiyor). Yanit en gec istek son tarihinde doner: suren kart o anki
+   * haliyle, baslamamis apartman okunmadan.
+   */
+  async function runCards(page: PageApartment[], userId: string, deadline: number): Promise<PortfolioCard[]> {
+    const results: Array<PortfolioCard | undefined> = new Array(page.length);
+    const running = new Map<number, () => PortfolioCard>();
+    let undecided = page.length;
+    let release: () => void = () => {};
+    const allDecided = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    if (undecided === 0) release();
+    const decide = (i: number, c: PortfolioCard) => {
+      if (results[i]) return;
+      results[i] = c;
+      running.delete(i);
+      if (--undecided === 0) release();
+    };
+    let next = 0;
+    let stopped = false;
+    const lane = async () => {
+      while (!stopped && next < page.length) {
+        const i = next++;
+        const apt = page[i] as PageApartment;
+        const budget = Math.min(deps.apartmentTimeoutMs, deadline - Date.now());
+        if (budget <= 0) {
+          decide(i, skippedCard(apt));
+          continue;
+        }
+        const started = startCard(apt, userId, budget);
+        running.set(i, started.snapshot);
+        void started.card.then((c) => decide(i, c));
+        await started.settled;
+      }
+    };
+    for (let k = 0; k < Math.max(1, Math.min(deps.concurrency, page.length)); k++) void lane();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const expired = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, Math.max(0, deadline - Date.now()));
+    });
+    await Promise.race([allDecided, expired]);
+    clearTimeout(timer);
+    stopped = true;
+    return page.map((apt, i) => results[i] ?? running.get(i)?.() ?? skippedCard(apt));
+  }
+
+  /**
+   * `deadline`: yanitin en gec hazir olacagi an (ms, `Date.now()` ekseni). Rota Lambda'nin kalan
+   * suresinden turetir; verilmezse `fallbackBudgetMs`.
+   */
+  async function list(ctx: { userId: string }, q: { limit?: string; cursor?: string } = {}, opts: { deadline?: number } = {}): Promise<PortfolioPage> {
     const limit = parseLimit(q.limit);
     const offset = decodeCursor(q.cursor);
+    const deadline = opts.deadline ?? Date.now() + deps.fallbackBudgetMs;
     const now = deps.now();
-    const deadline = Date.now() + deps.requestBudgetMs;
     const all = await eligible(ctx.userId);
     const page = all.slice(offset, offset + limit);
-    const items = await mapLimit(page, deps.concurrency, (apt) => card(apt, ctx.userId, deadline));
+    const items = await runCards(page, ctx.userId, deadline);
     return {
       asOf: istanbulDate(now),
       period: istanbulDate(now).slice(0, 7),

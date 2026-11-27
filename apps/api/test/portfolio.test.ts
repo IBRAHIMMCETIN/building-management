@@ -17,7 +17,8 @@ import { createReportService } from '../src/modules/finance/reportService.js';
 import { type FinanceContext, createFinanceService } from '../src/modules/finance/service.js';
 import { createMaintenanceService } from '../src/modules/maintenance/service.js';
 import type { MaintenanceTask } from '../src/modules/maintenance/types.js';
-import type { RoleRecord, PortfolioRepository } from '../src/modules/portfolio/repository.js';
+import { DataAccessError } from '../src/config/dynamodb.js';
+import { type PortfolioRepository, type RoleRecord, createPortfolioRepository } from '../src/modules/portfolio/repository.js';
 import {
   type ApartmentReadContext,
   type PortfolioSources,
@@ -32,7 +33,8 @@ import {
   tenderFigures,
   totalsOf,
 } from '../src/modules/portfolio/service.js';
-import { MAX_PAGE_SIZE, PORTFOLIO_SECTIONS, sectionsFor } from '../src/modules/portfolio/types.js';
+import { DEFAULT_PAGE_SIZE, FALLBACK_BUDGET_MS, LAMBDA_MARGIN_MS, MAX_PAGE_SIZE, PORTFOLIO_SECTIONS, sectionsFor } from '../src/modules/portfolio/types.js';
+import { requestDeadline } from '../src/modules/portfolio/routes.js';
 import { createTenderService } from '../src/modules/tenders/service.js';
 import { createTicketService } from '../src/modules/tickets/service.js';
 import { DEFAULT_TICKET_SETTINGS } from '../src/modules/tickets/types.js';
@@ -102,6 +104,22 @@ function fakeSources(opts: { fail?: Record<string, string[]>; hang?: Record<stri
 }
 
 const silent = () => {};
+
+/** Gercek kaynaklar: yalnizca testin kullandigi servisler verilir. */
+const withSources = (partial: Partial<Parameters<typeof createPortfolioSources>[0]>) =>
+  createPortfolioSources({
+    core: {} as never,
+    ledger: {} as never,
+    finance: {} as never,
+    reports: {} as never,
+    tickets: {} as never,
+    maintenance: {} as never,
+    equipment: {} as never,
+    polls: {} as never,
+    assemblies: {} as never,
+    tenders: {} as never,
+    ...partial,
+  });
 
 // ---------------------------------------------------------------------------
 // Yetki (saf)
@@ -222,7 +240,7 @@ describe('portfoy servisi', () => {
     expect(new Set(reads.map((r) => r.split(':')[0]))).toEqual(new Set(['apt-1', 'apt-2', 'apt-3']));
     expect(reads).toContain('apt-3:observer:tenders');
     expect(calls.roleKeys.map((k) => k.apartmentId).sort()).toEqual(['apt-1', 'apt-2', 'apt-3']);
-    expect(page).toMatchObject({ asOf: TODAY, period: '2026-11', total: 3, limit: 20 });
+    expect(page).toMatchObject({ asOf: TODAY, period: '2026-11', total: 3, limit: DEFAULT_PAGE_SIZE });
     expect(page).not.toHaveProperty('nextCursor');
     expect(page.items[0]).toMatchObject({
       units: { count: 20 },
@@ -268,7 +286,7 @@ describe('portfoy servisi', () => {
     expect(JSON.stringify(log.mock.calls)).not.toContain('gizli');
   });
 
-  it('suresini asan bolum ve istek butcesi asildiktan sonra baslayan apartman failed doner', async () => {
+  it('suresini asan bolum failed; son tarih gecmisse apartman hic okunmaz', async () => {
     const { repo } = fakeRepo({ gsi, names });
     const slow = createPortfolioService({ repo, sources: fakeSources({ hang: { 'apt-1': ['collection'] } }), now: () => NOW, apartmentTimeoutMs: 20, log: silent });
     const page = await slow.list({ userId: USER });
@@ -276,10 +294,71 @@ describe('portfoy servisi', () => {
     expect(page.items.filter((c) => c.status === 'ok')).toHaveLength(2);
 
     const reads: string[] = [];
-    const spent = createPortfolioService({ repo, sources: fakeSources({ onRead: (c, s) => reads.push(`${c.apartmentId}:${s}`) }), now: () => NOW, requestBudgetMs: 0, log: silent });
-    expect((await spent.list({ userId: USER })).items.every((c) => c.status === 'error')).toBe(true);
-    // Butce bittikten sonra apartman hic okunmaz.
+    const log = vi.fn();
+    const spent = createPortfolioService({ repo, sources: fakeSources({ onRead: (c, s) => reads.push(`${c.apartmentId}:${s}`) }), now: () => NOW, log });
+    expect((await spent.list({ userId: USER }, {}, { deadline: Date.now() - 1 })).items.every((c) => c.status === 'error')).toBe(true);
     expect(reads).toEqual([]);
+    expect(log).toHaveBeenCalledWith(expect.objectContaining({ msg: 'portfolio_apartment_skipped', reason: 'request_budget' }));
+  });
+
+  it('gercek saat: yavas kaynak butce icinde kismi kart doner; butce bitince baslamamis apartman okunmaz', async () => {
+    const { repo } = fakeRepo({ gsi, names });
+    const sources = fakeSources({ hang: { 'apt-2': ['finance', 'tickets'] } });
+    const started = Date.now();
+    const page = await createPortfolioService({ repo, sources, now: () => NOW, log: silent }).list({ userId: USER }, {}, { deadline: started + 150 });
+    const elapsed = Date.now() - started;
+    expect(elapsed).toBeLessThan(1_000);
+    const byId = new Map(page.items.map((c) => [c.apartmentId, c]));
+    expect(byId.get('apt-2')).toMatchObject({ status: 'partial', failed: ['finance', 'tickets'], units: { count: 20 } });
+    expect(byId.get('apt-1')?.status).toBe('ok');
+
+    // Tek yuva, ilk apartman hic bitmiyor: ikinci ve ucuncu son tarihe kadar baslayamaz.
+    const reads: string[] = [];
+    const blocked = createPortfolioService({
+      repo,
+      sources: fakeSources({ hang: { 'apt-2': ['units'] }, onRead: (c, s) => reads.push(`${c.apartmentId}:${s}`) }),
+      now: () => NOW,
+      concurrency: 1,
+      apartmentTimeoutMs: 30,
+      log: silent,
+    });
+    const t0 = Date.now();
+    const result = await blocked.list({ userId: USER }, {}, { deadline: t0 + 120 });
+    expect(Date.now() - t0).toBeLessThan(1_000);
+    // Adla sira: Akasya (apt-2), Cinar (apt-3), Zambak (apt-1).
+    expect(result.items.map((c) => [c.apartmentId, c.status])).toEqual([
+      ['apt-2', 'partial'],
+      ['apt-3', 'error'],
+      ['apt-1', 'error'],
+    ]);
+    expect(new Set(reads.map((r) => r.split(':')[0]))).toEqual(new Set(['apt-2']));
+  });
+
+  it('zaman asiminda yuva, alttaki okuma bitene kadar dolu kalir (es zamanli apartman siniri korunur)', async () => {
+    const many = Array.from({ length: 6 }, (_, i) => role(`apt-${i + 1}`, 'apartment_manager'));
+    const { repo } = fakeRepo({ gsi: many, names: Object.fromEntries(many.map((g, i) => [g.apartmentId as string, `Site ${i + 1}`])) });
+    const inFlight = new Set<string>();
+    let peak = 0;
+    const sources = fakeSources();
+    // Her apartmanin daire okumasi kart suresinden (15 ms) uzun surer (60 ms).
+    const slowUnits: PortfolioSources['units'] = async (ctx) => {
+      inFlight.add(ctx.apartmentId);
+      peak = Math.max(peak, inFlight.size);
+      await new Promise((r) => setTimeout(r, 60));
+      inFlight.delete(ctx.apartmentId);
+      return sources.units(ctx);
+    };
+    const service = createPortfolioService({ repo, sources: { ...sources, units: slowUnits }, now: () => NOW, concurrency: 2, apartmentTimeoutMs: 15, log: silent });
+    const page = await service.list({ userId: USER }, {}, { deadline: Date.now() + 2_000 });
+    expect(peak).toBe(2);
+    expect(page.items.every((c) => c.status === 'partial' && c.failed.join() === 'units')).toBe(true);
+  });
+
+  it('kararli sira: adsiz (site kaydi olmayan) apartman sonda, kimlikle; ayni ad kimlikle', async () => {
+    const grants = [role('apt-c', 'apartment_manager'), role('apt-a', 'apartment_manager'), role('apt-b', 'apartment_manager'), role('apt-0', 'observer')];
+    const { repo } = fakeRepo({ gsi: grants, names: { 'apt-c': 'Lale', 'apt-a': 'Lale', 'apt-b': 'Akasya' } });
+    const service = createPortfolioService({ repo, sources: fakeSources(), now: () => NOW, log: silent });
+    expect((await service.eligible(USER)).map((a) => a.apartmentId)).toEqual(['apt-b', 'apt-a', 'apt-c', 'apt-0']);
   });
 
   it('sayfalama, ust sinir ve es zamanli apartman siniri', async () => {
@@ -323,11 +402,11 @@ describe('mevcut ozetlerle birebir toplamlar', () => {
   const mgr = { apartmentId: APT, userId: 'mgr-1', role: 'apartment_manager' as const };
   const obs = { apartmentId: APT, userId: 'obs-1', role: 'observer' as const };
 
-  it('finans: Genel Bakis ozeti ve bu ay tahakkuk / tahsilat; salt okunur (hazir hesap / ozet yazimi yok)', async () => {
+  it('finans: Genel Bakis ozeti ve bu ay tahakkuk / tahsilat; hazir hesap yazimi yok, bayat ozet en iyi caba geri yazilir, hesap / bolum listesi bir kez', async () => {
     const fake = createFakeFinanceRepo(APT);
     const fiscal = createFakeFiscalRepo(fake.docs);
     const units = ['u1', 'u2'].map((id) => ({ unitId: id, siteId: APT, blockId: 'b1', number: id, status: 'active', exemptions: [], grossAreaTenthsM2: 1000 }) as unknown as Unit);
-    const core = { getUnit: async (_a: string, id: string) => units.find((u) => u.unitId === id), listUnits: async () => units };
+    const core = { getUnit: async (_a: string, id: string) => units.find((u) => u.unitId === id), listUnits: vi.fn(async () => units) };
     let n = 0;
     const finance = createFinanceService({ repository: fake.repo, core, now: () => NOW, newId: () => `id${String(++n).padStart(4, '0')}` });
     const zero = async () => 0;
@@ -348,23 +427,30 @@ describe('mevcut ozetlerle birebir toplamlar', () => {
     }
     await finance.recordPayment(ctx, { idempotencyKey: `p-${++k}`, unitId: 'u1', liableParty: 'owner', amount: 150000, method: 'cash', paidAt: '2026-11-10' });
 
-    const sources = createPortfolioSources({
-      core,
-      finance,
-      reports,
-      tickets: {} as never,
-      maintenance: {} as never,
-      equipment: {} as never,
-      polls: {} as never,
-      assemblies: {} as never,
-      tenders: {} as never,
-    });
+    const sources = withSources({ core, ledger: fake.repo, finance, reports });
+    const ensure = vi.spyOn(fake.repo, 'ensureAccounts');
+    const listAccounts = vi.spyOn(fake.repo, 'listAccounts');
+    core.listUnits.mockClear();
+
+    // Ozet onbellegi yazilamazsa sonuc yine doner (en iyi caba).
+    const failingPut = vi.spyOn(fake.repo, 'putAccountSummary').mockRejectedValue(new Error('yazilamadi'));
+    const c1 = { ...mgr };
+    const [first] = await Promise.all([sources.finance(c1), sources.collection(c1), sources.units(c1)]);
+    expect(failingPut).toHaveBeenCalled();
+    // Ayni kartin bolumleri hesap ve bolum listesini paylasir.
+    expect(listAccounts).toHaveBeenCalledTimes(1);
+    expect(core.listUnits).toHaveBeenCalledTimes(1);
+    failingPut.mockRestore();
+
+    // Bayat ozet (onceki yazim basarisiz) bu kez geri yazilir: sonraki portfoy istegi yeniden uretmez.
+    const putSummary = vi.spyOn(fake.repo, 'putAccountSummary');
+    const figures = await sources.finance({ ...mgr });
+    expect(putSummary).toHaveBeenCalled();
+    expect(figures).toEqual(first);
+    expect(ensure).not.toHaveBeenCalled();
+
     const dashboard = await reports.dashboard(ctx);
     const summary = await finance.summary(ctx);
-
-    const ensure = vi.spyOn(fake.repo, 'ensureAccounts');
-    const putSummary = vi.spyOn(fake.repo, 'putAccountSummary');
-    const figures = await sources.finance(mgr);
     expect(figures).toEqual({
       cash: summary.cash,
       bank: summary.bank,
@@ -379,8 +465,6 @@ describe('mevcut ozetlerle birebir toplamlar', () => {
     expect(await sources.collection(mgr)).toEqual(dashboard.thisMonth);
     expect(dashboard.thisMonth).toEqual({ period: '2026-11', charged: 200000, collected: 150000, collectionRatePct: 75 });
     expect(await sources.units(mgr)).toEqual({ count: 2 });
-    expect(ensure).not.toHaveBeenCalled();
-    expect(putSummary).not.toHaveBeenCalled();
   });
 
   it('talepler: pano ile ayni acik / SLA sayilari, icerik yok', async () => {
@@ -406,8 +490,11 @@ describe('mevcut ozetlerle birebir toplamlar', () => {
     await tickets.transition(mgr, resolved.ticket.ticketId, { version: resolved.ticket.version, action: 'resolve', note: 'Tamam' });
     now = new Date('2026-11-25T09:00:00.000Z'); // acil / yuksek SLA asildi
     const board = await tickets.board(mgr);
-    const sources = createPortfolioSources({ tickets, core: {} as never, finance: {} as never, reports: {} as never, maintenance: {} as never, equipment: {} as never, polls: {} as never, assemblies: {} as never, tenders: {} as never });
+    const sources = withSources({ tickets });
+    const list = vi.spyOn(fake.repo, 'list');
     const stats = await sources.tickets(mgr);
+    // Durum indeksi yok: panodaki gibi tum talepler, sayi icin eventually consistent okuma.
+    expect(list).toHaveBeenCalledWith(APT, { consistent: false });
     const active = board.columns.filter((c) => c.status !== 'resolved').reduce((s, c) => s + c.count, 0);
     expect(stats.openCount).toBe(active);
     expect(stats.overdueCount).toBe(board.overdueCount);
@@ -418,11 +505,12 @@ describe('mevcut ozetlerle birebir toplamlar', () => {
     expect(JSON.stringify(stats)).not.toContain('Asansör');
   });
 
-  it('bakim: takvimle ayni geciken kural + 7 gun icinde son gunu gelenler', async () => {
+  it('bakim: Genel Bakis ile ayni geciken sayisi (90 gunluk gorev listesi) + 7 gun icinde son gunu gelenler', async () => {
     const fake = createFakeMaintenanceRepo();
     const task = (dueDate: string, status: MaintenanceTask['status'], templateId = 'tpl1') =>
       fake.items.set(`MTASK#${dueDate}#${templateId}`, { PK: `APT#${APT}`, SK: `MTASK#${dueDate}#${templateId}`, entityType: 'MAINT_TASK', apartmentId: APT, templateId, dueDate, status, name: 'Asansör bakımı', version: 1 } as unknown as MaintenanceTask);
-    task('2025-10-01', 'scheduled'); // 1 yildan eski: takvim de saymaz
+    task('2025-10-01', 'scheduled'); // 1 yildan eski
+    task('2026-08-01', 'scheduled'); // 90 gun disi: Genel Bakis da saymaz (takvim sayar)
     task('2026-10-01', 'scheduled');
     task('2026-11-20', 'in_progress');
     task('2026-11-21', 'done');
@@ -433,11 +521,11 @@ describe('mevcut ozetlerle birebir toplamlar', () => {
     const site = { siteId: APT, settings: defaultSiteSettings() } as unknown as Site;
     const tickets = createTicketService({ repo: createFakeTicketRepo().repo, core: { getSite: async () => site, getUnit: async () => undefined, getBlock: async () => undefined }, memberships: { listMemberships: async () => [] }, roles: { list: async () => [] }, now: () => NOW });
     const maintenance = createMaintenanceService({ repo: fake.repo, tickets, roles: { list: async () => [] }, now: () => NOW });
-    const sources = createPortfolioSources({ maintenance, core: {} as never, finance: {} as never, reports: {} as never, tickets: {} as never, equipment: {} as never, polls: {} as never, assemblies: {} as never, tenders: {} as never });
+    const sources = withSources({ maintenance });
     const stats = await sources.maintenance(mgr);
-    const calendar = await maintenance.calendar(mgr, { month: '2026-11' });
-    const overdueInMonth = calendar.items.filter((t) => (t.status === 'scheduled' || t.status === 'in_progress') && t.dueDate < TODAY).length;
-    expect(stats.overdueCount).toBe(calendar.overdue.length + overdueInMonth);
+    // Genel Bakis'in "geciken bakim" kaynagi: GET /tasks?status=open&overdue=true (varsayilan pencere).
+    const dashboardOverdue = (await maintenance.listTasks(mgr, { status: 'open', overdue: 'true' })).items.length;
+    expect(stats.overdueCount).toBe(dashboardOverdue);
     expect(stats).toEqual({ overdueCount: 2, dueThisWeekCount: 2 });
     expect(await sources.maintenance(obs)).toEqual(stats);
   });
@@ -452,7 +540,7 @@ describe('mevcut ozetlerle birebir toplamlar', () => {
       eq('e5', { warrantyEndDate: '2026-12-01', status: 'retired' }),
     ];
     const equipment = createEquipmentService({ repo: { list: async () => list } as unknown as EquipmentRepository, store: undefined, now: () => NOW });
-    const sources = createPortfolioSources({ equipment, core: {} as never, finance: {} as never, reports: {} as never, tickets: {} as never, maintenance: {} as never, polls: {} as never, assemblies: {} as never, tenders: {} as never });
+    const sources = withSources({ equipment });
     const expiring = await equipment.expiring(mgr, { days: '30' });
     expect(equipmentFigures((await sources.equipment(mgr)).items)).toEqual(equipmentFigures(expiring.items));
     expect(equipmentFigures(expiring.items)).toEqual({ expiringCount: 3, expiringByKind: { warranty: 1, contract: 1, inspection: 1 }, expiredCount: 1 });
@@ -470,7 +558,7 @@ describe('mevcut ozetlerle birebir toplamlar', () => {
       newId: () => String(++n).padStart(10, '0'),
     });
     await tenders.create(mgr, { idempotencyKey: 'tender-key-1', title: 'Dış cephe mantolama', description: 'A ve B blok dış cephe', category: 'mantolama', deadline: '2026-12-15' });
-    const sources = createPortfolioSources({ tenders, core: {} as never, finance: {} as never, reports: {} as never, tickets: {} as never, maintenance: {} as never, equipment: {} as never, polls: {} as never, assemblies: {} as never });
+    const sources = withSources({ tenders });
     expect(tenderFigures((await sources.tenders(mgr)).items)).toEqual({ openCount: 1 });
     expect(tenderFigures((await sources.tenders(obs)).items)).toEqual({ openCount: 0 });
   });
@@ -536,7 +624,7 @@ describe('GET /api/portfolio', () => {
       ['apt-2', 'observer'],
       ['apt-1', 'management_company'],
     ]);
-    expect(list).toHaveBeenCalledWith({ userId: USER }, { limit: undefined, cursor: undefined });
+    expect(list).toHaveBeenCalledWith({ userId: USER }, { limit: undefined, cursor: undefined }, { deadline: expect.any(Number) });
   });
 
   it('kullaniciya ozel onbellek: ETag ile 304; gecersiz limit 400', async () => {
@@ -551,5 +639,71 @@ describe('GET /api/portfolio', () => {
     const bad = await get({ role: 'management_company' }, '/api/portfolio?limit=500');
     expect(bad.status).toBe(400);
     expect(await bad.json()).toMatchObject({ error: 'validation_error', field: 'limit' });
+  });
+
+  it('son tarih Lambda kalan suresinden: yavas kaynakla kismi kartlar butce icinde doner (gercek saat)', async () => {
+    const { repo } = fakeRepo({ gsi: [role('apt-1', 'management_company'), role('apt-2', 'observer')], names: { 'apt-1': 'Lale', 'apt-2': 'Gül' } });
+    const service = createPortfolioService({ repo, sources: fakeSources({ hang: { 'apt-1': ['collection', 'finance'] } }), now: () => NOW, log: silent });
+    const app = createApp({ version: 'test', portfolioService: service, authenticate: () => ({ userId: USER, role: 'management_company', apartmentId: 'apt-1' }) as AuthClaims });
+    const started = Date.now();
+    // Kalan 2,8 sn - 2,5 sn pay = 300 ms butce (API Lambda zaman asimi 15 sn; sabit 22 sn degil).
+    const res = await app.request('/api/portfolio', {}, { lambdaContext: { getRemainingTimeInMillis: () => LAMBDA_MARGIN_MS + 300 } });
+    const elapsed = Date.now() - started;
+    expect(res.status).toBe(200);
+    expect(elapsed).toBeLessThan(1_500);
+    const body = (await res.json()) as { items: { apartmentId: string; status: string; failed: string[] }[] };
+    expect(body.items.find((c) => c.apartmentId === 'apt-1')).toMatchObject({ status: 'partial', failed: ['finance', 'collection'] });
+    expect(body.items.find((c) => c.apartmentId === 'apt-2')).toMatchObject({ status: 'ok' });
+
+    // Kalan sure payin altindaysa hic apartman okunmaz, yanit hemen doner.
+    const quick = await app.request('/api/portfolio', {}, { lambdaContext: { getRemainingTimeInMillis: () => 1_000 } });
+    expect(((await quick.json()) as { items: { status: string }[] }).items.every((c) => c.status === 'error')).toBe(true);
+  });
+
+  it('requestDeadline: Lambda varsa kalan sure - pay, yoksa sabit butce', () => {
+    expect(requestDeadline({ lambdaContext: { getRemainingTimeInMillis: () => 12_000 } }, 1_000)).toBe(1_000 + 12_000 - LAMBDA_MARGIN_MS);
+    expect(requestDeadline({ lambdaContext: { getRemainingTimeInMillis: () => 100 } }, 1_000)).toBe(1_000);
+    expect(requestDeadline(undefined, 1_000)).toBe(1_000 + FALLBACK_BUDGET_MS);
+    expect(requestDeadline({}, 1_000)).toBe(1_000 + FALLBACK_BUDGET_MS);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// BatchGet: islenemeyen anahtarlar
+// ---------------------------------------------------------------------------
+
+describe('portfoy deposu BatchGet', () => {
+  const keyOf = (input: unknown) => ((input as { RequestItems: Record<string, { Keys: Record<string, string>[] }> }).RequestItems.t?.Keys ?? []);
+  const setup = (respond: (keys: Record<string, string>[], call: number) => { found: Record<string, string>[]; unprocessed: Record<string, string>[] }) => {
+    let call = 0;
+    const sleeps: number[] = [];
+    const log = vi.fn();
+    const client = {
+      send: vi.fn(async (cmd: { input: unknown }) => {
+        const keys = keyOf(cmd.input);
+        const { found, unprocessed } = respond(keys, call++);
+        return { Responses: { t: found }, ...(unprocessed.length ? { UnprocessedKeys: { t: { Keys: unprocessed } } } : {}) };
+      }),
+    };
+    const repo = createPortfolioRepository({ dynamo: () => ({ client: client as never, tableName: 't' }), sleep: async (ms) => void sleeps.push(ms), random: () => 0.5, log, grantItems: async () => [] });
+    return { repo, client, sleeps, log };
+  };
+  const site = (k: Record<string, string>) => ({ siteId: k.PK?.replace('APT#', '') ?? '', name: `Ad ${k.PK}` });
+
+  it('islenemeyen anahtar ustel bekleme + jitter ile yeniden istenir', async () => {
+    const { repo, sleeps } = setup((keys, call) => (call < 2 ? { found: keys.slice(0, 1).map(site), unprocessed: keys.slice(1) } : { found: keys.map(site), unprocessed: [] }));
+    const names = await repo.siteNames(['a', 'b', 'c']);
+    expect([...names.keys()].sort()).toEqual(['a', 'b', 'c']);
+    expect(sleeps).toEqual([50 + 25, 100 + 50]);
+  });
+
+  it('yine kalirsa sessizce dusurulmez: 503 ve gunluk satiri', async () => {
+    const { repo, client, sleeps, log } = setup((keys) => ({ found: [], unprocessed: keys }));
+    const err = await repo.roleRecords(USER, [{ apartmentId: 'a', role: 'apartment_manager' }]).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(DataAccessError);
+    expect((err as DataAccessError).httpStatus).toBe(503);
+    expect(client.send).toHaveBeenCalledTimes(5);
+    expect(sleeps).toEqual([75, 150, 300, 600]);
+    expect(log).toHaveBeenCalledWith(expect.objectContaining({ msg: 'portfolio_batch_get_unprocessed', purpose: 'roles', unprocessed: 1 }));
   });
 });

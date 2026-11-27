@@ -33,6 +33,7 @@ import { ticketRoutes } from './modules/tickets/routes.js';
 import { type TicketService, createTicketService } from './modules/tickets/service.js';
 import { coreAdminRoutes, coreRoutes } from './modules/core/routes.js';
 import { coreRepository } from './modules/core/repository.js';
+import { financeRepository } from './modules/finance/repository.js';
 import { portfolioRoutes } from './modules/portfolio/routes.js';
 import { type PortfolioService, createPortfolioService, createPortfolioSources } from './modules/portfolio/service.js';
 import { type CoreService, createCoreService } from './modules/core/service.js';
@@ -408,6 +409,7 @@ export function createApp(config: AppConfig) {
     createPortfolioService({
       sources: createPortfolioSources({
         core: coreRepository,
+        ledger: financeRepository,
         finance: financeService,
         reports: reportService ?? createReportService({ ledger: financeService }),
         tickets: ticketService,
