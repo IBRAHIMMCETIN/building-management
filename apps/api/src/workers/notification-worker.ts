@@ -13,7 +13,7 @@ import { isTicketEvent, operationsDigestRecipients, ticketRecipients } from '../
 import { type CourierSnapshot, gateRecipients, isGateEvent } from '../modules/gate/notifications.js';
 import { type GateRepository, gateRepository } from '../modules/gate/repository.js';
 import { type Courier, gateKeys } from '../modules/gate/types.js';
-import { type BookingSnapshot, isReservationEvent, reservationRecipients } from '../modules/reservations/notifications.js';
+import { type BookingSnapshot, isReservationEvent, refundSettling, reservationRecipients } from '../modules/reservations/notifications.js';
 import { type ReservationRepository, reservationRepository } from '../modules/reservations/repository.js';
 
 export type { DeliveryResult, Notification, NotificationTemplate, Notifier } from '../modules/notifications/notifier.js';
@@ -68,6 +68,17 @@ export class InvalidEventError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'InvalidEventError';
+  }
+}
+
+/**
+ * Olay bilerek ertelendi (hata degil): kayit henuz son durumuna ulasmadi. Mesaj SQS gorunurluk
+ * suresi sonunda yeniden teslim edilir; erteleme kosulu zamana baglidir (bkz. `refundSettling`).
+ */
+export class DeferredEventError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'DeferredEventError';
   }
 }
 
@@ -367,7 +378,16 @@ export function createNotificationWorker(overrides: Partial<WorkerDeps> = {}) {
         now: deps.now(),
         booking:
           b && b.apartmentId === event.apartmentId
-            ? { bookingId: b.bookingId, unitId: b.unitId, feeStatus: b.fee.status, ...(b.decisionNote ? { decisionNote: b.decisionNote } : {}), ...(b.cancelReason ? { cancelReason: b.cancelReason } : {}) }
+            ? {
+                bookingId: b.bookingId,
+                unitId: b.unitId,
+                status: b.status,
+                feeStatus: b.fee.status,
+                ...(b.fee.error ? { feeError: true } : {}),
+                ...(b.decisionNote ? { decisionNote: b.decisionNote } : {}),
+                ...(b.cancelReason ? { cancelReason: b.cancelReason } : {}),
+                ...(b.cancelledAt ? { cancelledAt: b.cancelledAt } : {}),
+              }
             : null,
       };
     }
@@ -386,6 +406,8 @@ export function createNotificationWorker(overrides: Partial<WorkerDeps> = {}) {
 
     const roles = isTicketEvent(event) || event.type === 'OPERATIONS_DIGEST' ? await deps.roles.list(event.apartmentId) : [];
     const records = await recordsFor(event);
+    // Yonetim iptalinin hemen ardindaki ucret iadesi henuz yazilmadiysa sonucu beklenir (sinirli).
+    if (refundSettling(event, records.booking, deps.now())) throw new DeferredEventError('Ucret iadesi sonucu bekleniyor');
     // Tercih kategorisi olay turunden (kanal kullanicinin kapattigi kategoriyi atlar).
     const category = categoryOfEvent(event.type);
     const notifications = buildNotifications(event, memberships, unitBlocks, today(), roles, records).map((n) => (category && !n.category ? { ...n, category } : n));
@@ -420,6 +442,11 @@ export function createNotificationWorker(overrides: Partial<WorkerDeps> = {}) {
           }),
         );
       } catch (err) {
+        if (err instanceof DeferredEventError) {
+          deps.log.info(JSON.stringify({ msg: 'event_deferred', messageId: record.messageId, eventId: event?.eventId, type: event?.type, reason: err.message }));
+          failures.push({ itemIdentifier: record.messageId });
+          continue;
+        }
         deps.log.error(
           JSON.stringify({
             msg: 'event_failed',

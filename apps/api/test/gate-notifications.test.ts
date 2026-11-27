@@ -8,7 +8,8 @@ import { describe, expect, it } from 'vitest';
 import type { DomainEvent } from '../src/events/publisher.js';
 import type { ApartmentRole } from '../src/modules/apartment-roles/types.js';
 import type { Unit } from '../src/modules/core/types.js';
-import { renderEmail } from '../src/modules/notifications/templates.js';
+import { COURIER_APPROVAL_VALID_MINUTES } from '../src/modules/gate/types.js';
+import { durationText, renderEmail } from '../src/modules/notifications/templates.js';
 import type { UnitMembership } from '../src/modules/portal/types.js';
 import { type Notification, type SqsEvent, buildNotifications, createNotificationWorker } from '../src/workers/notification-worker.js';
 import { APT, T0, ctxs, gateWorld } from './fakes/gateWorld.js';
@@ -166,6 +167,7 @@ describe('kapi e-posta sablonlari', () => {
     expect(email?.text).toContain('Hızlı Kargo kuryesi');
     expect(email?.text).toContain('Yanıt için son saat: 13:00');
     expect(email?.text).toContain('https://site.example/app/ziyaretci');
+    expect(email?.text).toContain(`Onayınız ${durationText(COURIER_APPROVAL_VALID_MINUTES)} geçerlidir`);
     const generic = renderEmail(note('gate_courier_arrived', { courierId: 'c1', unitId: 'u1', respondBy: '2026-11-27T10:00:00.000Z' }), ctx);
     expect(generic?.text).toContain('bir kurye kaydetti');
     expect(generic?.text).not.toContain('Firma');

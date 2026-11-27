@@ -962,6 +962,7 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
           idempotency: { id: p.idempotencyKey, fingerprint: fp },
           ...(w.replaceRecords?.length ? { replaceRecords: w.replaceRecords } : {}),
           ...(w.newDocs?.length ? { newDocs: w.newDocs } : {}),
+          ...(w.outbox?.length ? { outbox: w.outbox } : {}),
           audit: { apartmentId: ctx.apartmentId, action: p.action, target: p.target, actorId: ctx.userId, ...(p.reason ? { reason: p.reason } : {}), ...(w.auditDetails ? { details: w.auditDetails } : {}) },
         });
         return { replayed: false };
