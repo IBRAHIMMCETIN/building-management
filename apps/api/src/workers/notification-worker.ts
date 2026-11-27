@@ -26,6 +26,7 @@ export { createLogNotifier } from '../modules/notifications/notifier.js';
  *                                 (toplu tahakkuk kalemleri HARIC: onlar DUES_BATCH_SUMMARY ile)
  *       DUES_BATCH_SUMMARY     -> kullanici basina TEK ozet: gordugu tum kalemler bir arada
  *       ANNOUNCEMENT_PUBLISHED -> apartmandaki (blok hedefliyse o bloklardaki) tum uyeler
+ *       POLL_PUBLISHED         -> kat malikleri oylamasinda malikler, sakin oylamasinda tum uyeler
  *       LATE_FEE_POSTED        -> tazminat yazilan alt cariyi goren uyeler
  *       DUES_REMINDER          -> hatirlatilan alt cariyi goren uyeler (ilk kalem)
  *       TICKET_*               -> yonetim / gorevli / talep tarafi (modules/tickets/notifications.ts)
@@ -235,6 +236,16 @@ export function buildNotifications(
         const blockId = unitBlocks.get(m.unitId);
         if (blocks.size === 0 || (blockId !== undefined && blocks.has(blockId))) {
           add(m.userId, 'announcement_published', { announcementId: p.announcementId, title: p.title });
+        }
+      }
+      break;
+    }
+    case 'POLL_PUBLISHED': {
+      // Y1: kat malikleri oylamasi malik uyeliklerine, sakin oylamasi tum guncel uyelere.
+      const p = event.payload;
+      for (const m of current) {
+        if (p.audience === 'residents' || m.relation === 'owner') {
+          add(m.userId, 'poll_published', { pollId: p.pollId, title: p.title, audience: p.audience, opensAt: p.opensAt, closesAt: p.closesAt });
         }
       }
       break;

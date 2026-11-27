@@ -8,6 +8,8 @@ export type NotificationTemplate =
   | 'dues_reversed'
   | 'payment_received'
   | 'announcement_published'
+  /** Y1: anket / oylama yayinlandi. */
+  | 'poll_published'
   | 'late_fee_posted'
   /** Faz 3 (O1-2): ariza / talep. */
   | 'ticket_created'

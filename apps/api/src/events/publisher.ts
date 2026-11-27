@@ -36,6 +36,7 @@ export const EVENT_TYPES = [
   'TICKET_STATUS_CHANGED',
   'TICKET_COMMENTED',
   'OPERATIONS_DIGEST',
+  'POLL_PUBLISHED',
 ] as const;
 export type EventType = (typeof EVENT_TYPES)[number];
 
@@ -159,6 +160,18 @@ export type TicketEventPayload = {
  * isi). SLA'si asilmis talepler, yaklasan ve geciken bakim gorevleri, otomatik kapanan talep
  * sayisi. Yonetim tumunu, gorevli yalnizca kendisine atanan ve atanmamis kalemleri alir.
  */
+/**
+ * Y1: oylama yayinlandi. Secenekler ve aciklama tasinmaz; `owners` oylamasi kat maliklerine,
+ * `residents` tum guncel uyelere bildirilir.
+ */
+export type PollPublishedPayload = {
+  pollId: string;
+  title: string;
+  audience: 'owners' | 'residents';
+  opensAt: IsoDateTime;
+  closesAt: IsoDateTime;
+};
+
 export type OperationsDigestPayload = {
   date: IsoDate;
   slaBreached: { ticketId: string; number: string; title: string; priority: string; dueAt: IsoDateTime; assigneeId?: string }[];
@@ -180,6 +193,7 @@ type PayloadByType = {
   TICKET_STATUS_CHANGED: TicketEventPayload;
   TICKET_COMMENTED: TicketEventPayload;
   OPERATIONS_DIGEST: OperationsDigestPayload;
+  POLL_PUBLISHED: PollPublishedPayload;
 };
 
 export type DomainEvent<T extends EventType = EventType> = {

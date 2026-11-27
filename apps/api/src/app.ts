@@ -13,6 +13,8 @@ import { type SupportService, createSupportService, withSupportAccess } from './
 import { apartmentRoleRoutes } from './modules/apartment-roles/routes.js';
 import { type ApartmentRoleService, createApartmentRoleService } from './modules/apartment-roles/service.js';
 import { type AnnouncementService, createAnnouncementService } from './modules/announcements/service.js';
+import { pollPortalRoutes, pollRoutes } from './modules/polls/routes.js';
+import { type PollService, createPollService } from './modules/polls/service.js';
 import { maintenanceRoutes } from './modules/maintenance/routes.js';
 import { type MaintenanceService, createMaintenanceService } from './modules/maintenance/service.js';
 import { type WorkCostService, createWorkCostService } from './modules/workcosts/service.js';
@@ -145,6 +147,8 @@ export type AppConfig = {
   membershipService?: MembershipService;
   residentsService?: ResidentsService;
   announcementService?: AnnouncementService;
+  /** Y1: anket / oylama (yonetici + sakin portali). */
+  pollService?: PollService;
   /** Faz 3 (O1): ariza / talep. */
   ticketService?: TicketService;
   /** Faz 3 (O1-3): periyodik bakim. */
@@ -349,6 +353,9 @@ export function createApp(config: AppConfig) {
       service: config.announcementService ?? createAnnouncementService(),
     }),
   );
+  // Y1: anket / oylama. Oy hakki ve agirlik mulkiyet modulunun oy listesinden; sakin dairesi portal kuraliyla.
+  const pollService = config.pollService ?? createPollService({ portal: portalService });
+  app.route('/api/polls', pollRoutes({ authenticate, service: pollService }));
 
   // Faz 3 (O1): ariza / talep (yonetim, gorevli, guvenlik, denetci).
   const ticketService = config.ticketService ?? createTicketService();
@@ -365,6 +372,7 @@ export function createApp(config: AppConfig) {
   app.route('/api/portal/meters', meterPortalRoutes({ authenticate, service: meterPortalService }));
   // Faz 3 (O1-2): sakin ariza / talep (daha ozel yol, `/api/portal`'dan once).
   app.route('/api/portal/tickets', ticketPortalRoutes({ authenticate, service: ticketService }));
+  app.route('/api/portal/polls', pollPortalRoutes({ authenticate, service: pollService }));
   app.route(
     '/api/portal',
     portalRoutes({

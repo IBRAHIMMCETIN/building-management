@@ -14,6 +14,7 @@ import { ClosingBlockedError, PeriodError } from '../modules/finance/periodLock.
 import { MeterError } from '../modules/meters/errors.js';
 import { BulkJobError } from '../modules/bulkjobs/errors.js';
 import { TicketError } from '../modules/tickets/errors.js';
+import { PollError } from '../modules/polls/errors.js';
 import { PaymentsError } from '../modules/payments/service.js';
 import { PortalError } from '../modules/portal/service.js';
 import type { TableKeys } from '../modules/core/types.js';
@@ -92,6 +93,9 @@ export function handleError(err: Error, c: Context) {
     return c.json({ error: err.code, message: err.message }, err.httpStatus);
   }
   if (err instanceof TicketError) {
+    return c.json({ error: err.code, message: err.message }, err.httpStatus);
+  }
+  if (err instanceof PollError) {
     return c.json({ error: err.code, message: err.message }, err.httpStatus);
   }
   if (err instanceof BulkJobError) {
