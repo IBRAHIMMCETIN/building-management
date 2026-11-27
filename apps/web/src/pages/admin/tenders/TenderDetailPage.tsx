@@ -299,26 +299,28 @@ function DecisionCard({ tender: t, canWrite, onExpense }: { tender: Tender; canW
           {d.reference && <p className="text-small text-muted">Karar referansı: {d.reference}</p>}
         </div>
       </div>
-      {t.expense ? (
+      {t.expense && (
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
           <p className="text-small text-muted">
-            Gider kaydedildi: <span className="tabular-nums">{formatTRY(t.expense.amountKurus)}</span> · {formatDate(t.expense.date)}
+            {t.expense.reversed ? 'Gider ters kaydedildi' : 'Gider kaydedildi'}: <span className="tabular-nums">{formatTRY(t.expense.amountKurus)}</span> · {formatDate(t.expense.date)}
           </p>
           <Link to="/admin/finance" className="text-xs text-accent underline-offset-4 hover:underline">
             Finans'ta görüntüle
           </Link>
         </div>
-      ) : (
-        canWrite &&
-        t.expenseDraft && (
-          <div className="flex flex-col items-start gap-2">
-            <p className="text-small text-muted">İş tamamlanıp fatura geldiğinde gideri buradan kaydedin; tutar, tedarikçi (“{d.supplierName}”), açıklama ve gider kalemi karardan doldurulur, ödeme kaynağını siz seçersiniz.</p>
-            <Button size="sm" variant="secondary" onClick={onExpense}>
-              <ReceiptText className="size-4" aria-hidden="true" />
-              Gider kaydı oluştur
-            </Button>
-          </div>
-        )
+      )}
+      {canWrite && t.expenseDraft && (
+        <div className="flex flex-col items-start gap-2">
+          <p className="text-small text-muted">
+            {t.expense?.reversed
+              ? 'Bağlı gider Finans’ta ters kayıtla iptal edildi; gerekiyorsa yeni gider kaydı oluşturun. Tutar, tedarikçi, açıklama ve gider kalemi karardan doldurulur, ödeme kaynağını siz seçersiniz.'
+              : `İş tamamlanıp fatura geldiğinde gideri buradan kaydedin; tutar, tedarikçi (“${d.supplierName}”), açıklama ve gider kalemi karardan doldurulur, ödeme kaynağını siz seçersiniz.`}
+          </p>
+          <Button size="sm" variant="secondary" onClick={onExpense}>
+            <ReceiptText className="size-4" aria-hidden="true" />
+            Gider kaydı oluştur
+          </Button>
+        </div>
       )}
     </Card>
   );

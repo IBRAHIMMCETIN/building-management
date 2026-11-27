@@ -148,6 +148,8 @@ export type Tender = TableKeys &
     cancelledFrom?: TenderStatus;
     /** Karardan kaydedilen Finans gideri (yalnizca `decided`). */
     expense?: TenderExpenseLink;
+    /** Finans'ta ters kayitla iptal edilip yerine yenisi kaydedilen onceki giderler (eskiden yeniye). */
+    previousExpenses?: (TenderExpenseLink & { replacedAt: IsoDateTime })[];
   };
 
 export type TenderComment = TableKeys & {
@@ -159,6 +161,12 @@ export type TenderComment = TableKeys & {
   authorId: string;
   authorRole: string;
   authorKind: 'resident' | 'management';
+  /**
+   * Yalnizca yonetim yaniti: yazildigi anda yanitlanmamis sakin sorulari (kimlik). Bir soru, sonrasindaki
+   * ILK yonetim yanitinda bir kez listelenir; e-posta (TENDER_REPLIED) bu listedeki soru sahiplerine
+   * gider. Eski (alansiz) yanitlar oncesindeki sorulari yanitlanmis sayar.
+   */
+  answers?: string[];
   createdAt: IsoDateTime;
 };
 

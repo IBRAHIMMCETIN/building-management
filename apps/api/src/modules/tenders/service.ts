@@ -67,7 +67,7 @@ export type TenderServiceDeps = {
    * Karardan gider kaydi: MEVCUT Finans gider servisi (`recordExpense`; ayni dogrulama, bakiye ve
    * defter kurallari). Verilmezse "Gider kaydı oluştur" 503.
    */
-  finance: Pick<FinanceService, 'recordExpense'> | undefined;
+  finance: Pick<FinanceService, 'recordExpense' | 'isReversed'> | undefined;
   now: () => Date;
   newId: () => string;
 };
@@ -76,6 +76,8 @@ type Audience = 'manager' | 'observer' | 'resident';
 
 const MANAGER_ROLES = new Set(['apartment_manager', 'management_company']);
 const WRITE_RETRIES = 3;
+/** Bir yonetim yanitinin kaydettigi en fazla yanitlanan soru (kayit boyutu sinirli). */
+const MAX_ANSWERS = 500;
 const STATUS_ORDER: Record<TenderStatus, number> = { published: 0, collecting: 1, draft: 2, decided: 3, cancelled: 4 };
 
 const fingerprint = (v: unknown) => createHash('sha256').update(JSON.stringify(v)).digest('hex');
@@ -301,21 +303,29 @@ export function createTenderService(overrides: Partial<TenderServiceDeps> = {}) 
     };
   }
 
-  function expenseView(t: Tender, audience: Audience) {
+  /** Bagli gider Finans'ta ters kayitla iptal edildi mi (Finans yoksa bilinmez: hayir). */
+  const expenseReversed = async (ctx: TenderContext, e: Tender['expense']) => (e && deps.finance ? deps.finance.isReversed(ctx, e.transactionId) : false);
+
+  function expenseView(t: Tender, audience: Audience, reversed: boolean) {
     if (audience === 'resident') return {};
     const e = t.expense;
+    // Ters kaydedilmis gider yerine yenisi kaydedilebilir (on dolum yeniden sunulur).
+    const open = !e || reversed;
     return {
-      ...(e ? { expense: { expenseId: e.expenseId, transactionId: e.transactionId, amountKurus: e.amountKurus, date: e.date, linkedAt: e.linkedAt, linkedBy: e.linkedBy } } : {}),
-      ...(audience === 'manager' && !e && t.status === 'decided' && t.decision ? { expenseDraft: expenseDraftOf(t, t.decision) } : {}),
+      ...(e ? { expense: { expenseId: e.expenseId, transactionId: e.transactionId, amountKurus: e.amountKurus, date: e.date, linkedAt: e.linkedAt, linkedBy: e.linkedBy, reversed } } : {}),
+      ...(audience === 'manager' && open && t.status === 'decided' && t.decision ? { expenseDraft: expenseDraftOf(t, t.decision) } : {}),
     };
   }
 
   async function detailView(ctx: TenderContext, t: Tender, audience: Audience) {
-    const comments = isShared(t) ? await repo.listComments(ctx.apartmentId, t.tenderId) : [];
+    const [comments, reversed] = await Promise.all([
+      isShared(t) ? repo.listComments(ctx.apartmentId, t.tenderId) : Promise.resolve([] as TenderComment[]),
+      audience === 'resident' ? Promise.resolve(false) : expenseReversed(ctx, t.expense),
+    ]);
     comments.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
     return {
       ...summaryView(t, audience),
-      ...expenseView(t, audience),
+      ...expenseView(t, audience, reversed),
       description: t.description,
       ...(t.shortfallReason ? { shortfallReason: t.shortfallReason } : {}),
       ...(t.cancelReason ? { cancelReason: t.cancelReason, cancelledFrom: t.cancelledFrom } : {}),
@@ -765,23 +775,27 @@ export function createTenderService(overrides: Partial<TenderServiceDeps> = {}) 
    * penceresini on doldurulmus acar; sessiz kayit yoktur.
    *
    * Gider + defter islemi + ihaledeki bag (`expense`, surum kosullu) + denetim kaydi TEK atomik yazim
-   * (`recordExpense` is baglantisi). Ihale basina tek gider: ayni anahtarla tekrar ayni sonucu doner,
-   * farkli anahtarla ikinci gider 409. Es zamanli iki istekte surum kosulu yalnizca birini yazar.
+   * (`recordExpense` is baglantisi). Ihale basina tek gecerli gider: ayni anahtarla tekrar ayni sonucu
+   * doner, farkli anahtarla ikinci gider 409. Bagli gider Finans'ta ters kayitla iptal edildiyse yeni
+   * anahtarla yenisi kaydedilebilir: eskisi `previousExpenses`'a gecer, denetimde `replacesExpenseId`.
+   * Es zamanli iki istekte surum kosulu yalnizca birini yazar.
    */
   async function createExpense(ctx: TenderContext, tenderId: string, body: unknown) {
     managerOf(ctx);
     const o = asObject(body);
     const key = assertId(o.idempotencyKey, 'idempotencyKey');
     const t = await load(ctx, tenderId);
-    if (t.expense) {
-      if (t.expense.idempotencyKey === key) return { tender: await detailView(ctx, t, 'manager'), expenseId: t.expense.expenseId, transactionId: t.expense.transactionId, replayed: true };
-      throw new TenderError('conflict', 'Bu ihale için gider kaydı zaten oluşturuldu', { expenseId: t.expense.expenseId });
-    }
+    const prior = [...(t.previousExpenses ?? []), ...(t.expense ? [t.expense] : [])].find((e) => e.idempotencyKey === key);
+    if (prior) return { tender: await detailView(ctx, t, 'manager'), expenseId: prior.expenseId, transactionId: prior.transactionId, replayed: true };
     if (t.status !== 'decided' || !t.decision) throw new TenderError('invalid_state', 'Yalnızca karara bağlanmış ihale için gider kaydı oluşturulabilir');
     if (!deps.finance) throw new TenderError('unavailable', 'Finans modülü bu ortamda yapılandırılmamış');
+    const finance = deps.finance;
+    // Gecerli (ters kaydedilmemis) bagli gider varsa ikinci gider yok.
+    const linkedOpen = async (e: Tender['expense']) => !!e && !(await finance.isReversed(ctx, e.transactionId));
+    if (t.expense && (await linkedOpen(t.expense))) throw new TenderError('conflict', 'Bu ihale için gider kaydı zaten oluşturuldu', { expenseId: t.expense.expenseId });
     const draft = expenseDraftOf(t, t.decision);
     const has = (k: string) => o[k] !== undefined && o[k] !== null && o[k] !== '';
-    const r = await deps.finance.recordExpense(
+    const r = await finance.recordExpense(
       ctx,
       {
         ...o,
@@ -798,17 +812,27 @@ export function createTenderService(overrides: Partial<TenderServiceDeps> = {}) 
           // Her denemede guncel ihale: bu arada baska gider baglandiysa ikinci gider yazilmaz.
           const cur = await load(ctx, tenderId);
           if (cur.status !== 'decided' || !cur.decision) throw new TenderError('invalid_state', 'Yalnızca karara bağlanmış ihale için gider kaydı oluşturulabilir');
-          if (cur.expense) throw new TenderError('conflict', 'Bu ihale için gider kaydı zaten oluşturuldu', { expenseId: cur.expense.expenseId });
+          if (cur.expense && (await linkedOpen(cur.expense))) throw new TenderError('conflict', 'Bu ihale için gider kaydı zaten oluşturuldu', { expenseId: cur.expense.expenseId });
+          const replaced = cur.expense;
           const next: Tender = {
             ...cur,
             expense: { expenseId: expense.expenseId, transactionId: transaction.transactionId, amountKurus: expense.amount, date: expense.date, idempotencyKey: key, linkedAt: transaction.createdAt, linkedBy: ctx.userId },
+            ...(replaced ? { previousExpenses: [...(cur.previousExpenses ?? []), { ...replaced, replacedAt: transaction.createdAt }].slice(-20) } : {}),
             updatedAt: transaction.createdAt,
             updatedBy: ctx.userId,
             version: cur.version + 1,
           };
           return {
             replaceRecords: [{ item: next, expectedVersion: cur.version, label: `tender:${tenderId}` }],
-            auditDetails: { tender: { tenderId, quoteId: cur.decision.quoteId, decisionTotalKurus: cur.decision.totalKurus, amountDiffers: expense.amount !== cur.decision.totalKurus } },
+            auditDetails: {
+              tender: {
+                tenderId,
+                quoteId: cur.decision.quoteId,
+                decisionTotalKurus: cur.decision.totalKurus,
+                amountDiffers: expense.amount !== cur.decision.totalKurus,
+                ...(replaced ? { replacesExpenseId: replaced.expenseId, replacesTransactionId: replaced.transactionId } : {}),
+              },
+            },
           };
         },
       },
@@ -819,6 +843,22 @@ export function createTenderService(overrides: Partial<TenderServiceDeps> = {}) 
   // -------------------------------------------------------------------------
   // Soru / yorum (yayindaki ihalede: sakin sorar, yonetim yanitlar)
   // -------------------------------------------------------------------------
+
+  /**
+   * Yanitlanmamis sakin sorulari: hicbir yonetim yanitinin `answers` listesinde olmayan ve son eski
+   * (alansiz) yonetim yanitindan sonra yazilmis sorular. En yeni `MAX_ANSWERS` (kayit boyutu sinirli).
+   */
+  function openQuestions(existing: readonly TenderComment[]): string[] {
+    const sorted = [...existing].sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.commentId.localeCompare(b.commentId));
+    const answered = new Set<string>();
+    let legacyUntil = '';
+    for (const c of sorted) {
+      if (c.authorKind !== 'management') continue;
+      if (c.answers) for (const id of c.answers) answered.add(id);
+      else legacyUntil = c.createdAt;
+    }
+    return sorted.filter((c) => c.authorKind === 'resident' && !answered.has(c.commentId) && c.createdAt > legacyUntil).map((c) => c.commentId).slice(-MAX_ANSWERS);
+  }
 
   async function comment(ctx: TenderContext, tenderId: string, body: unknown) {
     const audience = audienceOf(ctx);
@@ -843,6 +883,8 @@ export function createTenderService(overrides: Partial<TenderServiceDeps> = {}) 
     }
     const ts = stamp();
     const commentId = `c-${shortId()}`;
+    // Yonetim yaniti: o ana kadar yanitlanmamis sakin sorulari (her soru bir kez; e-posta alicilari).
+    const answers = audience === 'manager' ? openQuestions(existing) : undefined;
     const item: TenderComment = {
       ...tenderKeys.comment(ctx.apartmentId, tenderId, ts, commentId),
       entityType: 'TENDER_COMMENT',
@@ -853,6 +895,7 @@ export function createTenderService(overrides: Partial<TenderServiceDeps> = {}) 
       authorId: ctx.userId,
       authorRole: ctx.role,
       authorKind: audience === 'resident' ? 'resident' : 'management',
+      ...(answers ? { answers } : {}),
       createdAt: ts,
     };
     try {

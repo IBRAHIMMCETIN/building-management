@@ -177,6 +177,14 @@ describe('ihale karari: gider kaydi', () => {
     expect(button('Gider kaydı oluştur')).toBeUndefined();
   });
 
+  it('bagli gider ters kaydedildiyse "Gider ters kaydedildi" gorunur ve yeni gider kaydi yeniden sunulur', async () => {
+    current = tender({ expense: { expenseId: 'e1', transactionId: 'tx1', amountKurus: 108_000_00, date: '2026-11-27', linkedAt: '2026-11-27T07:00:00.000Z', reversed: true } });
+    await render();
+    expect(container.textContent).toContain('Gider ters kaydedildi: ₺108.000,00');
+    expect(container.textContent).toContain('ters kayıtla iptal edildi');
+    expect(button('Gider kaydı oluştur')).toBeDefined();
+  });
+
   it('salt okuyan (denetci) dugmeyi gormez', async () => {
     canWrite = false;
     current = tender({ expenseDraft: undefined });

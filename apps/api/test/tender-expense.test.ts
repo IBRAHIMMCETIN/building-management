@@ -70,7 +70,7 @@ function world(opts: { finance?: boolean } = {}) {
   });
   const tender = (id: string) => structuredClone(fin.docs.get(`APT#${APT}|TENDER#${id}`)) as unknown as Tender;
   const expenses = () => [...fin.expenses.values()];
-  return { fin, service, tender, expenses };
+  return { fin, finance, service, tender, expenses };
 }
 
 describe('karardan gider kaydi: on dolum', () => {
@@ -144,6 +144,28 @@ describe('karardan gider kaydi: yazim', () => {
     expect(w.expenses()[0]).toMatchObject({ amount: 54_000_00, expenseAccountId: 'exp-management', description: 'Mantolama 1. hakediş', invoiceNumber: 'F-77', supplier: 'Cephe Ltd.' });
     expect(w.fin.batches.at(-1)?.audit).toMatchObject({ details: { tender: { amountDiffers: true } } });
     expect(r.tender).toMatchObject({ expense: { amountKurus: 54_000_00 } });
+  });
+
+  it('bagli gider Finansta ters kaydedilince: "ters kaydedildi" ve on dolum yeniden; yeni anahtarla yeni gider, eskisi gecmise; denetimli', async () => {
+    const w = world();
+    const first = await w.service.createExpense(mgr, 'tnd-1', { idempotencyKey: 'k-1', creditAccountId: 'payable' });
+    await w.finance.reverseTransaction({ apartmentId: APT, userId: 'mgr' }, first.transactionId, { reason: 'Fatura tutarı hatalı' });
+    const view = (await w.service.get(mgr, 'tnd-1')).tender;
+    expect(view.expense).toMatchObject({ expenseId: first.expenseId, reversed: true });
+    expect(view.expenseDraft).toMatchObject({ amountKurus: 108_000_00 });
+    expect((await w.service.get(observer, 'tnd-1')).tender.expense).toMatchObject({ reversed: true });
+    // Eski anahtar: ayni (eski) sonuc, yeni gider yok.
+    expect(await w.service.createExpense(mgr, 'tnd-1', { idempotencyKey: 'k-1', creditAccountId: 'payable' })).toMatchObject({ replayed: true, expenseId: first.expenseId });
+    const second = await w.service.createExpense(mgr, 'tnd-1', { idempotencyKey: 'k-2', creditAccountId: 'payable', amount: 100_000_00 });
+    expect(second).toMatchObject({ replayed: false });
+    expect(second.expenseId).not.toBe(first.expenseId);
+    expect(w.tender('tnd-1')).toMatchObject({ expense: { expenseId: second.expenseId, idempotencyKey: 'k-2' }, previousExpenses: [{ expenseId: first.expenseId, idempotencyKey: 'k-1', replacedAt: expect.any(String) }] });
+    expect(w.fin.batches.at(-1)?.audit).toMatchObject({ details: { tender: { tenderId: 'tnd-1', replacesExpenseId: first.expenseId, replacesTransactionId: first.transactionId } } });
+    expect(second.tender).toMatchObject({ expense: { expenseId: second.expenseId, reversed: false } });
+    expect(second.tender).not.toHaveProperty('expenseDraft');
+    // Yeni gider gecerli: ucuncu gider 409; eski anahtarlar hala tekrar sonucunu dondurur.
+    await expect(w.service.createExpense(mgr, 'tnd-1', { idempotencyKey: 'k-3', creditAccountId: 'payable' })).rejects.toMatchObject({ code: 'conflict', details: { expenseId: second.expenseId } });
+    expect(await w.service.createExpense(mgr, 'tnd-1', { idempotencyKey: 'k-1', creditAccountId: 'payable' })).toMatchObject({ replayed: true, expenseId: first.expenseId });
   });
 
   it('kurallar: yalnizca karara baglanmis ihale; yalnizca yonetim; Finans yoksa 503; baska apartman 404', async () => {

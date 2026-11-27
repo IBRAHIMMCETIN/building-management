@@ -106,7 +106,9 @@ export const tenderSchema = tenderSummarySchema.extend({
   canComment: z.boolean(),
   readiness: z.object({ activeQuotes: z.number(), minQuotes: z.number(), missingDocuments: z.array(z.string()), shortfall: z.boolean() }).optional(),
   /** Karardan kaydedilen Finans gideri (yonetim + denetci). */
-  expense: z.object({ expenseId: z.string(), transactionId: z.string(), amountKurus: z.number(), date: z.string(), linkedAt: z.string(), linkedBy: z.string().optional() }).optional(),
+  expense: z
+    .object({ expenseId: z.string(), transactionId: z.string(), amountKurus: z.number(), date: z.string(), linkedAt: z.string(), linkedBy: z.string().optional(), reversed: z.boolean().optional() })
+    .optional(),
   /** Yalnizca yonetim, karara baglanmis ve gideri olmayan ihale: gider penceresinin on dolumu. */
   expenseDraft: z.object({ amountKurus: z.number(), supplier: z.string(), description: z.string(), expenseAccountId: z.string(), date: z.string() }).optional(),
 });

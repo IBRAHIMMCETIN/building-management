@@ -190,6 +190,42 @@ describe('ihale bildirimleri (worker)', () => {
     expect(await w.deliver(w.lastEvent('TENDER_REPLIED'))).toEqual([]);
   });
 
+  it('her soru bir kez: yanit yanitlanmamis sorulari kaydeder; yanitla es zamanli yazilan eski soru sonraki yanitta kapsanir', async () => {
+    const w = world();
+    const t = await w.published();
+    const q1 = (await w.comment(ctx.a, t.tenderId, 'Garanti süresi kaç yıl?')).tender.comments.at(-1)?.commentId;
+    const r1 = (await w.comment(ctx.mgr, t.tenderId, 'Garanti 10 yıl.')).tender.comments.at(-1);
+    const stored = (sk: string) => [...w.fake.store.values()].find((d) => d.SK.includes(sk)) as Record<string, unknown>;
+    expect(stored(r1?.commentId as string)).toMatchObject({ authorKind: 'management', answers: [q1] });
+    // Gorunumde (yonetim / sakin) `answers` donmez.
+    expect(r1).not.toHaveProperty('answers');
+    expect(users(await w.deliver(w.lastEvent('TENDER_REPLIED')))).toEqual(['res-a']);
+    // Yanitla es zamanli yazilmis soru: zaman damgasi yanittan once, ama yanit yazilirken gorulmedi.
+    const lateAt = new Date(Date.parse(r1?.createdAt as string) - 1).toISOString();
+    w.fake.store.set(`APT#${APT}|TCMT#${t.tenderId}#${lateAt}#c-late`, {
+      PK: `APT#${APT}`, SK: `TCMT#${t.tenderId}#${lateAt}#c-late`, entityType: 'TENDER_COMMENT', apartmentId: APT, tenderId: t.tenderId, commentId: 'c-late', body: 'İskele ne zaman?', authorId: 'res-b', authorRole: 'resident', authorKind: 'resident', createdAt: lateAt,
+    });
+    const r2 = (await w.comment(ctx.mgr, t.tenderId, 'İskele Mart ayında.')).tender.comments.at(-1);
+    expect(stored(r2?.commentId as string)).toMatchObject({ answers: ['c-late'] });
+    expect(users(await w.deliver(w.lastEvent('TENDER_REPLIED')))).toEqual(['res-b']);
+  });
+
+  it('eski (listesiz) yonetim yaniti: oncesindeki sorular yanitlanmis sayilir; worker eski yanitta konum kuralini kullanir', async () => {
+    const w = world();
+    const t = await w.published();
+    await w.comment(ctx.a, t.tenderId, 'Garanti süresi kaç yıl?');
+    w.tick();
+    const legacyAt = new Date(Date.parse(T0) + 30 * 60_000).toISOString();
+    const legacy = { PK: `APT#${APT}`, SK: `TCMT#${t.tenderId}#${legacyAt}#c-legacy`, entityType: 'TENDER_COMMENT', apartmentId: APT, tenderId: t.tenderId, commentId: 'c-legacy', body: 'Eski yanıt', authorId: 'mgr', authorRole: 'apartment_manager', authorKind: 'management', createdAt: legacyAt };
+    w.fake.store.set(`${legacy.PK}|${legacy.SK}`, legacy);
+    for (let i = 0; i < 40; i++) w.tick();
+    const q2 = (await w.comment(ctx.b, t.tenderId, 'İskele ne zaman?')).tender.comments.at(-1)?.commentId;
+    const r = (await w.comment(ctx.mgr, t.tenderId, 'Mart.')).tender.comments.at(-1);
+    expect([...w.fake.store.values()].find((d) => d.SK.includes(r?.commentId as string))).toMatchObject({ answers: [q2] });
+    const legacyEvent = { ...w.lastEvent('TENDER_REPLIED'), eventId: `TENDER_REPLIED:${t.tenderId}:c-legacy`, payload: { tenderId: t.tenderId, commentId: 'c-legacy' } } as DomainEvent;
+    expect(users(await w.deliver(legacyEvent))).toEqual(['res-a']);
+  });
+
   it('kiraci izolasyonu: olayin apartmaniyla uyusmayan kayit / uyelik kullanilmaz', () => {
     const tender = { tenderId: 't1', apartmentId: 'apt-2', title: 'X', status: 'published' as const, quotes: [] };
     const event = { eventId: 'TENDER_PUBLISHED:t1', type: 'TENDER_PUBLISHED', version: 1, occurredAt: T0, apartmentId: APT, actorId: 'mgr', groupKey: APT, payload: { tenderId: 't1' } } as DomainEvent;
