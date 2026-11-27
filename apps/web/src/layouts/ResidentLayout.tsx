@@ -1,4 +1,4 @@
-import { Building2, Gauge, Home, Megaphone, Receipt, Wrench } from 'lucide-react';
+import { Building2, Gauge, Home, Megaphone, Receipt, Vote, Wrench } from 'lucide-react';
 import type { ComponentType } from 'react';
 import { NavLink, Outlet } from 'react-router';
 import { PortalUnitProvider } from '@/context/PortalUnitContext';
@@ -16,6 +16,7 @@ const NAV: NavItem[] = [
   { to: '/app/talepler', label: 'Talepler', icon: Wrench },
   { to: '/app/tuketim', label: 'Tüketimim', icon: Gauge },
   { to: '/app/announcements', label: 'Duyurular', icon: Megaphone },
+  { to: '/app/oylamalar', label: 'Oylamalar', icon: Vote },
 ];
 
 /**
@@ -51,7 +52,7 @@ export function ResidentLayout() {
 
       <nav
         aria-label="Sakin menüsü"
-        className="fixed inset-x-0 bottom-0 z-10 grid grid-cols-5 border-t border-border bg-surface pb-[env(safe-area-inset-bottom)]"
+        className="fixed inset-x-0 bottom-0 z-10 grid grid-cols-6 border-t border-border bg-surface pb-[env(safe-area-inset-bottom)]"
       >
         {NAV.map(({ to, label, icon: Icon, end }) => (
           <NavLink
