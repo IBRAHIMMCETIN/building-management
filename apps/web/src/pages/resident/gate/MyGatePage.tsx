@@ -23,8 +23,21 @@ export function MyGatePage() {
   const overview = useMyGate();
   const [tab, setTab] = useState<Tab>('guests');
 
-  if (overview.isPending) return <Skeleton className="h-48" />;
-  if (overview.isError) return <Alert tone="danger">{errorMessage(overview.error)}</Alert>;
+  // Yukleme / hata durumlari da sayfanin genisligiyle (masaustunde ortalanmis max-w-2xl).
+  if (overview.isPending) {
+    return (
+      <div className="mx-auto w-full max-w-2xl">
+        <Skeleton className="h-48" />
+      </div>
+    );
+  }
+  if (overview.isError) {
+    return (
+      <div className="mx-auto w-full max-w-2xl">
+        <Alert tone="danger">{errorMessage(overview.error)}</Alert>
+      </div>
+    );
+  }
   const { units, limits } = overview.data;
 
   return (
