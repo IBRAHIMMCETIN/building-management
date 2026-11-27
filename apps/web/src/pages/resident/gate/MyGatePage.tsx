@@ -23,12 +23,25 @@ export function MyGatePage() {
   const overview = useMyGate();
   const [tab, setTab] = useState<Tab>('guests');
 
-  if (overview.isPending) return <Skeleton className="h-48" />;
-  if (overview.isError) return <Alert tone="danger">{errorMessage(overview.error)}</Alert>;
+  // Yukleme / hata durumlari da sayfanin genisligiyle (masaustunde ortalanmis max-w-2xl).
+  if (overview.isPending) {
+    return (
+      <div className="mx-auto w-full max-w-2xl">
+        <Skeleton className="h-48" />
+      </div>
+    );
+  }
+  if (overview.isError) {
+    return (
+      <div className="mx-auto w-full max-w-2xl">
+        <Alert tone="danger">{errorMessage(overview.error)}</Alert>
+      </div>
+    );
+  }
   const { units, limits } = overview.data;
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="mx-auto flex w-full max-w-2xl flex-col gap-4">
       <h1 className="text-title font-bold">Ziyaretçi</h1>
       {units.length === 0 ? (
         <Alert>Misafir geçişi, kurye onayı ve araç kaydı yalnızca dairede oturan sakinler içindir. Bir hata olduğunu düşünüyorsanız yönetimle iletişime geçin.</Alert>

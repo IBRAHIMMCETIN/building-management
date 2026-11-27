@@ -20,7 +20,7 @@ export function MyReservationsPage() {
   const [tab, setTab] = useState<Tab>('new');
   const [done, setDone] = useState<{ booking: MyBooking; warning?: string } | null>(null);
   return (
-    <div className="flex flex-col gap-4">
+    <div className="mx-auto flex w-full max-w-2xl flex-col gap-4">
       <h1 className="text-title font-bold">Rezervasyon</h1>
       <FilterChips<Tab>
         label="Rezervasyon görünümü"

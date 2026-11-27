@@ -85,7 +85,8 @@ export function AdminLayout() {
 
   return (
     <div className="flex min-h-dvh">
-      <aside className="sticky top-0 hidden h-dvh w-sidebar shrink-0 flex-col gap-4 border-r border-border bg-surface px-3 md:flex">
+      {/* Kisa ekranda (ör. 1366x768 dizustu) uzun menu kendi icinde kayar; ogeler sikismaz / kesilmez. */}
+      <aside className="sticky top-0 hidden h-dvh w-sidebar shrink-0 flex-col gap-4 overflow-y-auto border-r border-border bg-surface px-3 pb-4 md:flex">
         <div className="flex h-16 items-center px-3">
           <Brand />
         </div>

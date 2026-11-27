@@ -134,9 +134,12 @@ export function ResidentHomePage() {
   return (
     <div className="flex flex-col gap-6">
       <h1 className="text-title font-bold">Hoş geldiniz</h1>
-      <DebtCard />
-      <MyTicketsCard />
-      <LatestAnnouncementsCard />
+      {/* Masaustunde iki sutun (Genel Bakis'taki kart izgarasi gibi); telefonda alt alta. */}
+      <div className="grid gap-6 lg:grid-cols-2 lg:gap-4">
+        <DebtCard />
+        <MyTicketsCard />
+        <LatestAnnouncementsCard />
+      </div>
     </div>
   );
 }
