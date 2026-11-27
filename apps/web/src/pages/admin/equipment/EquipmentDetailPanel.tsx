@@ -1,4 +1,4 @@
-import { Archive, FileText, Pencil, Power, Upload } from 'lucide-react';
+import { Archive, FileText, Pencil, Upload } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router';
 import { TaskStatusBadge, TicketStatusBadge } from '@/components/tickets/TicketBadges';
@@ -124,7 +124,6 @@ function EquipmentDetail({ equipment: e, onEdit, blockName }: { equipment: Equip
         <div className="flex flex-wrap gap-2" aria-label="Durum işlemleri">
           {e.status !== 'active' && (
             <Button size="sm" variant="secondary" onClick={() => setStatusTo('active')}>
-              <Power className="size-4" aria-hidden="true" />
               Çalışıyor olarak işaretle
             </Button>
           )}

@@ -8,7 +8,7 @@ import { EQUIPMENT_CATEGORIES, INSPECTION_LABELS } from '@/lib/equipment/model';
  * sonraki kontrol son kontrolden once olamaz, telefon / e-posta bicimi.
  */
 
-const date = z.string().trim().refine((v) => v === '' || /^\d{4}-\d{2}-\d{2}$/.test(v), 'Tarih GG.AA.YYYY olmalı');
+const date = z.string().trim().refine((v) => v === '' || /^\d{4}-\d{2}-\d{2}$/.test(v), 'Tarih seçin');
 const PHONE = /^[0-9+()\s-]{5,30}$/;
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 

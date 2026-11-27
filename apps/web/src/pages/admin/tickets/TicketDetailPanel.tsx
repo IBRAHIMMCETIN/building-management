@@ -331,17 +331,19 @@ function EditDialog({ ticket, onClose }: { ticket: Ticket; onClose: () => void }
             ))}
           </Select>
         </FormField>
-        <FormField label="Ekipman (isteğe bağlı)" hint="Arıza ekipmanın geçmişinde ve masraf toplamında görünür.">
-          <Select value={equipmentId} onChange={(e) => setEquipmentId(e.target.value)}>
-            <option value="">Bağlı değil</option>
-            {linkedMissing && <option value={ticket.equipmentId}>{labels.equipmentName(ticket.equipmentId ?? '') ?? 'Mevcut ekipman'}</option>}
-            {labels.equipment.map((e) => (
-              <option key={e.equipmentId} value={e.equipmentId}>
-                {e.name}
-              </option>
-            ))}
-          </Select>
-        </FormField>
+        {(labels.equipment.length > 0 || !!ticket.equipmentId) && (
+          <FormField label="Ekipman (isteğe bağlı)" hint="Arıza ekipmanın geçmişinde ve masraf toplamında görünür.">
+            <Select value={equipmentId} onChange={(e) => setEquipmentId(e.target.value)}>
+              <option value="">Bağlı değil</option>
+              {linkedMissing && <option value={ticket.equipmentId}>{labels.equipmentName(ticket.equipmentId ?? '') ?? 'Ekipman kaydı'}</option>}
+              {labels.equipment.map((e) => (
+                <option key={e.equipmentId} value={e.equipmentId}>
+                  {e.name}
+                </option>
+              ))}
+            </Select>
+          </FormField>
+        )}
         {update.isError && <Alert tone="danger">{errorMessage(update.error)}</Alert>}
         <div className="flex justify-end gap-2">
           <Button variant="ghost" onClick={onClose}>

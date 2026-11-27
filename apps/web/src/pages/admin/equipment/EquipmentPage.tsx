@@ -89,19 +89,21 @@ export function EquipmentPage() {
 function ExpiringPanel({ onOpen }: { onOpen: (id: string) => void }) {
   const expiring = useEquipmentExpiring();
   const [all, setAll] = useState(false);
-  if (expiring.isPending) return null;
+  if (expiring.isPending) return <Skeleton className="h-24" />;
   if (expiring.isError) return <Alert tone="danger">{errorMessage(expiring.error)}</Alert>;
   const items = expiring.data;
   if (!items.length) return null;
   const shown = all ? items : items.slice(0, EXPIRY_PREVIEW);
   return (
     <section className="flex flex-col gap-2" aria-labelledby="equipment-expiring">
-      <h2 id="equipment-expiring" className="inline-flex items-center gap-2 text-small font-semibold">
-        Yaklaşan ve dolan tarihler
-        <Badge tone={items.some((i) => i.expired) ? 'danger' : 'warning'}>{items.length}</Badge>
-      </h2>
+      <div className="flex items-center gap-2">
+        <h2 id="equipment-expiring" className="text-small font-semibold">
+          Yaklaşan ve dolan tarihler
+        </h2>
+        <Badge tone="warning">{items.length}</Badge>
+      </div>
       <p className="text-small text-muted">Garanti, servis sözleşmesi ve periyodik kontrol tarihleri 30 gün kala burada ve günlük özet e-postasında görünür.</p>
-      <ul className="grid gap-2 md:grid-cols-2">
+      <ul className="flex flex-col gap-2">
         {shown.map((i) => (
           <li key={`${i.equipmentId}-${i.kind}`}>
             <ExpiryRow item={i} onOpen={onOpen} />

@@ -1,6 +1,6 @@
-import { Pencil } from 'lucide-react';
+import { Calculator, Pencil } from 'lucide-react';
 import { useState } from 'react';
-import { Alert, Button, FormField, Input } from '@/components/ui';
+import { Alert, Button, Card, CardTitle, FormField, Input } from '@/components/ui';
 import { errorMessage } from '@/lib/api/errors';
 import type { EstimateInput, StaffEstimate } from '@/lib/api/tickets';
 import { formatDateTime } from '@/lib/dates';
@@ -22,9 +22,12 @@ export function EstimateCard({ estimate, canEdit, version, mutation, nameOf }: {
   const save = (input: EstimateInput) => mutation.mutate(input, { onSuccess: () => setEditing(false) });
 
   return (
-    <section className="flex flex-col gap-2 rounded-lg border border-border p-3" aria-label="Tahmini tutar">
-      <div className="flex items-center gap-2">
-        <h3 className="text-small font-semibold">Tahmini tutar (görevli notu)</h3>
+    <Card className="flex flex-col gap-3 p-4 md:p-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <CardTitle className="flex items-center gap-2 text-base md:text-base">
+          <Calculator className="size-4" aria-hidden="true" />
+          Tahmini tutar (görevli notu)
+        </CardTitle>
         {canEdit && !editing && (
           <Button size="xs" variant="subtle" className="ml-auto" onClick={() => setEditing(true)}>
             <Pencil className="size-3.5" aria-hidden="true" />
@@ -36,7 +39,7 @@ export function EstimateCard({ estimate, canEdit, version, mutation, nameOf }: {
       {editing ? (
         <div className="flex flex-col gap-3">
           <div className="grid gap-3 sm:grid-cols-3">
-            <FormField label="Tutar (TL)" error={amount.trim() && !valid ? 'Geçerli bir tutar girin (ör. 1500 veya 1500,50)' : undefined}>
+            <FormField label="Tutar (TL)" error={amount.trim() && !valid ? 'Geçerli bir tutar girin' : undefined}>
               <Input inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} />
             </FormField>
             <div className="sm:col-span-2">
@@ -71,6 +74,6 @@ export function EstimateCard({ estimate, canEdit, version, mutation, nameOf }: {
       ) : (
         <p className="text-small text-muted">Henüz tahmini tutar girilmedi.</p>
       )}
-    </section>
+    </Card>
   );
 }
