@@ -73,7 +73,7 @@ const AKASYA = card('apt-2', 'Akasya Apartmanı', { role: 'observer', readOnly: 
 const ZAMBAK = card('apt-3', 'Zambak Konutları', { status: 'partial', failed: ['finance', 'tickets'], finance: undefined, tickets: undefined });
 
 function page(items: PortfolioCard[], over: Partial<Page> = {}): Page {
-  return { asOf: '2026-11-25', period: '2026-11', total: items.length, limit: 20, items, totals: totalsOf(items), ...over };
+  return { asOf: '2026-11-25', period: '2026-11', total: items.length, limit: 12, items, totals: totalsOf(items), ...over };
 }
 
 function Where() {
@@ -138,7 +138,7 @@ afterEach(() => {
 describe('PortfolioPage', () => {
   it('toplamlar, apartman satirlari, rol / salt okunur isaretleri ve eksik veri uyarisi', async () => {
     const view = await render();
-    expect(api.page).toHaveBeenCalledWith({ limit: 20 }, expect.anything());
+    expect(api.page).toHaveBeenCalledWith({ limit: 12 }, expect.anything());
     const text = view.host.textContent ?? '';
     expect(text).toContain('3 apartman');
     expect(text).toContain('Kasım 2026 tahsilat');
@@ -194,7 +194,11 @@ describe('PortfolioPage', () => {
     await view.unmount();
 
     const again = await render();
-    const tickets = again.table().querySelector('button[aria-label="Lale Sitesi: açık talepler"]') as HTMLButtonElement;
+    const tickets = [...again.table().querySelectorAll('button')].find((b) => b.textContent?.includes('(Lale Sitesi, açık talepler)')) as HTMLButtonElement;
+    // Erisilebilir ad gorunen degerle baslar (aria-label yok; WCAG 2.5.3), baglam ekran okuyucuya sonda.
+    expect(tickets.hasAttribute('aria-label')).toBe(false);
+    expect(tickets.textContent).toMatch(/^5 açık1 acil · 2 SLA aşımı \(Lale Sitesi, açık talepler\)$/);
+    expect(tickets.querySelector('.sr-only')?.textContent).toBe(' (Lale Sitesi, açık talepler)');
     await act(async () => tickets.click());
     await flush();
     expect(again.value.setActiveContext).not.toHaveBeenCalled();
@@ -208,7 +212,7 @@ describe('PortfolioPage', () => {
     expect(view.host.textContent).toContain('toplamlar yüklenen 1 apartman içindir');
     await act(async () => view.text('Daha fazla yükle')?.click());
     await flush();
-    expect(api.page).toHaveBeenLastCalledWith({ limit: 20, cursor: 'c2' }, expect.anything());
+    expect(api.page).toHaveBeenLastCalledWith({ limit: 12, cursor: 'c2' }, expect.anything());
     expect(view.rowNames()).toEqual(['Akasya Apartmanı', 'Lale Sitesi']);
     expect(view.host.textContent).not.toContain('toplamlar yüklenen');
     expect(view.text('Daha fazla yükle')).toBeUndefined();

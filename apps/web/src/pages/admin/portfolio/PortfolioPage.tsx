@@ -1,6 +1,6 @@
 import { ArrowRight, Briefcase, Search } from 'lucide-react';
 import { type ReactNode, useMemo, useState } from 'react';
-import { Alert, Badge, Button, Card, FilterChips, Input, Select, Skeleton } from '@/components/ui';
+import { Alert, Badge, Button, Card, FilterChips, Input, Kpi, Select, Skeleton } from '@/components/ui';
 import { useAuth } from '@/hooks/useAuth';
 import { type OpenTarget, useOpenApartment, usePortfolio, usePortfolioAccess } from '@/hooks/usePortfolio';
 import { errorMessage } from '@/lib/api/errors';
@@ -218,31 +218,27 @@ function TotalsStrip({ totals: t, period }: { totals: PortfolioTotals; period?: 
   );
 }
 
-function Kpi({ label, value, detail, warn }: { label: string; value: string; detail?: string; warn?: boolean }) {
-  return (
-    <Card className="flex flex-col gap-1">
-      <p className="text-small text-muted">{label}</p>
-      <p className={`text-2xl font-semibold tabular-nums ${warn ? 'text-warning' : ''}`}>{value}</p>
-      {detail && <p className="text-xs text-muted">{detail}</p>}
-    </Card>
-  );
-}
-
 type ListProps = { items: PortfolioCard[]; onOpen: (t: OpenTarget) => void; pendingKey: string | null; disabled: boolean };
 type DrillProps = Omit<ListProps, 'items'> & { align: 'left' | 'right' };
 
-/** Hucredeki deger: tiklaninca o apartmanin ilgili ekrani acilir (baglam degisir). */
+/**
+ * Hucredeki deger: tiklaninca o apartmanin ilgili ekrani acilir (baglam degisir). Erisilebilir ad
+ * gorunen degerle baslar (WCAG 2.5.3); apartman ve ekran yalnizca ekran okuyucuya sonuna eklenir.
+ */
 function Drill({ card, to, label, onOpen, pendingKey, disabled, align, children }: { card: PortfolioCard; to: string; label: string; children: ReactNode } & DrillProps) {
   return (
     <button
       type="button"
       disabled={disabled}
-      aria-label={`${card.apartmentName}: ${label}`}
       aria-busy={pendingKey === `${card.apartmentId}|${to}` || undefined}
       onClick={() => onOpen({ apartmentId: card.apartmentId, role: card.role, to })}
       className={`rounded-sm underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-50 ${align === 'right' ? 'text-right' : 'text-left'}`}
     >
       {children}
+      <span className="sr-only">
+        {' '}
+        ({card.apartmentName}, {label})
+      </span>
     </button>
   );
 }
