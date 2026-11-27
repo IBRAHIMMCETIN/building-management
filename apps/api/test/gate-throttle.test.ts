@@ -86,7 +86,36 @@ describe('dogrulama deneme siniri (servis)', () => {
     await expect(w.service.verifyPass(ctxs.guard, { token: '../../etc' })).rejects.toMatchObject({ code: 'not_found' });
     const w0 = windowOf(Date.parse(T0));
     expect(w.fake.byPrefix(APT, throttleKeys.user('verify', 'guard-1', w0.start))[0]).toMatchObject({ count: 2 });
-    expect(w.fake.byPrefix(APT, throttleKeys.apartment('verify', w0.start))[0]).toMatchObject({ count: 2 });
+    // Apartman sayaci yalnizca ceza puani tasir (basarili / taban puan yok).
+    expect(w.fake.byPrefix(APT, throttleKeys.apartment('verify', w0.start))[0]).toMatchObject({ count: 1 });
+  });
+
+  it('limiti asmis kullanici 429 aldikca apartman sayaci sabit kalir; diger gorevliler etkilenmez', async () => {
+    const w = gateWorld();
+    const p = await w.pass();
+    const failures = Math.ceil(THROTTLE_LIMITS.verify.user / (1 + FAILED_CODE_PENALTY));
+    for (let i = 0; i < failures; i++) await expect(w.service.verifyPass(ctxs.guard, { code: 'ZZZZ2222' })).rejects.toMatchObject({ code: 'not_found' });
+    const w0 = windowOf(Date.parse(T0));
+    const aptCount = () => (w.fake.byPrefix(APT, throttleKeys.apartment('verify', w0.start))[0] as { count?: number } | undefined)?.count ?? 0;
+    const before = aptCount();
+    expect(before).toBe(failures * FAILED_CODE_PENALTY);
+    for (let i = 0; i < 50; i++) await expect(w.service.verifyPass(ctxs.guard, { code: 'ZZZZ2222' })).rejects.toMatchObject({ code: 'rate_limited', scope: 'user' });
+    expect(aptCount()).toBe(before);
+    expect((await w.service.verifyPass(ctxs.guard2, { code: p.shortCode })).pass.passId).toBe(p.passId);
+  });
+
+  it('cok gorevli, cok basarili okuma: apartman siniri hic tetiklenmez (yogun site kendini kilitlemez)', async () => {
+    const w = gateWorld();
+    const p = await w.pass();
+    // 8 gorevli x 40 basarili okuma = 320 istek (eski apartman siniri 300'u asar), paralel gorevliler.
+    const guards = Array.from({ length: 8 }, (_, i) => ({ apartmentId: APT, userId: `guard-x${i}`, role: 'security_guard' }));
+    await Promise.all(guards.map(async (g) => {
+      for (let i = 0; i < 40; i++) await w.service.verifyPass(g, { token: p.token });
+    }));
+    const w0 = windowOf(Date.parse(T0));
+    expect(w.fake.byPrefix(APT, throttleKeys.apartment('verify', w0.start))).toEqual([]);
+    expect(lockouts(w.fake.audits)).toEqual([]);
+    expect((await w.service.verifyPass(ctxs.guard, { token: p.token })).pass.passId).toBe(p.passId);
   });
 
   it('HTTP: 429 + Retry-After basligi ve Turkce mesaj; plaka aramasi da sayilir', async () => {
@@ -110,7 +139,7 @@ describe('dogrulama deneme siniri (servis)', () => {
 
 describe('deneme siniri (sayac mantigi)', () => {
   const subject = (ctx: { apartmentId: string; userId: string; role: string }) => ctx;
-  function limiter(limits = { verify: { user: 5, apartment: 8 }, plates: { user: 3, apartment: 4 } }) {
+  function limiter(limits: Parameters<typeof createGateThrottle>[0]['limits'] = { verify: { user: 20, apartment: 8 }, plates: { user: 3 } }) {
     const fake = createFakeGateRepo();
     let now = new Date(T0);
     const metrics: { metrics: Record<string, number>; props?: Record<string, unknown> }[] = [];
@@ -118,24 +147,34 @@ describe('deneme siniri (sayac mantigi)', () => {
     return { fake, t, metrics, at: (iso: string) => (now = new Date(iso)) };
   }
 
-  it('apartman sayaci tum gorevlileri kapsar; diger apartman ayri; kilitlenme denetimi + GateLockout metrigi', async () => {
+  it('apartman sayaci tum gorevlilerin basarisizlik cezalarini toplar; dolunca herkes 429; diger apartman ayri; denetim + metrik', async () => {
     const l = limiter();
-    for (let i = 0; i < 4; i++) await l.t.consume(subject(ctxs.guard), 'verify');
-    for (let i = 0; i < 4; i++) await l.t.consume(subject(ctxs.guard2), 'verify');
-    // 8. istekte apartman siniri doldu: ucuncu gorevli (yonetici) de 429 alir.
+    for (const g of [ctxs.guard, ctxs.guard2]) {
+      await l.t.consume(subject(g), 'verify');
+      await l.t.penalize(subject(g), 'verify', 4);
+    }
+    // 8 ceza puani: apartman siniri doldu; ucuncu kisi (yonetici) de 429 alir.
     const err = await l.t.consume(subject(ctxs.mgr), 'verify').catch((e: unknown) => e);
     expect(err).toMatchObject({ code: 'rate_limited', scope: 'apartment' });
     // Baska apartman etkilenmez (sayaclar kiracinin bolumunde).
     await l.t.consume(subject(ctxs.guardApt2), 'verify');
-    expect(l.fake.byPrefix(APT2, 'GTHR#')).toHaveLength(2);
+    expect(l.fake.byPrefix(APT2, 'GTHR#')).toHaveLength(1);
     expect(lockouts(l.fake.audits)).toEqual([
       expect.objectContaining({ apartmentId: APT, target: { type: 'apartment', id: APT }, details: expect.objectContaining({ scope: 'apartment', kind: 'verify', limit: 8 }) }),
     ]);
     expect(l.metrics).toEqual([{ metrics: { GateLockout: 1 }, props: { msg: 'gate_lockout', apartmentId: APT, kind: 'verify', scope: 'apartment' } }]);
   });
 
+  it('plaka aramasinda apartman sayaci yok (yalnizca kullanici)', async () => {
+    const l = limiter();
+    for (let i = 0; i < 3; i++) await l.t.consume(subject(ctxs.guard), 'plates');
+    await expect(l.t.consume(subject(ctxs.guard), 'plates')).rejects.toMatchObject({ scope: 'user' });
+    await l.t.consume(subject(ctxs.guard2), 'plates');
+    expect(l.fake.byPrefix(APT, 'GTHR#plates#A#')).toEqual([]);
+  });
+
   it('ceza esigi gecirince kilitlenme denetlenir (bir kez); tur bazli ayri sayac; pencere donunce sifir', async () => {
-    const l = limiter({ verify: { user: 5, apartment: 100 }, plates: { user: 3, apartment: 100 } });
+    const l = limiter({ verify: { user: 5, apartment: 100 }, plates: { user: 3 } });
     await l.t.consume(subject(ctxs.guard), 'verify');
     await l.t.penalize(subject(ctxs.guard), 'verify', 5);
     expect(lockouts(l.fake.audits)).toHaveLength(1);
@@ -155,7 +194,7 @@ describe('deneme siniri (sayac mantigi)', () => {
   });
 
   it('denetim yazilamazsa istek yine reddedilir (sinir sayactadir)', async () => {
-    const l = limiter({ verify: { user: 1, apartment: 10 }, plates: { user: 1, apartment: 1 } });
+    const l = limiter({ verify: { user: 1, apartment: 10 }, plates: { user: 1 } });
     l.fake.repo.audit = async () => {
       throw new Error('denetim kapali');
     };

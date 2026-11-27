@@ -255,8 +255,8 @@ variable "bulk_write_route_burst_limit" {
 
 variable "gate_route_rate_limit" {
   type        = number
-  default     = 10
-  description = "Guvenlik kapisi QR / kisa kod dogrulama ve plaka aramasi rotalari: saniyede ortalama istek (rota geneli; kullanici basina sinir uygulamada)."
+  default     = 100
+  description = "Guvenlik kapisi QR / kisa kod dogrulama ve plaka aramasi rotalari: saniyede ortalama istek. PLATFORM GENELI rota siniridir (tum apartmanlarin gorevlileri ayni kovayi paylasir): arka uc kapasitesine gore secilir, istemci basina sinir degildir. Istemci basina sinir uygulamadaki kullanici / apartman sayacidir (gate/throttle.ts), ileride Cloudflare ile IP basina."
 
   validation {
     condition     = var.gate_route_rate_limit >= 1
@@ -266,7 +266,7 @@ variable "gate_route_rate_limit" {
 
 variable "gate_route_burst_limit" {
   type    = number
-  default = 20
+  default = 200
 }
 
 # --- Guvenlik alarm esikleri (security_monitoring.tf) ---

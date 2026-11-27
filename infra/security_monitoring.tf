@@ -39,8 +39,10 @@ locals {
     "POST /api/bank/statements/{statementId}/commit"     = { rate = var.bulk_write_route_rate_limit, burst = var.bulk_write_route_burst_limit }
     "POST /api/bank/statements/{statementId}/auto-match" = { rate = var.bulk_write_route_rate_limit, burst = var.bulk_write_route_burst_limit }
     "GET /api/bank/reconciliation/report"                = { rate = var.bulk_write_route_rate_limit, burst = var.bulk_write_route_burst_limit }
-    # Guvenlik kapisi: kisa kod / plaka tahminine karsi rota siniri. Kullanici ve apartman basina
-    # deneme siniri uygulamadadir (DynamoDB sayaci, 429 + Retry-After); bu sinir arka ucu korur.
+    # Guvenlik kapisi: rota siniri platform genelidir (tum apartmanlar ayni kovayi paylasir), bu yuzden
+    # arka uc kapasitesine gore yuksek tutulur; dusuk tutulursa tek bir kullanici tum sitelerin
+    # gorevlilerini bloklayabilir. Istemci basina sinir uygulamadadir (kullanici / apartman sayaci,
+    # 429 + Retry-After; gate/throttle.ts), ileride Cloudflare ile IP basina.
     "POST /api/gate/passes/verify" = { rate = var.gate_route_rate_limit, burst = var.gate_route_burst_limit }
     "GET /api/gate/plates"         = { rate = var.gate_route_rate_limit, burst = var.gate_route_burst_limit }
   }

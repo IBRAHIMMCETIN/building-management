@@ -597,12 +597,12 @@ run "prod_plan" {
         "POST /api/mfa/users/{userId}/reset" = [1, 3]
         "POST /api/support/sessions"         = [1, 3]
         "POST /api/finance/dues"             = [2, 5]
-        "POST /api/gate/passes/verify"       = [10, 20]
-        "GET /api/gate/plates"               = [10, 20]
+        "POST /api/gate/passes/verify"       = [100, 200]
+        "GET /api/gate/plates"               = [100, 200]
       } :
       anytrue([for rs in aws_apigatewayv2_stage.default.route_settings : rs.route_key == k && rs.throttling_rate_limit == want[0] && rs.throttling_burst_limit == want[1]])
     ])
-    error_message = "Hassas rotalarda varsayilan throttling: MFA 1/5, yonetici guvenlik 1/3, toplu yazim 2/5, guvenlik kapisi 10/20"
+    error_message = "Hassas rotalarda varsayilan throttling: MFA 1/5, yonetici guvenlik 1/3, toplu yazim 2/5, guvenlik kapisi 100/200"
   }
   assert {
     condition = alltrue([
