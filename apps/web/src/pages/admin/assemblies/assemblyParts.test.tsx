@@ -103,8 +103,13 @@ describe('gundem karari', () => {
       setter?.call(yes, '1');
       yes.dispatchEvent(new Event('input', { bubbles: true }));
     });
+    expect((button('Düzeltmeyi kaydet') as HTMLButtonElement).disabled).toBe(true);
+    const reason = container.querySelector('textarea') as HTMLTextAreaElement;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(reason, 'Sayım hatası');
+      reason.dispatchEvent(new Event('input', { bubbles: true }));
+    });
     await act(async () => button('Düzeltmeyi kaydet')?.click());
-    expect(tally.mutateAsync).not.toHaveBeenCalled();
-    expect(container.textContent).toContain('Düzeltme gerekçesi en az 3 karakter olmalı');
+    expect(tally.mutateAsync).toHaveBeenCalledWith({ itemId: 'a2', input: { version: 4, yes: 1, no: 0, abstain: 0, correctionReason: 'Sayım hatası' } });
   });
 });

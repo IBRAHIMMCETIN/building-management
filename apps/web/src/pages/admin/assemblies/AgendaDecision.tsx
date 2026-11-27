@@ -1,5 +1,5 @@
-import { useMemo, useState } from 'react';
-import { Alert, Badge, Button, FormField, Input, Select, Textarea } from '@/components/ui';
+import { type ReactNode, useMemo, useState } from 'react';
+import { Alert, Badge, Button, Card, FormField, Input, Select, Textarea } from '@/components/ui';
 import { useRecordTally } from '@/hooks/useAssemblies';
 import {
   type AgendaItem,
@@ -47,6 +47,11 @@ function outcomeLine(o: DecisionOutcome, k: VoteChoice) {
   return `${CHOICE_LABELS[k]}: ${parts.join(' · ')}`;
 }
 
+/** Duzeltme girisi iptal kutusu gibi kart icinde (CancelBox); ilk karar girisi satirin icinde. */
+function EntryBox({ boxed, children }: { boxed: boolean; children: ReactNode }) {
+  return boxed ? <Card className="flex flex-col gap-3">{children}</Card> : <div className="flex flex-col gap-3">{children}</div>;
+}
+
 /** Gundem maddesi: karar turu, gerekli cogunluk, kayitli karar ve duzeltmeleri, karar / duzeltme girisi. */
 export function AgendaDecision({ index, item, assembly, quorum, units, records, canTally, canCorrect, unitLabel }: Props) {
   const record = useRecordTally(assembly.assemblyId);
@@ -74,10 +79,7 @@ export function AgendaDecision({ index, item, assembly, quorum, units, records, 
       if (problem) return;
       body = parsed;
     }
-    if (decided && reason.trim().length < 3) {
-      setIssue('Düzeltme gerekçesi en az 3 karakter olmalı');
-      return;
-    }
+    if (decided && reason.trim().length < 3) return;
     setIssue(null);
     try {
       await record.mutateAsync({ itemId: item.itemId, input: { version: assembly.version, ...body, ...(decided ? { correctionReason: reason.trim() } : {}) } });
@@ -143,7 +145,7 @@ export function AgendaDecision({ index, item, assembly, quorum, units, records, 
       )}
 
       {open && (
-        <div className="flex flex-col gap-3">
+        <EntryBox boxed={decided}>
           {decided && <p className="text-small text-muted">Kayıtlı karar değişmez: düzeltme gerekçesiyle yeni kayıt olarak eklenir ve tutanakta / karar defterinde birlikte görünür.</p>}
           {byUnit ? (
             <div className="flex flex-col gap-2">
@@ -211,19 +213,26 @@ export function AgendaDecision({ index, item, assembly, quorum, units, records, 
               <Textarea maxLength={500} value={reason} onChange={(e) => setReason(e.target.value)} />
             </FormField>
           )}
-          <div className="flex flex-wrap gap-2">
-            {decided && (
-              <Button size="sm" variant="ghost" disabled={record.isPending} onClick={() => setEditing(false)}>
+          {decided ? (
+            <div className="flex flex-wrap justify-end gap-2">
+              <Button variant="ghost" disabled={record.isPending} onClick={() => setEditing(false)}>
                 Vazgeç
               </Button>
-            )}
-            <Button size="sm" loading={record.isPending} onClick={() => void save()}>
-              {decided ? 'Düzeltmeyi kaydet' : 'Kararı kaydet'}
-            </Button>
-          </div>
-        </div>
+              <Button loading={record.isPending} disabled={reason.trim().length < 3} onClick={() => void save()}>
+                Düzeltmeyi kaydet
+              </Button>
+            </div>
+          ) : (
+            <div>
+              <Button size="sm" loading={record.isPending} onClick={() => void save()}>
+                Kararı kaydet
+              </Button>
+            </div>
+          )}
+        </EntryBox>
       )}
-      {(issue || record.isError) && <Alert tone="danger">{issue ?? errorMessage(record.error)}</Alert>}
+      {issue && <Alert tone="danger">{issue}</Alert>}
+      {record.isError && <Alert tone="danger">{errorMessage(record.error)}</Alert>}
     </div>
   );
 }

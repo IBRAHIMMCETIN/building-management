@@ -66,7 +66,7 @@ export function AssemblyCallCard({ assembly: a, check, outdated, canWrite }: Pro
             </Button>
           </div>
         ) : resending ? (
-          <div className="flex flex-col gap-3">
+          <Card className="flex flex-col gap-3">
             <FormField label="Yeniden gönderme gerekçesi" hint="Gerekçe denetim günlüğüne yazılır; tüm alıcılara yeniden e-posta gider.">
               <Textarea maxLength={500} value={reason} onChange={(e) => setReason(e.target.value)} />
             </FormField>
@@ -92,7 +92,7 @@ export function AssemblyCallCard({ assembly: a, check, outdated, canWrite }: Pro
                 Yeniden gönder
               </Button>
             </div>
-          </div>
+          </Card>
         ) : (
           <div>
             <Button size="sm" variant="secondary" onClick={() => setResending(true)}>
