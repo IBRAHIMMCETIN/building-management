@@ -25,7 +25,13 @@ export function QrScanner({ onResult, onClose }: { onResult: (text: string) => v
     let stream: MediaStream | undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let stopped = false;
-    const detector = createDetector();
+    let detector: ReturnType<typeof createDetector>;
+    try {
+      detector = createDetector();
+    } catch (err) {
+      setState({ kind: 'error', message: cameraErrorMessage(err) });
+      return;
+    }
     const stop = () => {
       stopped = true;
       if (timer) clearTimeout(timer);
@@ -48,18 +54,23 @@ export function QrScanner({ onResult, onClose }: { onResult: (text: string) => v
     navigator.mediaDevices
       .getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio: false })
       .then(async (s) => {
+        stream = s;
         if (stopped) {
-          s.getTracks().forEach((t) => t.stop());
+          stop();
           return;
         }
-        stream = s;
         video.srcObject = s;
+        // play() reddedilirse (otomatik oynatma politikasi, kesilen izin) asagidaki catch kamerayi kapatir.
         await video.play();
         setState({ kind: 'scanning' });
         void tick();
       })
       .catch((err: unknown) => {
-        if (!stopped) setState({ kind: 'error', message: cameraErrorMessage(err) });
+        // Her hata yolunda kamera serbest birakilir (isik yanik kalmasin).
+        const wasStopped = stopped;
+        stop();
+        video.srcObject = null;
+        if (!wasStopped) setState({ kind: 'error', message: cameraErrorMessage(err) });
       });
     return stop;
   }, []);

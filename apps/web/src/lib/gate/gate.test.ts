@@ -3,7 +3,7 @@ vi.mock('@/lib/api/client', () => ({ apiClient: {} }));
 import { courierSchema, deskPassSchema, gateLogPageSchema, managerPassSchema, myPassSchema, plateLookupSchema } from '@/lib/api/gate';
 import { cameraErrorMessage, scannerSupport } from './camera';
 import { passFormError } from './pass';
-import { COURIER_TEXT, courierState, formatPlate, formatShortCode, isTurkishPlate, normalizePlate, normalizeShortCode, parseScan, passLink, plateError, validityText } from './plate';
+import { COURIER_TEXT, VERDICT_TEXT, courierState, formatPlate, formatShortCode, isTurkishPlate, normalizePlate, normalizeShortCode, parseScan, passLink, plateError, validityText } from './plate';
 
 const TOKEN = 'AbCdEfGhIjKlMnOpQrStUv_-';
 
@@ -84,6 +84,9 @@ describe('durum metinleri ve semalar', () => {
     expect(courierState({ status: 'waiting', expired: false })).toBe('waiting');
     expect(courierState({ status: 'waiting', expired: true })).toBe('expired');
     expect(courierState({ status: 'approved', expired: false, enteredAt: 'x' })).toBe('inside');
+    expect(courierState({ status: 'approved', expired: false, approvalExpired: true })).toBe('approval_expired');
+    expect(COURIER_TEXT.approval_expired.label).toBe('Onay süresi doldu');
+    expect(VERDICT_TEXT.host_left).toEqual({ label: 'Ev sahibi taşındı', tone: 'danger' });
     expect(courierState({ status: 'approved', expired: false, enteredAt: 'x', exitedAt: 'y' })).toBe('done');
     expect(COURIER_TEXT[courierState({ status: 'declined', expired: false })].label).toBe('Reddedildi');
     expect(validityText('2026-11-27', '2026-11-27')).toBe('27 Kas 2026');
@@ -93,10 +96,14 @@ describe('durum metinleri ve semalar', () => {
   it('API yanitlari: yonetici gorunumunde jeton yok; gorevli gorunumunde sakin kimligi yok', () => {
     const resident = myPassSchema.parse({
       passId: 'p1', unitId: 'u1', unitLabel: 'A Blok · Daire 5', guestName: 'Can', validFrom: '2026-11-27', validUntil: '2026-11-27', entryMode: 'single',
-      status: 'active', verdict: 'valid', token: TOKEN, shortCode: 'K7M2PQ4X', entryCount: 0, inside: false, createdAt: 'x', mine: true, canRevoke: true, version: 1,
+      status: 'active', verdict: 'valid', token: TOKEN, shortCode: 'K7M2PQ4X', entryCount: 0, inside: false, createdAt: 'x', mine: true, canRevoke: true, canRotate: true, version: 1,
     });
+    // Liste yaniti jetonsuz gelir (kayitta yalnizca ozet var).
+    expect(myPassSchema.parse({ ...resident, token: undefined, shortCode: undefined }).token).toBeUndefined();
+    expect(myPassSchema.parse({ ...resident, verdict: 'host_left' }).verdict).toBe('host_left');
     expect(managerPassSchema.parse(resident)).not.toHaveProperty('token');
     expect(managerPassSchema.parse(resident)).not.toHaveProperty('shortCode');
+    expect(managerPassSchema.parse(resident)).not.toHaveProperty('canRotate');
     const desk = deskPassSchema.parse({ ...resident, message: 'Bu geçişin süresi doldu', verdict: 'expired', canEnter: false, canExit: true, createdBy: 'u-9' });
     expect(desk).not.toHaveProperty('createdBy');
     expect(desk).not.toHaveProperty('token');

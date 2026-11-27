@@ -137,6 +137,7 @@ export function useMyGateActions() {
   return {
     createPass: useMutation({ mutationFn: (v: CreatePassInput) => gatePortalApi.createPass(v), ...opts }),
     revokePass: useMutation({ mutationFn: (v: { id: string; version: number }) => gatePortalApi.revokePass(v.id, v.version), ...opts }),
+    rotatePass: useMutation({ mutationFn: (v: { id: string; version: number }) => gatePortalApi.rotatePass(v.id, v.version), ...opts }),
     respondCourier: useMutation({ mutationFn: (v: { id: string; version: number; decision: 'approve' | 'decline' }) => gatePortalApi.respondCourier(v.id, { version: v.version, decision: v.decision }), ...opts }),
     createVehicle: useMutation({ mutationFn: (v: CreateVehicleInput) => gatePortalApi.createVehicle(v), ...opts }),
     updateVehicle: useMutation({ mutationFn: (v: { id: string; input: UpdateVehicleInput }) => gatePortalApi.updateVehicle(v.id, v.input), ...opts }),

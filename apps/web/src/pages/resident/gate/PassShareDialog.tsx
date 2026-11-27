@@ -8,6 +8,7 @@ import { formatShortCode, passLink, validityText } from '@/lib/gate/plate';
 /**
  * Gecisin QR'i ve kisa kodu. Misafire baglanti paylasilir (Web Share API, yoksa kopyala): baglanti
  * yalnizca rastgele jetonu tasir, acildiginda QR tarayicida cizilir. QR'da kisisel veri yoktur.
+ * Jeton sunucuda saklanmaz: bu pencere yalnizca olusturma / "Yeni QR olustur" yanitiyla acilir.
  */
 export function PassShareDialog({ pass, onClose }: { pass: MyPass | undefined; onClose: () => void }) {
   const link = pass?.token ? passLink(window.location.origin, pass.token, pass.shortCode) : undefined;
@@ -74,10 +75,10 @@ export function PassShareDialog({ pass, onClose }: { pass: MyPass | undefined; o
                 </Button>
               </div>
               {shareError && <Alert tone="danger">{shareError}</Alert>}
-              <p className="text-xs text-muted">Bağlantıyı alan herkes bu geçişi kullanabilir; yalnızca misafirinizle paylaşın. Gerekirse geçişi iptal edebilirsiniz.</p>
+              <p className="text-xs text-muted">Bu QR ve kod yalnızca şimdi gösterilir; güvenlik nedeniyle saklanmaz. Kaybederseniz listeden "Yeni QR oluştur"a dokunun (eskisi çalışmaz). Bağlantıyı yalnızca misafirinizle paylaşın.</p>
             </>
           ) : (
-            <Alert>Bu geçiş artık kullanılamaz; QR ve kod gösterilmez.</Alert>
+            <Alert>Bu geçişin QR'ı yeniden gösterilemez. Gerekirse listeden "Yeni QR oluştur"a dokunun.</Alert>
           )}
         </div>
       )}

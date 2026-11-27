@@ -130,6 +130,8 @@ function CourierRow({ c }: { c: Courier }) {
             {c.note && ` · ${c.note}`}
           </span>
           {c.responseNote && <span className="text-small text-muted">Sakinin notu: {c.responseNote}</span>}
+          {c.enterBy && !c.approvalExpired && <span className="text-small text-muted">Onay {timeOf(c.enterBy)} saatine kadar geçerli</span>}
+          {c.approvalExpired && <span className="text-small text-muted">Onayın süresi doldu; kurye hâlâ kapıdaysa yeniden kaydedin.</span>}
         </span>
         <CourierBadge courier={c} />
       </div>

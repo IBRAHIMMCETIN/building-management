@@ -75,7 +75,7 @@ export function parseScan(text: string): ScanResult | undefined {
 // Etiketler
 // ---------------------------------------------------------------------------
 
-export type PassVerdict = 'valid' | 'not_yet_valid' | 'expired' | 'used' | 'revoked';
+export type PassVerdict = 'valid' | 'not_yet_valid' | 'expired' | 'used' | 'revoked' | 'host_left';
 export type Tone = 'success' | 'warning' | 'danger' | 'neutral' | 'accent';
 
 export const VERDICT_TEXT: Record<PassVerdict, { label: string; tone: Tone }> = {
@@ -84,21 +84,24 @@ export const VERDICT_TEXT: Record<PassVerdict, { label: string; tone: Tone }> = 
   expired: { label: 'Süresi doldu', tone: 'danger' },
   used: { label: 'Kullanıldı', tone: 'neutral' },
   revoked: { label: 'İptal edildi', tone: 'danger' },
+  host_left: { label: 'Ev sahibi taşındı', tone: 'danger' },
 };
 
-export type CourierState = 'waiting' | 'approved' | 'declined' | 'cancelled' | 'expired' | 'inside' | 'done';
+export type CourierState = 'waiting' | 'approved' | 'approval_expired' | 'declined' | 'cancelled' | 'expired' | 'inside' | 'done';
 
 /** Kurye kaydinin ekrandaki durumu (sunucu alanlarindan). */
-export function courierState(c: { status: string; expired: boolean; enteredAt?: string; exitedAt?: string }): CourierState {
+export function courierState(c: { status: string; expired: boolean; approvalExpired?: boolean; enteredAt?: string; exitedAt?: string }): CourierState {
   if (c.exitedAt) return 'done';
   if (c.enteredAt) return 'inside';
   if (c.status === 'waiting') return c.expired ? 'expired' : 'waiting';
+  if (c.status === 'approved' && c.approvalExpired) return 'approval_expired';
   return c.status as CourierState;
 }
 
 export const COURIER_TEXT: Record<CourierState, { label: string; tone: Tone }> = {
   waiting: { label: 'Onay bekliyor', tone: 'warning' },
   approved: { label: 'Onaylandı', tone: 'success' },
+  approval_expired: { label: 'Onay süresi doldu', tone: 'neutral' },
   declined: { label: 'Reddedildi', tone: 'danger' },
   cancelled: { label: 'Kapatıldı', tone: 'neutral' },
   expired: { label: 'Yanıt verilmedi', tone: 'neutral' },

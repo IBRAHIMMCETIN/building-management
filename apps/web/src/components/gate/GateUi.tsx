@@ -10,7 +10,7 @@ export function VerdictBadge({ verdict }: { verdict: PassVerdict }) {
   return <Badge tone={v.tone}>{v.label}</Badge>;
 }
 
-export function CourierBadge({ courier }: { courier: Pick<Courier, 'status' | 'expired' | 'enteredAt' | 'exitedAt'> }) {
+export function CourierBadge({ courier }: { courier: Pick<Courier, 'status' | 'expired' | 'approvalExpired' | 'enteredAt' | 'exitedAt'> }) {
   const c = COURIER_TEXT[courierState(courier)];
   return <Badge tone={c.tone}>{c.label}</Badge>;
 }

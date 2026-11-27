@@ -98,8 +98,10 @@ function Guests({ units, limits }: { units: Unit[]; limits: { maxPassDays: numbe
   const a = useMyGateActions();
   const [creating, setCreating] = useState(false);
   const [shown, setShown] = useState<MyPass>();
-  const [confirmId, setConfirmId] = useState<string>();
+  /** `revoke:<id>` veya `rotate:<id>`: ikinci dokunusla onaylanan islem. */
+  const [confirm, setConfirm] = useState<string>();
   const items = passes.data ?? [];
+  const rotate = (p: MyPass) => a.rotatePass.mutate({ id: p.passId, version: p.version }, { onSuccess: (r) => setShown(r.pass), onSettled: () => setConfirm(undefined) });
 
   return (
     <div className="flex flex-col gap-3">
@@ -108,6 +110,7 @@ function Guests({ units, limits }: { units: Unit[]; limits: { maxPassDays: numbe
         Misafir geçişi oluştur
       </Button>
       {a.revokePass.error && <Alert tone="danger">{errorMessage(a.revokePass.error)}</Alert>}
+      {a.rotatePass.error && <Alert tone="danger">{errorMessage(a.rotatePass.error)}</Alert>}
       {passes.isPending ? (
         <Skeleton className="h-32" />
       ) : passes.isError ? (
@@ -129,28 +132,38 @@ function Guests({ units, limits }: { units: Unit[]; limits: { maxPassDays: numbe
                 </span>
                 <VerdictBadge verdict={p.verdict} />
               </div>
-              {(p.token || p.canRevoke) && (
+              {confirm === `rotate:${p.passId}` && <p className="text-small text-text-secondary">Yeni QR ve kod oluşturulur; daha önce paylaştığınız QR ve kod çalışmaz. Yenisini misafirinize gönderin.</p>}
+              {(p.canRotate || p.canRevoke) && (
                 <div className="flex flex-wrap justify-end gap-2">
-                  {p.canRevoke &&
-                    (confirmId === p.passId ? (
-                      <>
-                        <Button size="sm" variant="ghost" onClick={() => setConfirmId(undefined)}>
-                          Vazgeç
-                        </Button>
-                        <Button size="sm" variant="danger" loading={a.revokePass.isPending} onClick={() => a.revokePass.mutate({ id: p.passId, version: p.version }, { onSettled: () => setConfirmId(undefined) })}>
+                  {confirm === `revoke:${p.passId}` || confirm === `rotate:${p.passId}` ? (
+                    <>
+                      <Button size="sm" variant="ghost" onClick={() => setConfirm(undefined)}>
+                        Vazgeç
+                      </Button>
+                      {confirm === `revoke:${p.passId}` ? (
+                        <Button size="sm" variant="danger" loading={a.revokePass.isPending} onClick={() => a.revokePass.mutate({ id: p.passId, version: p.version }, { onSettled: () => setConfirm(undefined) })}>
                           Evet, iptal et
                         </Button>
-                      </>
-                    ) : (
-                      <Button size="sm" variant="subtle" onClick={() => setConfirmId(p.passId)}>
-                        İptal et
-                      </Button>
-                    ))}
-                  {p.token && (
-                    <Button size="sm" variant="secondary" onClick={() => setShown(p)}>
-                      <QrCode className="size-4" aria-hidden="true" />
-                      QR / paylaş
-                    </Button>
+                      ) : (
+                        <Button size="sm" loading={a.rotatePass.isPending} onClick={() => rotate(p)}>
+                          Evet, yeni QR oluştur
+                        </Button>
+                      )}
+                    </>
+                  ) : (
+                    <>
+                      {p.canRevoke && (
+                        <Button size="sm" variant="subtle" onClick={() => setConfirm(`revoke:${p.passId}`)}>
+                          İptal et
+                        </Button>
+                      )}
+                      {p.canRotate && (
+                        <Button size="sm" variant="secondary" onClick={() => setConfirm(`rotate:${p.passId}`)}>
+                          <QrCode className="size-4" aria-hidden="true" />
+                          Yeni QR oluştur
+                        </Button>
+                      )}
+                    </>
                   )}
                 </div>
               )}

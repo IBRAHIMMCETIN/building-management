@@ -31,7 +31,9 @@ const desk = {
 };
 let perms = { canUseDesk: true, canManage: false, isGuard: true };
 let myCouriers: Courier[] = [];
-const portal = { respondCourier: mutation(), createPass: mutation(), revokePass: mutation(), createVehicle: mutation(), updateVehicle: mutation() };
+let rotated: unknown;
+let myPasses: unknown[] = [];
+const portal = { respondCourier: mutation(), createPass: mutation(), revokePass: mutation(), rotatePass: mutation(() => rotated), createVehicle: mutation(), updateVehicle: mutation() };
 
 vi.mock('@/hooks/useGate', () => ({
   useGatePermissions: () => perms,
@@ -44,13 +46,15 @@ vi.mock('@/hooks/useGate', () => ({
   useManagerPasses: () => ({ isPending: false, isError: false, data: [] }),
   useMyGate: () => ({ isPending: false, isError: false, data: { units: [{ unitId: 'u1', label: 'A Blok · Daire 5' }], limits: { maxVehiclesPerUnit: 4, maxPassDays: 31, maxPassLeadDays: 90, courierResponseMinutes: 60 } } }),
   useMyCouriers: () => ({ data: myCouriers }),
-  useMyPasses: () => ({ isPending: false, isError: false, data: [] }),
+  useMyPasses: () => ({ isPending: false, isError: false, data: myPasses }),
   useMyVehicles: () => ({ isPending: false, isError: false, data: { items: [] } }),
   useMyGateActions: () => portal,
 }));
 vi.mock('react-router', () => ({ useSearchParams: () => [new URLSearchParams(), vi.fn()] }));
 
+vi.mock('@/hooks/useQrDataUrl', () => ({ useQrDataUrl: (text?: string) => (text ? 'data:image/png;base64,QR' : undefined) }));
 const { GatePage } = await import('./GatePage');
+const { QrScanner } = await import('./QrScanner');
 const { MyGatePage } = await import('@/pages/resident/gate/MyGatePage');
 
 const pass = (over: Partial<DeskPass> = {}): DeskPass => ({
@@ -152,6 +156,51 @@ describe('guvenlik kapisi ekrani', () => {
     expect(container.textContent).toMatch(/QR okumayı desteklemiyor|kamera erişimi yok|güvenli \(https\)/);
     expect(container.querySelector('#gate-code')).toBeTruthy();
   });
+  it('yanit kaybolsa da "Yeni gecis okut" sonraki misafir icin yeni idempotency anahtari uretir', async () => {
+    perms = { canUseDesk: true, canManage: false, isGuard: true };
+    verifyResult = { pass: pass() };
+    // Giris yaniti kayboldu (ag hatasi): onSuccess hic cagrilmaz.
+    desk.passEntry.mutate.mockImplementationOnce(() => undefined);
+    await render(<GatePage />);
+    await submitCode('K7M2PQ4X');
+    await click(button('Giriş kaydet'));
+    await click(button('Yeni geçiş okut'));
+    verifyResult = { pass: pass({ passId: 'p2', guestName: 'İkinci Misafir' }) };
+    await submitCode('ABCD2345');
+    await click(button('Giriş kaydet'));
+    const keys = desk.passEntry.mutate.mock.calls.map((c) => (c[0] as { key: string }).key);
+    expect(keys).toHaveLength(2);
+    expect(keys[0]).not.toBe(keys[1]);
+  });
+
+  it('kamera: play() reddedilirse akis durdurulur ve elle kod girisine yonlendirilir', async () => {
+    const stopTrack = vi.fn();
+    const g = globalThis as unknown as { BarcodeDetector?: unknown; isSecureContext?: boolean };
+    const nav = navigator as unknown as { mediaDevices?: unknown };
+    const prev = { detector: g.BarcodeDetector, media: nav.mediaDevices, play: HTMLMediaElement.prototype.play, src: Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'srcObject') };
+    // happy-dom gercek MediaStream bekler: sahte akisi kabul eden ayarlayici.
+    Object.defineProperty(HTMLMediaElement.prototype, 'srcObject', { configurable: true, get: () => null, set: () => undefined });
+    g.BarcodeDetector = class {
+      detect = async () => [];
+    };
+    Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: { getUserMedia: vi.fn(async () => ({ getTracks: () => [{ stop: stopTrack }] })) } });
+    HTMLMediaElement.prototype.play = vi.fn(async () => {
+      throw Object.assign(new Error('izin'), { name: 'NotAllowedError' });
+    });
+    try {
+      await render(<QrScanner onResult={vi.fn()} onClose={vi.fn()} />);
+      await act(async () => new Promise((r) => setTimeout(r, 0)));
+      expect(HTMLMediaElement.prototype.play).toHaveBeenCalled();
+      expect(stopTrack).toHaveBeenCalled();
+      expect(container.textContent).toContain('Kamera izni verilmedi');
+    } finally {
+      g.BarcodeDetector = prev.detector;
+      Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: prev.media });
+      HTMLMediaElement.prototype.play = prev.play;
+      if (prev.src) Object.defineProperty(HTMLMediaElement.prototype, 'srcObject', prev.src);
+      else delete (HTMLMediaElement.prototype as unknown as { srcObject?: unknown }).srcObject;
+    }
+  });
 });
 
 describe('sakin ziyaretci ekrani', () => {
@@ -174,5 +223,23 @@ describe('sakin ziyaretci ekrani', () => {
     await render(<MyGatePage />);
     expect(container.textContent).not.toContain('Kapıda kurye var');
     expect(button('Misafir geçişi oluştur')).toBeTruthy();
+  });
+  it('listede QR yeniden gosterilmez; "Yeni QR olustur" onayla yenilenir ve yeni QR acilir', async () => {
+    myCouriers = [];
+    const base = {
+      passId: 'p1', unitId: 'u1', unitLabel: 'A Blok · Daire 5', guestName: 'Can', validFrom: '2026-11-27', validUntil: '2026-11-27', entryMode: 'single', status: 'active',
+      verdict: 'valid', entryCount: 0, inside: false, createdAt: '2026-11-27T08:00:00.000Z', mine: true, canRevoke: true, canRotate: true, version: 1,
+    };
+    myPasses = [base];
+    rotated = { pass: { ...base, version: 2, token: 'AbCdEfGhIjKlMnOpQrStUv_-', shortCode: 'ABCD2345' } };
+    await render(<MyGatePage />);
+    expect(container.textContent).not.toContain('ABCD-2345');
+    await click(button('Yeni QR oluştur'));
+    expect(container.textContent).toContain('daha önce paylaştığınız QR ve kod çalışmaz');
+    expect(portal.rotatePass.mutate).not.toHaveBeenCalled();
+    await click(button('Evet, yeni QR oluştur'));
+    expect(portal.rotatePass.mutate).toHaveBeenCalledWith({ id: 'p1', version: 1 }, expect.anything());
+    expect(document.body.textContent).toContain('ABCD-2345');
+    myPasses = [];
   });
 });

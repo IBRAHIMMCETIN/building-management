@@ -60,6 +60,8 @@ export function PassDesk() {
     setPass(undefined);
     setDone(undefined);
     setCode('');
+    // Yanit kaybolsa bile (ag hatasi) sonraki misafir ayni anahtari kullanmaz: 409 yerine yeni kayit.
+    renewKey();
     a.verify.reset();
     a.passEntry.reset();
     a.passExit.reset();

@@ -8,7 +8,7 @@ import { apiClient } from './client';
  * Gorevli yanitlarinda sakin adi / iletisim / borc yoktur; QR jetonu yalnizca sakine doner.
  */
 
-const verdict = z.enum(['valid', 'not_yet_valid', 'expired', 'used', 'revoked']);
+const verdict = z.enum(['valid', 'not_yet_valid', 'expired', 'used', 'revoked', 'host_left']);
 
 export const unitOptionSchema = z.object({ unitId: z.string(), label: z.string() });
 
@@ -20,6 +20,8 @@ export const vehicleSchema = z.object({
   plateDisplay: z.string(),
   note: z.string().optional(),
   status: z.enum(['active', 'inactive']),
+  /** Sahibi bolumden tasindi: gorevliye pasif gorunur. */
+  ownerLeft: z.boolean().optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
   createdByRole: z.string(),
@@ -40,7 +42,7 @@ export const plateHitSchema = z.object({
 export const plateLookupSchema = z.object({ query: z.string(), queryDisplay: z.string(), items: z.array(plateHitSchema) });
 export type PlateLookup = z.infer<typeof plateLookupSchema>;
 
-/** Sakin gorunumu (jeton / kod yalnizca hala kullanilabilir geciste). */
+/** Sakin gorunumu. Jeton / kod kayitta tutulmaz: yalnizca olusturma ve yenileme yanitinda gelir. */
 export const myPassSchema = z.object({
   passId: z.string(),
   unitId: z.string(),
@@ -64,11 +66,13 @@ export const myPassSchema = z.object({
   createdAt: z.string(),
   mine: z.boolean(),
   canRevoke: z.boolean(),
+  /** "Yeni QR olustur" (eski QR / kod gecersiz olur). */
+  canRotate: z.boolean(),
   version: z.number(),
 });
 export type MyPass = z.infer<typeof myPassSchema>;
 
-export const managerPassSchema = myPassSchema.omit({ token: true, shortCode: true, mine: true, note: true, lastExitAt: true, revokedAt: true });
+export const managerPassSchema = myPassSchema.omit({ token: true, shortCode: true, mine: true, note: true, lastExitAt: true, revokedAt: true, canRotate: true });
 export type ManagerPass = z.infer<typeof managerPassSchema>;
 
 /** Gorevli gorunumu: misafir, ev sahibi bolum, gecerlilik, karar. */
@@ -107,6 +111,9 @@ export const courierSchema = z.object({
   responseNote: z.string().optional(),
   enteredAt: z.string().optional(),
   exitedAt: z.string().optional(),
+  /** Onaylanan kuryenin iceri alinabilecegi son an (onay suresi). */
+  enterBy: z.string().optional(),
+  approvalExpired: z.boolean().optional(),
   createdAt: z.string(),
   canRespond: z.boolean(),
   canEnter: z.boolean(),
@@ -198,6 +205,7 @@ export const gatePortalApi = {
   passes: (signal?: AbortSignal) => apiClient.get(`${P}/passes`, { signal, schema: z.object({ items: z.array(myPassSchema) }) }),
   createPass: (input: CreatePassInput) => apiClient.post(`${P}/passes`, input, { schema: z.object({ pass: myPassSchema, replayed: z.boolean() }) }),
   revokePass: (id: string, version: number) => apiClient.post(`${P}/passes/${enc(id)}/revoke`, { version }, { schema: z.object({ pass: myPassSchema }) }),
+  rotatePass: (id: string, version: number) => apiClient.post(`${P}/passes/${enc(id)}/rotate`, { version }, { schema: z.object({ pass: myPassSchema }) }),
   couriers: (signal?: AbortSignal) => apiClient.get(`${P}/couriers`, { signal, schema: courierList }),
   respondCourier: (id: string, input: { version: number; decision: 'approve' | 'decline'; note?: string }) => apiClient.post(`${P}/couriers/${enc(id)}/respond`, input, { schema: courierOne }),
   log: (f: GateLogFilter, signal?: AbortSignal) => apiClient.get(`${P}/log`, { query: logQuery(f), signal, schema: gateLogPageSchema }),

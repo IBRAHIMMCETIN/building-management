@@ -2,7 +2,7 @@ import { Car } from 'lucide-react';
 import { Badge, Button } from '@/components/ui';
 import type { Vehicle } from '@/lib/api/gate';
 
-/** Arac listesi (yonetim + sakin): plaka, bolum, not, aktif / pasif ve durum degistirme. */
+/** Arac listesi (yonetim + sakin): plaka, bolum, not, aktif / pasif ve durum degistirme. Sahibi tasinan arac gorevliye pasif gorunur. */
 export function VehicleList({ items, onToggle, pendingId, showUnit = true }: { items: Vehicle[]; onToggle?: (v: Vehicle) => void; pendingId?: string; showUnit?: boolean }) {
   return (
     <ul className="flex flex-col gap-2">
@@ -17,7 +17,7 @@ export function VehicleList({ items, onToggle, pendingId, showUnit = true }: { i
               {v.note}
             </span>
           </span>
-          <Badge tone={v.status === 'active' ? 'success' : 'neutral'}>{v.status === 'active' ? 'Aktif' : 'Pasif'}</Badge>
+          <Badge tone={v.status === 'active' && !v.ownerLeft ? 'success' : 'neutral'}>{v.status !== 'active' ? 'Pasif' : v.ownerLeft ? 'Sahibi taşındı' : 'Aktif'}</Badge>
           {onToggle && (
             <Button variant="subtle" size="sm" loading={pendingId === v.vehicleId} onClick={() => onToggle(v)}>
               {v.status === 'active' ? 'Pasife al' : 'Etkinleştir'}
