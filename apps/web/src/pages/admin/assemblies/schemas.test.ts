@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 vi.mock('@/lib/api/client', () => ({ apiClient: {} }));
 import { navItemsFor } from '@/layouts/adminNav';
-import { type Assembly, type Quorum, assemblyDetailSchema, firstMeetingCandidates, quorumText } from '@/lib/api/assemblyModel';
+import { type Assembly, type Quorum, assemblyDetailSchema, firstMeetingCandidates, quorumSchema, quorumText } from '@/lib/api/assemblyModel';
 import { actionLabel } from '@/lib/audit/labels';
 import { assemblyFormSchema, formDefaults, makeAssemblyFormSchema, tallyIssue, toInput } from './schemas';
 
@@ -25,16 +25,19 @@ const quorum = (over: Partial<Quorum> = {}): Quorum => ({
   totalUnits: 4,
   presentUnits: 3,
   proxyUnits: 0,
+  totalOwners: 4,
+  presentOwners: 3,
+  ownersBps: 7500,
   totalVotes: 4,
   presentVotes: 3,
+  voteCap: 1,
   cappedOwners: 0,
   landShareComputable: true,
   reasons: ['Katılanların arsa payı toplamın yarısından fazla değil'],
-  unitsBps: 7500,
   totalLandShare: { numerator: '1000', denominator: '1000' },
   presentLandShare: { numerator: '300', denominator: '1000' },
   landShareBps: 3000,
-  unitsMajority: true,
+  ownersMajority: true,
   landShareMajority: false,
   secondMeeting: false,
   met: false,
@@ -75,14 +78,14 @@ describe('genel kurul formu', () => {
   });
 
   it('ikinci toplanti: ilk toplantidan sonra ve en gec 15 gun icinde; adaylar yeter sayisizligi tutanakta olanlar', () => {
-    const first = assembly({ assemblyId: 'f1', scheduledAt: '2026-12-15T16:00:00.000Z', quorumRecord: { met: false, presentVotes: 1, totalVotes: 4, recordedAt: '2026-12-15T17:00:00.000Z' } });
+    const first = assembly({ assemblyId: 'f1', scheduledAt: '2026-12-15T16:00:00.000Z', quorumRecord: { met: false, presentOwners: 1, totalOwners: 4, presentVotes: 1, totalVotes: 4, noAttendance: false, recordedAt: '2026-12-15T17:00:00.000Z' } });
     const schema = makeAssemblyFormSchema([first]);
     const at = (scheduledAt: string) => schema.safeParse({ ...valid, firstMeetingId: 'f1', scheduledAt });
     expect(at('2026-12-30T19:00').success).toBe(true);
     expect(at('2026-12-31T10:00').error?.issues[0]?.message).toContain('en geç 15 gün');
     expect(at('2026-12-15T18:00').error?.issues[0]?.message).toContain('ilk toplantıdan sonra');
     expect(toInput(at('2026-12-30T19:00').data!).firstMeetingId).toBe('f1');
-    const met = assembly({ assemblyId: 'm1', quorumRecord: { met: true, presentVotes: 3, totalVotes: 4, recordedAt: '2026-12-15T17:00:00.000Z' } });
+    const met = assembly({ assemblyId: 'm1', quorumRecord: { met: true, presentOwners: 3, totalOwners: 4, presentVotes: 3, totalVotes: 4, noAttendance: false, recordedAt: '2026-12-15T17:00:00.000Z' } });
     expect(firstMeetingCandidates([first, met, assembly({ assemblyId: 'x' }), assembly({ assemblyId: 's', secondMeeting: true, quorumRecord: first.quorumRecord })]).map((a) => a.assemblyId)).toEqual(['f1']);
     expect(firstMeetingCandidates([first], 'f1')).toEqual([]);
   });
@@ -106,6 +109,10 @@ describe('genel kurul modeli', () => {
   it('ayrinti semasi ve menu / denetim etiketleri', () => {
     const d = assemblyDetailSchema.parse({ assembly: assembly(), rollFrozen: true, quorum: quorum(), units: [{ unitId: 'u1', blockId: 'b1', number: '1', owners: [{ userId: 'x', name: 'Ali' }], attendance: { mode: 'proxy', proxy: { userId: 'p1', name: 'Vekil' }, recordedAt: '2026-12-15T16:30:00.000Z', version: 1 }, warnings: [] }] });
     expect(d.units[0]?.attendance?.proxy).toEqual({ userId: 'p1', name: 'Vekil' });
+    // Yeter sayinin sayi olcutu kat maliki (kisi): eski bolum bazli alanlarla gelen yanit reddedilir.
+    const { totalOwners: _t, presentOwners: _p, ...legacy } = quorum();
+    expect(() => quorumSchema.parse({ ...legacy, unitsMajority: true })).toThrow();
+    expect(quorumSchema.parse(quorum({ voteCap: 2, cappedOwners: 1 })).voteCap).toBe(2);
     for (const role of ['apartment_manager', 'management_company', 'observer'] as const) expect(navItemsFor(role).map((n) => n.to)).toContain('/admin/assemblies');
     expect(navItemsFor('building_staff').map((n) => n.to)).not.toContain('/admin/assemblies');
     expect(actionLabel('assembly.tally')).toBe('Genel kurul gündem sayımı kaydedildi');

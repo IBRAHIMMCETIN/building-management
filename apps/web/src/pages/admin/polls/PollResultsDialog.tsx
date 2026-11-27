@@ -6,7 +6,7 @@ import { usePollParticipation, usePollResults } from '@/hooks/usePolls';
 import { useBlocks } from '@/hooks/useUnits';
 import { errorMessage } from '@/lib/api/errors';
 import { PHASE_LABELS, PHASE_TONES, type Poll, type PollUnitRow, formatFraction } from '@/lib/api/polls';
-import { formatDateTime } from '@/lib/dates';
+import { formatDate, formatDateTime } from '@/lib/dates';
 
 type Tab = 'results' | 'units';
 const TABS: readonly { value: Tab; label: string }[] = [
@@ -59,7 +59,10 @@ export function PollResultsDialog({ poll, onClose }: { poll: Poll | null; onClos
               </Button>
             </div>
           ) : (
-            <PollResultsView results={results.data.results} />
+            <div className="flex flex-col gap-3">
+              {!results.data.rollFrozen && <Alert>Oy listesi henüz dondurulmadı: paydalar ön izlemedir; ilk oyla ({formatDate(results.data.results.rollDate)} tarihli liste) dondurulur.</Alert>}
+              <PollResultsView results={results.data.results} />
+            </div>
           )
         ) : participation.isPending ? (
           <div role="status" aria-label="Katılım yükleniyor" className="flex flex-col gap-2">

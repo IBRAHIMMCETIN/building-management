@@ -4,7 +4,7 @@ import { type DomainEvent, buildEvent } from '../../events/publisher.js';
 import type { Role } from '../../auth/claims.js';
 import type { AuditDraft } from '../audit/log.js';
 import { type CoreRepository, coreRepository } from '../core/repository.js';
-import type { IsoDate, IsoDateTime } from '../core/types.js';
+import type { IsoDate, IsoDateTime, Unit } from '../core/types.js';
 import { type Obj, ValidationError, asObject, assertId, optBool, optEnum, optString, reqInt, reqString } from '../core/validation.js';
 import { type MembershipRepository, membershipRepository } from '../memberships/repository.js';
 import { type VotingRollItem, buildVotingRoll } from '../ownership/register.js';
@@ -14,7 +14,7 @@ import type { UnitMembership } from '../portal/types.js';
 import { PollError } from './errors.js';
 import { type PollRepository, PollVoteConflictError, pollKeys, pollRepository } from './repository.js';
 import { effectiveCloseAt, eligibleVoters, istanbulDate, participationRows, pollPhase, tallyPoll } from './results.js';
-import { type RollChunk, type RollMeta, type RollSnapshotStore, buildSnapshot, rollSnapshotStore } from './rollSnapshot.js';
+import { type RollChunk, type RollEntry, type RollMeta, type RollSnapshotStore, buildSnapshot, rollSnapshotStore } from './rollSnapshot.js';
 import {
   MAX_OPTIONS,
   MIN_OPTIONS,
@@ -59,7 +59,7 @@ export type PollPortalContext = PollContext & { role: Role };
 export type PollServiceDeps = {
   repository: PollRepository;
   core: Pick<CoreRepository, 'listUnits'>;
-  ownership: Pick<OwnershipRepository, 'listHeads' | 'listRecords'>;
+  ownership: Pick<OwnershipRepository, 'getHead' | 'listHeads' | 'listRecords'>;
   memberships: Pick<MembershipRepository, 'list'>;
   /** Yayinda dondurulan oy listesi (sonuc, katilim ve oy hakki yalnizca buradan). */
   rolls: RollSnapshotStore;
@@ -220,10 +220,66 @@ export function createPollService(overrides: Partial<PollServiceDeps> & Pick<Pol
     return { roll, members: own };
   }
 
-  /** Yayindaki oylamanin dondurulmus oy listesi ozeti (yayindan once yok). */
-  function frozen(p: Poll): Poll & { roll: RollMeta } {
-    if (!p.roll) throw new PollError('conflict', 'Oylamanın oy listesi dondurulmamış');
-    return p as Poll & { roll: RollMeta };
+  const snapshotOf = (p: Poll, live: { roll: VotingRollItem[]; members: UnitMembership[] }, frozenAt: IsoDateTime) =>
+    buildSnapshot({
+      apartmentId: p.apartmentId,
+      ownerType: 'poll',
+      ownerId: p.pollId,
+      rollDate: p.rollDate,
+      frozenAt,
+      roll: live.roll,
+      voters: (item) => eligibleVoters({ audience: p.audience, rollDate: p.rollDate }, item, live.members),
+    });
+
+  /**
+   * Oy listesini dondurur: oylama `opensAt` anina geldiyse ve henuz dondurulmadiysa (planli yayinlanan
+   * oylamanin ilk oyu / kapatilmasi). Kovalar oylama kaydiyla AYNI atomik yazimda; eszamanli ilk oyda
+   * digerinin dondurdugu liste kullanilir. Okumalar hicbir zaman dondurmaz.
+   */
+  async function ensureRoll(ctx: PollContext, p: Poll): Promise<Poll & { roll: RollMeta }> {
+    if (p.roll) return p as Poll & { roll: RollMeta };
+    const now = stamp();
+    if (now < p.opensAt) throw new PollError('poll_closed', 'Oylama henüz başlamadı');
+    const snapshot = snapshotOf(p, await liveRoll(p.apartmentId, p.rollDate), now);
+    const next: Poll = { ...p, roll: snapshot.meta, updatedAt: now, updatedBy: ctx.userId, version: p.version + 1 };
+    try {
+      await repo.update(next, p.version, {
+        roll: snapshot.chunks,
+        audit: { apartmentId: p.apartmentId, action: 'poll.roll_freeze', target: { type: 'poll', id: p.pollId }, actorId: ctx.userId, details: { rollDate: p.rollDate, units: snapshot.meta.units } },
+      });
+      return next as Poll & { roll: RollMeta };
+    } catch (err) {
+      if (!(err instanceof DataAccessError && err.code === 'conflict')) throw err;
+      const fresh = await requirePoll(p.apartmentId, p.pollId);
+      if (fresh.roll) return fresh as Poll & { roll: RollMeta };
+      throw new PollError('conflict', 'Kayıt başka bir işlemle değiştirildi (sürüm uyuşmazlığı)');
+    }
+  }
+
+  /** Tum liste: dondurulmussa anlik goruntu, degilse (planli oylama, henuz oy yok) canli on izleme. */
+  async function rollOf(p: Poll): Promise<{ frozen: boolean; meta: RollMeta; entries: RollEntry[] }> {
+    if (p.roll) return { frozen: true, meta: p.roll, entries: await deps.rolls.entries(p.apartmentId, 'poll', p.pollId) };
+    const preview = snapshotOf(p, await liveRoll(p.apartmentId, p.rollDate), stamp());
+    return { frozen: false, meta: preview.meta, entries: preview.entries };
+  }
+
+  /** Tek bolum: dondurulmussa tek kova; degilse yalnizca o bolumun canli kaydi (tum apartman okunmaz). */
+  async function entryOf(p: Poll, unit: Unit): Promise<RollEntry | undefined> {
+    if (p.roll) return deps.rolls.entry(p.apartmentId, 'poll', p.pollId, p.roll, unit.unitId);
+    const [head, records, members] = await Promise.all([
+      deps.ownership.getHead(p.apartmentId, unit.unitId),
+      deps.ownership.listRecords(p.apartmentId, unit.unitId),
+      deps.memberships.list(p.apartmentId, { unitId: unit.unitId }),
+    ]);
+    const own = members.filter((m) => m.apartmentId === p.apartmentId && m.unitId === unit.unitId);
+    const roll = buildVotingRoll({
+      units: [unit],
+      heads: head && head.apartmentId === p.apartmentId ? [head] : [],
+      records: records.filter((r) => r.apartmentId === p.apartmentId && r.unitId === unit.unitId),
+      memberships: own,
+      day: p.rollDate,
+    }).items;
+    return snapshotOf(p, { roll, members: own }, stamp()).entries[0];
   }
 
   // -------------------------------------------------------------------------
@@ -318,18 +374,12 @@ export function createPollService(overrides: Partial<PollServiceDeps> & Pick<Pol
     const opensAt = current.opensAt < now ? now : current.opensAt;
     if (current.closesAt <= opensAt) throw new ValidationError('Oylamanın bitiş zamanı geçmiş; bitiş zamanını güncelleyin', 'closesAt');
     const rollDate = istanbulDate(opensAt);
-    // Oy listesi yayinda dondurulur: sonuc, katilim ve oy hakki bundan sonra yalnizca bu goruntuden.
+    // Oy listesi oy listesi gunu oncesinde DONDURULMAZ: hemen acilan oylamada yayinda, planli oylamada
+    // acilistan sonraki ilk oy / kapatma yaziminda dondurulur. Yayinda canli liste yalnizca dogrulanir.
     const live = await liveRoll(ctx.apartmentId, rollDate);
     if (live.roll.length === 0) throw new PollError('unprocessable', 'Apartmanda aktif bağımsız bölüm yok');
-    const snapshot = buildSnapshot({
-      apartmentId: ctx.apartmentId,
-      ownerType: 'poll',
-      ownerId: current.pollId,
-      rollDate,
-      frozenAt: now,
-      roll: live.roll,
-      voters: (item) => eligibleVoters({ audience: current.audience, rollDate }, item, live.members),
-    });
+    const opensNow = opensAt <= now;
+    const snapshot = snapshotOf({ ...current, rollDate }, live, now);
     if (current.weighting === 'land_share' && snapshot.meta.missingLandShare > 0) {
       throw new PollError('unprocessable', `Arsa payı ağırlıklı oylama için tüm bölümlerin arsa payı girilmeli (${snapshot.meta.missingLandShare} bölümde eksik)`);
     }
@@ -339,7 +389,7 @@ export function createPollService(overrides: Partial<PollServiceDeps> & Pick<Pol
       status: 'published',
       opensAt,
       rollDate,
-      roll: snapshot.meta,
+      ...(opensNow ? { roll: snapshot.meta } : {}),
       publishedAt: now,
       publishedBy: ctx.userId,
       ...touch(ctx, current),
@@ -356,7 +406,7 @@ export function createPollService(overrides: Partial<PollServiceDeps> & Pick<Pol
     );
     return save(next, current.version, {
       outbox: [event],
-      roll: snapshot.chunks,
+      ...(opensNow ? { roll: snapshot.chunks } : {}),
       audit: {
         apartmentId: ctx.apartmentId,
         action: 'poll.publish',
@@ -372,6 +422,7 @@ export function createPollService(overrides: Partial<PollServiceDeps> & Pick<Pol
           closesAt: next.closesAt,
           rollDate: next.rollDate,
           rollUnits: snapshot.meta.units,
+          rollFrozen: opensNow,
         },
       },
     });
@@ -381,14 +432,16 @@ export function createPollService(overrides: Partial<PollServiceDeps> & Pick<Pol
     const o = asObject(body);
     const version = reqInt(o, 'version', 1, Number.MAX_SAFE_INTEGER);
     const reason = reqString(o, 'reason', 500, 3);
-    const current = await requirePoll(ctx.apartmentId, id);
-    assertVersion(current, version);
-    const now = stamp();
-    const phase = pollPhase(current, now);
+    const loaded = await requirePoll(ctx.apartmentId, id);
+    assertVersion(loaded, version);
+    const phase = pollPhase(loaded, stamp());
     if (phase !== 'open' && phase !== 'scheduled') {
-      throw new PollError('conflict', phase === 'closed' ? 'Oylama zaten sona erdi' : `Oylama kapatılamaz: durum ${current.status}`);
+      throw new PollError('conflict', phase === 'closed' ? 'Oylama zaten sona erdi' : `Oylama kapatılamaz: durum ${loaded.status}`);
     }
-    const votedUnits = (await repo.listVotes(ctx.apartmentId, current.pollId)).length;
+    const votedUnits = (await repo.listVotes(ctx.apartmentId, loaded.pollId)).length;
+    // Acilmis ama henuz oy almamis planli oylama: kesin sonucun paydasi kapanista dondurulur.
+    const current = phase === 'open' ? await ensureRoll(ctx, loaded) : loaded;
+    const now = stamp();
     // Gizli oylama: cok az oyla erken kapatip sonucu acmak bireysel oyu ele verir.
     if (current.secret && phase === 'open' && votedUnits < MIN_SECRET_CLOSE_VOTES) {
       throw new PollError(
@@ -428,19 +481,18 @@ export function createPollService(overrides: Partial<PollServiceDeps> & Pick<Pol
   // Yonetici: sonuc ve katilim
   // -------------------------------------------------------------------------
 
-  async function requireTallyable(ctx: PollContext, id: string): Promise<Poll & { roll: RollMeta }> {
+  async function requireTallyable(ctx: PollContext, id: string): Promise<Poll> {
     const p = await requirePoll(ctx.apartmentId, id);
     if (p.status === 'draft' || p.status === 'cancelled') throw new PollError('conflict', 'Taslak veya iptal edilen oylamanın sonucu yoktur');
-    return frozen(p);
+    return p;
   }
 
-  const snapshotEntries = (p: Poll) => deps.rolls.entries(p.apartmentId, 'poll', p.pollId);
-
-  async function results(ctx: PollContext, id: string): Promise<{ poll: PollView; results: PollResults }> {
+  /** Sonuc: okuma hicbir sey dondurmaz; liste dondurulmamissa `rollFrozen: false` (on izleme paydasi). */
+  async function results(ctx: PollContext, id: string): Promise<{ poll: PollView; rollFrozen: boolean; results: PollResults }> {
     const p = await requireTallyable(ctx, id);
-    const [entries, votes] = await Promise.all([snapshotEntries(p), repo.listVotes(ctx.apartmentId, p.pollId)]);
+    const [roll, votes] = await Promise.all([rollOf(p), repo.listVotes(ctx.apartmentId, p.pollId)]);
     const nowIso = stamp();
-    return { poll: toView(p, nowIso), results: tallyPoll({ poll: p, entries, votes, nowIso }) };
+    return { poll: toView(p, nowIso), rollFrozen: roll.frozen, results: tallyPoll({ poll: { ...p, roll: roll.meta }, entries: roll.entries, votes, nowIso }) };
   }
 
   /**
@@ -451,7 +503,7 @@ export function createPollService(overrides: Partial<PollServiceDeps> & Pick<Pol
     const p = await requireTallyable(ctx, id);
     const votes = await repo.listVotes(ctx.apartmentId, p.pollId);
     if (p.secret && stamp() < p.closesAt) return { secret: true, hidden: true, hiddenUntil: p.closesAt, votedUnits: votes.length, items: [] };
-    const entries = await snapshotEntries(p);
+    const { entries } = await rollOf(p);
     return { secret: p.secret, hidden: false, votedUnits: votes.length, items: participationRows(p, entries, votes) };
   }
 
@@ -466,13 +518,12 @@ export function createPollService(overrides: Partial<PollServiceDeps> & Pick<Pol
   /** Sakinin gorebilecegi oylama: yayinda / bitmis, baslamis ve hedef kitle uyelik iliskisine uygun. */
   const visibleTo = (p: Poll, relation: UnitMembership['relation'], nowIso: IsoDateTime) =>
     (p.status === 'published' || (p.status === 'closed' && Boolean(p.publishedAt))) &&
-    Boolean(p.roll) &&
     p.opensAt <= nowIso &&
     (p.audience === 'residents' || relation === 'owner');
 
-  /** Oy hakki: yayinda dondurulan listedeki bolum satiri (tek kova okunur). */
-  async function eligibility(p: Poll & { roll: RollMeta }, unitId: string, userId: string): Promise<{ relation?: VoterRelation; reason?: string }> {
-    const entry = await deps.rolls.entry(p.apartmentId, 'poll', p.pollId, p.roll, unitId);
+  /** Oy hakki: dondurulmus listedeki bolum satiri (tek kova); dondurulmadiysa bolumun canli kaydi. */
+  async function eligibility(p: Poll, unit: Unit, userId: string): Promise<{ relation?: VoterRelation; reason?: string }> {
+    const entry = await entryOf(p, unit);
     const relation = entry?.voters.find((v) => v.userId === userId)?.relation;
     if (relation) return { relation };
     if (!entry) return { reason: `Bu bölüm ${p.rollDate} tarihli oy listesinde yok` };
@@ -533,10 +584,10 @@ export function createPollService(overrides: Partial<PollServiceDeps> & Pick<Pol
     assertPortal(ctx);
     const r = await deps.portal.resolveUnit({ ...ctx }, unitId);
     const nowIso = stamp();
-    const polls = (await repo.list(ctx.apartmentId)).filter((p) => visibleTo(p, r.membership.relation, nowIso)).map(frozen);
+    const polls = (await repo.list(ctx.apartmentId)).filter((p) => visibleTo(p, r.membership.relation, nowIso));
     const items = await Promise.all(
       polls.map(async (p) => {
-        const [vote, elig] = await Promise.all([repo.getVote(ctx.apartmentId, p.pollId, r.unit.unitId), eligibility(p, r.unit.unitId, ctx.userId)]);
+        const [vote, elig] = await Promise.all([repo.getVote(ctx.apartmentId, p.pollId, r.unit.unitId), eligibility(p, r.unit, ctx.userId)]);
         return portalView(p, r.unit.unitId, nowIso, elig, vote, ctx.userId);
       }),
     );
@@ -554,12 +605,12 @@ export function createPollService(overrides: Partial<PollServiceDeps> & Pick<Pol
     const found = await requirePoll(ctx.apartmentId, id);
     const nowIso = stamp();
     if (!visibleTo(found, r.membership.relation, nowIso)) throw new PollError('not_found', 'Oylama bulunamadı');
-    const p = frozen(found);
-    const [elig, vote] = await Promise.all([eligibility(p, r.unit.unitId, ctx.userId), repo.getVote(ctx.apartmentId, p.pollId, r.unit.unitId)]);
+    const p = found;
+    const [elig, vote] = await Promise.all([eligibility(p, r.unit, ctx.userId), repo.getVote(ctx.apartmentId, p.pollId, r.unit.unitId)]);
     const view = portalView(p, r.unit.unitId, nowIso, elig, vote, ctx.userId);
     if (!view.resultsAvailable) return view;
-    const [entries, votes] = await Promise.all([snapshotEntries(p), repo.listVotes(ctx.apartmentId, p.pollId)]);
-    return { ...view, results: tallyPoll({ poll: p, entries, votes, nowIso }) };
+    const [roll, votes] = await Promise.all([rollOf(p), repo.listVotes(ctx.apartmentId, p.pollId)]);
+    return { ...view, results: tallyPoll({ poll: { ...p, roll: roll.meta }, entries: roll.entries, votes, nowIso }) };
   }
 
   async function vote(ctx: PollPortalContext, id: string, unitId: string | undefined, body: unknown): Promise<PortalPollView> {
@@ -575,12 +626,13 @@ export function createPollService(overrides: Partial<PollServiceDeps> & Pick<Pol
       if (found.status === 'published' && found.opensAt > nowIso) throw new PollError('poll_closed', 'Oylama henüz başlamadı');
       throw new PollError('not_found', 'Oylama bulunamadı');
     }
-    const p = frozen(found);
-    if (pollPhase(p, nowIso) !== 'open') throw new PollError('poll_closed', 'Oylama sona erdi; oy kabul edilmiyor');
+    if (pollPhase(found, nowIso) !== 'open') throw new PollError('poll_closed', 'Oylama sona erdi; oy kabul edilmiyor');
     const optionId = reqString(o, 'optionId', 16);
-    if (!p.options.some((x) => x.optionId === optionId)) throw new ValidationError('Geçersiz seçenek', 'optionId');
+    if (!found.options.some((x) => x.optionId === optionId)) throw new ValidationError('Geçersiz seçenek', 'optionId');
+    // Planli yayinlanan oylamada ilk oy (acilistan sonra) oy listesini dondurur; oy hakki dondurulmus listeden.
+    const p = await ensureRoll(ctx, found);
 
-    const elig = await eligibility(p, r.unit.unitId, ctx.userId);
+    const elig = await eligibility(p, r.unit, ctx.userId);
     if (!elig.relation) throw new PollError('not_eligible', elig.reason ?? 'Bu oylamada oy hakkınız yok');
 
     const sameAsMine = (v: PollVote | undefined) => Boolean(v && v.voterUserId === ctx.userId && v.optionId === optionId);

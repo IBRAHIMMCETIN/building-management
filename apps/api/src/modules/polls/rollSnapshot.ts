@@ -23,6 +23,8 @@ export type RollEntry = {
   number: string;
   landShare?: LandShare;
   owners: { userId: string; share?: { numerator: number; denominator: number } }[];
+  /** Hisseli bolumde paydaslarin sectigi temsilci (oy listesindeki secim; yoksa bos). */
+  representativeUserId?: string;
   /** Bolumun oyunu kullanabilecek kisiler (oylamada hedef kitleye gore; kurulda malikler). */
   voters: RollVoter[];
   /** Arsa payinin ortak paydadaki degeri (BigInt metni); arsa payi yoksa "0". */
@@ -112,6 +114,7 @@ export function buildSnapshot(input: {
     number: r.number,
     ...(r.landShare ? { landShare: r.landShare } : {}),
     owners: r.owners.map((o) => ({ userId: o.userId, ...(o.share ? { share: o.share } : {}) })),
+    ...(r.representativeUserId ? { representativeUserId: r.representativeUserId } : {}),
     voters: input.voters(r),
     weight: scaledWeight(r.landShare, L).toString(),
     warnings: r.warnings,

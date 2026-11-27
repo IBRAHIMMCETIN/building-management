@@ -31,7 +31,10 @@ export function AssemblyDetailDialog({ assemblyId, canWrite, onClose, onEdit }: 
   const doc = useOpenDocument();
   const data = detail.data;
   const a = data?.assembly;
+  // Katilim, yeter sayi ve sayim toplanti basladiktan sonra girilir (API de reddeder).
+  const started = Boolean(a && Date.now() >= Date.parse(a.scheduledAt));
   const editable = canWrite && a?.status === 'planned';
+  const live = editable && started;
 
   return (
     <Dialog open={assemblyId !== null} onClose={onClose} title={a ? `${KIND_LABELS[a.kind]} · ${formatDateTime(a.scheduledAt)}` : 'Genel kurul'} variant="panel">
@@ -69,13 +72,14 @@ export function AssemblyDetailDialog({ assemblyId, canWrite, onClose, onEdit }: 
                 Oy listesi (hazirun) tarihi: {formatDate(a.rollDate)} ·{' '}
                 {data.rollFrozen && a.roll
                   ? `${formatDateTime(a.roll.frozenAt)} itibarıyla donduruldu`
-                  : 'henüz dondurulmadı (ön izleme); ilk katılım, yeter sayı kaydı veya hazirun cetveliyle dondurulur'}
+                  : 'henüz dondurulmadı (ön izleme); toplantı başladıktan sonraki ilk katılım, yeter sayı veya sayım kaydıyla dondurulur'}
               </p>
+              {editable && !started && <Alert>Katılım, yeter sayı ve sayım toplantı başladıktan sonra ({formatDateTime(a.scheduledAt)}) girilir. Hazirun cetveli şimdilik ön izlemedir.</Alert>}
               {a.cancelReason && <p className="text-muted">İptal gerekçesi: {a.cancelReason}</p>}
               <div className="flex flex-wrap gap-2 pt-1">
                 <Button size="sm" variant="secondary" loading={doc.pendingId === a.assemblyId} onClick={() => void doc.open(a.assemblyId, () => assembliesApi.attendanceSheet(a.assemblyId))}>
                   <FileText className="size-4" aria-hidden="true" />
-                  Hazirun cetveli (PDF)
+                  {data.rollFrozen ? 'Hazirun cetveli (PDF)' : 'Hazirun cetveli ön izleme (PDF)'}
                 </Button>
                 {editable && !data.rollFrozen && (
                   <Button size="sm" variant="subtle" onClick={() => onEdit(a)}>
@@ -87,20 +91,20 @@ export function AssemblyDetailDialog({ assemblyId, canWrite, onClose, onEdit }: 
               {doc.error && <Alert tone="danger">{doc.error}</Alert>}
             </div>
 
-            <QuorumCard assembly={a} quorum={data.quorum} editable={editable} />
+            <QuorumCard assembly={a} quorum={data.quorum} editable={live} />
 
             <Card className="flex flex-col gap-3">
               <CardTitle>Gündem ve sayım</CardTitle>
               <ol className="flex flex-col gap-3">
                 {a.agenda.map((item, i) => (
                   <li key={item.itemId}>
-                    <AgendaRow index={i} item={item} assembly={a} quorum={data.quorum} canTally={editable && data.quorum.met && a.quorumRecord?.met !== false} />
+                    <AgendaRow index={i} item={item} assembly={a} quorum={data.quorum} canTally={live && data.quorum.met && a.quorumRecord?.met !== false} />
                   </li>
                 ))}
               </ol>
             </Card>
 
-            <AttendanceTable assembly={a} units={data.units} editable={editable} />
+            <AttendanceTable assembly={a} units={data.units} editable={live} />
 
             {editable && <CancelBox assembly={a} />}
           </div>
@@ -116,14 +120,18 @@ function QuorumCard({ assembly: a, quorum: q, editable }: { assembly: Assembly; 
   return (
     <Card className="flex flex-col gap-3">
       <CardTitle>Yeter sayı (KMK m.30)</CardTitle>
-      <dl className="grid gap-3 sm:grid-cols-2">
+      <dl className="grid gap-3 sm:grid-cols-3">
         <div className="rounded-lg border border-border bg-surface-muted/40 px-3 py-2.5">
-          <dt className="text-xs text-muted">Katılan oy</dt>
+          <dt className="text-xs text-muted">Katılan kat maliki (yeter sayı)</dt>
           <dd className="font-semibold tabular-nums">
-            {q.presentVotes} / {q.totalVotes} · {formatBps(q.unitsBps)}{' '}
-            <span className="text-xs font-normal text-muted">
-              ({q.presentUnits}/{q.totalUnits} bölüm{q.proxyUnits > 0 ? `, ${q.proxyUnits} vekaleten` : ''})
-            </span>
+            {q.presentOwners} / {q.totalOwners} kişi · {formatBps(q.ownersBps)}
+          </dd>
+        </div>
+        <div className="rounded-lg border border-border bg-surface-muted/40 px-3 py-2.5">
+          <dt className="text-xs text-muted">Katılan bölüm / oy (karar)</dt>
+          <dd className="font-semibold tabular-nums">
+            {q.presentUnits} / {q.totalUnits} bölüm · {q.presentVotes} oy{' '}
+            {q.proxyUnits > 0 && <span className="text-xs font-normal text-muted">({q.proxyUnits} vekaleten)</span>}
           </dd>
         </div>
         <div className="rounded-lg border border-border bg-surface-muted/40 px-3 py-2.5">
@@ -132,19 +140,27 @@ function QuorumCard({ assembly: a, quorum: q, editable }: { assembly: Assembly; 
         </div>
       </dl>
       <Alert tone={q.met ? 'success' : 'info'}>{quorumText(q)}</Alert>
-      {q.met && <p className="text-small text-muted">Karar yeter sayısı: katılanların oy çokluğu (en az {q.decisionThreshold} kabul oyu).</p>}
+      {q.met && <p className="text-small text-muted">Karar yeter sayısı: katılanların oy çokluğu (en az {q.decisionThreshold} kabul oyu; kişi başına en fazla {q.voteCap} oy).</p>}
       {q.warnings.length > 0 && <Alert>{q.warnings.join(' · ')}</Alert>}
       {a.quorumRecord && (
         <p className="text-small">
-          Tutanak: yeter sayı {a.quorumRecord.met ? 'sağlandı' : 'sağlanmadı'} ({a.quorumRecord.presentVotes}/{a.quorumRecord.totalVotes} oy, {formatDateTime(a.quorumRecord.recordedAt)}).
+          Tutanak: yeter sayı {a.quorumRecord.met ? 'sağlandı' : 'sağlanmadı'} ({a.quorumRecord.noAttendance ? 'kimse gelmedi' : `${a.quorumRecord.presentOwners}/${a.quorumRecord.totalOwners} kat maliki`},{' '}
+          {formatDateTime(a.quorumRecord.recordedAt)}).
           {!a.quorumRecord.met && !a.secondMeeting && ` Karar için en geç ${SECOND_MEETING_MAX_DAYS} gün içinde bu toplantıya bağlı ikinci toplantı oluşturun.`}
         </p>
       )}
       {editable && !tallied && (
         <div className="flex flex-col items-start gap-2">
-          <Button size="sm" variant="secondary" loading={record.isPending} onClick={() => record.mutate(a.version)}>
-            Yeter sayıyı tutanağa geçir
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            <Button size="sm" variant="secondary" loading={record.isPending} onClick={() => record.mutate({ version: a.version })}>
+              Yeter sayıyı tutanağa geçir
+            </Button>
+            {q.presentUnits === 0 && (
+              <Button size="sm" variant="ghost" disabled={record.isPending} onClick={() => record.mutate({ version: a.version, noAttendance: true })}>
+                Kimse gelmedi
+              </Button>
+            )}
+          </div>
           {record.isError && <Alert tone="danger">{errorMessage(record.error)}</Alert>}
         </div>
       )}

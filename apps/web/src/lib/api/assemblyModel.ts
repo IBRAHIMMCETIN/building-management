@@ -46,7 +46,17 @@ export const assemblySchema = z.object({
   onlineUrl: z.string().optional(),
   rollDate: z.string(),
   roll: z.object({ frozenAt: z.string(), units: z.number().int() }).optional(),
-  quorumRecord: z.object({ met: z.boolean(), presentVotes: z.number().int(), totalVotes: z.number().int(), recordedAt: z.string() }).optional(),
+  quorumRecord: z
+    .object({
+      met: z.boolean(),
+      presentOwners: z.number().int(),
+      totalOwners: z.number().int(),
+      presentVotes: z.number().int(),
+      totalVotes: z.number().int(),
+      noAttendance: z.boolean(),
+      recordedAt: z.string(),
+    })
+    .optional(),
   agenda: z.array(z.object({ itemId: z.string(), title: z.string(), description: z.string().optional(), tally: tallySchema.optional() })),
   status: z.enum(['planned', 'cancelled']),
   cancelReason: z.string().optional(),
@@ -56,19 +66,27 @@ export const assemblySchema = z.object({
 export type Assembly = z.infer<typeof assemblySchema>;
 export type AgendaItem = Assembly['agenda'][number];
 
+/**
+ * Toplanti yeter sayisinin sayi olcutu kat maliki (ayri kisiler; hisseli bolum temsilcisiyle bir kez),
+ * karar olcutu katilanlarin oyu (bolum basina bir, kisi basina en fazla `voteCap`). `totalVotes`
+ * butun oylar (sinirsiz).
+ */
 export const quorumSchema = z.object({
   totalUnits: z.number().int(),
   presentUnits: z.number().int(),
   proxyUnits: z.number().int(),
+  totalOwners: z.number().int(),
+  presentOwners: z.number().int(),
+  ownersBps: z.number().int(),
   totalVotes: z.number().int(),
   presentVotes: z.number().int(),
+  voteCap: z.number().int(),
   cappedOwners: z.number().int(),
-  unitsBps: z.number().int(),
   landShareComputable: z.boolean(),
   totalLandShare: fractionSchema.nullable(),
   presentLandShare: fractionSchema.nullable(),
   landShareBps: z.number().int().nullable(),
-  unitsMajority: z.boolean(),
+  ownersMajority: z.boolean(),
   landShareMajority: z.boolean(),
   secondMeeting: z.boolean(),
   met: z.boolean(),
