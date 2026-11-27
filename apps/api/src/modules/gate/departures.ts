@@ -19,17 +19,30 @@
  * ve yazmaz. Es zamanli degisiklikte (sakin ayni anda iptal etti) yeniden okuyup dener. Her yazim
  * (en fazla `CHUNK` kayit) `gate.departure_release` denetim kaydiyla ayni atomik islemdedir.
  * Kiraci izolasyonu: tum okuma / yazimlar verilen apartmanin bolumunde (`APT#<id>`).
+ *
+ * Cari kapamayla biten uyelik (`endedByClosureId`) kapama geri alinabildigi icin bitis gunu (veya
+ * kaydin degistigi gun, hangisi sonraysa) + `CLOSURE_GRACE_DAYS` gun gecene kadar aday degildir; bu
+ * surede okuma anindaki kontrol gecisleri zaten reddeder. Tarama SONRASINDA geri alinan kapamada
+ * iptal edilen gecisler ve pasife alinan araclar geri gelmez: sakin gecisi yeniden olusturur, arac
+ * yonetimce yeniden etkinlestirilir (denetim kaydinda listelidir).
+ *
+ * Bir adayin hatasi digerlerini durdurmaz: `gate_departure_failed` logu (yalnizca apartman / bolum
+ * kimligi, kisi verisi yok) + `GateDepartureFailed` EMF metrigi (operations.tf alarmi); sonraki gun
+ * aday hala geriye bakis penceresindeyse yeniden denenir.
  */
+import type { MetricsEmitter } from '../../observability/metrics.js';
 import type { IsoDate } from '../core/types.js';
 import type { MembershipRepository } from '../memberships/repository.js';
 import type { UnitMembership } from '../portal/types.js';
-import { addDays, istanbulDayStart, reversePlate } from './model.js';
+import { addDays, istanbulDay, istanbulDayStart, reversePlate } from './model.js';
 import { GateConflictError, type GatePut, type GateRepository } from './repository.js';
 import { type GuestPass, MAX_PASS_DAYS, MAX_PASS_LEAD_DAYS, type PlateIndex, type UnitPointer, type Vehicle, gateKeys } from './types.js';
 
 export const DEPARTURE_REASON = 'taşınma';
 /** Tarama: bitis tarihi veya son degisikligi bu kadar gun icindeki uyelikler (kacan calismalar dahil). */
 export const LOOKBACK_DAYS = 7;
+/** Cari kapamayla biten uyelikte geri alma payi (gun): bu sure gecmeden pasife alma yapilmaz. */
+export const CLOSURE_GRACE_DAYS = 3;
 /** Tek atomik yazimdaki en fazla kayit (denetim kaydi + plaka dizinleri dahil 100 sinirinin altinda). */
 const CHUNK = 40;
 const RETRIES = 3;
@@ -58,7 +71,14 @@ export function departureCandidates(memberships: readonly UnitMembership[], apar
     const key = `${m.userId}|${m.unitId}`;
     if (residing.has(key) || m.startDate > day || out.has(key)) continue;
     const recent = (m.endDate !== undefined && m.endDate >= since) || (typeof m.updatedAt === 'string' && m.updatedAt >= sinceTs);
-    if (recent) out.set(key, { userId: m.userId, unitId: m.unitId });
+    if (!recent) continue;
+    // Cari kapama geri alinabilir: bitis (veya kaydin degistigi gun) + pay gecmeden dokunulmaz.
+    if (m.endedByClosureId) {
+      const changed = typeof m.updatedAt === 'string' ? istanbulDay(new Date(m.updatedAt)) : '';
+      const base = [m.endDate ?? '', changed].sort().at(-1) ?? '';
+      if (!base || day <= addDays(base, CLOSURE_GRACE_DAYS)) continue;
+    }
+    out.set(key, { userId: m.userId, unitId: m.unitId });
   }
   return [...out.values()];
 }
@@ -67,6 +87,9 @@ export type GateDeparturesDeps = {
   repo: GateRepository;
   memberships: Pick<MembershipRepository, 'list'>;
   now: () => Date;
+  /** EMF: GateDepartureFailed (operations.tf alarmi). */
+  metrics?: MetricsEmitter;
+  log?: Pick<Console, 'error'>;
 };
 
 export function createGateDepartures(deps: GateDeparturesDeps) {
@@ -183,8 +206,11 @@ export function createGateDepartures(deps: GateDeparturesDeps) {
         const r = await release(apartmentId, c, day, actorId);
         passesRevoked += r.passIds.length;
         vehiclesDeactivated += r.vehicleIds.length;
-      } catch {
+      } catch (err) {
         failed++;
+        // Kisi verisi yok: yalnizca apartman / bolum ve hata turu.
+        (deps.log ?? console).error(JSON.stringify({ msg: 'gate_departure_failed', apartmentId, unitId: c.unitId, error: err instanceof Error ? err.name : 'unknown' }));
+        deps.metrics?.emit({ GateDepartureFailed: 1 }, { msg: 'gate_departure_failed', apartmentId, unitId: c.unitId });
       }
     }
     return { candidates: candidates.length, passesRevoked, vehiclesDeactivated, failed };

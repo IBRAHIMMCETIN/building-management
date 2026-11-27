@@ -5,7 +5,7 @@
  * kiraci izolasyonu ve aday secimi (bitis gunu sonuna kadar oturur, geriye 7 gun).
  */
 import { describe, expect, it } from 'vitest';
-import { DEPARTURE_REASON, createGateDepartures, departureCandidates } from '../src/modules/gate/departures.js';
+import { CLOSURE_GRACE_DAYS, DEPARTURE_REASON, createGateDepartures, departureCandidates } from '../src/modules/gate/departures.js';
 import type { GateRepository } from '../src/modules/gate/repository.js';
 import type { UnitMembership } from '../src/modules/portal/types.js';
 import { APT, APT2, DAY, ctxs, gateWorld } from './fakes/gateWorld.js';
@@ -13,11 +13,19 @@ import { APT, APT2, DAY, ctxs, gateWorld } from './fakes/gateWorld.js';
 const NEXT = '2026-11-28';
 const SYSTEM = 'system-scheduler';
 
-function setup() {
-  const w = gateWorld();
+function setup(opts: { codes?: string[] } = {}) {
+  const w = gateWorld(opts);
+  const metrics: { metrics: Record<string, number>; props?: Record<string, unknown> }[] = [];
+  const errors: string[] = [];
   const departuresOf = (repo: GateRepository = w.fake.repo) =>
-    createGateDepartures({ repo, memberships: { list: async (apt) => w.memberships.filter((m) => m.apartmentId === apt) }, now: w.now });
-  return { w, departures: departuresOf(), departuresOf };
+    createGateDepartures({
+      repo,
+      memberships: { list: async (apt) => w.memberships.filter((m) => m.apartmentId === apt) },
+      now: w.now,
+      metrics: { emit: (m, props) => metrics.push({ metrics: m, ...(props ? { props } : {}) }) },
+      log: { error: (line: string) => errors.push(line) },
+    });
+  return { w, departures: departuresOf(), departuresOf, metrics, errors };
 }
 
 async function seed(w: ReturnType<typeof gateWorld>) {
@@ -134,6 +142,59 @@ describe('tasinmada gecis ve araclarin pasife alinmasi', () => {
   });
 });
 
+describe('buyuk kayit kumesi ve hata', () => {
+  it('40+ kayit parcalara bolunur; ikinci parcada surum cakismasi: yeniden okuyup kalanlari yazar, cift kayit yok', async () => {
+    const A = '23456789ABCDEFGHJKMNPQRSTUVWXYZ';
+    const { w, departuresOf } = setup({ codes: Array.from({ length: 60 }, (_, i) => `K7M2P${A[i % 31]}${A[Math.floor(i / 31)]}X`) });
+    const passes = [];
+    for (let i = 0; i < 45; i++) passes.push(await w.pass(ctxs.tenant, { guestName: `Misafir ${i}`, validUntil: '2026-11-29', entryMode: 'multi' }));
+    const { vehicle } = await w.service.createVehicle(ctxs.tenant, { unitId: 'u1', plate: '34 ABC 123' });
+    w.moveOut('tenant-u1', 'u1', '2026-11-26');
+    let writes = 0;
+    const raced = passes[42]!;
+    const repo: GateRepository = {
+      ...w.fake.repo,
+      async write(apt, wr) {
+        if (wr.audit?.action === 'gate.departure_release' && ++writes === 2) {
+          // Ikinci parca yazilmadan once yonetici bu parcadaki bir gecisi iptal eder.
+          await w.service.revokePass(ctxs.mgr, raced.passId, { version: 1 });
+        }
+        return w.fake.repo.write(apt, wr);
+      },
+    };
+    const r = await departuresOf(repo).release(APT, { userId: 'tenant-u1', unitId: 'u1' }, DAY, SYSTEM);
+    expect(r.passIds).toHaveLength(44);
+    expect(new Set(r.passIds).size).toBe(44);
+    expect(r.passIds).not.toContain(raced.passId);
+    expect(r.vehicleIds).toEqual([vehicle.vehicleId]);
+    const audits = w.fake.audits.filter((a) => a.action === 'gate.departure_release');
+    // Parca 1 (40 gecis) + yeniden denemedeki tek parca (4 gecis + arac); reddedilen parca denetlenmez.
+    expect(audits.map((a) => (a.details as { passIds: string[] }).passIds.length)).toEqual([40, 4]);
+    for (const wr of w.fake.writes.filter((x) => x.puts.some((p) => String(p.SK).startsWith('GPASS#') && p.revokeReason))) expect(wr.puts.length).toBeLessThanOrEqual(40);
+    for (const p of passes) expect(passOf(w, APT, p.passId)).toMatchObject({ status: 'revoked' });
+    expect(passOf(w, APT, raced.passId)).toMatchObject({ revokedBy: 'mgr' });
+  });
+
+  it('bir adayin hatasi digerlerini durdurmaz: kisi verisi olmayan log + GateDepartureFailed metrigi', async () => {
+    const { w, departuresOf, metrics, errors } = setup();
+    await seed(w);
+    w.moveOut('tenant-u1', 'u1', '2026-11-26');
+    w.moveOut('owner-u2', 'u2', '2026-11-26');
+    const repo: GateRepository = {
+      ...w.fake.repo,
+      async query(apt, q) {
+        if ((q.prefix ?? q.from ?? '').includes('#u1#')) throw new Error('throttled');
+        return w.fake.repo.query(apt, q);
+      },
+    };
+    expect(await departuresOf(repo).sweep(APT, DAY, SYSTEM)).toMatchObject({ candidates: 2, failed: 1, vehiclesDeactivated: 1 });
+    expect(metrics).toEqual([{ metrics: { GateDepartureFailed: 1 }, props: { msg: 'gate_departure_failed', apartmentId: APT, unitId: 'u1' } }]);
+    expect(errors).toHaveLength(1);
+    expect(JSON.parse(errors[0] as string)).toEqual({ msg: 'gate_departure_failed', apartmentId: APT, unitId: 'u1', error: 'Error' });
+    expect(errors[0]).not.toContain('tenant-u1');
+  });
+});
+
 describe('aday secimi', () => {
   const m = (extra: Partial<UnitMembership>) =>
     ({ userId: 'u', unitId: 'b1', apartmentId: APT, relation: 'tenant', residesInUnit: true, status: 'active', startDate: '2026-01-01', ...extra }) as UnitMembership;
@@ -149,5 +210,21 @@ describe('aday secimi', () => {
       m({ userId: 'other-apt', apartmentId: APT2, endDate: '2026-11-26' }),
     ];
     expect(departureCandidates(list, APT, DAY).map((c) => c.userId)).toEqual(['ended-yesterday', 'cancelled-now', 'owner-rented']);
+  });
+
+  it('cari kapamayla biten uyelik: bitis (veya kaydin degistigi gun) + 3 gun gecmeden aday degil (geri alma payi)', () => {
+    const closed = (extra: Partial<UnitMembership>) => m({ userId: 'closed', status: 'inactive', endedByClosureId: 'cl-1', ...extra } as Partial<UnitMembership>);
+    const at = (day: string, list: UnitMembership[]) => departureCandidates(list, APT, day).map((c) => c.userId);
+    const list = [closed({ endDate: '2026-11-26', updatedAt: '2026-11-26T08:00:00.000Z' })];
+    expect(CLOSURE_GRACE_DAYS).toBe(3);
+    expect(at('2026-11-27', list)).toEqual([]);
+    expect(at('2026-11-29', list)).toEqual([]);
+    expect(at('2026-11-30', list)).toEqual(['closed']);
+    // Geriye tarihli kapama (bitis 20 gun once) bugun kaydedildi: pay kaydin degistigi gunden sayilir.
+    const backdated = [closed({ endDate: '2026-11-07', updatedAt: '2026-11-27T08:00:00.000Z' })];
+    expect(at('2026-11-27', backdated)).toEqual([]);
+    expect(at('2026-12-01', backdated)).toEqual(['closed']);
+    // Kapama geri alindi (uyelik yeniden aktif, isaret kalkti): aday degil.
+    expect(at('2026-11-30', [m({ userId: 'closed', updatedAt: '2026-11-28T08:00:00.000Z' })])).toEqual([]);
   });
 });

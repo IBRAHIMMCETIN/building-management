@@ -368,13 +368,15 @@ run "prod_plan" {
   }
   assert {
     condition = alltrue([
-      for a in [aws_cloudwatch_metric_alarm.ledger_drift, aws_cloudwatch_metric_alarm.outbox_sweep_failed, aws_cloudwatch_metric_alarm.outbox_stuck] :
+      for a in [aws_cloudwatch_metric_alarm.ledger_drift, aws_cloudwatch_metric_alarm.outbox_sweep_failed, aws_cloudwatch_metric_alarm.outbox_stuck, aws_cloudwatch_metric_alarm.gate_departure_failed] :
       a.namespace == "BuildingManagement" && length(a.dimensions) == 1 && a.dimensions["Stack"] == "building-management" && a.treat_missing_data == "notBreaching"
     ])
     error_message = "Operasyon alarmlari worker'in EMF namespace ve Stack boyutunu dinlemeli"
   }
   assert {
     condition = (
+      aws_cloudwatch_metric_alarm.gate_departure_failed.metric_name == "GateDepartureFailed" &&
+      aws_cloudwatch_metric_alarm.gate_departure_failed.threshold == 0 &&
       aws_cloudwatch_metric_alarm.ledger_drift.metric_name == "LedgerDrift" &&
       aws_cloudwatch_metric_alarm.ledger_drift.statistic == "Sum" &&
       aws_cloudwatch_metric_alarm.ledger_drift.threshold == 0 &&

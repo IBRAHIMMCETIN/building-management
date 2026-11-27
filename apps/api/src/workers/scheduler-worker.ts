@@ -225,7 +225,7 @@ export function createSchedulerWorker(overrides: Partial<SchedulerDeps> = {}) {
   const maintenance = () => (lazy.maintenance ??= overrides.maintenance ?? createMaintenanceService({ now, store: undefined, tickets: ticketService() }));
   const equipment = () => (lazy.equipment ??= overrides.equipment ?? createEquipmentService({ now, store: undefined }));
   const polls = () => (lazy.polls ??= overrides.polls ?? createPollService({ now, portal: createPortalService({ now }) }));
-  const gate = () => (lazy.gate ??= overrides.gate ?? createGateDepartures({ repo: gateRepository, memberships: membershipRepository, now }));
+  const gate = () => (lazy.gate ??= overrides.gate ?? createGateDepartures({ repo: gateRepository, memberships: membershipRepository, now, metrics: metrics(), log }));
   /** Odeme servisleri tek yapilandirmadan, ilk kullanimda kurulur. */
   function paymentServices() {
     if (lazy.payments !== undefined && lazy.payouts !== undefined && lazy.invoices !== undefined) return;
