@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { act } from 'react';
+import { act, useSyncExternalStore } from 'react';
 import { type Root, createRoot } from 'react-dom/client';
 import { MemoryRouter } from 'react-router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -17,13 +17,29 @@ HTMLDialogElement.prototype.showModal ??= function (this: HTMLDialogElement) {
  * (sessiz kayit yok), gider ihale ucuna gider; kaydedilmis gider kartta baglantisiyla gorunur.
  */
 let current: Tender;
+const listeners = new Set<() => void>();
+/** Ayrinti onbellegi benzetimi: yazim yaniti ayrintiyi gunceller (on dolum kalkar). */
+const setCurrent = (t: Tender) => {
+  current = t;
+  for (const l of listeners) l();
+};
 let canWrite = true;
 const expenseFn = vi.fn();
 vi.mock('@/hooks/useTenders', async () => {
   const { useMutation } = await import('@tanstack/react-query');
   const stub = () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false, isError: false, error: null });
   return {
-    useTender: () => ({ isPending: false, isError: false, data: current }),
+    useTender: () => ({
+      isPending: false,
+      isError: false,
+      data: useSyncExternalStore(
+        (l) => {
+          listeners.add(l);
+          return () => listeners.delete(l);
+        },
+        () => current,
+      ),
+    }),
     useTenderPermissions: () => ({ canRead: true, canWrite }),
     useTenderActions: () => ({ collect: stub(), publish: stub(), decide: stub(), cancel: stub(), withdrawQuote: stub(), comment: stub() }),
     useTenderExpense: () => useMutation({ mutationFn: (v: unknown) => expenseFn(v) }),
@@ -123,7 +139,12 @@ const setValue = async (el: HTMLInputElement | HTMLSelectElement | null, value: 
 describe('ihale karari: gider kaydi', () => {
   it('"Gider kaydı oluştur" Finans gider penceresini karardan on doldurulmus acar; kayit ihale ucuna gider', async () => {
     current = tender();
-    expenseFn.mockImplementation(async () => ({ replayed: false, expenseId: 'e1', transactionId: 'tx1', tender: tender({ expenseDraft: undefined, expense: { expenseId: 'e1', transactionId: 'tx1', amountKurus: 108_000_00, date: '2026-11-27', linkedAt: '2026-11-27T07:00:00.000Z' } }) }));
+    expenseFn.mockImplementation(async () => {
+      const updated = tender({ expenseDraft: undefined, expense: { expenseId: 'e1', transactionId: 'tx1', amountKurus: 108_000_00, date: '2026-11-27', linkedAt: '2026-11-27T07:00:00.000Z' } });
+      // Yazim yaniti ayrintiyi gunceller: on dolum kalkar, pencere basari ekraninda kalmali.
+      setCurrent(updated);
+      return { replayed: false, expenseId: 'e1', transactionId: 'tx1', tender: updated };
+    });
     await render();
     await click(button('Gider kaydı oluştur'));
     expect(document.querySelector('dialog[open]')?.textContent).toContain('İhale için gider kaydı');
@@ -141,6 +162,7 @@ describe('ihale karari: gider kaydi', () => {
       input: expect.objectContaining({ idempotencyKey: expect.any(String), expenseAccountId: 'exp-repair', creditAccountId: 'payable', amount: 108_000_00, date: '2026-11-27', supplier: 'Cephe Ltd.' }),
     });
     const dialog = document.querySelector('dialog[open]');
+    expect(container.textContent).toContain('Gider kaydedildi: ₺108.000,00');
     expect(dialog?.textContent).toContain('108.000,00');
     expect(dialog?.textContent).toContain('gider kaydedildi');
     // Ihale basina tek gider: "Yeni gider" sunulmaz.

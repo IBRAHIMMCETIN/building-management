@@ -53,7 +53,7 @@ export const SUPPORT_TEXT: Record<Exclude<ScannerSupport, 'ok'>, string> = {
 };
 
 /** Yedek QR okuyucu (ayri parca) yuklenemedi: ag kesintisi veya eski surum onbellegi. */
-export const DECODER_LOAD_ERROR = 'QR okuyucu yüklenemedi. Bağlantınızı kontrol edip kamerayı yeniden açın veya kısa kodu aşağıya yazın.';
+export const DECODER_LOAD_ERROR = 'QR okuyucu yüklenemedi. Bağlantınızı kontrol edip tekrar deneyin veya kısa kodu aşağıya yazın.';
 
 /** getUserMedia hatasi -> gorevliye ne yapacagini soyleyen metin. */
 export function cameraErrorMessage(err: unknown): string {

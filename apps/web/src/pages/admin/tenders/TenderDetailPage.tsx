@@ -13,7 +13,7 @@ import { formatTRY } from '@/lib/money';
 import { istanbulToday } from '@/lib/reservations/model';
 import { TENDER_CATEGORY_LABELS, TENDER_STATUS_LABELS, TENDER_STATUS_TONES, allowedActions, canEditQuotes, deadlineText, publishBlockers } from '@/lib/tenders/model';
 import { ROLE_LABELS, isRole } from '@/types/roles';
-import { ExpenseDialog } from '../finance/ExpenseDialog';
+import { ExpenseDialog, type ExpensePreset } from '../finance/ExpenseDialog';
 import { DecideDialog, PublishDialog, ReasonDialog } from './ActionDialogs';
 import { QuoteDialog } from './QuoteDialog';
 import { TenderDialog } from './TenderDialog';
@@ -39,6 +39,9 @@ function Detail({ tender: t }: { tender: Tender }) {
   const { canWrite } = useTenderPermissions();
   const actions = useTenderActions();
   const expense = useTenderExpense();
+  // On dolum acilista sabitlenir: kayittan sonra ayrinti yaniti on dolumu kaldirsa da pencere
+  // basari ekranini gostermeye devam eder.
+  const [expensePreset, setExpensePreset] = useState<ExpensePreset>();
   const [open, setOpenState] = useState<Open>(null);
   // Diyalog acildigindaki ihale surumu: arada baska yonetici degistirirse islem 409 alir, yeni surumle
   // sessizce tekrar denenmez (kullanici guncel ekrani gorup pencereyi yeniden acar).
@@ -133,7 +136,14 @@ function Detail({ tender: t }: { tender: Tender }) {
       )}
       {t.status === 'draft' && canWrite && <Alert>Taslak yalnızca yönetimde görünür. Firmalardan teklif istemeye başladığınızda “Teklif toplamaya başla”yı seçin.</Alert>}
 
-      <DecisionCard tender={t} canWrite={canWrite} onExpense={() => setOpen('expense')} />
+      <DecisionCard
+        tender={t}
+        canWrite={canWrite}
+        onExpense={() => {
+          if (t.expenseDraft) setExpensePreset({ ...t.expenseDraft, amount: t.expenseDraft.amountKurus });
+          setOpen('expense');
+        }}
+      />
       {t.shortfallReason && (
         <Alert>
           Asgari {t.minQuotes} teklif yerine {t.quoteCount} teklifle paylaşıldı. Gerekçe: {t.shortfallReason}
@@ -218,13 +228,13 @@ function Detail({ tender: t }: { tender: Tender }) {
             onConfirm={(shortfallReason) => actions.publish.mutateAsync({ id: t.tenderId, version: openedVersion, ...(shortfallReason ? { shortfallReason } : {}) })}
           />
           <DecideDialog open={open === 'decide'} onClose={close} tender={t} pending={actions.decide.isPending} onConfirm={(v) => actions.decide.mutateAsync({ id: t.tenderId, version: openedVersion, ...v })} />
-          {t.expenseDraft && (
+          {expensePreset && (
             // Odeme kaynagi ihalede yok: Finans gider penceresi karardan on doldurulur, yonetici onaylar.
             <ExpenseDialog
               open={open === 'expense'}
               onClose={close}
               title="İhale için gider kaydı"
-              preset={{ ...t.expenseDraft, amount: t.expenseDraft.amountKurus }}
+              preset={expensePreset}
               onRecord={async (input) => {
                 const r = await expense.mutateAsync({ id: t.tenderId, input });
                 return { amount: r.tender.expense?.amountKurus ?? input.amount };
@@ -302,7 +312,7 @@ function DecisionCard({ tender: t, canWrite, onExpense }: { tender: Tender; canW
         canWrite &&
         t.expenseDraft && (
           <div className="flex flex-col items-start gap-2">
-            <p className="text-small text-muted">İş tamamlanıp fatura geldiğinde gideri “{d.supplierName}” tedarikçisiyle Finans'a kaydedin; tutar ve açıklama karardan doldurulur.</p>
+            <p className="text-small text-muted">İş tamamlanıp fatura geldiğinde gideri buradan kaydedin; tutar, tedarikçi (“{d.supplierName}”), açıklama ve gider kalemi karardan doldurulur, ödeme kaynağını siz seçersiniz.</p>
             <Button size="sm" variant="secondary" onClick={onExpense}>
               <ReceiptText className="size-4" aria-hidden="true" />
               Gider kaydı oluştur
