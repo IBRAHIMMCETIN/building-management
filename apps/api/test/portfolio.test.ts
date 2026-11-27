@@ -275,8 +275,11 @@ describe('portfoy servisi', () => {
     expect(page.items.find((c) => c.apartmentId === 'apt-1')).toMatchObject({ status: 'partial', failed: ['collection'] });
     expect(page.items.filter((c) => c.status === 'ok')).toHaveLength(2);
 
-    const spent = createPortfolioService({ repo, sources: fakeSources(), now: () => NOW, requestBudgetMs: 0, log: silent });
+    const reads: string[] = [];
+    const spent = createPortfolioService({ repo, sources: fakeSources({ onRead: (c, s) => reads.push(`${c.apartmentId}:${s}`) }), now: () => NOW, requestBudgetMs: 0, log: silent });
     expect((await spent.list({ userId: USER })).items.every((c) => c.status === 'error')).toBe(true);
+    // Butce bittikten sonra apartman hic okunmaz.
+    expect(reads).toEqual([]);
   });
 
   it('sayfalama, ust sinir ve es zamanli apartman siniri', async () => {

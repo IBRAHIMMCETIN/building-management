@@ -278,7 +278,11 @@ export function createPortfolioService(overrides: Partial<PortfolioServiceDeps> 
       assemblies: async () => assemblyFigures(await deps.sources.assemblies(ctx), nowIso),
       tenders: async () => tenderFigures((await deps.sources.tenders(ctx)).items),
     };
-    const settled = await Promise.allSettled(sections.map((s) => within(Promise.resolve().then(read[s]), budget)));
+    // Istek butcesi bittiyse apartman hic okunmaz (bolumler `failed`; istemci sonra yeniden dener).
+    const settled: PromiseSettledResult<unknown>[] =
+      budget <= 0
+        ? sections.map(() => ({ status: 'rejected', reason: new SectionTimeout() }))
+        : await Promise.allSettled(sections.map((s) => within(Promise.resolve().then(read[s]), budget)));
     const out: PortfolioCard = {
       apartmentId: apt.apartmentId,
       apartmentName: apt.apartmentName,
