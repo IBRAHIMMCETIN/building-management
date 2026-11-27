@@ -1,8 +1,9 @@
-import { CalendarClock, ChevronRight, Landmark, ListOrdered, MapPin, Plus } from 'lucide-react';
+import { CalendarClock, ChevronRight, FileText, Landmark, ListOrdered, Mail, MapPin, Plus } from 'lucide-react';
 import { useState } from 'react';
 import { Alert, Badge, Button, Card, Skeleton } from '@/components/ui';
 import { useAssemblies, useAssemblyPermissions } from '@/hooks/useAssemblies';
-import { type Assembly, KIND_LABELS } from '@/lib/api/assemblies';
+import { useOpenDocument } from '@/hooks/useOpenDocument';
+import { type Assembly, KIND_LABELS, STATUS_LABELS, STATUS_TONES, assembliesApi } from '@/lib/api/assemblies';
 import { errorMessage } from '@/lib/api/errors';
 import { formatDateTime } from '@/lib/dates';
 import { AssemblyDetailDialog } from './AssemblyDetailDialog';
@@ -10,10 +11,11 @@ import { AssemblyDialog } from './AssemblyDialog';
 
 type Editor = { item?: Assembly } | null;
 
-/** Y1-3 Genel Kurul: kat malikleri kurulu toplantilari, hazirun cetveli, katilim ve sayim. */
+/** Y1-3 Genel Kurul: kat malikleri kurulu toplantilari, cagri, hazirun cetveli, katilim, kararlar, tutanak ve karar defteri. */
 export function AssembliesPage() {
   const { canRead, canWrite } = useAssemblyPermissions();
   const list = useAssemblies();
+  const doc = useOpenDocument();
   const [editor, setEditor] = useState<Editor>(null);
   const [openId, setOpenId] = useState<string | null>(null);
   const items = list.data ?? [];
@@ -32,15 +34,22 @@ export function AssembliesPage() {
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <h1 className="text-title font-bold">Genel Kurul</h1>
-          <p className="text-small text-muted">Kat malikleri kurulu toplantısını hazırlayın: hazirun cetveli, katılım, yeter sayı ve gündem sayımı.</p>
+          <p className="text-small text-muted">Kat malikleri kurulu toplantısını yönetin: çağrı, hazirun cetveli, katılım, yeter sayı, kararlar ve tutanak.</p>
         </div>
-        {canWrite && (
-          <Button onClick={() => setEditor({})}>
-            <Plus className="size-4" aria-hidden="true" />
-            Yeni toplantı
+        <div className="flex flex-wrap gap-2">
+          <Button variant="secondary" loading={doc.pendingId === 'decision-book'} onClick={() => void doc.open('decision-book', () => assembliesApi.decisionBook())}>
+            <FileText className="size-4" aria-hidden="true" />
+            Karar defteri (PDF)
           </Button>
-        )}
+          {canWrite && (
+            <Button onClick={() => setEditor({})}>
+              <Plus className="size-4" aria-hidden="true" />
+              Yeni toplantı
+            </Button>
+          )}
+        </div>
       </div>
+      {doc.error && <Alert tone="danger">{doc.error}</Alert>}
 
       {list.isPending ? (
         <div role="status" aria-label="Toplantılar yükleniyor" className="flex flex-col gap-3">
@@ -82,7 +91,7 @@ export function AssembliesPage() {
                       {KIND_LABELS[a.kind]}
                       {a.secondMeeting ? ' (ikinci toplantı)' : ''}
                     </h2>
-                    <Badge tone={a.status === 'cancelled' ? 'neutral' : 'accent'}>{a.status === 'cancelled' ? 'İptal edildi' : 'Planlandı'}</Badge>
+                    <Badge tone={STATUS_TONES[a.status]}>{STATUS_LABELS[a.status]}</Badge>
                   </div>
                   <p className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted">
                     <span className="inline-flex items-center gap-1.5">
@@ -95,8 +104,14 @@ export function AssembliesPage() {
                     </span>
                     <span className="inline-flex items-center gap-1.5">
                       <ListOrdered className="size-3.5" aria-hidden="true" />
-                      {a.agenda.length} gündem maddesi{tallied ? ` · ${tallied} sayım` : ''}
+                      {a.agenda.length} gündem maddesi{tallied ? ` · ${tallied} karar` : ''}
                     </span>
+                    {a.calls?.length ? (
+                      <span className="inline-flex items-center gap-1.5">
+                        <Mail className="size-3.5" aria-hidden="true" />
+                        Çağrı {formatDateTime(a.calls[0]?.calledAt ?? '')}
+                      </span>
+                    ) : null}
                   </p>
                   <div className="-mx-2.5 -mb-1.5 flex justify-end">
                     <Button size="xs" variant="subtle" onClick={() => setOpenId(a.assemblyId)}>

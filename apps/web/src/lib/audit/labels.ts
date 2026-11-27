@@ -152,6 +152,11 @@ const EXACT: Record<string, string> = {
   'assembly.attendance': 'Genel kurul katılımı kaydedildi',
   'assembly.tally': 'Genel kurul gündem sayımı kaydedildi',
   'assembly.cancel': 'Genel kurul toplantısı iptal edildi',
+  'assembly.tally_correction': 'Genel kurul kararı düzeltildi (yeni kayıt)',
+  'assembly.call': 'Genel kurul çağrısı gönderildi',
+  'assembly.call_resend': 'Genel kurul çağrısı yeniden gönderildi',
+  'assembly.minutes': 'Genel kurul tutanağı güncellendi',
+  'assembly.finalize': 'Genel kurul tutanağı kesinleştirildi',
 };
 
 /** Sözlükte olmayan anahtarlar için alan adı (ilk parça) karşılıkları. */

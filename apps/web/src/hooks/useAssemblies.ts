@@ -1,7 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { type AssemblyInput, type AttendanceInput, assembliesApi } from '@/lib/api/assemblies';
+import { type AssemblyInput, type AttendanceInput, type MinutesInput, type TallyInput, assembliesApi } from '@/lib/api/assemblies';
+import { ApiError } from '@/lib/api/errors';
 import type { Role } from '@/types/roles';
 import { useAuth } from './useAuth';
+import { portalKeys } from './usePortal';
 import { unitKeys } from './useUnits';
 
 /** API rol listeleriyle ayni (assemblies/routes.ts). */
@@ -51,6 +53,12 @@ export function useSaveAssembly() {
   });
 }
 
+/** Cagri e-postasi (ilk gonderim veya gerekceli yeniden gonderim). */
+export function useSendCall(id: string) {
+  const invalidate = useInvalidate();
+  return useMutation({ mutationFn: (input: { version: number; resend?: boolean; reason?: string }) => assembliesApi.call(id, input), onSettled: invalidate });
+}
+
 export function useSetAttendance(id: string) {
   const invalidate = useInvalidate();
   return useMutation({
@@ -68,15 +76,54 @@ export function useRecordQuorum(id: string) {
   });
 }
 
+/** Gundem karari; kayitli karar yalnizca gerekceli duzeltmeyle (yeni kayit). */
 export function useRecordTally(id: string) {
   const invalidate = useInvalidate();
   return useMutation({
-    mutationFn: ({ itemId, ...input }: { itemId: string; version: number; yes: number; no: number; abstain: number }) => assembliesApi.tally(id, itemId, input),
+    mutationFn: ({ itemId, input }: { itemId: string; input: TallyInput }) => assembliesApi.tally(id, itemId, input),
     onSettled: invalidate,
   });
+}
+
+export function useSaveMinutes(id: string) {
+  const invalidate = useInvalidate();
+  return useMutation({ mutationFn: (input: MinutesInput) => assembliesApi.minutes(id, input), onSettled: invalidate });
+}
+
+export function useFinalizeAssembly(id: string) {
+  const invalidate = useInvalidate();
+  return useMutation({ mutationFn: (version: number) => assembliesApi.finalize(id, version), onSettled: invalidate });
 }
 
 export function useCancelAssembly() {
   const invalidate = useInvalidate();
   return useMutation({ mutationFn: ({ id, version, reason }: { id: string; version: number; reason: string }) => assembliesApi.cancel(id, version, reason), onSettled: invalidate });
+}
+
+// ---------------------------------------------------------------------------
+// Sakin portali (kat maliki)
+// ---------------------------------------------------------------------------
+
+/** Yetki (kiraci / uyelik yok) gibi "beklenen" 4xx'ler tekrar denenmez. */
+const retry = (count: number, err: unknown) => !(err instanceof ApiError && err.status < 500) && count < 2;
+
+function usePortalScope() {
+  const { user } = useAuth();
+  return { apt: user?.apartmentId ?? '', userId: user?.sub ?? '', enabled: user?.role === 'resident' && !!user.apartmentId };
+}
+
+export const portalAssemblyKeys = {
+  all: (apt: string, user: string) => [...portalKeys.all(apt, user), 'assemblies'] as const,
+  list: (apt: string, user: string) => [...portalAssemblyKeys.all(apt, user), 'list'] as const,
+  detail: (apt: string, user: string, id: string) => [...portalAssemblyKeys.all(apt, user), 'detail', id] as const,
+};
+
+export function useMyAssemblies() {
+  const { apt, userId, enabled } = usePortalScope();
+  return useQuery({ queryKey: portalAssemblyKeys.list(apt, userId), queryFn: ({ signal }) => assembliesApi.portalList(signal).then((r) => r.items), enabled, retry });
+}
+
+export function useMyAssembly(id: string | undefined) {
+  const { apt, userId, enabled } = usePortalScope();
+  return useQuery({ queryKey: portalAssemblyKeys.detail(apt, userId, id ?? ''), queryFn: ({ signal }) => assembliesApi.portalGet(id ?? '', signal), enabled: enabled && !!id, retry });
 }
