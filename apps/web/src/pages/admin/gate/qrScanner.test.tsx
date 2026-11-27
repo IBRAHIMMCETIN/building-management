@@ -102,6 +102,31 @@ describe('QR tarayici', () => {
     root = createRoot(container);
   });
 
+  it('izin hatasindan sonra sekmeye donunce kamera DOM icindeki ayni video ogesine baglanir', async () => {
+    const attached: boolean[] = [];
+    Object.defineProperty(HTMLMediaElement.prototype, 'srcObject', {
+      configurable: true,
+      get: () => null,
+      set(this: HTMLMediaElement, v: unknown) {
+        if (v) attached.push(this.isConnected && container.contains(this));
+      },
+    });
+    getUserMedia.mockImplementationOnce(async () => {
+      throw Object.assign(new Error('izin'), { name: 'NotAllowedError' });
+    });
+    await render();
+    expect(container.textContent).toContain('Kamera izni verilmedi');
+    hidden = true;
+    await act(async () => document.dispatchEvent(new Event('visibilitychange')));
+    hidden = false;
+    await act(async () => document.dispatchEvent(new Event('visibilitychange')));
+    await wait();
+    expect(getUserMedia).toHaveBeenCalledTimes(2);
+    expect(attached).toEqual([true]);
+    expect(container.textContent).not.toContain('Kamera izni verilmedi');
+    expect(container.textContent).toContain('QR kodu çerçeveye getirin');
+  });
+
   it('yedek cozucu yuklenemezse kamera kapanir ve kisa kod girisine yonlendirir', async () => {
     failLoad = true;
     await render();

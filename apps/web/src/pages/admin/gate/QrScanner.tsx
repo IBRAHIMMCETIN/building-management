@@ -1,6 +1,7 @@
 import { CameraOff } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { Alert, Button } from '@/components/ui';
+import { cn } from '@/lib/cn';
 import { DECODER_LOAD_ERROR, SUPPORT_TEXT, cameraErrorMessage, scanEngine, scannerSupport } from '@/lib/gate/camera';
 import { type FrameScanner, SCAN_INTERVAL_MS, createFrameScanner } from '@/lib/gate/qrDecode';
 
@@ -116,24 +117,27 @@ export function QrScanner({ onResult, onClose }: { onResult: (text: string) => v
     };
   }, []);
 
+  const failed = state.kind === 'error';
   return (
     <div className="flex flex-col gap-3">
-      {state.kind === 'error' ? (
+      {failed && (
         <Alert tone="danger">
           <span className="inline-flex items-center gap-2">
             <CameraOff className="size-4" aria-hidden="true" />
             {state.message}
           </span>
         </Alert>
-      ) : (
-        <div className="relative overflow-hidden rounded-xl border border-border-strong bg-surface-muted">
-          <video ref={videoRef} className="aspect-square w-full object-cover" playsInline muted aria-label="Kamera görüntüsü" />
-          <div className="pointer-events-none absolute inset-8 rounded-lg border-4 border-white/80" aria-hidden="true" />
+      )}
+      {/* Video her zaman DOM'da (hata durumunda gizli): sekmeye donuste yeniden acilan akis ayni ogeye baglanir. */}
+      <div className={cn('relative overflow-hidden rounded-xl border border-border-strong bg-surface-muted', failed && 'hidden')}>
+        <video ref={videoRef} className="aspect-square w-full object-cover" playsInline muted aria-label="Kamera görüntüsü" />
+        <div className="pointer-events-none absolute inset-8 rounded-lg border-4 border-white/80" aria-hidden="true" />
+        {!failed && (
           <p className="absolute inset-x-0 bottom-3 text-center text-small font-medium text-white" role="status">
             {state.kind === 'starting' ? 'Kamera açılıyor…' : 'QR kodu çerçeveye getirin'}
           </p>
-        </div>
-      )}
+        )}
+      </div>
       <Button variant="secondary" className="h-12 text-body" onClick={onClose}>
         Kamerayı kapat
       </Button>
