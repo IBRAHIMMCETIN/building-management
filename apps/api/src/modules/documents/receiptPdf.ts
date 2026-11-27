@@ -1,5 +1,6 @@
 import fontkit from '@pdf-lib/fontkit';
 import { PDFDocument, type PDFFont, type PDFPage, degrees, rgb } from 'pdf-lib';
+import { PDF_PRODUCER } from './brand.js';
 import { amountInWordsTR } from './amountWords.js';
 import { type PdfFonts, loadPdfFonts } from './fonts.js';
 
@@ -82,8 +83,8 @@ export async function renderReceiptPdf(data: ReceiptData, fonts?: PdfFonts): Pro
   doc.setTitle(`Tahsilat Makbuzu ${data.receiptNumber}`);
   doc.setSubject(`${data.apartmentName} - ${data.unitLabel}`);
   doc.setAuthor(data.apartmentName);
-  doc.setCreator('Aidat Yönetim');
-  doc.setProducer('Aidat Yönetim');
+  doc.setCreator(PDF_PRODUCER);
+  doc.setProducer(PDF_PRODUCER);
   doc.setLanguage('tr-TR');
   doc.setCreationDate(issued);
   doc.setModificationDate(issued);

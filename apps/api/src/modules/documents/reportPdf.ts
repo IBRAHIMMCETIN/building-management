@@ -1,5 +1,6 @@
 import fontkit from '@pdf-lib/fontkit';
 import { PDFDocument, type PDFFont, type PDFPage, rgb } from 'pdf-lib';
+import { PDF_PRODUCER } from './brand.js';
 import { type PdfFonts, loadPdfFonts } from './fonts.js';
 
 /**
@@ -52,8 +53,8 @@ export async function renderReportPdf(data: ReportPdfData, fonts?: PdfFonts): Pr
   const generated = new Date(data.generatedAt);
   doc.setTitle(`${data.title} - ${data.apartmentName}`);
   doc.setAuthor(data.apartmentName);
-  doc.setCreator('YÖNESİST');
-  doc.setProducer('YÖNESİST');
+  doc.setCreator(PDF_PRODUCER);
+  doc.setProducer(PDF_PRODUCER);
   doc.setLanguage('tr-TR');
   doc.setCreationDate(generated);
   doc.setModificationDate(generated);

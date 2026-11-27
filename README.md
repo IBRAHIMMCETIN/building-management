@@ -48,7 +48,7 @@ EventBridge Scheduler ──► SQS scheduled-jobs (+DLQ) ──► scheduler-wo
 
 | Katman | Teknoloji |
 | --- | --- |
-| Frontend | React 19 + Vite, Cloudflare Pages (Git entegrasyonu): https://building-management-apx.pages.dev (`dev` yığını). Sayfalar `React.lazy` ile ayrı parçalar (`router/lazyPage.tsx`), kütüphaneler vendor parçalarında (`vite.config.ts` → `rolldownOptions.output.codeSplitting`); Excel ve QR kütüphaneleri yalnızca ilgili ekranda dinamik yüklenir |
+| Frontend | **YÖNESİST** markası (logo `apps/web/public/brand/`, `components/BrandMark.tsx`, renkler `styles/theme.css`); React 19 + Vite, Cloudflare Pages (Git entegrasyonu): https://building-management-apx.pages.dev (`dev` yığını). Sayfalar `React.lazy` ile ayrı parçalar (`router/lazyPage.tsx`), kütüphaneler vendor parçalarında (`vite.config.ts` → `rolldownOptions.output.codeSplitting`); Excel ve QR kütüphaneleri yalnızca ilgili ekranda dinamik yüklenir |
 | API | Node.js 24, [Hono](https://hono.dev) + `@hono/aws-lambda`, AWS Lambda (arm64) |
 | Kimlik | Amazon Cognito + Pre Token Generation trigger, `aws-jwt-verify` |
 | Veritabanı | Amazon DynamoDB (single-table, `apartmentId` bazlı izolasyon) |
@@ -772,7 +772,7 @@ API Gateway sınırı istemci başına değil, rota başınadır: arka ucu ve ma
 - [ ] Büyük sitede (1.000+ bölüm) sayaç önizlemesi (`/calculate`) hâlâ senkron: canlı ölçüm ve gerekirse arka plan işine alma
 - [ ] Genel Bakış / bütçe gerçekleşen / gelir-gider raporu açık (kapanmamış) ayların tüm hareketlerini okur (kapalı aylar anlık görüntüden): aylık kapanış yapılmayan büyük sitede hesap-ay hareket özeti (rollup) değerlendirilmeli
 - [ ] Gece denetimi (`ledger_audit`) tüm siteleri tek Lambda çağrısında sırayla tarar: süre metriği / alarmı ve site başına mesaja bölme
-- [ ] PWA (manifest + service worker) — proje hedefinde var, henüz yok
+- [x] PWA: `manifest.webmanifest` (YÖNESİST adı, logo ikonları, maskable ikon), `public/sw.js` (yalnızca aynı kökenli GET; sayfa geçişi önce ağ + çevrimdışı kabuk, `/assets/*` önbellek) ve production'da kayıt (`src/lib/pwa.ts`)
 
 **Ürün modülleri (onaylı sıra: O1 sonrası)**
 

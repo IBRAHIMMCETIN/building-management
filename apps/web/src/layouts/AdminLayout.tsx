@@ -1,6 +1,7 @@
-import { ArrowLeftRight, Building2, Menu } from 'lucide-react';
+import { ArrowLeftRight, Menu } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { NavLink, Outlet, useLocation } from 'react-router';
+import { BrandMark } from '@/components/BrandMark';
 import { ContextSwitchDialog, useCanSwitchContext } from '@/components/context/ContextSwitcher';
 import { MfaGraceBanner } from '@/components/MfaGraceBanner';
 import { SupportBanner } from '@/components/support/SupportBanner';
@@ -43,8 +44,8 @@ function AdminNav({ onNavigate }: { onNavigate?: () => void }) {
 function Brand() {
   const { user } = useAuth();
   return (
-    <div className="flex items-center gap-2 text-accent">
-      <Building2 className="size-6" aria-hidden="true" />
+    <div className="flex items-center gap-2">
+      <BrandMark className="size-8" />
       <span className="font-semibold text-text">{panelTitleFor(user?.role)}</span>
     </div>
   );
@@ -106,6 +107,7 @@ export function AdminLayout() {
             >
               <Menu className="size-5" aria-hidden="true" />
             </button>
+            <BrandMark className="size-7" />
             <span className="truncate font-semibold">{panelTitleFor(user?.role)}</span>
           </div>
           <UserMenu sidebar />

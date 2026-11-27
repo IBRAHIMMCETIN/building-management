@@ -1,5 +1,6 @@
 import fontkit from '@pdf-lib/fontkit';
 import { PDFDocument, type PDFFont, type PDFPage, rgb } from 'pdf-lib';
+import { PDF_PRODUCER } from './brand.js';
 import { type PdfFonts, loadPdfFonts } from './fonts.js';
 import { formatDateTR, formatTRY } from './receiptPdf.js';
 
@@ -67,8 +68,8 @@ export async function renderMeterStatementPdf(data: MeterStatementPdfData, fonts
   doc.setTitle(`Sayaç Dağıtım Dökümü ${data.periodName} ${data.unitLabel}`);
   doc.setSubject(`${data.apartmentName} - ${data.unitLabel}`);
   doc.setAuthor(data.apartmentName);
-  doc.setCreator('Aidat Yönetim');
-  doc.setProducer('Aidat Yönetim');
+  doc.setCreator(PDF_PRODUCER);
+  doc.setProducer(PDF_PRODUCER);
   doc.setLanguage('tr-TR');
   doc.setCreationDate(generated);
   doc.setModificationDate(generated);

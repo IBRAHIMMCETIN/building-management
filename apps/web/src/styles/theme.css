@@ -20,12 +20,18 @@
   --color-border: #e4e4e7;
   /* Form alanlari ve hover kenarligi */
   --color-border-strong: #d4d4d8;
-  /* Metin/ikon vurgusu (baglanti, aktif filtre) */
-  --color-accent: #2563eb;
-  --color-accent-hover: #1d4ed8;
-  /* Dolu birincil buton zemini; ustundeki metin on-primary (AA kontrast) */
-  --color-primary: #2563eb;
-  --color-primary-hover: #1d4ed8;
+  /* Marka (YÖNESİST logosu): lacivert #122a4e, turkuaz #00aeb4, turuncu #fc7200.
+     Metin olarak kullanilan tonlar AA icin koyulastirildi (kontrastlar yorumlarda). */
+  /* Metin/ikon vurgusu (baglanti, aktif filtre, odak): marka turkuazi. Kontrast: surface
+     (beyaz) 5.1:1, bg 4.9:1, surface-muted 4.66:1 */
+  --color-accent: #007a80;
+  --color-accent-hover: #00646a;
+  /* Dolu birincil buton zemini: marka laciverti, beyaz metinle 14.3:1 */
+  --color-primary: #122a4e;
+  --color-primary-hover: #1c3a66;
+  /* Kelime marka: "YÖNE" (lacivert) + "SİST" (turuncu; buyuk kalin yazi icin 3.8:1) */
+  --color-brand-ink: #122a4e;
+  --color-brand-orange: #d95f00;
   --color-on-primary: #ffffff;
   --color-on-accent: #ffffff;
   --color-success: #047857;
@@ -70,12 +76,14 @@
       --color-muted: #a1a1aa; /* zinc-400 */
       --color-border: #27272a; /* zinc-800 */
       --color-border-strong: #3f3f46; /* zinc-700 */
-      --color-accent: #60a5fa; /* blue-400: koyu zeminde okunur metin */
-      --color-accent-hover: #93c5fd; /* blue-300 */
-      --color-primary: #2563eb; /* blue-600: beyaz metinle AA */
-      --color-primary-hover: #3b82f6; /* blue-500 */
-      --color-on-primary: #ffffff;
+      --color-accent: #3fd0d6; /* marka turkuazi, acik ton: zinc-950 uzerinde 10.6:1 */
+      --color-accent-hover: #6bdde1;
+      --color-primary: #2ec4cb; /* marka turkuazi: koyu metinle 9.4:1 */
+      --color-primary-hover: #5fd6db;
+      --color-on-primary: #09090b;
       --color-on-accent: #09090b;
+      --color-brand-ink: #f4f4f5;
+      --color-brand-orange: #fc7200; /* logodaki turuncu: zinc-950 uzerinde 7.2:1 */
       --color-success: #34d399; /* emerald-400 */
       --color-warning: #fbbf24; /* amber-400 */
       --color-danger: #f87171; /* red-400 */

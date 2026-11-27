@@ -1,0 +1,8 @@
+# Cloudflare Pages yanit basliklari (vite build public/ klasorunu dist/ kokune kopyalar).
+# Service worker her acilista kontrol edilsin: yeni surum hemen bulunur.
+/sw.js
+  Cache-Control: no-cache
+
+# Vite dosya adlari icerik ozetli (index-<hash>.js): degisirse adi da degisir.
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
