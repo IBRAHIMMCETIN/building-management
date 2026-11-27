@@ -250,10 +250,10 @@ describe('atomik denetim yazimi', () => {
       residesInUnit: true, status: 'active', startDate: '2026-11-01', createdAt: NOW.toISOString(), createdBy: 'mgr-1', updatedAt: NOW.toISOString(), updatedBy: 'mgr-1', version: 1,
     } as unknown as UnitMembership;
     await createMembershipRepository().create(m);
-    await createDynamoPreferencesRepository().put('u9', { email: { enabled: false }, updatedAt: NOW.toISOString() });
+    await createDynamoPreferencesRepository().patch('u9', { enabled: false, categories: {}, updatedAt: NOW.toISOString() });
     const [membership, prefs] = ddb.commandCalls(TransactWriteCommand).map((c) => c.args[0].input.TransactItems!);
     expect(membership![1]!.Put!.Item).toMatchObject({ PK: 'APT#apt-1', action: 'membership.create', target: { type: 'membership', id: 'u9:u1' }, details: { relation: 'tenant', status: 'active' } });
-    expect(prefs![0]!.Put!.Item).toMatchObject({ PK: 'USER#u9', SK: 'NOTIFPREF' });
+    expect(prefs![0]!.Update!.Key).toEqual({ PK: 'USER#u9', SK: 'NOTIFPREF' });
     expect(prefs![1]!.Put!.Item).toMatchObject({ PK: 'PLATFORM', action: 'notification_preferences.update', details: { emailEnabled: false } });
   });
 

@@ -25,6 +25,8 @@ import { maintenanceRoutes } from './modules/maintenance/routes.js';
 import { type MaintenanceService, createMaintenanceService } from './modules/maintenance/service.js';
 import { reservationPortalRoutes, reservationRoutes } from './modules/reservations/routes.js';
 import { type ReservationService, createReservationService } from './modules/reservations/service.js';
+import { tenderPortalRoutes, tenderRoutes } from './modules/tenders/routes.js';
+import { type TenderService, createTenderService } from './modules/tenders/service.js';
 import { type WorkCostService, createWorkCostService } from './modules/workcosts/service.js';
 import { ticketPortalRoutes } from './modules/tickets/portalRoutes.js';
 import { ticketRoutes } from './modules/tickets/routes.js';
@@ -168,6 +170,8 @@ export type AppConfig = {
   equipmentService?: EquipmentService;
   /** Ortak alan rezervasyonu (ucret Finans `chargeUnit` / ters kayit ile). */
   reservationService?: ReservationService;
+  /** Ihale / teklif toplama (teklif belgeleri documents servisiyle). */
+  tenderService?: TenderService;
   apartmentRoleService?: ApartmentRoleService;
   /** Guvenlik kapisi: plaka, misafir QR gecisi, kurye, kapi gunlugu. */
   gateService?: GateService;
@@ -387,6 +391,10 @@ export function createApp(config: AppConfig) {
   app.route('/api/equipment', equipmentRoutes({ authenticate, service: config.equipmentService ?? createEquipmentService({ finance: financeService }) }));
   const reservationService = config.reservationService ?? createReservationService({ finance: financeService });
   app.route('/api/reservations', reservationRoutes({ authenticate, service: reservationService }));
+  const tenderService =
+    config.tenderService ??
+    createTenderService({ documents: { promote: documentsService.promoteTenderQuote, sign: documentsService.signTenderDocument } });
+  app.route('/api/tenders', tenderRoutes({ authenticate, service: tenderService }));
 
 
   // Guvenlik kapisi (yonetim + guvenlik; sakin portali `/api/portal`'dan once).
@@ -399,6 +407,7 @@ export function createApp(config: AppConfig) {
   app.route('/api/portal/tickets', ticketPortalRoutes({ authenticate, service: ticketService }));
   app.route('/api/portal/reservations', reservationPortalRoutes({ authenticate, service: reservationService }));
   app.route('/api/portal/polls', pollPortalRoutes({ authenticate, service: pollService }));
+  app.route('/api/portal/tenders', tenderPortalRoutes({ authenticate, service: tenderService }));
   app.route(
     '/api/portal',
     portalRoutes({

@@ -16,6 +16,7 @@ import {
   pendingUploadKey,
   receiptKey,
   safeFileName,
+  tenderQuoteKey,
 } from './keys.js';
 import { renderReceiptPdf } from './receiptPdf.js';
 import { type DocumentStore, URL_TTL_SECONDS, createDocumentStoreFromEnv } from './store.js';
@@ -211,17 +212,57 @@ export function createDocumentsService(overrides: Partial<DocumentsServiceDeps> 
     upload: { uploadId: string; fileName: string },
     target: { expenseId: string; date: IsoDate },
   ): Promise<InvoiceAttachment> {
+    return promotePending(apartmentId, upload, 'invoiceUpload.uploadId', 'fatura', 'Fatura dosyasi', (ext) => invoiceKey(apartmentId, target.date, target.expenseId, ext));
+  }
+
+  /** Gecici yuklemeyi dogrular (gercek nesnenin boyutu / turu) ve kalici anahtara kopyalar. */
+  async function promotePending(
+    apartmentId: string,
+    upload: { uploadId: string; fileName: string },
+    field: string,
+    fallbackName: string,
+    label: string,
+    keyFor: (extension: string, uploadId: string) => string,
+  ): Promise<InvoiceAttachment> {
     const store = requireStore();
-    const uploadId = assertId(upload.uploadId, 'invoiceUpload.uploadId');
+    const uploadId = assertId(upload.uploadId, field);
     const tmp = pendingUploadKey(apartmentId, uploadId);
     const head = await store.head(tmp);
-    if (!head) throw new DocumentError('unprocessable', 'Fatura dosyasi bulunamadi (yukleme tamamlanmamis veya suresi dolmus); tekrar yukleyin');
+    if (!head) throw new DocumentError('unprocessable', `${label} bulunamadi (yukleme tamamlanmamis veya suresi dolmus); tekrar yukleyin`);
     if (head.size > MAX_INVOICE_BYTES) throw new DocumentError('unprocessable', 'Dosya en fazla 10 MB olabilir');
     if (!isInvoiceContentType(head.contentType)) throw new DocumentError('unprocessable', 'Desteklenmeyen dosya turu');
 
-    const key = invoiceKey(apartmentId, target.date, target.expenseId, INVOICE_CONTENT_TYPES[head.contentType]);
+    const key = keyFor(INVOICE_CONTENT_TYPES[head.contentType], uploadId);
     await store.copy(tmp, key);
-    return { key, fileName: safeFileName(upload.fileName, 'fatura'), contentType: head.contentType, size: head.size };
+    return { key, fileName: safeFileName(upload.fileName, fallbackName), contentType: head.contentType, size: head.size };
+  }
+
+  // -------------------------------------------------------------------------
+  // Ihale teklif belgesi
+  // -------------------------------------------------------------------------
+
+  /**
+   * Ihale teklifi kaydi sirasinda (ihale servisi cagirir): gider faturasi akisiyla yuklenen gecici
+   * dosya `apartments/{apt}/tenders/{tenderId}/quotes/{quoteId}/{uploadId}.{ext}` altina tasinir.
+   */
+  async function promoteTenderQuote(
+    apartmentId: string,
+    upload: { uploadId: string; fileName: string },
+    target: { tenderId: string; quoteId: string },
+  ): Promise<InvoiceAttachment> {
+    assertId(target.tenderId, 'tenderId');
+    assertId(target.quoteId, 'quoteId');
+    return promotePending(apartmentId, upload, 'document.uploadId', 'teklif', 'Teklif belgesi', (ext, uploadId) => tenderQuoteKey(apartmentId, target.tenderId, target.quoteId, uploadId, ext));
+  }
+
+  /**
+   * Kalici belge icin kisa omurlu indirme linki. Yetki cagiran modulde kontrol edilir; burada
+   * anahtarin bu apartmanin ihale on ekinde oldugu dogrulanir (baska kiracinin dosyasi imzalanmaz).
+   */
+  async function signTenderDocument(apartmentId: string, doc: Pick<InvoiceAttachment, 'key' | 'fileName' | 'contentType'>): Promise<SignedDownload> {
+    const prefix = `apartments/${apartmentId}/tenders/`;
+    if (!doc.key.startsWith(prefix) || doc.key.includes('..')) throw new DocumentError('not_found', 'Belge bulunamadi');
+    return sign(doc.key, doc.fileName, doc.contentType);
   }
 
   /** Yonetici/denetci: gider hareketinin faturasi. */
@@ -235,7 +276,17 @@ export function createDocumentsService(overrides: Partial<DocumentsServiceDeps> 
     return sign(expense.invoice.key, expense.invoice.fileName, expense.invoice.contentType);
   }
 
-  return { receiptForPayment, receiptForTransaction, receiptForPaymentId, residentReceipt, createInvoiceUpload, promoteInvoice, invoiceForTransaction };
+  return {
+    receiptForPayment,
+    receiptForTransaction,
+    receiptForPaymentId,
+    residentReceipt,
+    createInvoiceUpload,
+    promoteInvoice,
+    invoiceForTransaction,
+    promoteTenderQuote,
+    signTenderDocument,
+  };
 }
 
 export type DocumentsService = ReturnType<typeof createDocumentsService>;
