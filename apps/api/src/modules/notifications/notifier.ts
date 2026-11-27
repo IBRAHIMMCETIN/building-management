@@ -61,12 +61,15 @@ export type DeliveryResult = { status: 'sent' } | { status: 'skipped'; reason: S
 /** `send` sonuc dondurmezse bildirim gonderilmis sayilir (log kanali). */
 export type Notifier = { readonly channel: string; send(n: Notification): Promise<DeliveryResult | void> };
 
-/** Varsayilan kanal: CloudWatch'a yapilandirilmis log (dis gonderim yok). */
+/**
+ * Varsayilan kanal: CloudWatch'a yapilandirilmis log (dis gonderim yok). Yalnizca kimlikler ve sablon
+ * yazilir; `data` (gerekce, firma, baslik gibi serbest metinler) loga GIRMEZ.
+ */
 export function createLogNotifier(log: Pick<Console, 'info'> = console): Notifier {
   return {
     channel: 'log',
     async send(n) {
-      log.info(JSON.stringify({ msg: 'notification', channel: 'log', ...n }));
+      log.info(JSON.stringify({ msg: 'notification', channel: 'log', eventId: n.eventId, userId: n.userId, template: n.template }));
     },
   };
 }

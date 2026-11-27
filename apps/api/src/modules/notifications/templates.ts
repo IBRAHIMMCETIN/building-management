@@ -1,5 +1,6 @@
 import type { Notification, NotificationItem, NotificationLine } from './notifier.js';
 import { TICKET_CATEGORY_LABELS } from '../tickets/types.js';
+import { COURIER_APPROVAL_VALID_MINUTES } from '../gate/types.js';
 
 /**
  * Turkce e-posta sablonlari (HTML + duz metin).
@@ -85,6 +86,14 @@ export function formatDateTime(iso: unknown, timeOnly = false): string {
   const p = Object.fromEntries(ISTANBUL_PARTS.formatToParts(new Date(ms)).map((x) => [x.type, x.value]));
   const time = `${p.hour}:${p.minute}`;
   return timeOnly ? time : `${p.day}.${p.month}.${p.year} ${time}`;
+}
+
+/** Dakika -> "2 saat" / "90 dakika" / "1 saat 30 dakika". */
+export function durationText(minutes: number): string {
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  if (!h) return `${m} dakika`;
+  return m ? `${h} saat ${m} dakika` : `${h} saat`;
 }
 
 /** YYYY-MM -> "Ekim 2026". */
@@ -269,7 +278,7 @@ function spec(n: Notification, ctx: EmailContext): Spec | undefined {
         blocks: [
           { kind: 'p', text: `Güvenlik, ${unit} için ${company ? `${company} kuryesi` : 'bir kurye'} kaydetti. Kuryenin içeri alınması için sakin portalından onaylayın veya reddedin.` },
           { kind: 'rows', rows: [['Bağımsız bölüm', unit], ...(company ? [['Firma', company] as [string, string]] : []), ['Yanıt için son saat', formatDateTime(d.respondBy, true)]] },
-          { kind: 'note', text: 'Süresi içinde yanıt verilmezse istek düşer ve kurye içeri alınmaz. Onayınız 2 saat geçerlidir.' },
+          { kind: 'note', text: `Süresi içinde yanıt verilmezse istek düşer ve kurye içeri alınmaz. Onayınız ${durationText(COURIER_APPROVAL_VALID_MINUTES)} geçerlidir.` },
         ],
         cta: { label: 'Onayla veya reddet', path: 'ziyaretci' },
       };
@@ -386,7 +395,6 @@ function reservationSpec(n: Notification, ctx: EmailContext): Spec {
   const reason = str(d.reason);
   const cta = { label: 'Rezervasyonlarım', path: 'rezervasyon' };
   if (n.template === 'reservation_approved') {
-    const note = str(d.note);
     return {
       subject: `Rezervasyonunuz onaylandı: ${facility} ${formatDate(d.date)}`,
       heading: 'Rezervasyonunuz onaylandı',
@@ -394,7 +402,6 @@ function reservationSpec(n: Notification, ctx: EmailContext): Spec {
       blocks: [
         { kind: 'p', text: `${unit} adına ${facility} için yaptığınız rezervasyon yönetim tarafından onaylandı.` },
         { kind: 'rows', rows: [...rows, ...(fee > 0 ? [['Ücret', `${formatTL(fee)} (hesabınıza tahakkuk edildi)`] as [string, string]] : [])] },
-        ...(note ? [{ kind: 'p' as const, text: `Yönetimin notu: ${note}` }] : []),
         { kind: 'note', text: 'Planınız değişirse rezervasyonu portaldan, alanın iptal süresi dolmadan iptal edebilirsiniz.' },
       ],
       cta,

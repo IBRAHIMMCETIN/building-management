@@ -1,4 +1,5 @@
 import { BellRing } from 'lucide-react';
+import { useId } from 'react';
 import { Alert, Card, CardTitle, Skeleton } from '@/components/ui';
 import { useNotificationPreferences, useSaveNotificationPreferences } from '@/hooks/useTeam';
 import { errorMessage } from '@/lib/api/errors';
@@ -7,12 +8,14 @@ import { NOTIFICATION_CATEGORIES, NOTIFICATION_CATEGORY_META, categoryEnabled } 
 /**
  * Hesabim - bildirim tercihleri (`/api/me/notification-preferences`): e-posta ana anahtari ve kategori
  * bazli e-posta (aidat / tahsilat, duyuru, ariza, ziyaretci / kurye, rezervasyon, anket, genel kurul). Tercih
- * kullanici genelidir (tum apartmanlar); her degisiklik yalnizca ilgili alani gonderir, sunucu
- * digerlerini korur. Yonetim paneli ve sakin portali ayni karti kullanir.
+ * kullanici genelidir (tum apartmanlar); her degisiklik YALNIZCA degisen alani gonderir, sunucu
+ * digerlerine dokunmaz (iki cihaz / eski sekme birbirini ezmez). Yonetim paneli ve sakin portali ayni
+ * karti kullanir. Erisilebilirlik: ad sarmalayan <label>'dan, aciklama `aria-describedby` ile.
  */
 export function NotificationPreferencesCard() {
   const prefs = useNotificationPreferences();
   const save = useSaveNotificationPreferences();
+  const id = useId();
   const emailEnabled = prefs.data?.email.enabled ?? true;
 
   return (
@@ -29,32 +32,39 @@ export function NotificationPreferencesCard() {
             <input
               type="checkbox"
               className="mt-0.5"
+              name="enabled"
               checked={emailEnabled}
               disabled={save.isPending}
               onChange={(e) => save.mutate({ email: { enabled: e.target.checked } })}
-              aria-label="E-posta bildirimleri"
+              aria-describedby={`${id}-email-desc`}
             />
             <span>
               <span className="font-medium">E-posta bildirimleri</span>
-              <span className="block text-muted">Aşağıdaki konulardaki e-postaların tümü. Güvenlik ve davet e-postaları her zaman gönderilir.</span>
+              <span id={`${id}-email-desc`} className="block text-muted">
+                Aşağıdaki konulardaki e-postaların tümü. Güvenlik ve davet e-postaları her zaman gönderilir.
+              </span>
             </span>
           </label>
           <div role="group" aria-label="E-posta konuları" className={`flex flex-col gap-3 pl-6 ${emailEnabled ? '' : 'opacity-60'}`}>
             {NOTIFICATION_CATEGORIES.map((category) => {
               const meta = NOTIFICATION_CATEGORY_META[category];
+              const descId = `${id}-${category}-desc`;
               return (
                 <label key={category} className="flex items-start gap-3 text-small">
                   <input
                     type="checkbox"
                     className="mt-0.5"
+                    name={category}
                     checked={emailEnabled && categoryEnabled(prefs.data, category)}
                     disabled={save.isPending || !emailEnabled}
-                    onChange={(e) => save.mutate({ email: { enabled: emailEnabled, [category]: e.target.checked } })}
-                    aria-label={`${meta.label} e-postaları`}
+                    onChange={(e) => save.mutate({ email: { [category]: e.target.checked } })}
+                    aria-describedby={descId}
                   />
                   <span>
                     <span className="font-medium">{meta.label}</span>
-                    <span className="block text-muted">{meta.description}</span>
+                    <span id={descId} className="block text-muted">
+                      {meta.description}
+                    </span>
                   </span>
                 </label>
               );

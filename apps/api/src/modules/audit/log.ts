@@ -6,6 +6,7 @@ import {
   QueryCommand,
   TransactWriteCommand,
   type TransactWriteCommandInput,
+  UpdateCommand,
 } from '@aws-sdk/lib-dynamodb';
 import { DataAccessError, getDynamo, putNewItem, putVersionedItem, toDataAccessError } from '../../config/dynamodb.js';
 import { getRequestContext } from './context.js';
@@ -408,7 +409,25 @@ export async function auditedPutVersioned(
   }
 }
 
-/** Kosulsuz ustune yazim (ornegin kullanici tercihi) + denetim kaydi. */
+/**
+ * Kosulsuz kismi guncelleme (`UpdateExpression`, okumadan; yalnizca verilen alanlar) + denetim kaydi.
+ * Ornegin kullanici tercihi: es zamanli iki kismi guncelleme birbirinin alanini ezmez.
+ */
+export async function auditedUpdate(
+  key: { PK: string; SK: string },
+  update: { UpdateExpression: string; ExpressionAttributeNames: Record<string, string>; ExpressionAttributeValues: Record<string, unknown> },
+  draft: AuditDraft,
+): Promise<void> {
+  const { client, tableName } = getDynamo();
+  try {
+    if (!auditTable()) await client.send(new UpdateCommand({ TableName: tableName, Key: key, ...update }));
+    else await sendWithAudit(client, [{ Update: { TableName: tableName, Key: key, ...update } }], draft);
+  } catch (err) {
+    throw toDataAccessError(err);
+  }
+}
+
+/** Kosulsuz ustune yazim + denetim kaydi. */
 export async function auditedPut(item: { PK: string; SK: string; [key: string]: unknown }, draft: AuditDraft): Promise<void> {
   const { client, tableName } = getDynamo();
   try {

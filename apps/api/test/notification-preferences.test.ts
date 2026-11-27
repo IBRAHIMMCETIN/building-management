@@ -3,7 +3,7 @@
  * donuk), kismi guncellemede onceki secimin korunmasi, e-posta kanalinin her kategoriyi uygulamasi
  * (worker olay turunden kategori atar) ve `/api/me/notification-preferences` uclari.
  */
-import { DynamoDBDocumentClient, GetCommand, PutCommand, TransactWriteCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, GetCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { mockClient } from 'aws-sdk-client-mock';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { createApp } from '../src/app.js';
@@ -18,13 +18,13 @@ import { createEmailNotifier } from '../src/modules/notifications/email.js';
 import type { Notification } from '../src/modules/notifications/notifier.js';
 import {
   type NotificationPreferences,
-  type PreferencesRepository,
   createDynamoPreferencesRepository,
   createPreferencesService,
   parsePreferences,
 } from '../src/modules/notifications/preferences.js';
 import type { UnitMembership } from '../src/modules/portal/types.js';
 import { createNotificationWorker } from '../src/workers/notification-worker.js';
+import { createFakePreferencesRepo } from './fakes/preferencesRepo.js';
 
 const APT = 'apt-1';
 const NOW = new Date('2026-11-27T08:00:00.000Z');
@@ -69,41 +69,55 @@ describe('tercih govdesi ve kaydi', () => {
     process.env.DYNAMODB_ENDPOINT = '';
   });
 
-  it('govde: alti kategori boolean; bilinmeyen alan ve boolean olmayan deger reddedilir', () => {
+  it('govde: alti kategori boolean, ana anahtar istege bagli; bos, bilinmeyen ve boolean olmayan reddedilir', () => {
     const all = Object.fromEntries(NOTIFICATION_CATEGORIES.map((c) => [c, false]));
     expect(parsePreferences({ email: { enabled: true, ...all } })).toEqual({ email: { enabled: true, ...all } });
-    expect(parsePreferences({ email: { enabled: true, gate: false } })).toEqual({ email: { enabled: true, gate: false } });
-    for (const bad of [{ email: { enabled: true, gate: 'no' } }, { email: { enabled: true, sms: true } }, { email: { enabled: true, polls: null } }]) {
-      expect(() => parsePreferences(bad)).toThrow(ValidationError);
+    expect(parsePreferences({ email: { gate: false } })).toEqual({ email: { gate: false } });
+    expect(parsePreferences({ email: { enabled: false } })).toEqual({ email: { enabled: false } });
+    for (const bad of [{ email: {} }, { email: { enabled: true, gate: 'no' } }, { email: { enabled: true, sms: true } }, { email: { polls: null } }, { email: { enabled: 'evet' } }]) {
+      expect(() => parsePreferences(bad), JSON.stringify(bad)).toThrow(ValidationError);
     }
   });
 
-  it('kayit: yalnizca secilen kategoriler `emailCategories` haritasinda; eski ticketEmails okunur, yeni harita onceliklidir', async () => {
-    ddb
-      .on(GetCommand)
-      .resolvesOnce({ Item: { emailEnabled: true, ticketEmails: false, updatedAt: ts } })
-      .resolvesOnce({ Item: { emailEnabled: true, ticketEmails: false, emailCategories: { tickets: true, gate: false, bogus: false }, updatedAt: ts } });
+  it('kayit: duz oznitelikler (ariza icin eski `ticketEmails`); guncelleme okumadan yalnizca verilen alanlari SET eder', async () => {
+    ddb.on(GetCommand).resolvesOnce({ Item: { emailEnabled: true, ticketEmails: false, emailGate: false, emailPolls: 'x', updatedAt: ts } });
     const repo = createDynamoPreferencesRepository();
-    expect(await repo.get('user-1')).toEqual({ email: { enabled: true, tickets: false }, updatedAt: ts });
-    expect(await repo.get('user-1')).toEqual({ email: { enabled: true, tickets: true, gate: false }, updatedAt: ts });
+    expect(await repo.get('user-1')).toEqual({ email: { enabled: true, tickets: false, gate: false }, updatedAt: ts });
+    expect(ddb.commandCalls(GetCommand)[0]?.args[0].input.ConsistentRead).toBe(true);
 
-    ddb.on(PutCommand).resolves({});
-    ddb.on(TransactWriteCommand).resolves({});
-    await repo.put('user-1', { email: { enabled: true, reservations: false, finance: true }, updatedAt: ts });
-    const put = ddb.commandCalls(PutCommand)[0]?.args[0].input.Item ?? ddb.commandCalls(TransactWriteCommand)[0]?.args[0].input.TransactItems?.[0]?.Put?.Item;
-    expect(put).toMatchObject({ PK: 'USER#user-1', SK: 'NOTIFPREF', emailEnabled: true, emailCategories: { finance: true, reservations: false } });
-    expect(put).not.toHaveProperty('ticketEmails');
+    ddb.on(UpdateCommand).resolves({});
+    await repo.patch('user-1', { categories: { reservations: false, tickets: true }, updatedAt: ts });
+    const input = ddb.commandCalls(UpdateCommand)[0]!.args[0].input;
+    expect(input.Key).toEqual({ PK: 'USER#user-1', SK: 'NOTIFPREF' });
+    // Ana anahtar verilmedi: emailEnabled yazilmaz (eski sekme ana anahtari geri acamaz).
+    expect(Object.values(input.ExpressionAttributeNames ?? {})).toEqual(['entityType', 'userId', 'updatedAt', 'ticketEmails', 'emailReservations']);
+    expect(input.UpdateExpression).not.toMatch(/REMOVE|emailEnabled/);
+    expect(input).not.toHaveProperty('ConditionExpression');
+    expect(ddb.commandCalls(GetCommand)).toHaveLength(1); // yazimdan once okuma yok
   });
 
-  it('kismi guncelleme: verilmeyen kategoride onceki secim korunur; ana anahtar her istekte zorunlu', async () => {
-    const store = new Map<string, NotificationPreferences>();
-    const repository: PreferencesRepository = { get: async (u) => store.get(u) ?? { email: { enabled: true } }, put: async (u, p) => void store.set(u, p) };
+  it('servis: once yalnizca verilen alanlar yazilir, yanit yazim sonrasi tutarli okumadan', async () => {
+    const { repository, calls } = createFakePreferencesRepo();
     const service = createPreferencesService({ repository, now: () => NOW });
-    await service.update('u', { email: { enabled: true, gate: false } });
-    await service.update('u', { email: { enabled: true, reservations: false } });
-    expect(await service.update('u', { email: { enabled: true, gate: true } })).toEqual({ email: { enabled: true, gate: true, reservations: false }, updatedAt: ts });
-    // Eski istemci (yalnizca ana anahtar) kategori secimlerini silmez.
-    expect((await service.update('u', { email: { enabled: false } })).email).toEqual({ enabled: false, gate: true, reservations: false });
+    expect(await service.update('u', { email: { gate: false } })).toEqual({ email: { enabled: true, gate: false }, updatedAt: ts });
+    expect(calls).toEqual(['patch:u', 'get:u']);
+    expect((await service.update('u', { email: { enabled: false } })).email).toEqual({ enabled: false, gate: false });
+  });
+
+  it('es zamanli kismi PUTlar (iki cihaz / eski sekme) birbirini ezmez', async () => {
+    const { repository, store } = createFakePreferencesRepo();
+    const service = createPreferencesService({ repository, now: () => NOW });
+    // Kullanici ana anahtari bir cihazda kapatti; ayni anda baska cihaz ve eski bir sekme kategori degistiriyor.
+    await Promise.all([
+      service.update('u', { email: { enabled: false } }),
+      service.update('u', { email: { gate: false } }),
+      service.update('u', { email: { polls: false } }),
+      service.update('u', { email: { reservations: false } }),
+    ]);
+    expect(store.get('u')?.email).toEqual({ enabled: false, gate: false, polls: false, reservations: false });
+    // Eski sekme (ana anahtari acik saniyor) yalnizca degistirdigi kategoriyi gonderir: ana anahtar kapali kalir.
+    await service.update('u', { email: { gate: true } });
+    expect(store.get('u')?.email).toEqual({ enabled: false, gate: true, polls: false, reservations: false });
   });
 });
 
@@ -200,8 +214,7 @@ describe('worker + tercih: kategoriyi kapatan sakine e-posta gitmez', () => {
 
 describe('/api/me/notification-preferences', () => {
   it('GET varsayilan; PUT tek kategori gonderir, digerleri korunur; baska kullanici etkilenmez', async () => {
-    const store = new Map<string, NotificationPreferences>();
-    const repository: PreferencesRepository = { get: async (u) => store.get(u) ?? { email: { enabled: true } }, put: async (u, p) => void store.set(u, p) };
+    const { repository } = createFakePreferencesRepo();
     const app = createApp({
       version: 'test',
       authenticate: createMockAuthenticator(),
@@ -215,11 +228,12 @@ describe('/api/me/notification-preferences', () => {
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       });
     expect(await (await call('GET', 'res-1')).json()).toEqual({ email: { enabled: true } });
-    expect((await call('PUT', 'res-1', { email: { enabled: true, gate: false } })).status).toBe(200);
-    const second = await call('PUT', 'res-1', { email: { enabled: true, polls: false } });
+    expect((await call('PUT', 'res-1', { email: { gate: false } })).status).toBe(200);
+    const second = await call('PUT', 'res-1', { email: { polls: false } });
     expect(await second.json()).toEqual({ email: { enabled: true, gate: false, polls: false }, updatedAt: ts });
     expect(await (await call('GET', 'res-1')).json()).toMatchObject({ email: { enabled: true, gate: false, polls: false } });
     expect((await call('PUT', 'res-1', { email: { enabled: true, rezervasyon: false } })).status).toBe(400);
+    expect((await call('PUT', 'res-1', { email: {} })).status).toBe(400);
     expect(await (await call('GET', 'res-2')).json()).toEqual({ email: { enabled: true } });
   });
 });

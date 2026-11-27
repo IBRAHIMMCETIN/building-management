@@ -21,6 +21,8 @@ const GatePage = lazyPage(() => import('@/pages/admin/gate/GatePage'), 'GatePage
 const MyGatePage = lazyPage(() => import('@/pages/resident/gate/MyGatePage'), 'MyGatePage');
 const GuestPassPage = lazyPage(() => import('@/pages/public/GuestPassPage'), 'GuestPassPage');
 const ReservationsPage = lazyPage(() => import('@/pages/admin/reservations/ReservationsPage'), 'ReservationsPage');
+const TendersPage = lazyPage(() => import('@/pages/admin/tenders/TendersPage'), 'TendersPage');
+const TenderDetailPage = lazyPage(() => import('@/pages/admin/tenders/TenderDetailPage'), 'TenderDetailPage');
 const ReadingEntryPage = lazyPage(() => import('@/pages/admin/meters/ReadingEntryPage'), 'ReadingEntryPage');
 const ImportPage = lazyPage(() => import('@/pages/admin/import/ImportPage'), 'ImportPage');
 const AccountPage = lazyPage(() => import('@/pages/account/AccountPage'), 'AccountPage');
@@ -51,6 +53,8 @@ const MyTicketDetailPage = lazyPage(() => import('@/pages/resident/tickets/MyTic
 const MyTicketsPage = lazyPage(() => import('@/pages/resident/tickets/MyTicketsPage'), 'MyTicketsPage');
 const NewTicketWizard = lazyPage(() => import('@/pages/resident/tickets/NewTicketWizard'), 'NewTicketWizard');
 const MyReservationsPage = lazyPage(() => import('@/pages/resident/reservations/MyReservationsPage'), 'MyReservationsPage');
+const MyTendersPage = lazyPage(() => import('@/pages/resident/tenders/MyTendersPage'), 'MyTendersPage');
+const MyTenderDetailPage = lazyPage(() => import('@/pages/resident/tenders/MyTenderDetailPage'), 'MyTenderDetailPage');
 
 export const router = createBrowserRouter([
   {
@@ -105,6 +109,9 @@ export const router = createBrowserRouter([
                   { path: 'announcements', element: <AnnouncementsPage /> },
                   // Ortak alan rezervasyonu (denetci salt okur).
                   { path: 'reservations', element: <ReservationsPage /> },
+                  // Ihale / teklif toplama (denetci yalnizca paylasilanlari salt okur).
+                  { path: 'tenders', element: <TendersPage /> },
+                  { path: 'tenders/:tenderId', element: <TenderDetailPage /> },
                   // Y1: anket / oylama (yonetici + yonetim firmasi yazar, denetci salt okur).
                   { path: 'polls', element: <PollsPage /> },
                   { path: 'assemblies', element: <AssembliesPage /> },
@@ -180,6 +187,8 @@ export const router = createBrowserRouter([
               { path: 'talepler/yeni', element: <NewTicketWizard /> },
               { path: 'talepler/:ticketId', element: <MyTicketDetailPage /> },
               { path: 'rezervasyon', element: <MyReservationsPage /> },
+              { path: 'ihale', element: <MyTendersPage /> },
+              { path: 'ihale/:tenderId', element: <MyTenderDetailPage /> },
               { path: 'odeme', element: <PaymentPage /> },
               { path: 'odeme/sonuc', element: <PaymentResultPage /> },
               { path: 'announcements', element: <ResidentAnnouncementsPage /> },

@@ -6,7 +6,7 @@ import {
   SendEmailCommand,
   TooManyRequestsException,
 } from '@aws-sdk/client-sesv2';
-import { DynamoDBDocumentClient, GetCommand, PutCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, GetCommand, PutCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { mockClient } from 'aws-sdk-client-mock';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createApp } from '../src/app.js';
@@ -26,17 +26,17 @@ import {
 } from '../src/modules/notifications/email.js';
 import type { Notification } from '../src/modules/notifications/notifier.js';
 import {
-  type NotificationPreferences,
   type PreferencesRepository,
   createDynamoPreferencesRepository,
   createPreferencesService,
   parsePreferences,
 } from '../src/modules/notifications/preferences.js';
-import { cleanSubject, escapeHtml, formatDate, formatPeriod, formatTL, renderEmail, safeUrl } from '../src/modules/notifications/templates.js';
+import { cleanSubject, durationText, escapeHtml, formatDate, formatDateTime, formatPeriod, formatTL, renderEmail, safeUrl } from '../src/modules/notifications/templates.js';
 import type { ApartmentRole } from '../src/modules/apartment-roles/types.js';
 import type { UnitMembership } from '../src/modules/portal/types.js';
 import type { Person } from '../src/modules/residents/repository.js';
 import { createNotificationWorker } from '../src/workers/notification-worker.js';
+import { createFakePreferencesRepo } from './fakes/preferencesRepo.js';
 
 const APT = 'apt-1';
 const NOW = new Date('2026-11-21T08:00:00.000Z');
@@ -75,6 +75,18 @@ describe('sablon yardimcilari', () => {
     expect(formatDate('2026-11-15')).toBe('15.11.2026');
     expect(formatPeriod('2026-10')).toBe('Ekim 2026');
     expect(formatPeriod('2026-02')).toBe('Şubat 2026');
+  });
+
+  it('Istanbul saatiyle tarih-saat (genel kurul / oylama / kapi): 15.12.2026 19:00, gece yarisi 00:05; sure metni', () => {
+    // Genel kurul toplantisi 15.12.2026 19:00 (Istanbul) = 16:00Z.
+    expect(formatDateTime('2026-12-15T16:00:00.000Z')).toBe('15.12.2026 19:00');
+    // 21:05Z = ertesi gun 00:05 Istanbul (24:05 degil, gun ilerler).
+    expect(formatDateTime('2026-12-15T21:05:00.000Z')).toBe('16.12.2026 00:05');
+    expect(formatDateTime('2026-12-15T21:05:00.000Z', true)).toBe('00:05');
+    expect(formatDateTime('gecersiz')).toBe('gecersiz');
+    expect(durationText(120)).toBe('2 saat');
+    expect(durationText(90)).toBe('1 saat 30 dakika');
+    expect(durationText(45)).toBe('45 dakika');
   });
 
   it('HTML escape ve konu temizligi', () => {
@@ -556,16 +568,14 @@ describe('bildirim tercihleri', () => {
     expect(await repo.get('user-1')).toEqual({ email: { enabled: false }, updatedAt: ts });
     expect(ddb.commandCalls(GetCommand)[0]!.args[0].input.Key).toEqual({ PK: 'USER#user-1', SK: 'NOTIFPREF' });
 
-    ddb.on(PutCommand).resolves({});
-    await repo.put('user-1', { email: { enabled: false }, updatedAt: ts });
-    expect(ddb.commandCalls(PutCommand)[0]!.args[0].input.Item).toEqual({
-      PK: 'USER#user-1',
-      SK: 'NOTIFPREF',
-      entityType: 'NOTIFICATION_PREFERENCES',
-      userId: 'user-1',
-      emailEnabled: false,
-      updatedAt: ts,
-    });
+    ddb.on(UpdateCommand).resolves({});
+    await repo.patch('user-1', { enabled: false, categories: {}, updatedAt: ts });
+    const update = ddb.commandCalls(UpdateCommand)[0]!.args[0].input;
+    expect(update.Key).toEqual({ PK: 'USER#user-1', SK: 'NOTIFPREF' });
+    expect(update.UpdateExpression).toBe('SET #et = :et, #uid = :uid, #upd = :upd, #a3 = :v3');
+    expect(update.ExpressionAttributeNames).toMatchObject({ '#a3': 'emailEnabled' });
+    expect(update.ExpressionAttributeValues).toEqual({ ':et': 'NOTIFICATION_PREFERENCES', ':uid': 'user-1', ':upd': ts, ':v3': false });
+    expect(ddb.commandCalls(PutCommand)).toHaveLength(0);
     await expect(repo.get('a#b')).rejects.toThrow(/userId/);
   });
 
@@ -577,11 +587,7 @@ describe('bildirim tercihleri', () => {
   });
 
   function api() {
-    const store = new Map<string, NotificationPreferences>();
-    const repository: PreferencesRepository = {
-      get: async (u) => store.get(u) ?? { email: { enabled: true } },
-      put: async (u, p) => void store.set(u, p),
-    };
+    const { repository, store } = createFakePreferencesRepo();
     const app = createApp({
       version: 'test',
       authenticate: createMockAuthenticator(),
