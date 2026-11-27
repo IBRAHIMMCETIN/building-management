@@ -9,6 +9,7 @@
  * Silme yok: toplanti `cancelled` olur, katilim `absent` ile geri alinir.
  */
 import type { IsoDate, IsoDateTime, TableKeys, AuditFields } from '../core/types.js';
+import type { RollMeta } from '../polls/rollSnapshot.js';
 
 export const ASSEMBLY_KINDS = ['ordinary', 'extraordinary'] as const;
 export type AssemblyKind = (typeof ASSEMBLY_KINDS)[number];
@@ -27,8 +28,8 @@ export type AgendaTally = {
   yes: number;
   no: number;
   abstain: number;
-  /** Sayim anindaki katilan bolum sayisi (karar esigi bununla hesaplanir). */
-  presentUnits: number;
+  /** Sayim anindaki katilan oy (KMK m.31 sinirli; karar esigi bununla hesaplanir). */
+  presentVotes: number;
   decision: 'accepted' | 'rejected';
   recordedAt: IsoDateTime;
   recordedBy: string;
@@ -43,20 +44,39 @@ export type Assembly = TableKeys &
     apartmentId: string;
     kind: AssemblyKind;
     /**
-     * Ikinci toplanti: ilk toplantida yeter sayi saglanamadi (KMK m.30/3). Toplanti yeter sayisi
-     * aranmaz; karar yine katilanlarin sayi cogunluguyla.
+     * Ikinci toplanti (KMK m.30): `firstMeetingId` ayni apartmanin, yeter sayisinin saglanamadigi
+     * tutanaga gecmis ilk toplantisidir ve bu toplanti ondan en gec 15 gun sonradir. Toplanti yeter
+     * sayisi aranmaz; karar katilanlarin oy cogunluguyla.
      */
     secondMeeting: boolean;
+    firstMeetingId?: string;
     scheduledAt: IsoDateTime;
     location?: string;
     onlineUrl?: string;
     /** Oy listesi (hazirun) tarihi: toplanti gunu, Europe/Istanbul. */
     rollDate: IsoDate;
+    /** Ilk katilim / sayim / hazirun isteginde dondurulan oy listesi (satirlar `ASMROLL#...`). */
+    roll?: RollMeta;
+    /** Toplanti yeter sayisinin tutanaga gecirilen sonucu (ilk sayimda veya elle). */
+    quorumRecord?: QuorumRecord;
     agenda: AgendaItem[];
     status: AssemblyStatus;
     cancelledAt?: IsoDateTime;
     cancelReason?: string;
   };
+
+export type QuorumRecord = {
+  met: boolean;
+  presentUnits: number;
+  totalUnits: number;
+  presentVotes: number;
+  totalVotes: number;
+  unitsMajority: boolean;
+  landShareMajority: boolean;
+  landShareComputable: boolean;
+  recordedAt: IsoDateTime;
+  recordedBy: string;
+};
 
 export type AssemblyAttendance = TableKeys & {
   entityType: 'ASSEMBLY_ATTENDANCE';
@@ -64,10 +84,10 @@ export type AssemblyAttendance = TableKeys & {
   assemblyId: string;
   unitId: string;
   mode: AttendanceMode;
-  /** Toplantiya katilan malik / paydas adi (serbest metin; hazirun cetveline yazilir). */
-  attendeeName?: string;
-  /** Vekaleten katilimda vekilin adi. */
-  proxyName?: string;
+  /** Asaleten katilan paydas (oy listesindeki maliklerden biri; hisseli bolumun temsilcisi). */
+  attendee?: { userId: string };
+  /** Vekaleten katilimda vekil: apartman kisisi ise userId, degilse ad-soyad. */
+  proxy?: { userId?: string; name: string };
   recordedAt: IsoDateTime;
   recordedBy: string;
   version: number;

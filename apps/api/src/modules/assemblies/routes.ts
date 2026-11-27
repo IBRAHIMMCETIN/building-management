@@ -13,10 +13,11 @@ export type AssemblyRoutesDeps = { authenticate: Authenticator; service: Assembl
  * `/api/assemblies` - Y1-3 kat malikleri kurulu (genel kurul) hazirligi.
  *
  *   GET   /                                   toplantilar (en yeni once)
- *   POST  /                                   { kind, scheduledAt, location?, onlineUrl?, secondMeeting?, agenda[] }
- *   GET   /:id                                toplanti + KMK m.30 yeter sayi + oy listesi / katilim satirlari
- *   PATCH /:id                                { version, ... } (sayim kaydedilmeden once)
- *   PUT   /:id/attendance/:unitId             { mode: present|proxy|absent, attendeeName?, proxyName? }
+ *   POST  /                                   { kind, scheduledAt, location?, onlineUrl?, firstMeetingId?, agenda[] }
+ *   GET   /:id                                toplanti + KMK m.30 yeter sayi + (dondurulmus) oy listesi / katilim
+ *   PATCH /:id                                { version, ... } (oy listesi dondurulmadan once)
+ *   PUT   /:id/attendance/:unitId             { mode: present|proxy|absent, attendeeUserId?, proxyUserId? | proxyName? }
+ *   POST  /:id/quorum                         { version } yeter sayiyi tutanaga gecir
  *   POST  /:id/agenda/:itemId/tally           { version, yes, no, abstain } (yeter sayi saglandiysa)
  *   POST  /:id/cancel                         { version, reason }
  *   GET   /:id/attendance-sheet               hazirun cetveli PDF (5 dk imzali link)
@@ -45,6 +46,7 @@ export function assemblyRoutes({ authenticate, service }: AssemblyRoutesDeps) {
   r.put('/:id/attendance/:unitId', requireRole(WRITE_ROLES), async (c) =>
     c.json(await service.setAttendance(ctx(c), id(c), c.req.param('unitId') ?? '', await readJson(c))),
   );
+  r.post('/:id/quorum', requireRole(WRITE_ROLES), async (c) => c.json(await service.recordQuorum(ctx(c), id(c), await readJson(c))));
   r.post('/:id/agenda/:itemId/tally', requireRole(WRITE_ROLES), async (c) =>
     c.json(await service.recordTally(ctx(c), id(c), c.req.param('itemId') ?? '', await readJson(c))),
   );

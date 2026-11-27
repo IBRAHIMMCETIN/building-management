@@ -12,7 +12,8 @@ import { renderEmail } from '../src/modules/notifications/templates.js';
 import type { OwnershipRecord } from '../src/modules/ownership/types.js';
 import { type PollRepository, PollVoteConflictError, createPollRepository, pollKeys } from '../src/modules/polls/repository.js';
 import { commonDenominator, eligibleVoters, istanbulDate, pollPhase, tallyPoll, toBps } from '../src/modules/polls/results.js';
-import { createPollService } from '../src/modules/polls/service.js';
+import { buildSnapshot, createMemoryRollStore } from '../src/modules/polls/rollSnapshot.js';
+import { MIN_SECRET_CLOSE_VOTES, createPollService } from '../src/modules/polls/service.js';
 import type { Poll, PollVote } from '../src/modules/polls/types.js';
 import type { PortalRepository } from '../src/modules/portal/repository.js';
 import { createPortalService } from '../src/modules/portal/service.js';
@@ -73,7 +74,7 @@ const defaultMembers = () => [
   member('own-3', 'u3', 'owner', { residesInUnit: true }),
 ];
 
-function createFakePollRepo() {
+function createFakePollRepo(rolls: ReturnType<typeof createMemoryRollStore>) {
   const polls = new Map<string, Poll>();
   const votes = new Map<string, PollVote>();
   const outbox: DomainEvent[] = [];
@@ -92,6 +93,7 @@ function createFakePollRepo() {
       if (polls.get(pk(p.apartmentId, p.pollId))?.version !== expected) throw new DataAccessError('conflict', 'surum');
       const events = opts.outbox ?? [];
       if (events.some((e) => outbox.some((o) => o.eventId === e.eventId))) throw new DataAccessError('conflict', 'olay');
+      if (opts.roll?.length) rolls.put(opts.roll);
       polls.set(pk(p.apartmentId, p.pollId), clone(p));
       outbox.push(...clone(events));
       if (opts.audit) audits.push(clone(opts.audit));
@@ -111,8 +113,15 @@ function createFakePollRepo() {
 
 function setup(opts: { units?: Unit[]; members?: UnitMembership[]; records?: OwnershipRecord[] } = {}) {
   let now = new Date(T0);
-  const clock = { set: (iso: string) => void (now = new Date(iso)) };
-  const fake = createFakePollRepo();
+  let step = 0;
+  const clock = { set: (iso: string) => void (now = new Date(iso)), step: (ms: number) => void (step = ms) };
+  const tick = () => {
+    const d = now;
+    now = new Date(now.getTime() + step);
+    return d;
+  };
+  const rolls = createMemoryRollStore();
+  const fake = createFakePollRepo(rolls);
   const units = opts.units ?? defaultUnits();
   const members = opts.members ?? defaultMembers();
   const records = opts.records ?? [];
@@ -130,19 +139,19 @@ function setup(opts: { units?: Unit[]; members?: UnitMembership[]; records?: Own
     listUnitPayments: async () => [],
     listPublishedAnnouncements: async () => [],
   };
-  const portal = createPortalService({ repository: portalRepo, core, now: () => now });
+  const portal = createPortalService({ repository: portalRepo, core, now: tick });
   let n = 0;
   const pollService = createPollService({
     repository: fake.repo,
     core,
     ownership: {
-      getHead: async () => undefined,
       listHeads: async () => [],
       listRecords: async (apt, unitId) => records.filter((r) => r.apartmentId === apt && (!unitId || r.unitId === unitId)),
     },
     memberships: { list: async (apt, f = {}) => members.filter((m) => m.apartmentId === apt && (!f.unitId || m.unitId === f.unitId)) },
     portal,
-    now: () => now,
+    rolls,
+    now: tick,
     newId: () => `poll${++n}`,
   });
   const app = createApp({ version: 'test', authenticate: createMockAuthenticator(), pollService, portalService: portal });
@@ -172,7 +181,7 @@ function setup(opts: { units?: Unit[]; members?: UnitMembership[]; records?: Own
     return pub.body;
   };
 
-  return { ...fake, app, call, portalCall, vote, token, clock, published, units };
+  return { ...fake, app, call, portalCall, vote, token, clock, published, units, members, records, rolls };
 }
 
 const draft = { title: 'Asansör yenilensin mi?', options: ['Evet', 'Hayır'], closesAt: '2026-11-17T18:00:00+03:00' };
@@ -318,7 +327,7 @@ describe('polls - yasam dongusu ve denetim', () => {
 
   it('erken kapatma gerekce ister, denetime poll.close (early) yazilir; bittikten sonra kapatilamaz', async () => {
     const { call, audits, published, vote, clock } = setup();
-    await published();
+    await published({ secret: false });
     await vote('own-1', 'o1');
     expect((await call('POST', '/poll1/close', { version: 2 })).status).toBe(400);
     clock.set('2026-11-12T07:00:00.000Z');
@@ -408,7 +417,7 @@ describe('polls - oy kullanma (sakin portali)', () => {
     expect([...votes.values()].filter((v) => v.unitId === 'u2')).toHaveLength(1);
 
     const part = await call('GET', '/poll1/participation');
-    expect(part.body.items.find((r: any) => r.unitId === 'u2')).toEqual({ unitId: 'u2', blockId: 'b1', number: '2', landShare: { numerator: 240, denominator: 1200 }, voted: true, warnings: [] });
+    expect(part.body).toEqual({ secret: true, hidden: true, hiddenUntil: '2026-11-17T15:00:00.000Z', votedUnits: 1, items: [] });
   });
 
   it('ayni kisinin ayni secimi yazim yapmaz (surum 1 kalir); gecersiz secenek 400', async () => {
@@ -423,7 +432,7 @@ describe('polls - oy kullanma (sakin portali)', () => {
 
   it('kapanmis oylama oy kabul etmez: erken kapatma ve bitis zamani', async () => {
     const { vote, published, call, clock } = setup();
-    await published();
+    await published({ secret: false });
     await published({ title: 'İkinci' });
     await call('POST', '/poll1/close', { version: 2, reason: 'Toplantıda karar alındı' });
     const early = await vote('own-1', 'o1');
@@ -533,11 +542,11 @@ describe('polls - sonuc, agirlik ve gizlilik', () => {
       final: false,
       tallyHidden: false,
       weighting: 'per_unit',
-      eligible: { units: 3, landShare: { numerator: 1200, denominator: 1200 } },
-      participation: { units: 3, unitsBps: 10000, landShare: { numerator: 1200, denominator: 1200 }, landShareBps: 10000 },
+      eligible: { units: 3, landShare: { numerator: '1200', denominator: '1200' } },
+      participation: { units: 3, unitsBps: 10000, landShare: { numerator: '1200', denominator: '1200' }, landShareBps: 10000 },
       options: [
-        { optionId: 'o1', units: 2, unitsBps: 6667, landShare: { numerator: 360, denominator: 1200 }, landShareBps: 3000 },
-        { optionId: 'o2', units: 1, unitsBps: 3333, landShare: { numerator: 840, denominator: 1200 }, landShareBps: 7000 },
+        { optionId: 'o1', units: 2, unitsBps: 6667, landShare: { numerator: '360', denominator: '1200' }, landShareBps: 3000 },
+        { optionId: 'o2', units: 1, unitsBps: 3333, landShare: { numerator: '840', denominator: '1200' }, landShareBps: 7000 },
       ],
       winnerOptionId: 'o1',
     });
@@ -560,24 +569,42 @@ describe('polls - sonuc, agirlik ve gizlilik', () => {
     expect(r.participation).toMatchObject({ units: 2, unitsBps: 6667, landShareBps: 8000 });
   });
 
-  it('farkli paydali arsa paylari ortak paydaya cevrilir', () => {
+  it('farkli paydali arsa paylari ortak paydaya cevrilir; eksik arsa payinda toplamlar hesaplanmaz', () => {
     expect(commonDenominator([{ numerator: 1, denominator: 8 }, { numerator: 1, denominator: 12 }, undefined])).toBe(24n);
     expect(commonDenominator([undefined])).toBeNull();
     expect(toBps(1n, 3n)).toBe(3333);
     expect(toBps(2n, 3n)).toBe(6667);
     expect(toBps(5n, 0n)).toBe(0);
-    const poll = { pollId: 'p', options: [{ optionId: 'o1', label: 'A' }, { optionId: 'o2', label: 'B' }], weighting: 'land_share', secret: false, audience: 'owners', status: 'closed', opensAt: T0, closesAt: T0, rollDate: '2026-11-10' } as unknown as Poll;
-    const roll = [
-      { unitId: 'a', blockId: 'b', number: '1', landShare: { numerator: 1, denominator: 8 }, owners: [{ userId: 'x' }], warnings: [] },
-      { unitId: 'b', blockId: 'b', number: '2', landShare: { numerator: 1, denominator: 12 }, owners: [{ userId: 'y' }], warnings: [] },
-      { unitId: 'c', blockId: 'b', number: '3', owners: [], warnings: ['Malik kaydı yok'] },
-    ];
+    const item = (unitId: string, landShare?: LandShare, owners = [{ userId: `o-${unitId}` }]) => ({ unitId, blockId: 'b', number: unitId, vote: 1 as const, source: 'register' as const, ...(landShare ? { landShare } : {}), owners, warnings: [] });
+    const snap = (roll: ReturnType<typeof item>[]) => buildSnapshot({ apartmentId: APT, ownerType: 'poll', ownerId: 'p', rollDate: '2026-11-10', frozenAt: T0, roll, voters: (r) => r.owners.map((o) => ({ userId: o.userId, relation: 'owner' })) });
+    const base = { pollId: 'p', options: [{ optionId: 'o1', label: 'A' }, { optionId: 'o2', label: 'B' }], weighting: 'land_share', secret: false, audience: 'owners', status: 'closed', opensAt: T0, closesAt: T0, rollDate: '2026-11-10' };
     const v = (unitId: string, optionId: string) => ({ pollId: 'p', unitId, optionId }) as PollVote;
-    const r = tallyPoll({ poll, roll, votes: [v('a', 'o1'), v('b', 'o2')], nowIso: T0 });
-    expect(r.eligible.landShare).toEqual({ numerator: 5, denominator: 24 });
-    expect(r.options?.map((o) => o.landShare)).toEqual([{ numerator: 3, denominator: 24 }, { numerator: 2, denominator: 24 }]);
+
+    const full = snap([item('a', { numerator: 1, denominator: 8 }), item('b', { numerator: 1, denominator: 12 })]);
+    const r = tallyPoll({ poll: { ...base, roll: full.meta } as never, entries: full.entries, votes: [v('a', 'o1'), v('b', 'o2')], nowIso: T0 });
+    expect(r.eligible.landShare).toEqual({ numerator: '5', denominator: '24' });
+    expect(r.options?.map((o) => o.landShare)).toEqual([{ numerator: '3', denominator: '24' }, { numerator: '2', denominator: '24' }]);
     expect(r.winnerOptionId).toBe('o1'); // 3/24 > 5/48
-    expect(r.warnings).toEqual(['1 bölümün arsa payı girilmemiş; arsa payı toplamlarına katılmadı', '1 bölümde oy kullanabilecek malik kaydı yok']);
+
+    const partial = snap([item('a', { numerator: 1, denominator: 8 }), item('b', { numerator: 1, denominator: 12 }), item('c', undefined, [])]);
+    const rp = tallyPoll({ poll: { ...base, weighting: 'per_unit', roll: partial.meta } as never, entries: partial.entries, votes: [v('a', 'o1')], nowIso: T0 });
+    expect(rp.eligible.landShare).toBeNull();
+    expect(rp.participation.landShareBps).toBeNull();
+    expect(rp.warnings).toEqual(['1 bölümün arsa payı girilmemiş; arsa payı toplamları hesaplanamıyor', '1 bölümde oy kullanabilecek malik kaydı yok']);
+  });
+
+  it('BigInt ortak payda: cok buyuk / aralarinda asal paydalar tasmaz, sonuc 500 vermez', async () => {
+    const primes = [999_999_937, 999_999_929, 999_999_893];
+    const units = primes.map((d, i) => unit(`u${i + 1}`, String(i + 1), { numerator: 1, denominator: d }));
+    const { published, vote, call } = setup({ units, members: [member('own-1', 'u1', 'owner'), member('own-2a', 'u2', 'owner'), member('own-3', 'u3', 'owner')] });
+    await published({ weighting: 'land_share', secret: false });
+    await vote('own-1', 'o1');
+    const res = await call('GET', '/poll1/results');
+    expect(res.status).toBe(200);
+    const den = BigInt(res.body.results.eligible.landShare.denominator);
+    expect(den).toBe(primes.reduce((p, d) => p * BigInt(d), 1n));
+    expect(den > BigInt(Number.MAX_SAFE_INTEGER)).toBe(true);
+    expect(res.body.results.options[0].units).toBe(1);
   });
 
   it('gizli oylama: surerken kimse dagilimi gormez; bitince sayilar acilir; bolum bazinda secim HICBIR evrede yok', async () => {
@@ -592,17 +619,19 @@ describe('polls - sonuc, agirlik ve gizlilik', () => {
     expect((await portalCall('GET', '/poll1', 'own-1')).body).toMatchObject({ resultsAvailable: false });
 
     const liveRows = (await call('GET', '/poll1/participation')).body;
-    expect(liveRows.secret).toBe(true);
-    expect(liveRows.items.map((r: any) => r.voted)).toEqual([true, false, true]);
-    for (const row of liveRows.items) {
+    expect(liveRows).toEqual({ secret: true, hidden: true, hiddenUntil: '2026-11-17T15:00:00.000Z', votedUnits: 2, items: [] });
+
+    clock.set('2026-11-17T15:00:00.000Z');
+    const afterRows = (await call('GET', '/poll1/participation')).body;
+    expect(afterRows.hidden).toBe(false);
+    expect(afterRows.items.map((r: any) => r.voted)).toEqual([true, false, true]);
+    for (const row of afterRows.items) {
       expect(row).not.toHaveProperty('optionId');
       expect(row).not.toHaveProperty('castAt');
       expect(row).not.toHaveProperty('voterRelation');
     }
-    const serialized = JSON.stringify(liveRows);
-    for (const leak of ['own-1', 'own-3', 'o1', 'o2']) expect(serialized).not.toContain(leak);
-
-    clock.set('2026-11-17T15:00:00.000Z');
+    const serialized = JSON.stringify(afterRows);
+    for (const leak of ['own-1', 'own-3', '"o1"', '"o2"']) expect(serialized).not.toContain(leak);
     const final = (await call('GET', '/poll1/results')).body.results;
     expect(final).toMatchObject({ final: true, tallyHidden: false, winnerOptionId: null });
     expect(final.options.map((o: any) => o.units)).toEqual([1, 1]);
@@ -641,13 +670,13 @@ describe('polls - saf yardimcilar', () => {
   it('oy hakki: kat malikleri yalnizca listedeki paydaslar; sakinlerde o gun gecerli uyelikler', () => {
     const roll = { unitId: 'u1', owners: [{ userId: 'a' }, { userId: 'b' }] };
     const members = [member('t', 'u1', 'tenant'), member('old', 'u1', 'tenant', { endDate: '2026-11-01', status: 'inactive' }), member('later', 'u1', 'tenant', { startDate: '2026-12-01' })];
-    expect([...eligibleVoters({ audience: 'owners', rollDate: '2026-11-10' }, roll, members).keys()]).toEqual(['a', 'b']);
-    expect([...eligibleVoters({ audience: 'residents', rollDate: '2026-11-10' }, roll, members).entries()]).toEqual([
-      ['a', 'owner'],
-      ['b', 'owner'],
-      ['t', 'tenant'],
+    expect(eligibleVoters({ audience: 'owners', rollDate: '2026-11-10' }, roll, members).map((v) => v.userId)).toEqual(['a', 'b']);
+    expect(eligibleVoters({ audience: 'residents', rollDate: '2026-11-10' }, roll, members)).toEqual([
+      { userId: 'a', relation: 'owner' },
+      { userId: 'b', relation: 'owner' },
+      { userId: 't', relation: 'tenant' },
     ]);
-    expect(eligibleVoters({ audience: 'owners', rollDate: '2026-11-10' }, undefined, members).size).toBe(0);
+    expect(eligibleVoters({ audience: 'owners', rollDate: '2026-11-10' }, undefined, members)).toEqual([]);
   });
 });
 
@@ -739,5 +768,112 @@ describe('polls repository (DynamoDB)', () => {
     expect(await repo.listVotes(APT, 'p1')).toHaveLength(1);
     expect(ddb.commandCalls(QueryCommand)[0]!.args[0].input.ExpressionAttributeValues).toMatchObject({ ':pk': 'APT#apt-1', ':skp': 'POLLVOTE#p1#' });
     await expect(repo.putVote({ ...voteItem(), PK: 'APT#apt-2' }, 0, T0)).rejects.toThrow(/tutarsiz/);
+  });
+
+  it('yayin: oy listesi kovalari oylamayla ayni TransactWriteItems icinde attribute_not_exists ile yazilir', async () => {
+    ddb.on(TransactWriteCommand).resolves({});
+    const snap = buildSnapshot({
+      apartmentId: APT,
+      ownerType: 'poll',
+      ownerId: 'p1',
+      rollDate: '2026-11-10',
+      frozenAt: T0,
+      roll: [{ unitId: 'u1', blockId: 'b1', number: '1', vote: 1, source: 'register', owners: [{ userId: 'a' }], warnings: [] }],
+      voters: () => [{ userId: 'a', relation: 'owner' }],
+    });
+    const poll = { ...pollKeys.poll(APT, 'p1'), entityType: 'POLL', pollId: 'p1', apartmentId: APT, updatedAt: T0, version: 2, roll: snap.meta } as unknown as Poll;
+    await repo.update(poll, 1, { roll: snap.chunks });
+    const items = ddb.commandCalls(TransactWriteCommand)[0]!.args[0].input.TransactItems!;
+    expect(items).toHaveLength(2);
+    expect(items[1]!.Put).toMatchObject({ ConditionExpression: 'attribute_not_exists(PK)', Item: { SK: 'POLLROLL#p1#000', entityType: 'ROLL_SNAPSHOT' } });
+    await expect(repo.update(poll, 1, { roll: [{ ...snap.chunks[0]!, ownerId: 'other' }] })).rejects.toThrow(/ait degil/);
+  });
+});
+
+describe('polls - dondurulmus oy listesi, gizlilik ve eszamanlilik', () => {
+  it('oy listesi yayinda dondurulur: sonradan sicil / uyelik / arsa payi degisse de oy hakki ve paydalar degismez', async () => {
+    const { published, vote, call, units, members, rolls, polls } = setup();
+    await published({ weighting: 'land_share', secret: false });
+    const poll = polls.get(`${APT}|poll1`)!;
+    expect(poll.roll).toMatchObject({ rollDate: '2026-11-10', units: 3, denominator: '1200', totalWeight: '1200', missingLandShare: 0, frozenAt: T0 });
+    expect((await rolls.entries(APT, 'poll', 'poll1')).map((e) => e.unitId)).toEqual(['u1', 'u2', 'u3']);
+
+    // Yayindan sonra: u3'un arsa payi degisir, geriye donuk yeni malik eklenir, yeni bolum acilir.
+    units[2] = { ...units[2]!, landShare: { numerator: 1, denominator: 1200 } };
+    units.push(unit('u9', '9', { numerator: 500, denominator: 1200 }));
+    members.push(member('late-3', 'u3', 'owner'), member('own-9', 'u9', 'owner'));
+    expect((await vote('late-3', 'o1')).body.error).toBe('not_eligible');
+    expect((await vote('own-9', 'o1')).body.message).toContain('oy listesinde yok');
+    await vote('own-3', 'o2');
+    const r = (await call('GET', '/poll1/results')).body.results;
+    expect(r.eligible).toEqual({ units: 3, landShare: { numerator: '1200', denominator: '1200' } });
+    expect(r.options[1].landShare).toEqual({ numerator: '840', denominator: '1200' });
+    expect((await call('GET', '/poll1/participation')).body.items.map((x: any) => x.unitId)).toEqual(['u1', 'u2', 'u3']);
+  });
+
+  it(`gizli oylama en az ${MIN_SECRET_CLOSE_VOTES} oy olmadan erken kapatilamaz; planli gizli oylama kapatilabilir; katilim planlanan bitise kadar gizli`, async () => {
+    const { published, vote, call } = setup();
+    await published();
+    await vote('own-1', 'o1');
+    await vote('own-2a', 'o2');
+    const refused = await call('POST', '/poll1/close', { version: 2, reason: 'Erken bitir' });
+    expect(refused.status).toBe(422);
+    expect(refused.body.message).toContain('en az 3 bölüm');
+    await vote('own-3', 'o1');
+    const closed = await call('POST', '/poll1/close', { version: 2, reason: 'Erken bitir' });
+    expect(closed.status).toBe(200);
+    // Erken kapanista sonuc kesinlesir ama hangi bolumun oy kullandigi planlanan bitise kadar gizli.
+    expect((await call('GET', '/poll1/results')).body.results).toMatchObject({ final: true, tallyHidden: false });
+    expect((await call('GET', '/poll1/participation')).body).toMatchObject({ hidden: true, votedUnits: 3, items: [] });
+
+    await published({ title: 'Planlı gizli', opensAt: '2026-11-20T09:00:00+03:00', closesAt: '2026-11-25T18:00:00+03:00' });
+    expect((await call('POST', '/poll2/close', { version: 2, reason: 'Vazgeçildi' })).status).toBe(200);
+  });
+
+  it('ara sonuc yalnizca bolumu oy kullanmis sakine; oy vermeyen "oy verince" bilgisini alir', async () => {
+    const { published, vote, portalCall } = setup();
+    await published({ secret: false, resultsVisibleBeforeClose: true });
+    await vote('own-1', 'o1');
+    expect((await portalCall('GET', '/poll1', 'own-1')).body).toMatchObject({ resultsAvailable: true, resultsAfterVote: false, results: { final: false } });
+    const notYet = (await portalCall('GET', '/poll1', 'own-3')).body;
+    expect(notYet).toMatchObject({ resultsAvailable: false, resultsAfterVote: true });
+    expect(notYet.results).toBeUndefined();
+  });
+
+  it('kapanis kontrolu icin zaman damgasi yazimdan hemen once alinir', async () => {
+    const { published, vote, clock, repo } = setup();
+    await published();
+    let written: { now: string; castAt: string } | undefined;
+    const put = repo.putVote;
+    repo.putVote = async (v, expected, now) => {
+      written = { now, castAt: v.castAt };
+      return put(v, expected, now);
+    };
+    clock.step(1000);
+    expect((await vote('own-1', 'o1')).status).toBe(200);
+    // Her saat okumasi 1 sn ilerler: daire cozumu T0, evre kontrolu T0+1 sn; yazim zamani bunlardan
+    // SONRA yeniden alinir (evre kontrolundeki zaman yeniden kullanilmaz).
+    expect(written!.now > '2026-11-10T07:00:01.000Z').toBe(true);
+    expect(written!.castAt).toBe(written!.now);
+  });
+
+  it('ayni oyun eszamanli ikinci gonderimi kosul cakismasinda basari doner; farkli oy 409', async () => {
+    const { published, vote, repo, votes } = setup();
+    await published();
+    const put = repo.putVote;
+    // Esanli istek ayni oyu az once yazmis gibi: kosul cakisir, kayitli oy gonderilenle ayni.
+    repo.putVote = async (v, expected, now) => {
+      await put(v, expected, now);
+      throw new PollVoteConflictError('vote');
+    };
+    const same = await vote('own-2a', 'o1');
+    expect(same.status).toBe(200);
+    expect(same.body.myVote).toMatchObject({ castByMe: true, optionId: 'o1' });
+    // Diger paydasin farkli oyu araya girdi: kayitli oy gonderilenden farkli -> 409.
+    repo.putVote = async (v) => {
+      votes.set(`${APT}|poll1|u2`, { ...v, voterUserId: 'own-2a', optionId: 'o1', version: 2 });
+      throw new PollVoteConflictError('vote');
+    };
+    expect((await vote('own-2b', 'o2')).status).toBe(409);
   });
 });

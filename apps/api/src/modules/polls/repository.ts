@@ -5,6 +5,7 @@ import { toOutboxItems } from '../../events/outbox.js';
 import type { DomainEvent } from '../../events/publisher.js';
 import { type AuditDraft, sendWithAudit } from '../audit/log.js';
 import type { IsoDateTime, TableKeys } from '../core/types.js';
+import type { RollChunk } from './rollSnapshot.js';
 import type { Poll, PollVote } from './types.js';
 
 /** Oylama: `POLL#<pollId>`; oy: `POLLVOTE#<pollId>#<unitId>` (bolum basina tek kayit). */
@@ -29,7 +30,7 @@ export type PollRepository = {
    * Surumlu guncelleme. `audit` (yayin / kapatma / iptal) ve `outbox` (POLL_PUBLISHED) ayni
    * `TransactWriteItems` icinde yazilir. Surum veya olay cakismasinda `DataAccessError('conflict')`.
    */
-  update(poll: Poll, expectedVersion: number, opts?: { audit?: AuditDraft; outbox?: DomainEvent[] }): Promise<void>;
+  update(poll: Poll, expectedVersion: number, opts?: { audit?: AuditDraft; outbox?: DomainEvent[]; roll?: RollChunk[] }): Promise<void>;
   getVote(apartmentId: string, pollId: string, unitId: string): Promise<PollVote | undefined>;
   listVotes(apartmentId: string, pollId: string): Promise<PollVote[]>;
   /**
@@ -82,6 +83,11 @@ export function createPollRepository(): PollRepository {
         ...toOutboxItems(opts.outbox ?? [], poll.updatedAt, poll.apartmentId).map(
           (item): TransactItem => ({ Put: { TableName: tableName, Item: item, ConditionExpression: 'attribute_not_exists(PK)' } }),
         ),
+        // Yayinda dondurulan oy listesi kovalari: oylamayla ayni atomik yazim.
+        ...(opts.roll ?? []).map((chunk): TransactItem => {
+          if (chunk.apartmentId !== poll.apartmentId || chunk.ownerId !== poll.pollId) throw new Error('Oy listesi kovasi oylamaya ait degil');
+          return { Put: { TableName: tableName, Item: chunk, ConditionExpression: 'attribute_not_exists(PK)' } };
+        }),
       ];
       try {
         await sendWithAudit(client, items, opts.audit);

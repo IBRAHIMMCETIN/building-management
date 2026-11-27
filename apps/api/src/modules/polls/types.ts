@@ -11,6 +11,7 @@
  * dogrular; erken kapatma ile yarisan oy reddedilir. Silme yok: taslak `cancelled` olur.
  */
 import type { AuditFields, IsoDate, IsoDateTime, LandShare, TableKeys } from '../core/types.js';
+import type { RollMeta } from './rollSnapshot.js';
 
 /** Saklanan durum. `published` oylamanin evresi (planli / acik / bitti) zamana gore hesaplanir. */
 export const POLL_STATUSES = ['draft', 'published', 'closed', 'cancelled'] as const;
@@ -54,6 +55,8 @@ export type Poll = TableKeys &
      * mulkiyet modulunun oy listesiyle (`buildVotingRoll`) bu gun icin hesaplanir; yayinda sabitlenir.
      */
     rollDate: IsoDate;
+    /** Yayinda dondurulan oy listesinin ozeti (satirlar `POLLROLL#<pollId>#<kova>`). Taslakta yok. */
+    roll?: RollMeta;
     status: PollStatus;
     publishedAt?: IsoDateTime;
     publishedBy?: string;
@@ -85,7 +88,8 @@ export type PollVote = TableKeys & {
 };
 
 /** Sonuc kesri: tum payda ortak (bolumlerin arsa payi paydalarinin EKOK'u). */
-export type Fraction = { numerator: number; denominator: number };
+/** BigInt metni: paydalar cok farkli olsa da tasma olmaz. */
+export type Fraction = { numerator: string; denominator: string };
 
 export type OptionTally = {
   optionId: string;

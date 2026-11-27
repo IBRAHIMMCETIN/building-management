@@ -1,8 +1,9 @@
 import { TransactionCanceledException } from '@aws-sdk/client-dynamodb';
 import type { TransactWriteCommandInput } from '@aws-sdk/lib-dynamodb';
-import { DataAccessError, getDynamo, getTenantItem, putNewItem, queryTenantAll, skKey, tenantPk, toDataAccessError } from '../../config/dynamodb.js';
-import { type AuditDraft, sendWithAudit } from '../audit/log.js';
+import { DataAccessError, getDynamo, getTenantItem, queryTenantAll, skKey, tenantPk, toDataAccessError } from '../../config/dynamodb.js';
+import { type AuditDraft, auditedPutNew, sendWithAudit } from '../audit/log.js';
 import type { TableKeys } from '../core/types.js';
+import type { RollChunk } from '../polls/rollSnapshot.js';
 import type { Assembly, AssemblyAttendance } from './types.js';
 
 export const assemblyKeys = {
@@ -13,9 +14,13 @@ export const assemblyKeys = {
 export type AssemblyRepository = {
   get(apartmentId: string, assemblyId: string): Promise<Assembly | undefined>;
   list(apartmentId: string): Promise<Assembly[]>;
-  create(a: Assembly): Promise<void>;
-  /** Surum kosullu; `audit` ayni atomik yazimda. Cakismada `DataAccessError('conflict')`. */
-  update(a: Assembly, expectedVersion: number, audit?: AuditDraft): Promise<void>;
+  /** Yeni toplanti + denetim kaydi (atomik). */
+  create(a: Assembly, audit: AuditDraft): Promise<void>;
+  /**
+   * Surum kosullu; `audit` ve `roll` (dondurulan oy listesi kovalari, `attribute_not_exists`) ayni
+   * atomik yazimda. Cakismada `DataAccessError('conflict')`.
+   */
+  update(a: Assembly, expectedVersion: number, audit?: AuditDraft, roll?: RollChunk[]): Promise<void>;
   listAttendance(apartmentId: string, assemblyId: string): Promise<AssemblyAttendance[]>;
   getAttendance(apartmentId: string, assemblyId: string, unitId: string): Promise<AssemblyAttendance | undefined>;
   /**
@@ -41,11 +46,11 @@ export function createAssemblyRepository(): AssemblyRepository {
       const items = await queryTenantAll<Assembly>(apartmentId, 'ASSEMBLY#', { ConsistentRead: true });
       return items.filter((a) => a.entityType === 'ASSEMBLY' && a.apartmentId === apartmentId);
     },
-    async create(a) {
+    async create(a, audit) {
       assertKeys(a, assemblyKeys.assembly(a.apartmentId, a.assemblyId));
-      await putNewItem(a);
+      await auditedPutNew(a, audit);
     },
-    async update(a, expectedVersion, audit) {
+    async update(a, expectedVersion, audit, roll = []) {
       assertKeys(a, assemblyKeys.assembly(a.apartmentId, a.assemblyId));
       const { client, tableName } = getDynamo();
       const items: TransactItem[] = [
@@ -58,6 +63,10 @@ export function createAssemblyRepository(): AssemblyRepository {
             ExpressionAttributeValues: { ':expected': expectedVersion },
           },
         },
+        ...roll.map((chunk): TransactItem => {
+          if (chunk.apartmentId !== a.apartmentId || chunk.ownerId !== a.assemblyId) throw new Error('Oy listesi kovasi toplantiya ait degil');
+          return { Put: { TableName: tableName, Item: chunk, ConditionExpression: 'attribute_not_exists(PK)' } };
+        }),
       ];
       try {
         await sendWithAudit(client, items, audit);

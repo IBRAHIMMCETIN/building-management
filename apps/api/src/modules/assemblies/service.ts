@@ -3,30 +3,33 @@ import { DataAccessError } from '../../config/dynamodb.js';
 import type { AuditDraft } from '../audit/log.js';
 import { type CoreRepository, coreRepository } from '../core/repository.js';
 import type { IsoDateTime } from '../core/types.js';
-import { type Obj, ValidationError, asObject, assertId, optBool, optString, reqEnum, reqInt, reqString } from '../core/validation.js';
+import { type Obj, ValidationError, asObject, assertId, optString, reqEnum, reqInt, reqString } from '../core/validation.js';
 import { DocumentError } from '../documents/errors.js';
 import { assemblySheetKey, contentDisposition } from '../documents/keys.js';
 import { renderReportPdf } from '../documents/reportPdf.js';
 import { type DocumentStore, URL_TTL_SECONDS, createDocumentStoreFromEnv } from '../documents/store.js';
 import { type MembershipRepository, membershipRepository } from '../memberships/repository.js';
 import { formatDate, formatDateTime } from '../notifications/templates.js';
-import { type VotingRollItem, buildVotingRoll } from '../ownership/register.js';
+import { addDays, buildVotingRoll } from '../ownership/register.js';
 import { type OwnershipRepository, ownershipRepository } from '../ownership/repository.js';
 import { PollError } from '../polls/errors.js';
 import { istanbulDate } from '../polls/results.js';
+import { type RollEntry, type RollMeta, type RollSnapshotStore, buildSnapshot, rollSnapshotStore } from '../polls/rollSnapshot.js';
 import { type PersonRepository, personRepository } from '../residents/repository.js';
-import { type Quorum, assemblyQuorum, decide } from './quorum.js';
+import { type ProxyRef, type Quorum, assemblyQuorum, decide, proxyViolation } from './quorum.js';
 import { type AssemblyRepository, assemblyKeys, assemblyRepository } from './repository.js';
-import { ASSEMBLY_KINDS, ATTENDANCE_MODES, type AgendaItem, type Assembly, type AssemblyAttendance, MAX_AGENDA_ITEMS } from './types.js';
+import { ASSEMBLY_KINDS, ATTENDANCE_MODES, type AgendaItem, type Assembly, type AssemblyAttendance, MAX_AGENDA_ITEMS, type QuorumRecord } from './types.js';
 
 /**
  * Y1-3 - Kat malikleri kurulu (genel kurul) hazirligi: toplanti kaydi (olagan / olaganustu, tarih,
- * yer veya cevrim ici baglanti, gundem), oy listesinden hazirun cetveli (PDF), katilim girisi
- * (asaleten / vekaleten), KMK m.30 yeter sayi kontrolu ve gundem maddesi basina sayim.
- *  - Oy listesi toplanti gunu (Europe/Istanbul) icin mulkiyet modulunden (`buildVotingRoll`).
- *  - Sayim yalnizca toplanti yeter sayisi saglandiysa (ikinci toplantida aranmaz) kaydedilir;
- *    karar katilanlarin sayi cogunluguyla. Sayim ve katilim denetim zincirine yazilir.
- *  - Silme yok: iptal `cancelled`, katilim `absent` ile geri alinir.
+ * yer veya cevrim ici baglanti, gundem), dondurulmus oy listesinden hazirun cetveli (PDF), katilim
+ * girisi (asaleten / vekaleten), KMK m.30 yeter sayi, m.31 oy ve vekalet sinirlari, gundem sayimi.
+ *  - Oy listesi toplanti gunu icin mulkiyet modulunden; ilk katilim, yeter sayi kaydi, sayim veya
+ *    hazirun isteginde DONDURULUR. Yeter sayi, sayim ve hazirun yalnizca dondurulmus listeden.
+ *  - Ikinci toplanti, yeter sayisinin saglanamadigi tutanaga gecmis ilk toplantiya baglanir ve ondan
+ *    en gec 15 gun sonradir; yeter sayi aranmaz, karar katilanlarin oy cogunluguyla.
+ *  - Olusturma, duzenleme, iptal, oy listesinin dondurulmasi, katilim, yeter sayi ve sayim denetim
+ *    zincirine yazilir (ad bilgisi olmadan). Silme yok.
  */
 
 /** Hata kodlari anket / oylama ile ortak (Y1). */
@@ -35,6 +38,8 @@ export class AssemblyError extends PollError {
 }
 
 export const KIND_LABELS = { ordinary: 'Olağan', extraordinary: 'Olağanüstü' } as const;
+/** KMK m.30: ikinci toplanti ilk toplantidan en gec bu kadar gun sonra. */
+export const SECOND_MEETING_MAX_DAYS = 15;
 
 export type AssemblyContext = { apartmentId: string; userId: string };
 
@@ -44,6 +49,7 @@ export type AssemblyServiceDeps = {
   ownership: Pick<OwnershipRepository, 'listHeads' | 'listRecords'>;
   memberships: Pick<MembershipRepository, 'list'>;
   people: Pick<PersonRepository, 'list'>;
+  rolls: RollSnapshotStore;
   store: DocumentStore | undefined;
   now: () => Date;
   newId: () => string;
@@ -57,7 +63,7 @@ export type AssemblyUnitRow = {
   number: string;
   landShare?: { numerator: number; denominator: number };
   owners: { userId: string; name?: string; share?: { numerator: number; denominator: number } }[];
-  attendance?: Pick<AssemblyAttendance, 'mode' | 'attendeeName' | 'proxyName' | 'recordedAt' | 'version'>;
+  attendance?: { mode: AssemblyAttendance['mode']; attendee?: { userId: string; name?: string }; proxy?: ProxyRef; recordedAt: IsoDateTime; version: number };
   warnings: string[];
 };
 
@@ -96,7 +102,7 @@ function parseUrl(o: Obj): string | undefined {
   return url.toString();
 }
 
-const shareText = (s: { numerator: number; denominator: number }) => `${s.numerator}/${s.denominator}`;
+const shareText = (s: { numerator: number | string; denominator: number | string }) => `${s.numerator}/${s.denominator}`;
 
 export function createAssemblyService(overrides: Partial<AssemblyServiceDeps> = {}) {
   const deps: AssemblyServiceDeps = {
@@ -105,6 +111,7 @@ export function createAssemblyService(overrides: Partial<AssemblyServiceDeps> = 
     ownership: ownershipRepository,
     memberships: membershipRepository,
     people: personRepository,
+    rolls: rollSnapshotStore,
     store: 'store' in overrides ? overrides.store : createDocumentStoreFromEnv(),
     now: () => new Date(),
     newId: () => randomUUID(),
@@ -151,47 +158,110 @@ export function createAssemblyService(overrides: Partial<AssemblyServiceDeps> = 
     details,
   });
 
-  function meetingFields(o: Obj, current?: Assembly) {
+  const meetingDetails = (a: Assembly) => ({
+    kind: a.kind,
+    scheduledAt: a.scheduledAt,
+    secondMeeting: a.secondMeeting,
+    ...(a.firstMeetingId ? { firstMeetingId: a.firstMeetingId } : {}),
+    agendaItems: a.agenda.length,
+  });
+
+  /** Ikinci toplanti: ilk toplanti ayni apartmanda, yeter sayisizligi tutanakta, en gec 15 gun once. */
+  async function assertFirstMeeting(ctx: AssemblyContext, firstMeetingId: string, scheduledAt: IsoDateTime, selfId?: string): Promise<void> {
+    assertId(firstMeetingId, 'firstMeetingId');
+    if (firstMeetingId === selfId) throw new ValidationError('Toplantı kendisinin ikinci toplantısı olamaz', 'firstMeetingId');
+    const first = await repo.get(ctx.apartmentId, firstMeetingId);
+    if (!first || first.apartmentId !== ctx.apartmentId) throw new AssemblyError('not_found', 'İlk toplantı bulunamadı');
+    if (first.status !== 'planned') throw new AssemblyError('unprocessable', 'İptal edilen toplantıya ikinci toplantı bağlanamaz');
+    if (first.secondMeeting) throw new AssemblyError('unprocessable', 'İkinci toplantıya yeniden ikinci toplantı bağlanamaz');
+    if (first.quorumRecord?.met !== false) {
+      throw new AssemblyError('unprocessable', 'İlk toplantıda yeter sayının sağlanamadığı tutanağa geçirilmemiş; önce ilk toplantının yeter sayısını kaydedin');
+    }
+    if (scheduledAt <= first.scheduledAt) throw new ValidationError('İkinci toplantı ilk toplantıdan sonra olmalıdır', 'scheduledAt');
+    if (istanbulDate(scheduledAt) > addDays(istanbulDate(first.scheduledAt), SECOND_MEETING_MAX_DAYS)) {
+      throw new ValidationError(`İkinci toplantı ilk toplantıdan en geç ${SECOND_MEETING_MAX_DAYS} gün sonra yapılmalıdır (KMK m.30)`, 'scheduledAt');
+    }
+  }
+
+  async function meetingFields(ctx: AssemblyContext, o: Obj, current?: Assembly) {
     const kind = o.kind === undefined && current ? current.kind : reqEnum(o, 'kind', ASSEMBLY_KINDS);
     const scheduledAt = o.scheduledAt === undefined && current ? current.scheduledAt : parseDateTime(o, 'scheduledAt');
     const location = o.location === undefined ? current?.location : o.location === null ? undefined : optString(o, 'location', 300);
     const onlineUrl = o.onlineUrl === undefined ? current?.onlineUrl : o.onlineUrl === null ? undefined : parseUrl(o);
     if (!location && !onlineUrl) throw new ValidationError('Toplantı yeri veya çevrim içi bağlantı girilmeli', 'location');
-    const secondMeeting = optBool(o, 'secondMeeting') ?? current?.secondMeeting ?? false;
+    if (o.secondMeeting !== undefined) throw new ValidationError('İkinci toplantı için ilk toplantıyı seçin (firstMeetingId)', 'firstMeetingId');
+    const firstMeetingId = o.firstMeetingId === undefined ? current?.firstMeetingId : o.firstMeetingId === null ? undefined : reqString(o, 'firstMeetingId', 64);
+    if (firstMeetingId) await assertFirstMeeting(ctx, firstMeetingId, scheduledAt, current?.assemblyId);
     const agenda = o.agenda === undefined && current ? current.agenda : parseAgenda(o.agenda);
-    return { kind, scheduledAt, rollDate: istanbulDate(scheduledAt), secondMeeting, agenda, ...(location ? { location } : {}), ...(onlineUrl ? { onlineUrl } : {}) };
+    return {
+      kind,
+      scheduledAt,
+      rollDate: istanbulDate(scheduledAt),
+      secondMeeting: Boolean(firstMeetingId),
+      ...(firstMeetingId ? { firstMeetingId } : {}),
+      agenda,
+      ...(location ? { location } : {}),
+      ...(onlineUrl ? { onlineUrl } : {}),
+    };
   }
 
   // -------------------------------------------------------------------------
-  // Oy listesi ve katilim
+  // Oy listesi: canli onizleme ve dondurma
   // -------------------------------------------------------------------------
 
-  async function loadRoll(ctx: AssemblyContext, a: Assembly): Promise<VotingRollItem[]> {
+  async function liveSnapshot(ctx: AssemblyContext, a: Assembly, frozenAt: IsoDateTime) {
     const [units, heads, records, members] = await Promise.all([
       deps.core.listUnits(ctx.apartmentId),
       deps.ownership.listHeads(ctx.apartmentId),
       deps.ownership.listRecords(ctx.apartmentId),
       deps.memberships.list(ctx.apartmentId, {}),
     ]);
-    return buildVotingRoll({
+    const roll = buildVotingRoll({
       units: units.filter((u) => u.siteId === ctx.apartmentId),
       heads: heads.filter((h) => h.apartmentId === ctx.apartmentId),
       records: records.filter((r) => r.apartmentId === ctx.apartmentId),
       memberships: members.filter((m) => m.apartmentId === ctx.apartmentId),
       day: a.rollDate,
     }).items;
+    return buildSnapshot({
+      apartmentId: ctx.apartmentId,
+      ownerType: 'assembly',
+      ownerId: a.assemblyId,
+      rollDate: a.rollDate,
+      frozenAt,
+      roll,
+      voters: (item) => item.owners.map((o) => ({ userId: o.userId, relation: 'owner' as const })),
+    });
   }
 
-  async function state(ctx: AssemblyContext, a: Assembly) {
-    const [roll, attendance] = await Promise.all([loadRoll(ctx, a), repo.listAttendance(ctx.apartmentId, a.assemblyId)]);
-    return { roll, attendance, quorum: assemblyQuorum({ roll, attendance, secondMeeting: a.secondMeeting }) };
+  /** Oy listesi dondurulmamissa toplanti kaydiyla ayni atomik yazimda dondurur (denetimli). */
+  async function ensureRoll(ctx: AssemblyContext, a: Assembly): Promise<Assembly & { roll: RollMeta }> {
+    if (a.roll) return a as Assembly & { roll: RollMeta };
+    const now = stamp();
+    const snapshot = await liveSnapshot(ctx, a, now);
+    const next: Assembly = { ...a, roll: snapshot.meta, updatedAt: now, updatedBy: ctx.userId, version: a.version + 1 };
+    try {
+      await repo.update(next, a.version, audit(ctx, next, 'assembly.roll_freeze', { rollDate: a.rollDate, units: snapshot.meta.units }), snapshot.chunks);
+      return next as Assembly & { roll: RollMeta };
+    } catch (err) {
+      if (!(err instanceof DataAccessError && err.code === 'conflict')) throw err;
+      // Eszamanli ilk katilim: digeri dondurduysa onunkini kullan.
+      const fresh = await requireAssembly(ctx, a.assemblyId);
+      if (fresh.roll) return fresh as Assembly & { roll: RollMeta };
+      throw new AssemblyError('conflict', 'Kayıt başka bir işlemle değiştirildi (sürüm uyuşmazlığı)');
+    }
   }
 
-  async function rows(ctx: AssemblyContext, roll: VotingRollItem[], attendance: AssemblyAttendance[]): Promise<AssemblyUnitRow[]> {
+  async function frozenState(ctx: AssemblyContext, a: Assembly & { roll: RollMeta }) {
+    const [entries, attendance] = await Promise.all([deps.rolls.entries(ctx.apartmentId, 'assembly', a.assemblyId), repo.listAttendance(ctx.apartmentId, a.assemblyId)]);
+    return { entries, attendance, quorum: assemblyQuorum({ entries, meta: a.roll, attendance, secondMeeting: a.secondMeeting }) };
+  }
+
+  async function rows(ctx: AssemblyContext, entries: readonly RollEntry[], attendance: readonly AssemblyAttendance[]): Promise<AssemblyUnitRow[]> {
     const people = await deps.people.list(ctx.apartmentId);
     const nameOf = new Map(people.filter((p) => p.apartmentId === ctx.apartmentId).map((p) => [p.userId, p.fullName]));
     const attOf = new Map(attendance.map((x) => [x.unitId, x]));
-    return roll.map((r) => {
+    return entries.map((r) => {
       const att = attOf.get(r.unitId);
       return {
         unitId: r.unitId,
@@ -200,9 +270,16 @@ export function createAssemblyService(overrides: Partial<AssemblyServiceDeps> = 
         ...(r.landShare ? { landShare: r.landShare } : {}),
         owners: r.owners.map((o) => ({ userId: o.userId, ...(nameOf.get(o.userId) ? { name: nameOf.get(o.userId) } : {}), ...(o.share && r.owners.length > 1 ? { share: o.share } : {}) })),
         ...(att
-          ? { attendance: { mode: att.mode, recordedAt: att.recordedAt, version: att.version, ...(att.attendeeName ? { attendeeName: att.attendeeName } : {}), ...(att.proxyName ? { proxyName: att.proxyName } : {}) } }
+          ? {
+              attendance: {
+                mode: att.mode,
+                recordedAt: att.recordedAt,
+                version: att.version,
+                ...(att.attendee ? { attendee: { userId: att.attendee.userId, ...(nameOf.get(att.attendee.userId) ? { name: nameOf.get(att.attendee.userId) } : {}) } } : {}),
+                ...(att.proxy ? { proxy: att.proxy } : {}),
+              },
+            }
           : {}),
-        // Kurulda paydaslar temsilci secer (KMK m.31); oy listesinin uyarilari aynen gosterilir.
         warnings: r.warnings,
       };
     });
@@ -214,6 +291,7 @@ export function createAssemblyService(overrides: Partial<AssemblyServiceDeps> = 
 
   async function create(ctx: AssemblyContext, body: unknown): Promise<AssemblyView> {
     const o = asObject(body);
+    const fields = await meetingFields(ctx, o);
     const ts = stamp();
     const assemblyId = deps.newId();
     const a: Assembly = {
@@ -221,7 +299,7 @@ export function createAssemblyService(overrides: Partial<AssemblyServiceDeps> = 
       entityType: 'ASSEMBLY',
       assemblyId,
       apartmentId: ctx.apartmentId,
-      ...meetingFields(o),
+      ...fields,
       status: 'planned',
       createdAt: ts,
       createdBy: ctx.userId,
@@ -229,7 +307,7 @@ export function createAssemblyService(overrides: Partial<AssemblyServiceDeps> = 
       updatedBy: ctx.userId,
       version: 1,
     };
-    await repo.create(a);
+    await repo.create(a, audit(ctx, a, 'assembly.create', meetingDetails(a)));
     return view(a);
   }
 
@@ -240,10 +318,16 @@ export function createAssemblyService(overrides: Partial<AssemblyServiceDeps> = 
       .map(view);
   }
 
-  async function detail(ctx: AssemblyContext, id: string): Promise<{ assembly: AssemblyView; quorum: Quorum; units: AssemblyUnitRow[] }> {
+  /** Ayrinti: dondurulmussa anlik goruntuden; degilse canli onizleme (`rollFrozen: false`, katilim yok). */
+  async function detail(ctx: AssemblyContext, id: string): Promise<{ assembly: AssemblyView; rollFrozen: boolean; quorum: Quorum; units: AssemblyUnitRow[] }> {
     const a = await requireAssembly(ctx, id);
-    const s = await state(ctx, a);
-    return { assembly: view(a), quorum: s.quorum, units: await rows(ctx, s.roll, s.attendance) };
+    if (a.roll) {
+      const s = await frozenState(ctx, a as Assembly & { roll: RollMeta });
+      return { assembly: view(a), rollFrozen: true, quorum: s.quorum, units: await rows(ctx, s.entries, s.attendance) };
+    }
+    const preview = await liveSnapshot(ctx, a, stamp());
+    const quorum = assemblyQuorum({ entries: preview.entries, meta: preview.meta, attendance: [], secondMeeting: a.secondMeeting });
+    return { assembly: view(a), rollFrozen: false, quorum, units: await rows(ctx, preview.entries, []) };
   }
 
   async function update(ctx: AssemblyContext, id: string, body: unknown): Promise<AssemblyView> {
@@ -252,10 +336,10 @@ export function createAssemblyService(overrides: Partial<AssemblyServiceDeps> = 
     const current = await requireAssembly(ctx, id);
     assertVersion(current, version);
     requirePlanned(current);
-    if (current.agenda.some((i) => i.tally)) throw new AssemblyError('conflict', 'Sayım kaydedilen toplantının bilgileri ve gündemi değiştirilemez');
-    const { location: _l, onlineUrl: _u, ...rest } = current;
-    const next: Assembly = { ...rest, ...meetingFields(o, current), updatedAt: stamp(), updatedBy: ctx.userId, version: current.version + 1 };
-    return save(next, current.version);
+    if (current.roll) throw new AssemblyError('conflict', 'Oy listesi dondurulduktan sonra toplantı bilgileri ve gündem değiştirilemez');
+    const { location: _l, onlineUrl: _u, firstMeetingId: _f, ...rest } = current;
+    const next: Assembly = { ...rest, ...(await meetingFields(ctx, o, current)), updatedAt: stamp(), updatedBy: ctx.userId, version: current.version + 1 };
+    return save(next, current.version, audit(ctx, next, 'assembly.update', meetingDetails(next)));
   }
 
   async function cancel(ctx: AssemblyContext, id: string, body: unknown): Promise<AssemblyView> {
@@ -267,21 +351,56 @@ export function createAssemblyService(overrides: Partial<AssemblyServiceDeps> = 
     requirePlanned(current);
     const now = stamp();
     const next: Assembly = { ...current, status: 'cancelled', cancelledAt: now, cancelReason: reason, updatedAt: now, updatedBy: ctx.userId, version: current.version + 1 };
-    return save(next, current.version, audit(ctx, next, 'assembly.cancel', { kind: next.kind, scheduledAt: next.scheduledAt }, reason));
+    return save(next, current.version, audit(ctx, next, 'assembly.cancel', meetingDetails(next), reason));
   }
+
+  // -------------------------------------------------------------------------
+  // Katilim, yeter sayi, sayim
+  // -------------------------------------------------------------------------
 
   async function setAttendance(ctx: AssemblyContext, id: string, unitId: string, body: unknown) {
     const o = asObject(body);
     assertId(unitId, 'unitId');
     const mode = reqEnum(o, 'mode', ATTENDANCE_MODES);
-    const attendeeName = mode === 'absent' ? undefined : optString(o, 'attendeeName', 150);
-    const proxyName = mode === 'proxy' ? reqString(o, 'proxyName', 150) : undefined;
-    const a = await requireAssembly(ctx, id);
-    requirePlanned(a);
-    const roll = await loadRoll(ctx, a);
-    if (!roll.some((r) => r.unitId === unitId)) throw new AssemblyError('not_found', 'Bölüm oy listesinde yok');
-    const existing = await repo.getAttendance(ctx.apartmentId, a.assemblyId, unitId);
-    if (existing && existing.mode === mode && existing.attendeeName === attendeeName && existing.proxyName === proxyName) return { attendance: existing };
+    const loaded = await requireAssembly(ctx, id);
+    requirePlanned(loaded);
+    const a = await ensureRoll(ctx, loaded);
+    const entry = await deps.rolls.entry(ctx.apartmentId, 'assembly', a.assemblyId, a.roll, unitId);
+    if (!entry) throw new AssemblyError('not_found', 'Bölüm dondurulmuş oy listesinde yok');
+
+    let attendee: AssemblyAttendance['attendee'];
+    let proxy: ProxyRef | undefined;
+    if (mode === 'present' && o.attendeeUserId !== undefined && o.attendeeUserId !== null) {
+      const userId = reqString(o, 'attendeeUserId', 64);
+      if (!entry.owners.some((x) => x.userId === userId)) throw new ValidationError('Katılan kişi bu bölümün malikleri arasında değil', 'attendeeUserId');
+      attendee = { userId };
+    }
+    if (mode === 'proxy') {
+      if (o.proxyUserId !== undefined && o.proxyUserId !== null) {
+        const userId = reqString(o, 'proxyUserId', 64);
+        if (entry.owners.some((x) => x.userId === userId)) throw new ValidationError('Bölüm maliki kendi bölümünde vekil olamaz; asaleten katılım seçin', 'proxyUserId');
+        const person = (await deps.people.list(ctx.apartmentId)).find((p) => p.apartmentId === ctx.apartmentId && p.userId === userId);
+        if (!person) throw new ValidationError('Vekil apartmanın kişi kayıtlarında bulunamadı', 'proxyUserId');
+        proxy = { userId, name: person.fullName };
+      } else {
+        proxy = { name: reqString(o, 'proxyName', 150, 3) };
+      }
+    }
+
+    const attendance = await repo.listAttendance(ctx.apartmentId, a.assemblyId);
+    const existing = attendance.find((x) => x.unitId === unitId);
+    if (proxy) {
+      const after = [...attendance.filter((x) => x.unitId !== unitId), { unitId, mode, proxy }];
+      const entries = await deps.rolls.entries(ctx.apartmentId, 'assembly', a.assemblyId);
+      const violation = proxyViolation(entries, after, proxy);
+      if (violation) throw new AssemblyError('unprocessable', violation);
+    }
+    const same =
+      existing && existing.mode === mode && existing.attendee?.userId === attendee?.userId && JSON.stringify(existing.proxy ?? null) === JSON.stringify(proxy ?? null);
+    if (same) {
+      const { PK: _pk, SK: _sk, ...rest } = existing;
+      return { attendance: rest };
+    }
     const att: AssemblyAttendance = {
       ...assemblyKeys.attendance(ctx.apartmentId, a.assemblyId, unitId),
       entityType: 'ASSEMBLY_ATTENDANCE',
@@ -289,15 +408,15 @@ export function createAssemblyService(overrides: Partial<AssemblyServiceDeps> = 
       assemblyId: a.assemblyId,
       unitId,
       mode,
-      ...(attendeeName ? { attendeeName } : {}),
-      ...(proxyName ? { proxyName } : {}),
+      ...(attendee ? { attendee } : {}),
+      ...(proxy ? { proxy } : {}),
       recordedAt: stamp(),
       recordedBy: ctx.userId,
       version: (existing?.version ?? 0) + 1,
     };
     try {
-      // Ad / vekil adi kisisel veri: denetim ayrintisina yazilmaz.
-      await repo.putAttendance(att, existing?.version ?? 0, audit(ctx, a, 'assembly.attendance', { unitId, mode }));
+      // Ad / vekil adi kisisel veri: denetim ayrintisina yazilmaz (yalnizca vekilin uye olup olmadigi).
+      await repo.putAttendance(att, existing?.version ?? 0, audit(ctx, a, 'assembly.attendance', { unitId, mode, ...(proxy ? { proxyIsMember: Boolean(proxy.userId) } : {}) }));
     } catch (err) {
       if (err instanceof DataAccessError && err.code === 'conflict') throw new AssemblyError('conflict', 'Katılım bu arada değişti veya toplantı iptal edildi; sayfayı yenileyin');
       throw err;
@@ -306,51 +425,84 @@ export function createAssemblyService(overrides: Partial<AssemblyServiceDeps> = 
     return { attendance: rest };
   }
 
+  const toRecord = (ctx: AssemblyContext, q: Quorum): QuorumRecord => ({
+    met: q.met,
+    presentUnits: q.presentUnits,
+    totalUnits: q.totalUnits,
+    presentVotes: q.presentVotes,
+    totalVotes: q.totalVotes,
+    unitsMajority: q.unitsMajority,
+    landShareMajority: q.landShareMajority,
+    landShareComputable: q.landShareComputable,
+    recordedAt: stamp(),
+    recordedBy: ctx.userId,
+  });
+
+  /** Toplanti yeter sayisini tutanaga gecirir (saglanamadiysa ikinci toplantinin dayanagi). */
+  async function recordQuorum(ctx: AssemblyContext, id: string, body: unknown): Promise<{ assembly: AssemblyView; quorum: Quorum }> {
+    const o = asObject(body);
+    const version = reqInt(o, 'version', 1, Number.MAX_SAFE_INTEGER);
+    const loaded = await requireAssembly(ctx, id);
+    assertVersion(loaded, version);
+    requirePlanned(loaded);
+    if (loaded.agenda.some((i) => i.tally)) throw new AssemblyError('conflict', 'Sayım kaydedilmiş toplantının yeter sayısı yeniden kaydedilemez');
+    const a = await ensureRoll(ctx, loaded);
+    const { quorum } = await frozenState(ctx, a);
+    const record = toRecord(ctx, quorum);
+    const next: Assembly = { ...a, quorumRecord: record, updatedAt: record.recordedAt, updatedBy: ctx.userId, version: a.version + 1 };
+    const saved = await save(next, a.version, audit(ctx, next, 'assembly.quorum', { ...record, recordedAt: undefined, recordedBy: undefined, reasons: quorum.reasons }));
+    return { assembly: saved, quorum };
+  }
+
   async function recordTally(ctx: AssemblyContext, id: string, itemId: string, body: unknown): Promise<{ assembly: AssemblyView; quorum: Quorum }> {
     const o = asObject(body);
     const version = reqInt(o, 'version', 1, Number.MAX_SAFE_INTEGER);
     const yes = reqInt(o, 'yes', 0, 100_000);
     const no = reqInt(o, 'no', 0, 100_000);
     const abstain = reqInt(o, 'abstain', 0, 100_000);
-    const a = await requireAssembly(ctx, id);
-    assertVersion(a, version);
-    requirePlanned(a);
-    const item = a.agenda.find((i) => i.itemId === itemId);
+    const loaded = await requireAssembly(ctx, id);
+    assertVersion(loaded, version);
+    requirePlanned(loaded);
+    const item = loaded.agenda.find((i) => i.itemId === itemId);
     if (!item) throw new AssemblyError('not_found', 'Gündem maddesi bulunamadı');
-    const { quorum } = await state(ctx, a);
+    if (loaded.quorumRecord?.met === false) {
+      throw new AssemblyError('conflict', 'Bu toplantıda yeter sayının sağlanamadığı tutanağa geçti; karar için ikinci toplantı oluşturun');
+    }
+    const a = await ensureRoll(ctx, loaded);
+    const { quorum } = await frozenState(ctx, a);
     if (!quorum.met) {
-      throw new AssemblyError(
-        'unprocessable',
-        `Toplantı yeter sayısı sağlanmadı (katılan ${quorum.presentUnits}/${quorum.totalUnits} bölüm; sayı ve arsa payı çoğunluğu gerekli). İkinci toplantıda yeter sayı aranmaz.`,
-      );
+      throw new AssemblyError('unprocessable', `Toplantı yeter sayısı sağlanmadı: ${quorum.reasons.join('; ')}. İkinci toplantıda yeter sayı aranmaz.`);
     }
-    if (yes + no + abstain > quorum.presentUnits) {
-      throw new ValidationError(`Kabul + ret + çekimser toplamı katılan bölüm sayısını (${quorum.presentUnits}) aşamaz`, 'yes');
+    if (yes + no + abstain > quorum.presentVotes) {
+      throw new ValidationError(`Kabul + ret + çekimser toplamı katılan oy sayısını (${quorum.presentVotes}) aşamaz`, 'yes');
     }
-    const decision = decide(yes, quorum.presentUnits);
-    const tally = { yes, no, abstain, presentUnits: quorum.presentUnits, decision, recordedAt: stamp(), recordedBy: ctx.userId };
+    const decision = decide(yes, quorum.presentVotes);
+    const tally = { yes, no, abstain, presentVotes: quorum.presentVotes, decision, recordedAt: stamp(), recordedBy: ctx.userId };
     const next: Assembly = {
       ...a,
+      ...(a.quorumRecord ? {} : { quorumRecord: toRecord(ctx, quorum) }),
       agenda: a.agenda.map((i) => (i.itemId === itemId ? { ...i, tally } : i)),
       updatedAt: tally.recordedAt,
       updatedBy: ctx.userId,
       version: a.version + 1,
     };
-    const saved = await save(next, a.version, audit(ctx, next, 'assembly.tally', { itemId, yes, no, abstain, presentUnits: quorum.presentUnits, decision, corrected: Boolean(item.tally) }));
+    const saved = await save(next, a.version, audit(ctx, next, 'assembly.tally', { itemId, yes, no, abstain, presentVotes: quorum.presentVotes, decision, corrected: Boolean(item.tally) }));
     return { assembly: saved, quorum };
   }
 
   // -------------------------------------------------------------------------
-  // Hazirun cetveli (PDF)
+  // Hazirun cetveli (PDF) - dondurulmus oy listesinden
   // -------------------------------------------------------------------------
 
   async function attendanceSheet(ctx: AssemblyContext, id: string) {
     if (!deps.store) throw new DocumentError('unavailable', 'Belge deposu yapılandırılmamış (DOCUMENTS_BUCKET)');
-    const a = await requireAssembly(ctx, id);
-    const [s, site, blocks] = await Promise.all([state(ctx, a), deps.core.getSite(ctx.apartmentId), deps.core.listBlocks(ctx.apartmentId)]);
+    const loaded = await requireAssembly(ctx, id);
+    const a = loaded.status === 'planned' ? await ensureRoll(ctx, loaded) : loaded.roll ? (loaded as Assembly & { roll: RollMeta }) : undefined;
+    if (!a) throw new AssemblyError('conflict', 'İptal edilen ve oy listesi dondurulmamış toplantının hazirun cetveli üretilemez');
+    const [s, site, blocks] = await Promise.all([frozenState(ctx, a), deps.core.getSite(ctx.apartmentId), deps.core.listBlocks(ctx.apartmentId)]);
     const blockName = new Map(blocks.map((b) => [b.blockId, b.name]));
-    const multiBlock = new Set(s.roll.map((r) => r.blockId)).size > 1;
-    const units = await rows(ctx, s.roll, s.attendance);
+    const multiBlock = new Set(s.entries.map((r) => r.blockId)).size > 1;
+    const units = await rows(ctx, s.entries, s.attendance);
     const apartmentName = site?.name ?? 'Apartman';
     const q = s.quorum;
     const place = [a.location, a.onlineUrl ? `Çevrim içi: ${a.onlineUrl}` : undefined].filter(Boolean).join(' · ');
@@ -379,26 +531,27 @@ export function createAssemblyService(overrides: Partial<AssemblyServiceDeps> = 
                 u.owners.length ? u.owners.map((o) => `${o.name ?? 'Kayıtlı kişi'}${o.share ? ` (${shareText(o.share)})` : ''}`).join(', ') : '— (malik kaydı yok)',
                 u.landShare ? shareText(u.landShare) : '—',
                 u.attendance ? modeText[u.attendance.mode] : '',
-                u.attendance?.proxyName ?? '',
+                u.attendance?.proxy?.name ?? '',
                 '',
               ],
             })),
             {
               bold: true,
               rule: true,
-              cells: ['', `${q.totalUnits} bölüm`, '', q.totalLandShare ? shareText(q.totalLandShare) : '—', `${q.presentUnits} katılan`, `${q.proxyUnits} vekaleten`, ''],
+              cells: ['', `${q.totalUnits} bölüm`, `${q.totalVotes} oy`, q.totalLandShare ? shareText(q.totalLandShare) : '—', `${q.presentVotes} katılan oy`, `${q.proxyUnits} vekaleten`, ''],
             },
           ],
         },
       ],
       notes: [
-        'Toplantı yeter sayısı (KMK m.30): kat maliklerinin sayı ve arsa payı çoğunluğu (her ikisinde yarıdan fazlası); ikinci toplantıda aranmaz. Karar yeter sayısı: katılanların sayı çoğunluğu.',
-        `Kayıtlı katılım: ${q.presentUnits}/${q.totalUnits} bölüm${q.presentLandShare ? ` · arsa payı ${shareText(q.presentLandShare)}` : ''} · yeter sayı ${q.met ? 'sağlandı' : 'sağlanmadı'}.`,
+        'Toplantı yeter sayısı (KMK m.30): kat maliklerinin sayı ve arsa payı çoğunluğu (her ikisinde yarıdan fazlası); ikinci toplantıda aranmaz. Karar yeter sayısı: katılanların oy çokluğu.',
+        'Oy (KMK m.31): her bağımsız bölüm bir oy; birden fazla bölümü olan malikin oyu toplam oyların üçte birini aşamaz. Vekil oyların %5\'inden fazlasını, 40 ve daha az bölümde ikiden fazla kat malikini temsil edemez.',
+        `Kayıtlı katılım: ${q.presentVotes}/${q.totalVotes} oy${q.presentLandShare ? ` · arsa payı ${shareText(q.presentLandShare)}` : ''} · yeter sayı ${q.met ? 'sağlandı' : 'sağlanmadı'}${q.reasons.length ? ` (${q.reasons.join('; ')})` : ''}.`,
         ...q.warnings,
         'Toplantı Başkanı: ..............................   Yazman: ..............................   Oy Toplayıcı: ..............................',
       ],
     };
-    const dataHash = createHash('sha256').update(JSON.stringify({ v: 1, apartmentName, assembly: view(a), sheet })).digest('hex');
+    const dataHash = createHash('sha256').update(JSON.stringify({ v: 2, apartmentName, assembly: view(a), sheet })).digest('hex');
     const key = assemblySheetKey(ctx.apartmentId, a.rollDate, a.assemblyId, dataHash);
     if (!(await deps.store.head(key))) {
       await deps.store.put(key, await renderReportPdf({ ...sheet, apartmentName, generatedAt: stamp(), dataHash }), 'application/pdf');
@@ -408,7 +561,7 @@ export function createAssemblyService(overrides: Partial<AssemblyServiceDeps> = 
     return { url, fileName, contentType: 'application/pdf', expiresAt: new Date(deps.now().getTime() + URL_TTL_SECONDS * 1000).toISOString() };
   }
 
-  return { create, list, detail, update, cancel, setAttendance, recordTally, attendanceSheet };
+  return { create, list, detail, update, cancel, setAttendance, recordQuorum, recordTally, attendanceSheet };
 }
 
 export type AssemblyService = ReturnType<typeof createAssemblyService>;
