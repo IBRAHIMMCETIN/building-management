@@ -20,6 +20,7 @@ import { createPortalService } from '../modules/portal/service.js';
 import { createOwnershipReader } from '../modules/ownership/reader.js';
 import { type MaintenanceService, createMaintenanceService } from '../modules/maintenance/service.js';
 import { type TicketService, createTicketService } from '../modules/tickets/service.js';
+import { type PollService, createPollService } from '../modules/polls/service.js';
 import type { SqsBatchResponse, SqsEvent } from './notification-worker.js';
 import { createDynamoBulkJobRepository } from '../modules/bulkjobs/repository.js';
 import { loadBulkJobQueueFromEnv } from '../modules/bulkjobs/queue.js';
@@ -146,6 +147,8 @@ export type SchedulerDeps = {
   /** O1-3: talep otomatik kapanisi + SLA listesi ve bakim gorevi uretimi / ozet kalemleri. */
   tickets: Pick<TicketService, 'runDaily'>;
   maintenance: Pick<MaintenanceService, 'generate' | 'digestItems'>;
+  /** Y1: suresi dolup hic oy almamis oylamalarin oy listesini sistem olarak dondurur (`maintenance_tasks`). */
+  polls: Pick<PollService, 'freezeEnded'>;
   /** null: online odeme kapali. Verilmezse ortam degiskenlerinden kurulur (ilk kullanimda). */
   payments: Pick<PaymentsService, 'reconcile' | 'reconcileRefunds'> | null;
   /** P4: platform transferi izleme (null: online odeme kapali). */
@@ -173,6 +176,7 @@ export function createSchedulerWorker(overrides: Partial<SchedulerDeps> = {}) {
     plans?: SchedulerDeps['plans'];
     tickets?: SchedulerDeps['tickets'];
     maintenance?: SchedulerDeps['maintenance'];
+    polls?: SchedulerDeps['polls'];
     payments?: SchedulerDeps['payments'];
     payouts?: SchedulerDeps['payouts'];
     invoices?: SchedulerDeps['invoices'];
@@ -205,6 +209,7 @@ export function createSchedulerWorker(overrides: Partial<SchedulerDeps> = {}) {
   const ticketService = () => createTicketService({ now, store: undefined });
   const tickets = () => (lazy.tickets ??= overrides.tickets ?? ticketService());
   const maintenance = () => (lazy.maintenance ??= overrides.maintenance ?? createMaintenanceService({ now, store: undefined, tickets: ticketService() }));
+  const polls = () => (lazy.polls ??= overrides.polls ?? createPollService({ now, portal: createPortalService({ now }) }));
   /** Odeme servisleri tek yapilandirmadan, ilk kullanimda kurulur. */
   function paymentServices() {
     if (lazy.payments !== undefined && lazy.payouts !== undefined && lazy.invoices !== undefined) return;
@@ -434,7 +439,9 @@ export function createSchedulerWorker(overrides: Partial<SchedulerDeps> = {}) {
 
       case 'maintenance_tasks': {
         const r = await maintenance().generate(apartmentId, day);
-        return { apartmentId, status: 'done', detail: { date: day, ...r } };
+        // Y1: bitmis ama hic oy almamis oylamalarin oy listesi (kesin sonucun paydasi) dondurulur.
+        const pollsFrozen = await polls().freezeEnded(apartmentId);
+        return { apartmentId, status: 'done', detail: { date: day, ...r, ...(pollsFrozen > 0 ? { pollsFrozen } : {}) } };
       }
 
       case 'ticket_maintenance': {

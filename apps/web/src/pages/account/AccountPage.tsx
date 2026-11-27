@@ -1,16 +1,15 @@
 import { useQuery } from '@tanstack/react-query';
-import { BellRing, ShieldCheck, UserRound } from 'lucide-react';
+import { ShieldCheck, UserRound } from 'lucide-react';
 import { useNavigate } from 'react-router';
 import { Alert, Badge, Button, Card, CardTitle, Skeleton } from '@/components/ui';
 import { useActiveApartmentName } from '@/hooks/useActiveContextLabel';
 import { useAuth } from '@/hooks/useAuth';
-import { useNotificationPreferences, useSaveNotificationPreferences } from '@/hooks/useTeam';
 import { errorMessage } from '@/lib/api/errors';
-import { ticketEmailsEnabled } from '@/lib/api/notificationPreferences';
 import { type MfaStatus, fetchMfaStatus } from '@/lib/api/mfa';
 import { MFA_SETUP_PATH } from '@/lib/auth/mfa';
 import { formatDateTime } from '@/lib/dates';
 import { ROLE_LABELS } from '@/types/roles';
+import { NotificationPreferencesCard } from './NotificationPreferencesCard';
 
 const MFA_STATUS_META: Record<MfaStatus['status'], { label: string; tone: 'success' | 'warning' | 'danger' | 'neutral' }> = {
   enabled: { label: 'Açık', tone: 'success' },
@@ -20,20 +19,17 @@ const MFA_STATUS_META: Record<MfaStatus['status'], { label: string; tone: 'succe
 };
 
 /**
- * Faz 1 - Hesabim: profil ve aktif baglam, e-posta bildirim tercihi
- * (`/api/me/notification-preferences`) ve iki adimli dogrulama durumu (`/api/me/mfa`).
+ * Faz 1 - Hesabim: profil ve aktif baglam, kategori bazli e-posta bildirim tercihleri
+ * (`NotificationPreferencesCard`, `/api/me/notification-preferences`) ve iki adimli dogrulama durumu (`/api/me/mfa`).
  * Yonetim paneli (/admin/account) ve sakin portali (/app/account) ayni ekrani kullanir.
  */
 export function AccountPage() {
   const { user } = useAuth();
   const apartmentName = useActiveApartmentName();
   const navigate = useNavigate();
-  const prefs = useNotificationPreferences();
-  const save = useSaveNotificationPreferences();
   const mfa = useQuery({ queryKey: ['me', 'mfa', user?.sub], queryFn: ({ signal }) => fetchMfaStatus(signal), enabled: !!user });
 
   if (!user) return null;
-  const emailEnabled = prefs.data?.email.enabled ?? true;
   const mfaMeta = mfa.data ? MFA_STATUS_META[mfa.data.status] : undefined;
 
   return (
@@ -56,52 +52,7 @@ export function AccountPage() {
         <p className="text-small text-muted">Ad ve e-posta değişikliği için apartman yönetiminize başvurun. Başka bir apartman/rol için üst menüdeki bağlam seçiciyi kullanın.</p>
       </Card>
 
-      <Card className="flex flex-col gap-3">
-        <CardTitle className="flex items-center gap-2">
-          <BellRing className="size-5 text-muted" aria-hidden="true" />
-          Bildirimler
-        </CardTitle>
-        {prefs.isPending && <Skeleton className="h-8" />}
-        {prefs.isError && <Alert tone="danger">{errorMessage(prefs.error)}</Alert>}
-        {prefs.data && (
-          <label className="flex items-start gap-3 text-small">
-            <input
-              type="checkbox"
-              className="mt-0.5"
-              checked={emailEnabled}
-              disabled={save.isPending}
-              onChange={(e) => save.mutate({ email: { enabled: e.target.checked } })}
-              aria-label="E-posta bildirimleri"
-            />
-            <span>
-              <span className="font-medium">E-posta bildirimleri</span>
-              <span className="block text-muted">Tahakkuk, tahsilat makbuzu, hatırlatma ve duyuru e-postaları. Güvenlik ve davet e-postaları her zaman gönderilir.</span>
-            </span>
-          </label>
-        )}
-        {prefs.data && (
-          <label className={`flex items-start gap-3 pl-6 text-small ${emailEnabled ? '' : 'opacity-60'}`}>
-            <input
-              type="checkbox"
-              className="mt-0.5"
-              checked={emailEnabled && ticketEmailsEnabled(prefs.data)}
-              disabled={save.isPending || !emailEnabled}
-              onChange={(e) => save.mutate({ email: { enabled: emailEnabled, tickets: e.target.checked } })}
-              aria-label="Arıza e-postaları"
-            />
-            <span>
-              <span className="font-medium">Arıza e-postaları</span>
-              <span className="block text-muted">Arıza / talep açılması, atanması, çözülmesi ve yorum bildirimleri ile günlük operasyon özeti.{!emailEnabled && ' E-posta bildirimleri kapalıyken gönderilmez.'}</span>
-            </span>
-          </label>
-        )}
-        {save.isError && <Alert tone="danger">{errorMessage(save.error)}</Alert>}
-        {save.isSuccess && (
-          <p role="status" className="text-small text-success">
-            Tercihiniz kaydedildi.
-          </p>
-        )}
-      </Card>
+      <NotificationPreferencesCard />
 
       <Card className="flex flex-col gap-3">
         <CardTitle className="flex items-center gap-2">

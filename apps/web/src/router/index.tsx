@@ -10,6 +10,8 @@ import { PageSuspense, lazyPage } from './lazyPage';
 
 // Sayfalar ayri parcalardir (giris ekrani ve hata sayfalari haric): rota acilinca indirilir.
 const AnnouncementsPage = lazyPage(() => import('@/pages/admin/announcements/AnnouncementsPage'), 'AnnouncementsPage');
+const PollsPage = lazyPage(() => import('@/pages/admin/polls/PollsPage'), 'PollsPage');
+const AssembliesPage = lazyPage(() => import('@/pages/admin/assemblies/AssembliesPage'), 'AssembliesPage');
 const DashboardPage = lazyPage(() => import('@/pages/admin/DashboardPage'), 'DashboardPage');
 const FinancePage = lazyPage(() => import('@/pages/admin/finance/FinancePage'), 'FinancePage');
 const MetersPage = lazyPage(() => import('@/pages/admin/meters/MetersPage'), 'MetersPage');
@@ -38,6 +40,8 @@ const PlatformInvoicesPage = lazyPage(() => import('@/pages/platform/payments/Pl
 const PlatformPaymentsPage = lazyPage(() => import('@/pages/platform/payments/PlatformPaymentsPage'), 'PlatformPaymentsPage');
 const PlatformPayoutsPage = lazyPage(() => import('@/pages/platform/payments/PlatformPayoutsPage'), 'PlatformPayoutsPage');
 const ResidentAnnouncementsPage = lazyPage(() => import('@/pages/resident/AnnouncementsPage'), 'ResidentAnnouncementsPage');
+const MyPollsPage = lazyPage(() => import('@/pages/resident/polls/MyPollsPage'), 'MyPollsPage');
+const MyPollDetailPage = lazyPage(() => import('@/pages/resident/polls/MyPollDetailPage'), 'MyPollDetailPage');
 const ConsumptionPage = lazyPage(() => import('@/pages/resident/ConsumptionPage'), 'ConsumptionPage');
 const DuesPage = lazyPage(() => import('@/pages/resident/DuesPage'), 'DuesPage');
 const PaymentPage = lazyPage(() => import('@/pages/resident/payment/PaymentPage'), 'PaymentPage');
@@ -106,6 +110,9 @@ export const router = createBrowserRouter([
                   // Ihale / teklif toplama (denetci yalnizca paylasilanlari salt okur).
                   { path: 'tenders', element: <TendersPage /> },
                   { path: 'tenders/:tenderId', element: <TenderDetailPage /> },
+                  // Y1: anket / oylama (yonetici + yonetim firmasi yazar, denetci salt okur).
+                  { path: 'polls', element: <PollsPage /> },
+                  { path: 'assemblies', element: <AssembliesPage /> },
                   { path: 'import', element: <ImportPage /> },
                   { path: 'settings', element: <SettingsPage /> },
                 ],
@@ -183,6 +190,9 @@ export const router = createBrowserRouter([
               { path: 'odeme', element: <PaymentPage /> },
               { path: 'odeme/sonuc', element: <PaymentResultPage /> },
               { path: 'announcements', element: <ResidentAnnouncementsPage /> },
+              // Y1: anket / oylama.
+              { path: 'oylamalar', element: <MyPollsPage /> },
+              { path: 'oylamalar/:pollId', element: <MyPollDetailPage /> },
               { path: 'account', element: <AccountPage /> },
             ],
           },

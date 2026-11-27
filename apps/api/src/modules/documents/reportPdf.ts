@@ -12,7 +12,15 @@ import { type PdfFonts, loadPdfFonts } from './fonts.js';
  */
 export type ReportColumn = { header: string; /** Goreli genislik. */ width: number; align?: 'left' | 'right' };
 export type ReportRow = { cells: string[]; bold?: boolean; muted?: boolean; /** Ustunde ayirici cizgi (toplam satiri). */ rule?: boolean };
-export type ReportSection = { title?: string; columns: ReportColumn[]; rows: ReportRow[] };
+export type ReportSection = {
+  title?: string;
+  columns: ReportColumn[];
+  rows: ReportRow[];
+  /** Veri satiri yuksekligi (pt; varsayilan 15). Y1 hazirun cetveli imza payi icin daha yuksek satir kullanir. */
+  rowHeight?: number;
+  /** Her veri satirinin altina ince cizgi (elle doldurulan cizelgeler). */
+  ruled?: boolean;
+};
 
 export type ReportPdfData = {
   apartmentName: string;
@@ -93,7 +101,8 @@ export async function renderReportPdf(data: ReportPdfData, fonts?: PdfFonts): Pr
     });
   };
 
-  const drawRow = (cols: ReportColumn[], cells: string[], opts: { font: PDFFont; color?: ReturnType<typeof rgb>; bg?: boolean }) => {
+  const drawRow = (cols: ReportColumn[], cells: string[], opts: { font: PDFFont; color?: ReturnType<typeof rgb>; bg?: boolean; height?: number; ruled?: boolean }) => {
+    const h = opts.height ?? ROW_H;
     const xs = columnsX(cols);
     if (opts.bg) page.drawRectangle({ x: M, y: y - 4, width: contentW, height: ROW_H, color: HEAD_BG });
     cols.forEach((c, i) => {
@@ -102,7 +111,8 @@ export async function renderReportPdf(data: ReportPdfData, fonts?: PdfFonts): Pr
       const x = c.align === 'right' ? box.end - 3 - opts.font.widthOfTextAtSize(text, SIZE) : box.start + 3;
       page.drawText(text, { x, y, size: SIZE, font: opts.font, color: opts.color ?? INK });
     });
-    y -= ROW_H;
+    if (opts.ruled) page.drawLine({ start: { x: M, y: y + ROW_H - 4 - h }, end: { x: W - M, y: y + ROW_H - 4 - h }, thickness: 0.4, color: LINE });
+    y -= h;
   };
 
   header();
@@ -114,8 +124,9 @@ export async function renderReportPdf(data: ReportPdfData, fonts?: PdfFonts): Pr
       y -= 16;
     }
     headerRow();
+    const rowH = section.rowHeight ?? ROW_H;
     for (const row of section.rows) {
-      if (y < M + 30) {
+      if (y < M + 15 + rowH) {
         header();
         if (section.title) {
           page.drawText(fit(`${section.title} (devam)`, fb, 10.5, contentW), { x: M, y, size: 10.5, font: fb, color: INK });
@@ -124,7 +135,7 @@ export async function renderReportPdf(data: ReportPdfData, fonts?: PdfFonts): Pr
         headerRow();
       }
       if (row.rule) page.drawLine({ start: { x: M, y: y + ROW_H - 4 }, end: { x: W - M, y: y + ROW_H - 4 }, thickness: 0.6, color: LINE });
-      drawRow(section.columns, row.cells, { font: row.bold ? fb : f, ...(row.muted ? { color: MUTED } : {}) });
+      drawRow(section.columns, row.cells, { font: row.bold ? fb : f, height: rowH, ruled: Boolean(section.ruled), ...(row.muted ? { color: MUTED } : {}) });
     }
     y -= 10;
   }

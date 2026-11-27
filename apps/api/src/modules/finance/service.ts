@@ -233,6 +233,8 @@ export type WorkLinkWrite = {
   newDocs?: (TableKeys & { entityType: string })[];
   /** Denetim kaydina eklenecek ayrintilar (is baglantisi). */
   auditDetails?: Record<string, unknown>;
+  /** Ayni atomik yazimda outbox'a girecek ek olaylar (ornegin rezervasyon onayi bildirimi). */
+  outbox?: DomainEvent[];
 };
 export type WorkLinkHook = {
   /** Idempotency parmak izine eklenir (ayni anahtar baska ise kullanilamaz). */
@@ -915,10 +917,11 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
       try {
         if (p.link) {
           const extra = await p.link.build({ transaction: tx });
+          const events = [...(outbox ?? []), ...(extra.outbox ?? [])];
           const input = {
             transactions: [tx],
             idempotency: { id: p.idemId, fingerprint: p.fp },
-            ...(outbox ? { outbox } : {}),
+            ...(events.length ? { outbox: events } : {}),
             ...(extra.replaceRecords?.length ? { replaceRecords: extra.replaceRecords } : {}),
             ...(extra.newDocs?.length ? { newDocs: extra.newDocs } : {}),
           };
@@ -1895,6 +1898,7 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
             records: [expense],
             ...(extra.replaceRecords?.length ? { replaceRecords: extra.replaceRecords } : {}),
             ...(extra.newDocs?.length ? { newDocs: extra.newDocs } : {}),
+            ...(extra.outbox?.length ? { outbox: extra.outbox } : {}),
           };
           await repo.postBatch({ ...input, audit: withAuditDetails(ledgerAuditDraft(input, ctx.apartmentId), extra.auditDetails) });
         } else {

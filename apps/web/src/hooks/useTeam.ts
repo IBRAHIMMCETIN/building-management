@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { type RoleEndInput, type RoleInviteInput, apartmentRolesApi } from '@/lib/api/apartmentRoles';
-import { notificationPreferencesApi, type NotificationPreferences } from '@/lib/api/notificationPreferences';
+import { notificationPreferencesApi, type NotificationPreferencesInput } from '@/lib/api/notificationPreferences';
 import type { Role } from '@/types/roles';
 import { useAuth } from './useAuth';
 
@@ -77,7 +77,7 @@ export function useSaveNotificationPreferences() {
   const qc = useQueryClient();
   const { user } = useAuth();
   return useMutation({
-    mutationFn: (prefs: NotificationPreferences) => notificationPreferencesApi.put(prefs),
+    mutationFn: (prefs: NotificationPreferencesInput) => notificationPreferencesApi.put(prefs),
     onSuccess: (data) => qc.setQueryData(accountKeys.notifications(user?.sub), data),
   });
 }

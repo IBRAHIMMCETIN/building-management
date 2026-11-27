@@ -5,7 +5,7 @@ describe('sakin menusu: alt sekmeler ve "Diğer"', () => {
   it('ilk dort oge alt cubukta, kalanlar cekmecede', () => {
     const { primary, more } = splitResidentNav();
     expect(primary.map((n) => n.label)).toEqual(['Ana Sayfa', 'Borçlarım', 'Talepler', 'Duyurular']);
-    expect(more.map((n) => n.to)).toEqual(['/app/ziyaretci', '/app/rezervasyon', '/app/tuketim', '/app/ihale']);
+    expect(more.map((n) => n.to)).toEqual(['/app/ziyaretci', '/app/rezervasyon', '/app/oylamalar', '/app/tuketim', '/app/ihale']);
     expect(primary.length + more.length).toBe(RESIDENT_NAV.length);
   });
 
@@ -19,6 +19,7 @@ describe('sakin menusu: alt sekmeler ve "Diğer"', () => {
     const { more } = splitResidentNav();
     expect(isMoreActive('/app/rezervasyon', more)).toBe(true);
     expect(isMoreActive('/app/ziyaretci/abc', more)).toBe(true);
+    expect(isMoreActive('/app/oylamalar/poll-1', more)).toBe(true);
     expect(isMoreActive('/app/ziyaretciler', more)).toBe(false);
     expect(isMoreActive('/app/dues', more)).toBe(false);
     expect(isMoreActive('/app', more)).toBe(false);

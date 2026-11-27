@@ -14,7 +14,8 @@ type Tab = 'guests' | 'vehicles' | 'history';
 type Unit = { unitId: string; label: string };
 
 /**
- * Sakin "Ziyaretçi": kapidaki kuryeye onay (sayfa acikken 15 sn'de bir yenilenir), misafir gecisi
+ * Sakin "Ziyaretçi": kapidaki kuryeye onay (kayitta e-posta bildirimi; sayfa acikken ayrica 15 sn'de
+ * bir yenilenir), misafir gecisi
  * (QR + kisa kod paylasimi), araclarim ve dairemin kapi kayitlari. Yalnizca dairede oturan sakinler
  * (kiraci veya oturan malik) kullanir.
  */

@@ -1,4 +1,4 @@
-import { CalendarDays, DoorOpen, Gauge, Home, Megaphone, Receipt, Scale, Wrench } from 'lucide-react';
+import { CalendarDays, DoorOpen, Gauge, Home, Megaphone, Receipt, Scale, Vote, Wrench } from 'lucide-react';
 import type { NavItem } from './adminNav';
 
 /**
@@ -12,6 +12,7 @@ export const RESIDENT_NAV: readonly NavItem[] = [
   { to: '/app/announcements', label: 'Duyurular', icon: Megaphone },
   { to: '/app/ziyaretci', label: 'Ziyaretçi', icon: DoorOpen },
   { to: '/app/rezervasyon', label: 'Rezervasyon', icon: CalendarDays },
+  { to: '/app/oylamalar', label: 'Oylamalar', icon: Vote },
   { to: '/app/tuketim', label: 'Tüketimim', icon: Gauge },
   { to: '/app/ihale', label: 'İhaleler', icon: Scale },
 ];

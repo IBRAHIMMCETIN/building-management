@@ -21,6 +21,8 @@ export const AUDIT_CATEGORIES = [
   { prefix: 'reservation.', label: 'Ortak alan rezervasyonu' },
   { prefix: 'tender.', label: 'İhale / teklif toplama' },
   { prefix: 'meters.', label: 'Sayaç ve endeks dağıtımı' },
+  { prefix: 'poll.', label: 'Anket / oylama' },
+  { prefix: 'assembly.', label: 'Genel kurul' },
 ] as const;
 
 const EXACT: Record<string, string> = {
@@ -154,6 +156,13 @@ const EXACT: Record<string, string> = {
   'meters.period_reverse': 'Sayaç dönemi geri alma başlatıldı',
   'meters.period_reversed': 'Sayaç dönemi geri alındı',
   'meters.period_correction': 'Düzeltme dönemi açıldı',
+  // Y1 anket / oylama
+  'poll.publish': 'Oylama yayınlandı',
+  'poll.close': 'Oylama erken kapatıldı',
+  'poll.cancel': 'Oylama taslağı iptal edildi',
+  'assembly.attendance': 'Genel kurul katılımı kaydedildi',
+  'assembly.tally': 'Genel kurul gündem sayımı kaydedildi',
+  'assembly.cancel': 'Genel kurul toplantısı iptal edildi',
 };
 
 /** Sözlükte olmayan anahtarlar için alan adı (ilk parça) karşılıkları. */
@@ -174,6 +183,8 @@ const DOMAIN_LABELS: Record<string, string> = {
   closure: 'Cari kapama',
   import: 'Toplu aktarım',
   notification_preferences: 'Bildirim tercihi',
+  poll: 'Oylama',
+  assembly: 'Genel kurul',
 };
 
 const humanize = (s: string) => s.replace(/[._]+/g, ' ').trim();

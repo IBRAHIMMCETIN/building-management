@@ -192,8 +192,11 @@ run "prod_plan" {
       "DUE_GENERATED", "PAYMENT_RECEIVED", "ANNOUNCEMENT_PUBLISHED", "LATE_FEE_POSTED", "DUES_REMINDER",
       "DUES_BATCH_SUMMARY", "METER_PERIOD_REVERSED",
       "TICKET_CREATED", "TICKET_ASSIGNED", "TICKET_STATUS_CHANGED", "TICKET_COMMENTED", "OPERATIONS_DIGEST",
+      "POLL_PUBLISHED",
+      "GATE_COURIER_ARRIVED", "GATE_GUEST_ENTERED",
+      "RESERVATION_APPROVED", "RESERVATION_REJECTED", "RESERVATION_CANCELLED",
     ]
-    error_message = "Bildirim kuyrugu worker'in isledigi tum olay turlerine abone olmali (ariza/talep ve gunluk operasyon ozeti dahil)"
+    error_message = "Bildirim kuyrugu worker'in isledigi tum olay turlerine abone olmali (ariza/talep, gunluk operasyon ozeti ve oylama yayini dahil)"
   }
   assert {
     condition     = aws_sns_topic_subscription.notification.raw_message_delivery

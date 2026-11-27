@@ -122,3 +122,12 @@ export function financeReportKey(apartmentId: string, generatedOn: IsoDate, kind
   const safeSlug = slug.replace(/[^A-Za-z0-9_-]/g, '-').slice(0, 80);
   return `apartments/${apartmentId}/reports/${ym(generatedOn)}/finance-${kind}-${safeSlug}-${dataHash.slice(0, 16)}.pdf`;
 }
+
+/**
+ * Y1-3: kat malikleri kurulu hazirun cetveli. `dataHash` oy listesi + katilim + sablon ozetidir:
+ * katilim degistikce yeni dosya uretilir.
+ *   apartments/{apt}/reports/{yyyy}/{mm}/assembly-hazirun-{assemblyId}-{hash}.pdf
+ */
+export function assemblySheetKey(apartmentId: string, meetingDate: IsoDate, assemblyId: string, dataHash: string): string {
+  return `apartments/${apartmentId}/reports/${ym(meetingDate)}/assembly-hazirun-${assemblyId}-${dataHash.slice(0, 16)}.pdf`;
+}
