@@ -7,7 +7,7 @@
 import { TransactionCanceledException } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, QueryCommand, TransactWriteCommand } from '@aws-sdk/lib-dynamodb';
 import { mockClient } from 'aws-sdk-client-mock';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createApp } from '../src/app.js';
 import type { AuthClaims } from '../src/auth/claims.js';
 import { resetDynamoCache } from '../src/config/dynamodb.js';
@@ -17,7 +17,7 @@ import { ValidationError } from '../src/modules/core/validation.js';
 import { FinanceError, type FinanceContext, createFinanceService } from '../src/modules/finance/service.js';
 import type { UnitMembership } from '../src/modules/portal/types.js';
 import { ReservationError } from '../src/modules/reservations/errors.js';
-import { createReservationRepository } from '../src/modules/reservations/repository.js';
+import { ReservationConflictError, createReservationRepository } from '../src/modules/reservations/repository.js';
 import { type ReservationContext, type ReservationFinance, createReservationService } from '../src/modules/reservations/service.js';
 import { bookingTimeError, istanbulInstant, istanbulMinutes, lockSlotsOf, slotGrid, weekdayOf } from '../src/modules/reservations/time.js';
 import type { Booking } from '../src/modules/reservations/types.js';
@@ -32,8 +32,8 @@ const ALL_WEEK = [1, 2, 3, 4, 5, 6, 7].map((day) => ({ day, open: '09:00', close
 const audit = { createdAt: T0, createdBy: 'seed', updatedAt: T0, updatedBy: 'seed', version: 1 };
 const unit = (id: string, blockId: string, apt = APT) =>
   ({ PK: `APT#${apt}`, SK: `UNIT#${id}`, entityType: 'UNIT', unitId: id, siteId: apt, blockId, number: id.toUpperCase(), type: 'flat', grossAreaTenthsM2: 1000, exemptions: [], status: 'active', ...audit }) as unknown as Unit;
-const member = (userId: string, unitId: string, relation: 'owner' | 'tenant', apt = APT) =>
-  ({ userId, unitId, apartmentId: apt, relation, residesInUnit: true, status: 'active', startDate: '2026-01-01' }) as unknown as UnitMembership;
+const member = (userId: string, unitId: string, relation: 'owner' | 'tenant', apt = APT, extra: Partial<UnitMembership> = {}) =>
+  ({ userId, unitId, apartmentId: apt, relation, residesInUnit: true, status: 'active', startDate: '2026-01-01', ...extra }) as unknown as UnitMembership;
 
 const ctxs = {
   mgr: { apartmentId: APT, userId: 'mgr', role: 'apartment_manager' },
@@ -46,7 +46,7 @@ const ctxs = {
   other: { apartmentId: 'apt-2', userId: 'mgr-2', role: 'apartment_manager' },
 } satisfies Record<string, ReservationContext>;
 
-function world(opts: { finance?: (f: ReservationFinance) => ReservationFinance } = {}) {
+function world(opts: { finance?: (f: ReservationFinance) => ReservationFinance; memberships?: UnitMembership[]; splitUnits?: string[] } = {}) {
   let now = new Date(T0);
   const fin = createFakeFinanceRepo(APT);
   // Rezervasyon ve finans ayni tabloyu paylasir (onay + tahakkuk atomik).
@@ -56,7 +56,7 @@ function world(opts: { finance?: (f: ReservationFinance) => ReservationFinance }
     { blockId: 'b1', name: 'A Blok', status: 'active' },
     { blockId: 'b2', name: 'B Blok', status: 'active' },
   ] as unknown as Block[];
-  const memberships = [member('res-a', 'u1', 'tenant'), member('res-a2', 'u1', 'owner'), member('res-b', 'u2', 'owner'), member('res-b', 'u3', 'owner')];
+  const memberships = [member('res-a', 'u1', 'tenant'), member('res-a2', 'u1', 'owner'), member('res-b', 'u2', 'owner'), member('res-b', 'u3', 'owner'), ...(opts.memberships ?? [])];
   const core: Pick<CoreRepository, 'getUnit' | 'listUnits' | 'getBlock'> = {
     getUnit: async (apt, id) => units.find((u) => u.unitId === id && u.siteId === apt),
     listUnits: async (apt) => units.filter((u) => u.siteId === apt),
@@ -69,6 +69,7 @@ function world(opts: { finance?: (f: ReservationFinance) => ReservationFinance }
     repo: fake.repo,
     core,
     memberships: { listMemberships: async (apt, userId) => memberships.filter((m) => m.userId === userId && m.apartmentId === apt) },
+    ownership: { billingOf: async (_a, unitId) => (opts.splitUnits?.includes(unitId) ? 'split' : 'joint') },
     finance,
     now: () => now,
     newId: () => `id${String(++n).padStart(10, '0')}`,
@@ -95,7 +96,7 @@ function world(opts: { finance?: (f: ReservationFinance) => ReservationFinance }
     service.book(ctx, { idempotencyKey: `bk-${++k}`, facilityId, unitId: ctx === ctxs.b ? 'u2' : 'u1', date: '2026-11-29', start: '10:00', minutes: 60, ...extra });
   const stored = (id: string) => structuredClone(fin.docs.get(`APT#${APT}|RBOOK#${id}`)) as unknown as Booking;
   const fctx: FinanceContext = { apartmentId: APT, userId: 'mgr' };
-  return { fake, fin, service, finance: realFinance, fctx, facility, book, stored, setNow: (iso: string) => (now = new Date(iso)) };
+  return { fake, fin, service, finance: realFinance, fctx, facility, book, stored, memberships, setNow: (iso: string) => (now = new Date(iso)) };
 }
 
 const reasonOf = (p: Promise<unknown>) => p.then(() => 'ok', (e: { code?: string }) => e.code ?? 'error');
@@ -163,7 +164,7 @@ describe('ortak alan tanimi', () => {
     await expect(make({ feeKurus: 5000, incomeAccountId: 'income-late-fee' })).rejects.toBeInstanceOf(ValidationError);
     expect((await make({ openingHours: [{ day: 6, open: '10:00', close: '24:00' }], blockIds: ['b2', 'b1', 'b2'], feeKurus: 5000 })).facility).toMatchObject({ blockIds: ['b1', 'b2'], feeKurus: 5000 });
     // Finans yoksa ucretli alan tanimlanamaz (yalnizca ucretsiz).
-    const noFinance = createReservationService({ repo: w.fake.repo, core: { getUnit: async () => undefined, getBlock: async () => undefined }, memberships: { listMemberships: async () => [] }, finance: undefined, now: () => new Date(T0) });
+    const noFinance = createReservationService({ repo: w.fake.repo, core: { getUnit: async () => undefined, getBlock: async () => undefined }, memberships: { listMemberships: async () => [] }, ownership: { billingOf: async () => 'joint' }, finance: undefined, now: () => new Date(T0) });
     await expect(noFinance.createFacility(ctxs.mgr, { idempotencyKey: 'nf-1', name: 'Salon', capacity: 5, openingHours: ALL_WEEK, slotMinutes: 60, feeKurus: 100 })).rejects.toMatchObject({ code: 'unprocessable' });
   });
 
@@ -481,6 +482,199 @@ describe('KVKK ve kiraci izolasyonu', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Inceleme duzeltmeleri
+// ---------------------------------------------------------------------------
+
+const ctxOwnerAway: ReservationContext = { apartmentId: APT, userId: 'own-away', role: 'resident' };
+const ctxOld: ReservationContext = { apartmentId: APT, userId: 'res-old', role: 'resident' };
+const ctxNew: ReservationContext = { apartmentId: APT, userId: 'res-new', role: 'resident' };
+
+describe('ucret tarafi rezervasyonu yapandan belirlenir', () => {
+  it('oturmayan malik: malik carisine; oturan malik ve kiraci: oturan carisine (taraf rezervasyonda saklanir)', async () => {
+    const w = world({ memberships: [member('own-away', 'u1', 'owner', APT, { residesInUnit: false })] });
+    const f = await w.facility({ feeKurus: 10_000, maxActivePerUnit: 5 });
+    const away = (await w.book(ctxOwnerAway, f.facilityId, { start: '10:00' })).booking;
+    expect(away).toMatchObject({ status: 'confirmed', fee: { status: 'charged' } });
+    expect(w.stored(away.bookingId).payer).toEqual({ liableParty: 'owner', relation: 'owner' });
+    expect(w.fin.balanceOf('recv-u1-owner')).toBe(10_000);
+    expect(w.fin.balanceOf('recv-u1-occupant')).toBe(0);
+    await w.book(ctxs.a2, f.facilityId, { start: '12:00' }); // oturan malik
+    await w.book(ctxs.a, f.facilityId, { start: '14:00' }); // kiraci
+    expect(w.fin.balanceOf('recv-u1-occupant')).toBe(20_000);
+    expect(w.fin.balanceOf('recv-u1-owner')).toBe(10_000);
+  });
+
+  it('onayda saklanan taraf tahakkuk edilir; yapan kisinin uyeligi bittiyse onay reddedilir (tahmin yok)', async () => {
+    const w = world({ memberships: [member('own-away', 'u1', 'owner', APT, { residesInUnit: false })] });
+    const f = await w.facility({ feeKurus: 7_500, requiresApproval: true, maxActivePerUnit: 5 });
+    const p = (await w.book(ctxOwnerAway, f.facilityId, { start: '10:00' })).booking;
+    // Onay gunu dairede kiraci oturuyor; yine de ucret rezervasyonu yapan malike.
+    await w.service.approve(ctxs.mgr, p.bookingId, { version: 1 });
+    expect(w.fin.balanceOf('recv-u1-owner')).toBe(7_500);
+    expect(w.fin.batches.at(-1)?.audit?.details).toMatchObject({ reservation: { liableParty: 'owner' } });
+
+    const q = (await w.book(ctxs.a, f.facilityId, { start: '12:00' })).booking;
+    const tenancy = w.memberships.find((m) => m.userId === 'res-a') as UnitMembership;
+    Object.assign(tenancy, { status: 'inactive', endDate: '2026-11-26' });
+    await expect(w.service.approve(ctxs.mgr, q.bookingId, { version: 1 })).rejects.toMatchObject({ code: 'unprocessable', message: expect.stringMatching(/üyeliği sona ermiş/) });
+    expect(w.fin.balanceOf('recv-u1-occupant')).toBe(0);
+    expect(w.stored(q.bookingId).status).toBe('pending');
+  });
+
+  it('belirsiz uyelik (malik + kiraci, oturmayan kiraci) ve hisseli faturalanan malik: ucretli rezervasyon reddedilir', async () => {
+    const w = world({
+      memberships: [
+        member('dual', 'u1', 'owner', APT, { residesInUnit: false }),
+        member('dual', 'u1', 'tenant'),
+        member('odd', 'u1', 'tenant', APT, { residesInUnit: false }),
+        member('co-own', 'u2', 'owner', APT, { residesInUnit: false }),
+      ],
+      splitUnits: ['u2'],
+    });
+    const paid = await w.facility({ feeKurus: 5_000 });
+    const free = await w.facility({ name: 'Kütüphane' });
+    for (const userId of ['dual', 'odd']) {
+      await expect(w.book({ apartmentId: APT, userId, role: 'resident' }, paid.facilityId)).rejects.toMatchObject({ code: 'unprocessable', message: expect.stringMatching(/kime yazılacağı belirlenemiyor/) });
+    }
+    await expect(w.service.book({ apartmentId: APT, userId: 'co-own', role: 'resident' }, { idempotencyKey: 'co-1', facilityId: paid.facilityId, unitId: 'u2', date: '2026-11-29', start: '10:00', minutes: 60 })).rejects.toMatchObject({
+      message: expect.stringMatching(/Hisseli/),
+    });
+    // Ucretsiz alanda taraf onemsiz: rezervasyon yapilir.
+    expect((await w.book({ apartmentId: APT, userId: 'dual', role: 'resident' }, free.facilityId)).booking.status).toBe('confirmed');
+    expect(w.fin.transactions.size).toBe(0);
+  });
+});
+
+describe('KVKK: daireye sonradan gelen sakin', () => {
+  function moved() {
+    const w = world({ memberships: [member('res-old', 'u2', 'tenant', APT, { startDate: '2025-01-01' })] });
+    return w;
+  }
+  it('yeni kiraci onceki sakinin rezervasyonunu gormez, iptal edemez, sinirina sayilmaz; dilim "dolu" gorunur', async () => {
+    const w = moved();
+    const f = await w.facility({ maxActivePerUnit: 1 });
+    const old = (await w.book(ctxOld, f.facilityId, { unitId: 'u2', date: '2026-12-05', start: '10:00' })).booking;
+    // Eski kiraci tasindi, yenisi 28.11'de basladi.
+    Object.assign(w.memberships.find((m) => m.userId === 'res-old') as UnitMembership, { status: 'inactive', endDate: '2026-11-27' });
+    w.memberships.push(member('res-new', 'u2', 'tenant', APT, { startDate: '2026-11-28' }));
+    w.setNow('2026-11-28T07:00:00.000Z');
+    expect((await w.service.myBookings(ctxNew)).upcoming).toEqual([]);
+    await expect(w.service.cancel(ctxNew, old.bookingId, { version: old.version })).rejects.toMatchObject({ code: 'not_found' });
+    const day = await w.service.availability(ctxNew, f.facilityId, '2026-12-05');
+    expect(day.slots.find((s) => s.start === '10:00')?.state).toBe('busy');
+    expect((await w.book(ctxNew, f.facilityId, { unitId: 'u2', date: '2026-12-05', start: '14:00' })).booking.status).toBe('confirmed');
+    expect((await w.service.availability(ctxNew, f.facilityId, '2026-12-05')).slots.find((s) => s.start === '14:00')?.state).toBe('mine');
+    // Daireden uzun suredir uye olan malik ikisini de gorur.
+    expect((await w.service.myBookings(ctxs.b)).upcoming.map((b) => b.startTime)).toEqual(['10:00', '14:00']);
+    // Eski sakin artik uye degil: hicbirini goremez.
+    expect((await w.service.myBookings(ctxOld)).upcoming).toEqual([]);
+  });
+});
+
+describe('ucret iadesi hatalari iptali bozmaz', () => {
+  it('beklenmeyen ters kayit hatasi: iptal basarili + uyari; iade kuyrugunda; yeniden deneme tamamlar', async () => {
+    let boom = true;
+    const w = world({
+      finance: (real) => ({
+        ...real,
+        reverseTransaction: async (...args: Parameters<ReservationFinance['reverseTransaction']>) => {
+          if (boom) {
+            boom = false;
+            throw new Error('DynamoDB zaman asimi');
+          }
+          return real.reverseTransaction(...args);
+        },
+      }),
+    });
+    const f = await w.facility({ feeKurus: 9_000 });
+    const b = (await w.book(ctxs.a, f.facilityId)).booking;
+    const r = await w.service.cancel(ctxs.a, b.bookingId, { version: b.version });
+    expect(r).toMatchObject({ booking: { status: 'cancelled', fee: { status: 'reversal_pending' } }, warning: expect.stringMatching(/iade kuyruğuna/) });
+    expect(w.stored(b.bookingId).fee.error).toMatch(/beklenmeyen hata/);
+    const queue = await w.service.pending(ctxs.observer);
+    expect(queue.reversals.map((x) => x.bookingId)).toEqual([b.bookingId]);
+    const again = await w.service.cancel(ctxs.mgr, b.bookingId, { version: queue.reversals[0]?.version, reason: 'Yeniden dene' });
+    expect(again).not.toHaveProperty('warning');
+    expect(again.booking.fee.status).toBe('reversed');
+    expect((await w.service.pending(ctxs.mgr)).reversals).toEqual([]);
+    expect(w.fin.balanceOf('recv-u1-occupant')).toBe(0);
+  });
+
+  it('ters kayittan sonra rezervasyon yazimi da basarisizsa yine 2xx + uyari', async () => {
+    let afterReverse: (() => void) | undefined;
+    const w = world({
+      finance: (real) => ({
+        ...real,
+        reverseTransaction: async (...args: Parameters<ReservationFinance['reverseTransaction']>) => {
+          const out = await real.reverseTransaction(...args);
+          afterReverse?.();
+          afterReverse = undefined;
+          return out;
+        },
+      }),
+    });
+    afterReverse = () => w.fake.failNextWith(new Error('throttled'));
+    const f = await w.facility({ feeKurus: 9_000 });
+    const b = (await w.book(ctxs.a, f.facilityId)).booking;
+    const r = await w.service.cancel(ctxs.a, b.bookingId, { version: b.version });
+    expect(r.booking.status).toBe('cancelled');
+    expect(r.warning).toMatch(/iade kuyruğuna/);
+    // Kayit kuyrukta; yeniden deneme ters kaydi tekrar yazmaz (zaten ters cevrilmis), yalnizca isaretler.
+    const queued = (await w.service.pending(ctxs.mgr)).reversals[0];
+    const done = await w.service.cancel(ctxs.mgr, b.bookingId, { version: queued?.version, reason: 'İşaretle' });
+    expect(done.booking.fee.status).toBe('reversed');
+    expect([...w.fin.transactions.values()].filter((t) => t.kind === 'reversal')).toHaveLength(1);
+  });
+
+  it('Finans engeli: yonetici gerekceyle elle cozuldu isaretler (denetimli); sakin yapamaz', async () => {
+    const w = world({
+      finance: (real) => ({
+        ...real,
+        reverseTransaction: async () => {
+          throw new FinanceError('unprocessable', 'Bu kalem bir yapılandırma planına bağlı');
+        },
+      }),
+    });
+    const f = await w.facility({ feeKurus: 9_000 });
+    const b = (await w.book(ctxs.a, f.facilityId)).booking;
+    const c = (await w.service.cancel(ctxs.mgr, b.bookingId, { version: b.version, reason: 'Arıza' })).booking;
+    expect(c.fee).toMatchObject({ status: 'reversal_pending', error: expect.stringMatching(/yapılandırma planına/) });
+    await expect(w.service.resolveFeeManually(ctxs.a, b.bookingId, { version: c.version, reason: 'Kendim' })).rejects.toMatchObject({ code: 'forbidden' });
+    await expect(w.service.resolveFeeManually(ctxs.mgr, b.bookingId, { version: c.version, reason: 'x' })).rejects.toBeInstanceOf(ValidationError);
+    const done = (await w.service.resolveFeeManually(ctxs.mgr, b.bookingId, { version: c.version, reason: 'Plan iptal edilip elle mahsup edildi' })).booking;
+    expect(done.fee).toMatchObject({ status: 'resolved_manually', resolvedNote: 'Plan iptal edilip elle mahsup edildi', resolvedBy: 'mgr' });
+    expect(done.fee).not.toHaveProperty('error');
+    expect(w.fake.audits.at(-1)).toMatchObject({ action: 'reservation.fee_manual_resolve', reason: 'Plan iptal edilip elle mahsup edildi' });
+    expect((await w.service.pending(ctxs.mgr)).reversals).toEqual([]);
+    await expect(w.service.resolveFeeManually(ctxs.mgr, b.bookingId, { version: done.version, reason: 'Tekrar' })).rejects.toMatchObject({ code: 'invalid_state' });
+  });
+});
+
+describe('es zamanlilik: cekisme ve alan degisikligi', () => {
+  it('tukenmis cekisme (TransactionConflict): dilim baskasinca alindiysa 409 slot_taken, alinmadiysa 409 conflict', async () => {
+    const w = world();
+    const f = await w.facility();
+    w.fake.beforeNextWrite(async () => {
+      await w.book(ctxs.b, f.facilityId, { start: '10:00' });
+    });
+    w.fake.failNextWith(new ReservationConflictError('contention'));
+    await expect(w.book(ctxs.a, f.facilityId, { start: '10:00' })).rejects.toMatchObject({ code: 'slot_taken', httpStatus: 409 });
+    w.fake.failNextWith(new ReservationConflictError('contention'));
+    await expect(w.book(ctxs.a, f.facilityId, { start: '15:00' })).rejects.toMatchObject({ code: 'conflict', httpStatus: 409 });
+  });
+
+  it('alan rezervasyon sirasinda pasife alindi / duzenlendi: eski kurallarla rezervasyon yazilmaz', async () => {
+    const w = world();
+    const f = await w.facility();
+    w.fake.beforeNextWrite(async () => {
+      await w.service.updateFacility(ctxs.mgr, f.facilityId, { version: 1, status: 'inactive' });
+    });
+    await expect(w.book(ctxs.a, f.facilityId)).rejects.toMatchObject({ code: 'conflict', message: expect.stringMatching(/kuralları bu arada değişti/) });
+    expect([...w.fin.docs.values()].filter((d) => d.entityType === 'RESERVATION_BOOKING' || d.entityType === 'RESERVATION_SLOT')).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // API
 // ---------------------------------------------------------------------------
 
@@ -543,6 +737,10 @@ describe('API uclari', () => {
     const id = created.json.booking.bookingId as string;
     expect((await call('POST', `/api/reservations/bookings/${id}/cancel`, ctxs.observer, { version: 1, reason: 'Deneme' })).status).toBe(403);
     expect((await call('POST', `/api/portal/reservations/bookings/${id}/cancel`, ctxs.a, { version: 1 })).json.booking.status).toBe('cancelled');
+    // Elle cozum: yalnizca yonetim; iadesi beklemeyen ucrette 409.
+    expect((await call('POST', `/api/reservations/bookings/${id}/fee-resolved`, ctxs.observer, { version: 2, reason: 'Elle çözüldü' })).status).toBe(403);
+    expect((await call('POST', `/api/reservations/bookings/${id}/fee-resolved`, ctxs.mgr, { version: 2, reason: 'Elle çözüldü' })).json).toMatchObject({ error: 'invalid_state' });
+    expect((await call('GET', '/api/reservations/bookings/pending', ctxs.mgr)).json).toMatchObject({ reversals: [] });
   });
 });
 
@@ -592,6 +790,29 @@ describe('rezervasyon deposu (DynamoDB)', () => {
     const items = ddb.commandCalls(TransactWriteCommand)[0]!.args[0].input.TransactItems!;
     expect(items[0]?.Put).toMatchObject({ ConditionExpression: 'attribute_exists(PK) AND #version = :expected', ExpressionAttributeValues: { ':expected': 1 } });
     expect(items[1]?.Put).toMatchObject({ ConditionExpression: '#state = :held AND #booking = :booking', Item: { state: 'released' }, ExpressionAttributeValues: { ':booking': 'b1' } });
+  });
+
+  it('alan kontrolu ayni islemde (ConditionCheck); es zamanli cakisma (TransactionConflict) dilim nedenine eslenir', async () => {
+    const repo = createReservationRepository();
+    const write = () => repo.write(APT, { at: T0, booking: { item: booking, expectedVersion: 0 }, facilityCheck: { facilityId: 'f1', version: 4 }, hold: [slot('2026-11-29T07:00:00.000Z')] });
+    ddb.on(TransactWriteCommand).resolvesOnce({});
+    await write();
+    const items = ddb.commandCalls(TransactWriteCommand)[0]!.args[0].input.TransactItems!;
+    expect(items[1]?.ConditionCheck).toMatchObject({ Key: { SK: 'RFAC#f1' }, ConditionExpression: 'attribute_exists(PK) AND #version = :fv AND #status = :active', ExpressionAttributeValues: { ':fv': 4, ':active': 'active' } });
+    const cancelWith = (codes: string[]) =>
+      ddb.on(TransactWriteCommand).callsFake(() => {
+        throw new TransactionCanceledException({ message: 'iptal', $metadata: {}, CancellationReasons: codes.map((Code) => ({ Code })) });
+      });
+    cancelWith(['None', 'ConditionalCheckFailed', 'None']);
+    await expect(write()).rejects.toMatchObject({ reason: 'facility' });
+    // Cekisme + baska bir iptal nedeni: tekrar denenmez, cakisan oge (dilim) nedene eslenir.
+    cancelWith(['None', 'None', 'TransactionConflict', 'ValidationError']);
+    await expect(write()).rejects.toMatchObject({ reason: 'slot' });
+    // Yalnizca cekisme: tekrar denemeler tukenince `contention` (servis dilimi kontrol eder).
+    const random = vi.spyOn(Math, 'random').mockReturnValue(0);
+    cancelWith(['None', 'None', 'TransactionConflict']);
+    await expect(write()).rejects.toMatchObject({ reason: 'contention' });
+    random.mockRestore();
   });
 
   it('aralik sorgusu SK BETWEEN ile ve yalnizca tutulan dilimler', async () => {

@@ -42,11 +42,13 @@ const id = (c: Context<Env>) => c.req.param('id') ?? '';
  *                                          cancelNoticeHours, blockIds?, feeKurus, incomeAccountId? }
  *   PATCH /facilities/:id                { version, ...alanlar, status?: active|inactive }
  *   GET   /bookings                      ?facilityId=&from=&to=&status=   takvim (Istanbul gunleri, en fazla 62 gun)
- *   GET   /bookings/pending              onay bekleyenler
+ *   GET   /bookings/pending              onay bekleyenler + iade bekleyenler (`reversals`)
  *   GET   /bookings/:id
  *   POST  /bookings/:id/approve          { version, note? }     (ucretliyse oturan carisine tahakkuk)
  *   POST  /bookings/:id/reject           { version, reason }
- *   POST  /bookings/:id/cancel           { version, reason }    (tahakkuk varsa ters kayit; yarim iade yeniden denenir)
+ *   POST  /bookings/:id/cancel           { version, reason }    (tahakkuk varsa ters kayit; yarim iade yeniden denenir;
+ *                                                                  ters kayit hatasi iptali bozmaz: `warning`)
+ *   POST  /bookings/:id/fee-resolved     { version, reason }    iadesi Finans'ca engellenen ucreti elle cozuldu isaretle
  */
 export function reservationRoutes({ authenticate, service }: ReservationRoutesDeps) {
   const r = base(authenticate);
@@ -64,6 +66,7 @@ export function reservationRoutes({ authenticate, service }: ReservationRoutesDe
   r.post('/bookings/:id/approve', requireRole(WRITE_ROLES), async (c) => c.json(await service.approve(ctxOf(c), id(c), await readJson(c))));
   r.post('/bookings/:id/reject', requireRole(WRITE_ROLES), async (c) => c.json(await service.reject(ctxOf(c), id(c), await readJson(c))));
   r.post('/bookings/:id/cancel', requireRole(WRITE_ROLES), async (c) => c.json(await service.cancel(ctxOf(c), id(c), await readJson(c))));
+  r.post('/bookings/:id/fee-resolved', requireRole(WRITE_ROLES), async (c) => c.json(await service.resolveFeeManually(ctxOf(c), id(c), await readJson(c))));
   return r;
 }
 

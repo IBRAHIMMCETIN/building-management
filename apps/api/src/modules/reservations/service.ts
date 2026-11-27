@@ -17,13 +17,16 @@ import type { IsoDate, IsoDateTime } from '../core/types.js';
 import { type Obj, ValidationError, asObject, assertId, isIsoDate, optInt, optString, reqInt, reqString } from '../core/validation.js';
 import { FinanceError, type FinanceService } from '../finance/service.js';
 import { PeriodClosedError } from '../finance/periodLock.js';
+import { type OwnershipReader, createOwnershipReader } from '../ownership/reader.js';
 import { type PortalRepository, portalRepository } from '../portal/repository.js';
+import type { UnitMembership } from '../portal/types.js';
 import { ReservationError } from './errors.js';
 import { ReservationConflictError, type ReservationRepository, type ReservationWrite, reservationRepository } from './repository.js';
 import { addDays, bookingTimeError, daysBetween, formatClock, istanbulDate, istanbulInstant, istanbulMinutes, lockSlotsOf, parseClock, slotGrid, windowOn } from './time.js';
 import {
   type Booking,
   type BookingIndex,
+  type BookingPayer,
   type BookingStatus,
   BOOKING_STATUSES,
   type Facility,
@@ -52,6 +55,8 @@ export type ReservationServiceDeps = {
   repo: ReservationRepository;
   core: Pick<CoreRepository, 'getUnit' | 'getBlock'>;
   memberships: Pick<PortalRepository, 'listMemberships'>;
+  /** Hisseli mulkiyet faturalama modu (malik adina ucret paydaslara bolunecekse belirsiz sayilir). */
+  ownership: Pick<OwnershipReader, 'billingOf'>;
   /** Ucret tahakkuku ve ters kaydi; verilmezse yalnizca ucretsiz alan tanimlanabilir. */
   finance: ReservationFinance | undefined;
   now: () => Date;
@@ -59,7 +64,18 @@ export type ReservationServiceDeps = {
 };
 
 type ActorKind = 'manager' | 'observer' | 'resident';
-type Actor = { kind: ActorKind; userId: string; role: string; unitIds: string[] };
+/** Sakinin bir dairedeki guncel uyelikleri: en erken baslangic ve uyelik basina ucret tarafi. */
+type ResidentUnit = { since: IsoDate; payers: (BookingPayer | undefined)[] };
+type Actor = { kind: ActorKind; userId: string; role: string; unitIds: string[]; units: Map<string, ResidentUnit> };
+
+const activeOn = (m: Pick<UnitMembership, 'status' | 'startDate' | 'endDate'>, d: IsoDate) => m.status === 'active' && m.startDate <= d && (!m.endDate || m.endDate >= d);
+
+/** Uyelikten ucret tarafi: dairede oturan (kiraci / oturan malik) -> oturan; oturmayan malik -> malik. */
+export function payerOfMembership(m: Pick<UnitMembership, 'relation' | 'residesInUnit'>): BookingPayer | undefined {
+  if (m.relation === 'tenant') return m.residesInUnit === false ? undefined : { liableParty: 'occupant', relation: 'tenant' };
+  if (m.relation === 'owner') return { liableParty: m.residesInUnit ? 'occupant' : 'owner', relation: 'owner' };
+  return undefined;
+}
 
 const MANAGER_ROLES = new Set(['apartment_manager', 'management_company']);
 const DEFAULT_INCOME = 'income-dues';
@@ -68,6 +84,7 @@ const HOUR = 3_600_000;
 /** Sakin "rezervasyonlarim" listesinde gecmis rezervasyonlar (gun). */
 const HISTORY_DAYS = 90;
 const WRITE_RETRIES = 3;
+const SLOT_TAKEN = 'Seçtiğiniz saat aralığı az önce doldu; başka bir saat seçin';
 
 type FacilityFields = Pick<
   Facility,
@@ -109,6 +126,7 @@ export function createReservationService(overrides: Partial<ReservationServiceDe
     repo: reservationRepository,
     core: coreRepository,
     memberships: portalRepository,
+    ownership: overrides.ownership ?? createOwnershipReader(),
     finance: undefined,
     now: () => new Date(),
     newId: () => randomUUID(),
@@ -124,14 +142,17 @@ export function createReservationService(overrides: Partial<ReservationServiceDe
   // -------------------------------------------------------------------------
 
   async function actorOf(ctx: ReservationContext): Promise<Actor> {
-    if (MANAGER_ROLES.has(ctx.role)) return { kind: 'manager', userId: ctx.userId, role: ctx.role, unitIds: [] };
-    if (ctx.role === 'observer') return { kind: 'observer', userId: ctx.userId, role: ctx.role, unitIds: [] };
+    if (MANAGER_ROLES.has(ctx.role)) return { kind: 'manager', userId: ctx.userId, role: ctx.role, unitIds: [], units: new Map() };
+    if (ctx.role === 'observer') return { kind: 'observer', userId: ctx.userId, role: ctx.role, unitIds: [], units: new Map() };
     if (ctx.role === 'resident') {
       const d = today();
-      const unitIds = (await deps.memberships.listMemberships(ctx.apartmentId, ctx.userId))
-        .filter((m) => m.apartmentId === ctx.apartmentId && m.status === 'active' && m.startDate <= d && (!m.endDate || m.endDate >= d))
-        .map((m) => m.unitId);
-      return { kind: 'resident', userId: ctx.userId, role: ctx.role, unitIds: [...new Set(unitIds)] };
+      const units = new Map<string, ResidentUnit>();
+      for (const m of await deps.memberships.listMemberships(ctx.apartmentId, ctx.userId)) {
+        if (m.apartmentId !== ctx.apartmentId || !activeOn(m, d)) continue;
+        const cur = units.get(m.unitId);
+        units.set(m.unitId, { since: cur && cur.since < m.startDate ? cur.since : m.startDate, payers: [...(cur?.payers ?? []), payerOfMembership(m)] });
+      }
+      return { kind: 'resident', userId: ctx.userId, role: ctx.role, unitIds: [...units.keys()], units };
     }
     throw new ReservationError('forbidden', 'Bu rol rezervasyon modülünü kullanamaz');
   }
@@ -156,12 +177,33 @@ export function createReservationService(overrides: Partial<ReservationServiceDe
 
   const fctx = (ctx: ReservationContext) => ({ apartmentId: ctx.apartmentId, userId: ctx.userId });
 
+  /**
+   * KVKK: sakin bir rezervasyonu ancak o dairenin guncel uyesiyse ve rezervasyonu kendisi yaptiysa
+   * ya da rezervasyon dairedeki uyeliginin baslangicindan sonra yapildiysa gorur, iptal eder ve
+   * sinira sayar. Yeni kiraci onceki sakinin rezervasyonlarini gormez.
+   */
+  function entitled(actor: Actor, b: Pick<Booking, 'unitId' | 'createdBy' | 'createdAt'>): boolean {
+    const u = actor.units.get(b.unitId);
+    return !!u && (b.createdBy === actor.userId || istanbulDate(new Date(b.createdAt)) >= u.since);
+  }
+
+  /**
+   * Ucretin yazilacagi taraf: rezervasyonu yapanin bu dairedeki uyeliginden. Birden fazla uyelik
+   * farkli taraf veriyorsa veya kayit tutarsizsa (oturmayan kiraci) belirsizdir (undefined).
+   */
+  function payerOf(unit: ResidentUnit | undefined): BookingPayer | undefined {
+    if (!unit || !unit.payers.length || unit.payers.some((p) => !p)) return undefined;
+    const parties = new Set(unit.payers.map((p) => p?.liableParty));
+    return parties.size === 1 ? unit.payers[0] : undefined;
+  }
+
   async function write(apartmentId: string, w: ReservationWrite) {
     try {
       await repo.write(apartmentId, w);
     } catch (err) {
       if (err instanceof ReservationConflictError && err.reason === 'version') throw new ReservationError('conflict', err.message);
-      if (err instanceof ReservationConflictError && err.reason === 'slot') throw new ReservationError('slot_taken', 'Seçtiğiniz saat aralığı az önce doldu; başka bir saat seçin');
+      if (err instanceof ReservationConflictError && err.reason === 'slot') throw new ReservationError('slot_taken', SLOT_TAKEN);
+      if (err instanceof ReservationConflictError) throw new ReservationError('conflict', 'Kayıt başka bir işlemle değişti; sayfayı yenileyin');
       throw err;
     }
   }
@@ -443,7 +485,10 @@ export function createReservationService(overrides: Partial<ReservationServiceDe
     return { from: range.from, to: range.to, items: items.map((b) => adminView(b, now)) };
   }
 
-  /** Onay bekleyenler: baslangici gelmemis `pending` rezervasyonlar (en yakini once). */
+  /**
+   * Onay bekleyenler: baslangici gelmemis `pending` rezervasyonlar (en yakini once) ve iade
+   * bekleyenler (`reversal_pending`: iptal edildi, ucretin ters kaydi yapilamadi).
+   */
   async function pending(ctx: ReservationContext) {
     await staffOf(ctx);
     const now = deps.now();
@@ -455,7 +500,11 @@ export function createReservationService(overrides: Partial<ReservationServiceDe
       )
     ).flat();
     const items = (ids.length ? await repo.getBookings(ctx.apartmentId, ids) : []).filter((b) => b.status === 'pending' && b.start > nowIso).sort((a, b) => a.start.localeCompare(b.start));
-    return { items: items.map((b) => adminView(b, now)), total: items.length };
+    const queued = await repo.listFeeQueue(ctx.apartmentId);
+    const reversals = (queued.length ? await repo.getBookings(ctx.apartmentId, queued) : [])
+      .filter((b) => b.fee.status === 'reversal_pending')
+      .sort((a, b) => (a.cancelledAt ?? a.updatedAt).localeCompare(b.cancelledAt ?? b.updatedAt));
+    return { items: items.map((b) => adminView(b, now)), total: items.length, reversals: reversals.map((b) => adminView(b, now)) };
   }
 
   async function loadBooking(ctx: ReservationContext, bookingId: string): Promise<Booking> {
@@ -521,13 +570,17 @@ export function createReservationService(overrides: Partial<ReservationServiceDe
     const now = deps.now();
     const ahead = daysBetween(today(), date);
     const held = await repo.listHeldSlots(ctx.apartmentId, facility.facilityId, istanbulInstant(date, 0), istanbulInstant(date, 1440));
-    const holder = new Map(held.map((s) => [s.slotStart, s.unitId]));
+    // Kendi dairemdeki dilimler yalnizca gorme hakkim olan rezervasyonlarsa "mine"; digerleri "busy".
+    const ownHeld = held.filter((s) => actor.unitIds.includes(s.unitId));
+    const ownBookings = ownHeld.length ? await repo.getBookings(ctx.apartmentId, [...new Set(ownHeld.map((s) => s.bookingId))]) : [];
+    const mineIds = new Set(ownBookings.filter((b) => entitled(actor, b)).map((b) => b.bookingId));
+    const holder = new Map(held.map((s) => [s.slotStart, mineIds.has(s.bookingId) ? 'mine' : 'busy']));
     const w = windowOn(facility.openingHours, date);
     const slots = slotGrid(facility, date).map((g) => {
       const startAt = istanbulInstant(date, g.start);
       const atoms = lockSlotsOf(startAt, istanbulInstant(date, g.end));
       const holders = atoms.map((a) => holder.get(a)).filter((u): u is string => !!u);
-      const state = Date.parse(startAt) <= now.getTime() ? 'past' : holders.some((u) => !actor.unitIds.includes(u)) ? 'busy' : holders.length ? 'mine' : 'free';
+      const state = Date.parse(startAt) <= now.getTime() ? 'past' : holders.includes('busy') ? 'busy' : holders.length ? 'mine' : 'free';
       return { start: formatClock(g.start), end: formatClock(g.end), startAt, state };
     });
     return {
@@ -548,7 +601,7 @@ export function createReservationService(overrides: Partial<ReservationServiceDe
     const now = deps.now();
     const from = new Date(now.getTime() - HISTORY_DAYS * 86_400_000).toISOString();
     const ids = (await Promise.all(actor.unitIds.map((u) => repo.listUnitBookingIds(ctx.apartmentId, u, from)))).flat();
-    const bookings = (ids.length ? await repo.getBookings(ctx.apartmentId, ids) : []).filter((b) => actor.unitIds.includes(b.unitId));
+    const bookings = (ids.length ? await repo.getBookings(ctx.apartmentId, ids) : []).filter((b) => entitled(actor, b));
     const facilities = new Map((await repo.listFacilities(ctx.apartmentId)).map((f) => [f.facilityId, f]));
     const nowIso = now.toISOString();
     const upcoming = bookings.filter((b) => b.end > nowIso && b.status !== 'cancelled' && b.status !== 'rejected').sort((a, b) => a.start.localeCompare(b.start));
@@ -563,10 +616,13 @@ export function createReservationService(overrides: Partial<ReservationServiceDe
   // Sakin: rezervasyon
   // -------------------------------------------------------------------------
 
-  async function activeBookings(apartmentId: string, unitId: string, facilityId: string, now: Date): Promise<Booking[]> {
+  /** Daire basina sinira sayilanlar: aktorun gorme hakki olan (bkz. `entitled`) bitmemis rezervasyonlar. */
+  async function activeBookings(apartmentId: string, actor: Actor, unitId: string, facilityId: string, now: Date): Promise<Booking[]> {
     const ids = await repo.listUnitBookingIds(apartmentId, unitId, new Date(now.getTime() - MAX_BOOKING_MINUTES * MINUTE).toISOString());
     const nowIso = now.toISOString();
-    return (ids.length ? await repo.getBookings(apartmentId, ids) : []).filter((b) => b.facilityId === facilityId && HOLDING_STATUSES.includes(b.status) && b.end > nowIso);
+    return (ids.length ? await repo.getBookings(apartmentId, ids) : []).filter(
+      (b) => b.facilityId === facilityId && HOLDING_STATUSES.includes(b.status) && b.end > nowIso && entitled(actor, b),
+    );
   }
 
   /**
@@ -606,6 +662,15 @@ export function createReservationService(overrides: Partial<ReservationServiceDe
 
     if (!actor.unitIds.includes(unitId)) throw new ReservationError('forbidden', 'Yalnızca üyesi olduğunuz daire için rezervasyon yapabilirsiniz');
     const { facility, units } = await portalFacility(ctx, actor, facilityId);
+    const fee = facility.feeKurus;
+    // Ucret tarafi rezervasyonu yapanin uyeliginden; belirsizse ucretli alanda tahmin edilmez.
+    const payer = payerOf(actor.units.get(unitId));
+    if (fee > 0 && !payer) {
+      throw new ReservationError('unprocessable', 'Bu dairedeki üyelik kaydınızdan ücretin kime yazılacağı belirlenemiyor (malik / kiracı / oturma durumu). Lütfen yönetimle iletişime geçin.');
+    }
+    if (fee > 0 && payer?.liableParty === 'owner' && (await deps.ownership.billingOf(ctx.apartmentId, unitId)) === 'split') {
+      throw new ReservationError('unprocessable', 'Hisseli faturalanan dairede, dairede oturmayan malik adına ücretli rezervasyon yapılamaz (ücret paydaşlara bölünürdü). Lütfen yönetimle iletişime geçin.');
+    }
     const unit = units.find((u) => u.unitId === unitId);
     if (!unit) throw new ReservationError('not_found', 'Bağımsız bölüm bulunamadı');
     if (!openTo(facility, [unit.blockId])) throw new ReservationError('forbidden', 'Bu ortak alan dairenizin bloğuna açık değil');
@@ -621,13 +686,12 @@ export function createReservationService(overrides: Partial<ReservationServiceDe
     }
     const slots = lockSlotsOf(startIso, endIso);
     const bookingId = `${date.replaceAll('-', '')}-${shortId()}`;
-    const fee = facility.feeKurus;
     const status: BookingStatus = facility.requiresApproval || fee > 0 ? 'pending' : 'confirmed';
     const autoConfirm = !facility.requiresApproval && fee > 0;
 
     for (let attempt = 1; ; attempt++) {
       const guard = await repo.getGuard(ctx.apartmentId, facilityId, unitId);
-      const active = await activeBookings(ctx.apartmentId, unitId, facilityId, now);
+      const active = await activeBookings(ctx.apartmentId, actor, unitId, facilityId, now);
       if (active.length >= facility.maxActivePerUnit) {
         throw new ReservationError('unprocessable', `Bu alan için daire başına en fazla ${facility.maxActivePerUnit} aktif rezervasyon yapılabilir`);
       }
@@ -649,6 +713,7 @@ export function createReservationService(overrides: Partial<ReservationServiceDe
         ...(note ? { note } : {}),
         status,
         createdByRole: ctx.role,
+        ...(payer ? { payer } : {}),
         ...(autoConfirm ? { autoConfirm } : {}),
         fee: fee > 0 ? { amount: fee, status: 'pending', ...(facility.incomeAccountId ? { incomeAccountId: facility.incomeAccountId } : {}) } : { amount: 0, status: 'none' },
         ...(status === 'confirmed' ? { decidedAt: ts, decidedBy: ctx.userId } : {}),
@@ -663,6 +728,8 @@ export function createReservationService(overrides: Partial<ReservationServiceDe
         await repo.write(ctx.apartmentId, {
           at: ts,
           booking: { item: booking, expectedVersion: 0 },
+          // Alan bu arada duzenlendiyse / pasife alindiysa eski kurallarla yazilmaz.
+          facilityCheck: { facilityId, version: facility.version },
           hold: slots.map((slotStart) => lockOf(ctx.apartmentId, booking, slotStart, ts)),
           guard: { facilityId, unitId, expected: guard },
           indexes: [index(reservationKeys.facilityIndex(ctx.apartmentId, facilityId, startIso, bookingId)), index(reservationKeys.unitIndex(ctx.apartmentId, unitId, startIso, bookingId))],
@@ -671,7 +738,7 @@ export function createReservationService(overrides: Partial<ReservationServiceDe
             apartmentId: ctx.apartmentId,
             action: 'reservation.book',
             target: { type: 'reservation', id: bookingId },
-            details: { facilityId, facility: facility.name, unitId, date, start: formatClock(start), minutes, status, feeKurus: fee },
+            details: { facilityId, facility: facility.name, unitId, date, start: formatClock(start), minutes, status, feeKurus: fee, ...(payer ? { liableParty: payer.liableParty } : {}) },
           },
         });
       } catch (err) {
@@ -680,7 +747,15 @@ export function createReservationService(overrides: Partial<ReservationServiceDe
           if (r) return r;
         }
         if (err instanceof ReservationConflictError && err.reason === 'guard' && attempt < WRITE_RETRIES) continue;
-        if (err instanceof ReservationConflictError && err.reason === 'slot') throw new ReservationError('slot_taken', 'Seçtiğiniz saat aralığı az önce doldu; başka bir saat seçin');
+        if (err instanceof ReservationConflictError && err.reason === 'slot') throw new ReservationError('slot_taken', SLOT_TAKEN);
+        if (err instanceof ReservationConflictError && err.reason === 'facility') {
+          throw new ReservationError('conflict', 'Ortak alanın kuralları bu arada değişti veya alan rezervasyona kapatıldı; sayfayı yenileyip tekrar deneyin');
+        }
+        if (err instanceof ReservationConflictError && err.reason === 'contention') {
+          // Es zamanli yazim yarisi: dilim baska rezervasyonca alindiysa dolu, degilse tekrar denenebilir.
+          const held = await repo.listHeldSlots(ctx.apartmentId, facilityId, startIso, endIso);
+          if (held.some((h) => h.bookingId !== bookingId)) throw new ReservationError('slot_taken', SLOT_TAKEN);
+        }
         if (err instanceof ReservationConflictError) throw new ReservationError('conflict', 'Aynı anda başka bir rezervasyon işlendi; tekrar deneyin');
         throw err;
       }
@@ -720,12 +795,21 @@ export function createReservationService(overrides: Partial<ReservationServiceDe
       if (!deps.finance) throw new ReservationError('unprocessable', 'Ücret tahakkuku için finans modülü gerekli');
       let confirmed: Booking | undefined;
       const day = today();
+      const payer = booking.payer ?? { liableParty: 'occupant', relation: 'tenant' };
+      // Ucret, rezervasyonu yapanin tarafina yazilir: o kisi hala dairenin ayni taraftan uyesi olmali
+      // (onay gunu dairede kim oturuyorsa ona degil).
+      const bookerParties = (await deps.memberships.listMemberships(ctx.apartmentId, booking.createdBy))
+        .filter((m) => m.apartmentId === ctx.apartmentId && m.unitId === booking.unitId && activeOn(m, day))
+        .map((m) => payerOfMembership(m)?.liableParty);
+      if (!bookerParties.includes(payer.liableParty)) {
+        throw new ReservationError('unprocessable', 'Rezervasyonu yapan kişinin bu dairedeki üyeliği sona ermiş veya değişmiş; ücret kime yazılacağı belirsiz. Rezervasyonu reddedin veya iptal edin.');
+      }
       const r = await deps.finance.chargeUnit(
         fctx(ctx),
         {
           idempotencyKey: `RSVFEE_${booking.bookingId}`,
           unitId: booking.unitId,
-          liableParty: 'occupant',
+          liableParty: payer.liableParty,
           amount: booking.fee.amount,
           date: day,
           dueDate: booking.date > day ? booking.date : day,
@@ -738,6 +822,11 @@ export function createReservationService(overrides: Partial<ReservationServiceDe
           async build({ transaction }) {
             const cur = await repo.getBooking(ctx.apartmentId, booking.bookingId);
             if (!cur || cur.status !== 'pending') throw new ReservationError('conflict', 'Rezervasyon başka bir işlemle değişti; sayfayı yenileyin');
+            // Finans bos daire / hisse kurallariyla baska bir cariye yonlendirdiyse yazim yapilmaz.
+            const debits = transaction.lines.filter((l) => l.side === 'debit');
+            if (debits.length !== 1 || debits[0]?.liableParty !== payer.liableParty) {
+              throw new ReservationError('unprocessable', 'Ücret rezervasyonu yapan tarafın carisine yazılamıyor (daire boş görünüyor veya hisseli faturalama); rezervasyonu reddedin veya iptal edin.');
+            }
             const { error: _e, ...fee } = cur.fee;
             const next: Booking = {
               ...cur,
@@ -751,7 +840,7 @@ export function createReservationService(overrides: Partial<ReservationServiceDe
             confirmed = next;
             return {
               replaceRecords: [{ item: next, expectedVersion: cur.version, label: 'reservation' }],
-              auditDetails: { reservation: { action: opts.action, bookingId: cur.bookingId, facilityId: cur.facilityId, unitId: cur.unitId, date: cur.date, start: timesOf(cur).startTime } },
+              auditDetails: { reservation: { action: opts.action, bookingId: cur.bookingId, facilityId: cur.facilityId, unitId: cur.unitId, date: cur.date, start: timesOf(cur).startTime, liableParty: payer.liableParty } },
             };
           },
         },
@@ -852,9 +941,11 @@ export function createReservationService(overrides: Partial<ReservationServiceDe
   }
 
   /**
-   * Iptal. Sakin: kendi dairesinin bekleyen / onayli rezervasyonu, alanin iptal suresi dolmadan.
-   * Yonetici: gerekceyle her zaman. Ucret tahakkuk edildiyse Finans ters kaydi yapilir; ters kayit
-   * yapilamazsa (`reversal_pending`) yonetici ayni ucla yeniden dener.
+   * Iptal. Sakin: gorme hakki oldugu (bkz. `entitled`) bekleyen / onayli rezervasyon, alanin iptal
+   * suresi dolmadan. Yonetici: gerekceyle her zaman. Ucret tahakkuk edildiyse Finans ters kaydi
+   * yapilir; iptal yazildiktan sonra ters kayit hatasi istegi BOZMAZ: hata rezervasyona yazilir,
+   * yanit `warning` tasir ve kayit yonetimin iade kuyruguna (`RFEEQ#`) duser. Yonetici ayni ucla
+   * yeniden dener veya `fee-resolved` ile elle cozuldu olarak isaretler.
    */
   async function cancel(ctx: ReservationContext, bookingId: string, body: unknown) {
     const actor = await actorOf(ctx);
@@ -862,16 +953,17 @@ export function createReservationService(overrides: Partial<ReservationServiceDe
     const o = asObject(body);
     const version = parseVersion(o);
     const booking = await loadBooking(ctx, bookingId);
-    // Sakin baska dairenin rezervasyonunun varligini da ogrenmez.
-    if (actor.kind === 'resident' && !actor.unitIds.includes(booking.unitId)) throw new ReservationError('not_found', 'Rezervasyon bulunamadı');
+    // Sakin gorme hakki olmayan rezervasyonun (baska daire, onceki sakin) varligini da ogrenmez.
+    if (actor.kind === 'resident' && !entitled(actor, booking)) throw new ReservationError('not_found', 'Rezervasyon bulunamadı');
     assertVersion(booking, version);
     const now = deps.now();
     const facility = await repo.getFacility(ctx.apartmentId, booking.facilityId);
     const view = (b: Booking) => (actor.kind === 'resident' ? residentView(actor, b, facility, deps.now()) : adminView(b, deps.now()));
+    const result = (r: { booking: Booking; warning?: string }) => ({ booking: view(r.booking), ...(r.warning ? { warning: r.warning } : {}) });
 
     if (!HOLDING_STATUSES.includes(booking.status)) {
       // Yarida kalan ucret iadesi: yalnizca yonetim yeniden dener.
-      if (booking.fee.status === 'reversal_pending' && actor.kind === 'manager') return { booking: view(await reverseFee(ctx, booking)) };
+      if (booking.fee.status === 'reversal_pending' && actor.kind === 'manager') return result(await reverseFee(ctx, booking));
       throw new ReservationError('invalid_state', 'Rezervasyon zaten iptal edilmiş veya reddedilmiş');
     }
     let reason: string | undefined;
@@ -900,6 +992,10 @@ export function createReservationService(overrides: Partial<ReservationServiceDe
       at: ts,
       booking: { item: next, expectedVersion: version },
       release: booking.slots.map((s) => lockOf(ctx.apartmentId, booking, s, ts)),
+      // Iade tamamlanana kadar yonetimin iade kuyrugunda gorunur (okuma guncel ucret durumuna gore suzer).
+      ...(charged
+        ? { indexes: [{ ...reservationKeys.feeQueue(ctx.apartmentId, bookingId), entityType: 'RESERVATION_INDEX' as const, apartmentId: ctx.apartmentId, bookingId, facilityId: booking.facilityId, unitId: booking.unitId, start: booking.start }] }
+        : {}),
       audit: {
         apartmentId: ctx.apartmentId,
         action: 'reservation.cancel',
@@ -908,19 +1004,22 @@ export function createReservationService(overrides: Partial<ReservationServiceDe
         details: { facilityId: booking.facilityId, unitId: booking.unitId, date: booking.date, from: booking.status, by: next.cancelKind, ...(charged ? { feeTransactionId: booking.fee.transactionId } : {}) },
       },
     });
-    return { booking: view(charged ? await reverseFee(ctx, next) : next) };
+    return result(charged ? await reverseFee(ctx, next) : { booking: next });
   }
+
+  const REVERSAL_WARNING = 'Rezervasyon iptal edildi; ücret iadesi (ters kayıt) yapılamadı ve yönetimin iade kuyruğuna alındı.';
 
   /**
    * Tahakkuk edilmis ucretin Finans ters kaydi (idempotent: `REV_<islem>`; zaten ters kaydedildiyse
-   * yalnizca rezervasyon isaretlenir). Hata rezervasyona yazilir, iptal geri alinmaz.
+   * yalnizca rezervasyon isaretlenir). Iptal zaten yazilmistir: hicbir hata disari firlatilmaz; hata
+   * metni rezervasyona (`fee.error`) yazilir ve `warning` doner.
    */
-  async function reverseFee(ctx: ReservationContext, booking: Booking): Promise<Booking> {
+  async function reverseFee(ctx: ReservationContext, booking: Booking): Promise<{ booking: Booking; warning?: string }> {
     const txId = booking.fee.transactionId;
-    if (!txId || !deps.finance) return booking;
-    const finance = deps.finance;
     let fee: Booking['fee'];
     try {
+      if (!txId || !deps.finance) throw new ReservationError('unprocessable', 'Ters kayıt için finans işlemi bulunamadı');
+      const finance = deps.finance;
       if (!(await finance.isReversed(fctx(ctx), txId))) {
         await finance.reverseTransaction(fctx(ctx), txId, { reason: `Rezervasyon iptali: ${booking.facilityName} ${trDate(booking.date)} ${timesOf(booking).startTime}`.slice(0, 300) });
       }
@@ -928,18 +1027,50 @@ export function createReservationService(overrides: Partial<ReservationServiceDe
       fee = { ...rest, status: 'reversed', reversedAt: stamp() };
     } catch (err) {
       const message = domainMessage(err);
-      if (!message) throw err;
-      fee = { ...booking.fee, status: 'reversal_pending', error: `Ücret iadesi (ters kayıt) yapılamadı: ${message}`.slice(0, 300) };
+      if (!message) console.error(err);
+      fee = { ...booking.fee, status: 'reversal_pending', error: `Ücret iadesi (ters kayıt) yapılamadı: ${message ?? 'beklenmeyen hata'}`.slice(0, 300) };
     }
     const next: Booking = { ...booking, fee, ...touch(ctx, booking, stamp()) };
+    const warning = fee.status === 'reversal_pending' ? REVERSAL_WARNING : undefined;
     try {
       await repo.write(ctx.apartmentId, { at: next.updatedAt, booking: { item: next, expectedVersion: booking.version } });
-      return next;
+      return { booking: next, ...(warning ? { warning } : {}) };
     } catch (err) {
-      // Es zamanli guncelleme: ters kayit idempotent, bir sonraki deneme isaretler.
-      if (err instanceof ReservationConflictError) return (await repo.getBooking(ctx.apartmentId, booking.bookingId)) ?? booking;
-      throw err;
+      // Es zamanli guncelleme veya gecici hata: ters kayit idempotent; kayit iade kuyrugunda kalir.
+      if (!(err instanceof ReservationConflictError)) console.error(err);
+      const fresh = await repo.getBooking(ctx.apartmentId, booking.bookingId).catch(() => undefined);
+      const shown = fresh ?? next;
+      return { booking: shown, ...(shown.fee.status === 'reversal_pending' ? { warning: REVERSAL_WARNING } : {}) };
     }
+  }
+
+  /**
+   * Finans engeli (ornegin kalem yapilandirma planina bagli) nedeniyle ters kaydi yapilamayan ucreti
+   * yonetici gerekceyle "elle cozuldu" olarak isaretler (denetimli; defter degismez, duzeltme Finans'ta).
+   */
+  async function resolveFeeManually(ctx: ReservationContext, bookingId: string, body: unknown) {
+    await managerOf(ctx);
+    const o = asObject(body);
+    const version = parseVersion(o);
+    const reason = reqReason(o, 'reason');
+    const booking = await loadBooking(ctx, bookingId);
+    if (booking.fee.status !== 'reversal_pending') throw new ReservationError('invalid_state', 'Yalnızca iadesi bekleyen ücret elle çözüldü olarak işaretlenebilir');
+    assertVersion(booking, version);
+    const ts = stamp();
+    const { error: _e, ...rest } = booking.fee;
+    const next: Booking = { ...booking, fee: { ...rest, status: 'resolved_manually', resolvedNote: reason, resolvedAt: ts, resolvedBy: ctx.userId }, ...touch(ctx, booking, ts) };
+    await write(ctx.apartmentId, {
+      at: ts,
+      booking: { item: next, expectedVersion: version },
+      audit: {
+        apartmentId: ctx.apartmentId,
+        action: 'reservation.fee_manual_resolve',
+        target: { type: 'reservation', id: bookingId },
+        reason,
+        details: { unitId: booking.unitId, feeKurus: booking.fee.amount, feeTransactionId: booking.fee.transactionId, lastError: booking.fee.error },
+      },
+    });
+    return { booking: adminView(next, deps.now()) };
   }
 
   return {
@@ -952,6 +1083,7 @@ export function createReservationService(overrides: Partial<ReservationServiceDe
     approve,
     reject,
     cancel,
+    resolveFeeManually,
     portalFacilities,
     availability,
     myBookings,

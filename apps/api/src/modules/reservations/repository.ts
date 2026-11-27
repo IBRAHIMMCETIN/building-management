@@ -3,7 +3,7 @@ import { BatchGetCommand, QueryCommand, type QueryCommandOutput, type TransactWr
 import { getDynamo, getTenantItem, queryTenantAll, tenantPk, toDataAccessError } from '../../config/dynamodb.js';
 import { toOutboxItems } from '../../events/outbox.js';
 import type { DomainEvent } from '../../events/publisher.js';
-import { type AuditDraft, sendWithAudit } from '../audit/log.js';
+import { AuditChainBusyError, type AuditDraft, WriteContentionError, sendWithAudit } from '../audit/log.js';
 import {
   type Booking,
   type BookingIndex,
@@ -21,9 +21,13 @@ import {
  * `attribute_not_exists(PK) OR state = released` kosuluyla tutulur; ayni dilimi isteyen ikinci
  * yazim (es zamanli olsa da) reddedilir. Hicbir oge silinmez (Lambda'larin DeleteItem yetkisi yok).
  */
+/**
+ * `facility`: alan bu arada degisti / pasife alindi (eski kurallarla rezervasyon yazilmaz).
+ * `contention`: es zamanli yazimlar yuzunden tekrar denemeler tukendi (dilimler kontrol edilmeli).
+ */
 export class ReservationConflictError extends Error {
   constructor(
-    readonly reason: 'duplicate' | 'version' | 'slot' | 'guard',
+    readonly reason: 'duplicate' | 'version' | 'slot' | 'guard' | 'facility' | 'contention',
     message = 'Kayıt başka bir işlemle değişti; sayfayı yenileyin',
   ) {
     super(message);
@@ -37,6 +41,8 @@ export type ReservationWrite = {
   facility?: { item: Facility; expectedVersion: number };
   /** 0: yeni rezervasyon. */
   booking?: { item: Booking; expectedVersion: number };
+  /** Ayni yazimda alanin okunan surumde ve aktif oldugu kontrol edilir (`ConditionCheck`). */
+  facilityCheck?: { facilityId: string; version: number };
   /** Tutulacak dilimler (bos ya da serbest birakilmis olmali). */
   hold?: SlotLock[];
   /** Serbest birakilacak dilimler (`state: released`); yalnizca ayni rezervasyon tutuyorsa. */
@@ -63,6 +69,8 @@ export type ReservationRepository = {
   listHeldSlots(apartmentId: string, facilityId: string, from: string, to: string): Promise<SlotLock[]>;
   getGuard(apartmentId: string, facilityId: string, unitId: string): Promise<number>;
   getIdempotency(apartmentId: string, key: string): Promise<ReservationIdempotency | undefined>;
+  /** Iade kuyrugundaki (ters kaydi yapilamamis) rezervasyon kimlikleri. */
+  listFeeQueue(apartmentId: string): Promise<string[]>;
   write(apartmentId: string, w: ReservationWrite): Promise<void>;
 };
 
@@ -142,6 +150,10 @@ export function createReservationRepository(): ReservationRepository {
       return item?.seq ?? 0;
     },
     getIdempotency: (apt, key) => getTenantItem<ReservationIdempotency>(reservationKeys.idempotency(apt, key)),
+    async listFeeQueue(apt) {
+      const items = await queryTenantAll<BookingIndex>(apt, reservationKeys.feeQueuePrefix, { ConsistentRead: true });
+      return items.map((i) => i.bookingId);
+    },
     async write(apt, w) {
       const pk = tenantPk(apt);
       for (const doc of [w.facility?.item, w.booking?.item, ...(w.hold ?? []), ...(w.release ?? []), ...(w.indexes ?? []), w.idempotency]) {
@@ -170,6 +182,17 @@ export function createReservationRepository(): ReservationRepository {
       if (w.idempotency) add('duplicate', { Put: { TableName: tableName, Item: w.idempotency, ConditionExpression: 'attribute_not_exists(PK)' } });
       if (w.facility) add('version', versioned(w.facility.item, w.facility.expectedVersion));
       if (w.booking) add('version', versioned(w.booking.item, w.booking.expectedVersion));
+      if (w.facilityCheck) {
+        add('facility', {
+          ConditionCheck: {
+            TableName: tableName,
+            Key: reservationKeys.facility(apt, w.facilityCheck.facilityId),
+            ConditionExpression: 'attribute_exists(PK) AND #version = :fv AND #status = :active',
+            ExpressionAttributeNames: { '#version': 'version', '#status': 'status' },
+            ExpressionAttributeValues: { ':fv': w.facilityCheck.version, ':active': 'active' },
+          },
+        });
+      }
       for (const s of w.hold ?? []) {
         add('slot', {
           Put: {
@@ -213,10 +236,15 @@ export function createReservationRepository(): ReservationRepository {
         await sendWithAudit(client, items, w.audit);
       } catch (err) {
         if (err instanceof TransactionCanceledException) {
+          // Kosul hatasi once; yoksa es zamanli islem cakismasi (TransactionConflict) ayni ogeye eslenir:
+          // ayni dilimi ayni anda yazan iki rezervasyondan kaybeden `slot` alir.
           const reasons = err.CancellationReasons ?? [];
-          const failed = reasons.findIndex((r) => r.Code === 'ConditionalCheckFailed');
+          let failed = reasons.findIndex((r) => r.Code === 'ConditionalCheckFailed');
+          if (failed < 0 || failed >= kinds.length) failed = reasons.findIndex((r) => r.Code === 'TransactionConflict');
           if (failed >= 0 && failed < kinds.length) throw new ReservationConflictError(kinds[failed] as ReservationConflictError['reason']);
         }
+        // Tekrar denemeleri tukenmis cekisme: dilim tutuluyorsa servis dilim durumunu kontrol eder.
+        if ((err instanceof WriteContentionError || err instanceof AuditChainBusyError) && w.hold?.length) throw new ReservationConflictError('contention');
         throw toDataAccessError(err);
       }
     },

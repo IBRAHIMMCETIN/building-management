@@ -11,12 +11,14 @@
  *   RBFAC#<facilityId>#<startIso>#<bookingId>  takvim indeksi (yalnizca eklenir; baslangic degismez)
  *   RBUNIT#<unitId>#<startIso>#<bookingId>     daire indeksi (sakin "rezervasyonlarim", aktif sayim)
  *   RIDEM#<idempotencyKey>                     olusturma idempotency kaydi (alan ve rezervasyon)
+ *   RFEEQ#<bookingId>                          iade kuyrugu: ters kaydi yapilamayan ucret (yalnizca eklenir;
+ *                                              okuma rezervasyonun guncel ucret durumuna gore suzer)
  *
  * Saatler Europe/Istanbul duvar saatiyle girilir (`HH:MM`), kayitlarda UTC ISO tutulur.
  * Ucret (kurus) onay aninda Finans `chargeUnit` ile oturan alt carisine tahakkuk eder; iptalde
  * Finans `reverseTransaction` ile ters kayit yapilir. Bu modul defter satiri yazmaz.
  */
-import type { AuditFields, EntityStatus, IsoDate, IsoDateTime, TableKeys } from '../core/types.js';
+import type { AuditFields, EntityStatus, IsoDate, IsoDateTime, LiableParty, TableKeys } from '../core/types.js';
 
 /** Kilit ve takvim izgarasi: tum dilim uzunluklari ve acilis saatleri bu adimin katidir. */
 export const SLOT_STEP_MINUTES = 30;
@@ -75,9 +77,10 @@ export const HOLDING_STATUSES: readonly BookingStatus[] = ['pending', 'confirmed
 /**
  * Ucret durumu: `none` ucretsiz; `pending` onay bekliyor (tahakkuk yok); `charged` tahakkuk edildi;
  * `void` tahakkuk olmadan iptal / ret; `reversal_pending` iptal edildi, ters kayit yapilamadi
- * (yeniden denenir); `reversed` ters kayitla iade edildi.
+ * (yeniden denenir); `reversed` ters kayitla iade edildi; `resolved_manually` Finans engeli nedeniyle
+ * yonetici gerekceyle elle cozuldu olarak isaretledi (denetimli).
  */
-export type FeeStatus = 'none' | 'pending' | 'charged' | 'void' | 'reversal_pending' | 'reversed';
+export type FeeStatus = 'none' | 'pending' | 'charged' | 'void' | 'reversal_pending' | 'reversed' | 'resolved_manually';
 export type BookingFee = {
   amount: number;
   status: FeeStatus;
@@ -87,7 +90,18 @@ export type BookingFee = {
   reversedAt?: IsoDateTime;
   /** Son tahakkuk / ters kayit hatasi (yoneticiye). */
   error?: string;
+  /** Elle cozum gerekcesi (`resolved_manually`). */
+  resolvedNote?: string;
+  resolvedAt?: IsoDateTime;
+  resolvedBy?: string;
 };
+
+/**
+ * Ucreti odeyecek taraf, rezervasyonu YAPAN kisinin o gunku uyeliginden belirlenir ve saklanir:
+ * dairede oturuyorsa oturan (kiraci / oturan malik) carisi, oturmuyorsa malik carisi. Onayda bu
+ * taraf tahakkuk edilir (onay gunu dairede kimin oturduguna gore degil).
+ */
+export type BookingPayer = { liableParty: LiableParty; relation: 'owner' | 'tenant' };
 
 export type Booking = TableKeys &
   AuditFields & {
@@ -109,6 +123,8 @@ export type Booking = TableKeys &
     note?: string;
     status: BookingStatus;
     createdByRole: string;
+    /** Ucretin yazilacagi taraf (rezervasyon aninda, yapan kisinin uyeliginden). */
+    payer?: BookingPayer;
     /** Onay gerektirmeyen ucretli alan: olusturmadan hemen sonra tahakkukla onaylanir. */
     autoConfirm?: boolean;
     fee: BookingFee;
@@ -164,4 +180,6 @@ export const reservationKeys = {
   unitIndex: (apt: string, unitId: string, start: IsoDateTime, bookingId: string): TableKeys => ({ PK: pk(apt), SK: `RBUNIT#${unitId}#${start}#${bookingId}` }),
   unitIndexPrefix: (unitId: string) => `RBUNIT#${unitId}#`,
   idempotency: (apt: string, key: string): TableKeys => ({ PK: pk(apt), SK: `RIDEM#${key}` }),
+  feeQueue: (apt: string, bookingId: string): TableKeys => ({ PK: pk(apt), SK: `RFEEQ#${bookingId}` }),
+  feeQueuePrefix: 'RFEEQ#',
 };

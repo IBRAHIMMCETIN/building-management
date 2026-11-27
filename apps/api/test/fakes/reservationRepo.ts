@@ -24,7 +24,7 @@ export function createFakeReservationRepo(store: Map<string, Doc> = new Map()) {
       .filter((i) => i.PK === `APT#${apt}` && i.SK >= from && i.SK <= to)
       .sort((a, b) => a.SK.localeCompare(b.SK))
       .map((i) => structuredClone(i) as unknown as T);
-  let failNext: ReservationConflictError | undefined;
+  let failNext: Error | undefined;
   /** Yazimdan hemen once calisir (es zamanli istek benzetimi). */
   let beforeWrite: (() => Promise<void>) | undefined;
 
@@ -41,17 +41,15 @@ export function createFakeReservationRepo(store: Map<string, Doc> = new Map()) {
     listHeldSlots: async (apt, fac, from, to) => between<SlotLock>(apt, `RSLOT#${fac}#${from}`, `RSLOT#${fac}#${to}`).filter((s) => s.state === 'held' && s.slotStart < to),
     getGuard: async (apt, fac, unit) => (store.get(`APT#${apt}|RGUARD#${fac}#${unit}`)?.seq as number | undefined) ?? 0,
     getIdempotency: async (apt, key) => get<ReservationIdempotency>({ PK: `APT#${apt}`, SK: `RIDEM#${key}` }),
+    listFeeQueue: async (apt) => between<BookingIndex>(apt, 'RFEEQ#', 'RFEEQ#~').map((i) => i.bookingId),
     async write(apt, w) {
-      if (beforeWrite) {
-        const hook = beforeWrite;
-        beforeWrite = undefined;
-        await hook();
-      }
-      if (failNext) {
-        const e = failNext;
-        failNext = undefined;
-        throw e;
-      }
+      // Kanca ve hata bu yazima aittir: kancanin icindeki (araya giren) yazim etkilenmez.
+      const hook = beforeWrite;
+      const fail = failNext;
+      beforeWrite = undefined;
+      failNext = undefined;
+      if (hook) await hook();
+      if (fail) throw fail;
       const pk = `APT#${apt}`;
       for (const d of [w.facility?.item, w.booking?.item, ...(w.hold ?? []), ...(w.release ?? []), ...(w.indexes ?? []), w.idempotency]) {
         if (d && d.PK !== pk) throw new Error('Kiraci uyusmazligi');
@@ -62,6 +60,10 @@ export function createFakeReservationRepo(store: Map<string, Doc> = new Map()) {
         if (!v) continue;
         const cur = store.get(k(v.item)) as { version?: number } | undefined;
         if (v.expectedVersion === 0 ? !!cur : cur?.version !== v.expectedVersion) throw new ReservationConflictError('version');
+      }
+      if (w.facilityCheck) {
+        const f = store.get(`${pk}|RFAC#${w.facilityCheck.facilityId}`);
+        if (!f || f.version !== w.facilityCheck.version || f.status !== 'active') throw new ReservationConflictError('facility');
       }
       for (const s of w.hold ?? []) {
         const cur = store.get(k(s));
@@ -95,7 +97,7 @@ export function createFakeReservationRepo(store: Map<string, Doc> = new Map()) {
     audits,
     outbox,
     writes,
-    failNextWith: (e: ReservationConflictError) => {
+    failNextWith: (e: Error) => {
       failNext = e;
     },
     /** Bir sonraki yazimdan once `hook` calisir (araya giren es zamanli istek). */
