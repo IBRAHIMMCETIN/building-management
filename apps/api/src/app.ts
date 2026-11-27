@@ -14,6 +14,8 @@ import { apartmentRoleRoutes } from './modules/apartment-roles/routes.js';
 import { type ApartmentRoleService, createApartmentRoleService } from './modules/apartment-roles/service.js';
 import { type AnnouncementService, createAnnouncementService } from './modules/announcements/service.js';
 import { pollPortalRoutes, pollRoutes } from './modules/polls/routes.js';
+import { assemblyRoutes } from './modules/assemblies/routes.js';
+import { type AssemblyService, createAssemblyService } from './modules/assemblies/service.js';
 import { type PollService, createPollService } from './modules/polls/service.js';
 import { maintenanceRoutes } from './modules/maintenance/routes.js';
 import { type MaintenanceService, createMaintenanceService } from './modules/maintenance/service.js';
@@ -149,6 +151,8 @@ export type AppConfig = {
   announcementService?: AnnouncementService;
   /** Y1: anket / oylama (yonetici + sakin portali). */
   pollService?: PollService;
+  /** Y1-3: kat malikleri kurulu hazirligi (hazirun cetveli, katilim, yeter sayi, sayim). */
+  assemblyService?: AssemblyService;
   /** Faz 3 (O1): ariza / talep. */
   ticketService?: TicketService;
   /** Faz 3 (O1-3): periyodik bakim. */
@@ -356,6 +360,7 @@ export function createApp(config: AppConfig) {
   // Y1: anket / oylama. Oy hakki ve agirlik mulkiyet modulunun oy listesinden; sakin dairesi portal kuraliyla.
   const pollService = config.pollService ?? createPollService({ portal: portalService });
   app.route('/api/polls', pollRoutes({ authenticate, service: pollService }));
+  app.route('/api/assemblies', assemblyRoutes({ authenticate, service: config.assemblyService ?? createAssemblyService() }));
 
   // Faz 3 (O1): ariza / talep (yonetim, gorevli, guvenlik, denetci).
   const ticketService = config.ticketService ?? createTicketService();

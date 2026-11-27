@@ -84,7 +84,7 @@ export function toBps(part: bigint, whole: bigint): number {
   return Number((part * 20_000n + whole) / (2n * whole));
 }
 
-function fraction(numerator: bigint, denominator: bigint): Fraction {
+export function fraction(numerator: bigint, denominator: bigint): Fraction {
   const max = BigInt(Number.MAX_SAFE_INTEGER);
   if (numerator > max || denominator > max) {
     // Uygulamada olusmaz (arsa paylari ortak paydali girilir); yine de sessiz tasma yerine acik hata.
