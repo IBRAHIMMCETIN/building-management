@@ -276,9 +276,89 @@ function spec(n: Notification, ctx: EmailContext): Spec | undefined {
         cta: { label: 'Geçişlerimi görüntüle', path: 'ziyaretci' },
       };
     }
+    case 'reservation_approved':
+    case 'reservation_rejected':
+    case 'reservation_cancelled':
+      return reservationSpec(n, ctx);
     default:
       return undefined;
   }
+}
+
+/** Iptal edilen rezervasyonda ucretin durumu (yonetim iptali). */
+function refundText(status: string, amount: string): string | undefined {
+  switch (status) {
+    case 'reversed':
+      return `${amount} iade edildi (ters kayıt hesabınıza işlendi)`;
+    case 'reversal_pending':
+      return `${amount} iadesi yönetim tarafından işleniyor`;
+    case 'resolved_manually':
+      return `${amount} yönetim tarafından ayrıca düzeltildi`;
+    case 'void':
+    case 'pending':
+      return 'Ücret tahakkuk edilmemişti; ödeme gerekmez';
+    default:
+      return undefined;
+  }
+}
+
+/** Ortak alan rezervasyonu: yonetimin onayi, reddi ve iptali (rezervasyonu yapan sakine). */
+function reservationSpec(n: Notification, ctx: EmailContext): Spec {
+  const d = n.data;
+  const unit = ctx.unitLabel(str(d.unitId));
+  const facility = str(d.facilityName) || 'Ortak alan';
+  const when = `${formatDate(d.date)} ${formatDateTime(d.start, true)}-${formatDateTime(d.end, true)}`;
+  const fee = num(d.feeKurus);
+  const rows: [string, string][] = [
+    ['Ortak alan', facility],
+    ['Tarih', formatDate(d.date)],
+    ['Saat', `${formatDateTime(d.start, true)}-${formatDateTime(d.end, true)}`],
+    ['Bağımsız bölüm', unit],
+  ];
+  const reason = str(d.reason);
+  const cta = { label: 'Rezervasyonlarım', path: 'rezervasyon' };
+  if (n.template === 'reservation_approved') {
+    const note = str(d.note);
+    return {
+      subject: `Rezervasyonunuz onaylandı: ${facility} ${formatDate(d.date)}`,
+      heading: 'Rezervasyonunuz onaylandı',
+      preheader: `${facility}, ${when}`,
+      blocks: [
+        { kind: 'p', text: `${unit} adına ${facility} için yaptığınız rezervasyon yönetim tarafından onaylandı.` },
+        { kind: 'rows', rows: [...rows, ...(fee > 0 ? [['Ücret', `${formatTL(fee)} (hesabınıza tahakkuk edildi)`] as [string, string]] : [])] },
+        ...(note ? [{ kind: 'p' as const, text: `Yönetimin notu: ${note}` }] : []),
+        { kind: 'note', text: 'Planınız değişirse rezervasyonu portaldan, alanın iptal süresi dolmadan iptal edebilirsiniz.' },
+      ],
+      cta,
+    };
+  }
+  if (n.template === 'reservation_rejected') {
+    return {
+      subject: `Rezervasyonunuz reddedildi: ${facility} ${formatDate(d.date)}`,
+      heading: 'Rezervasyon talebiniz reddedildi',
+      preheader: `${facility}, ${when}`,
+      blocks: [
+        { kind: 'p', text: `${unit} adına ${facility} için yaptığınız rezervasyon talebi yönetim tarafından reddedildi.` },
+        { kind: 'rows', rows },
+        ...(reason ? [{ kind: 'p' as const, text: `Gerekçe: ${reason}` }] : []),
+        { kind: 'note', text: `Seçtiğiniz saat aralığı yeniden rezervasyona açıldı.${fee > 0 ? ' Ücret tahakkuk edilmedi.' : ''}` },
+      ],
+      cta: { ...cta, label: 'Yeni rezervasyon yap' },
+    };
+  }
+  const refund = fee > 0 ? refundText(str(d.feeStatus), formatTL(fee)) : undefined;
+  return {
+    subject: `Rezervasyonunuz iptal edildi: ${facility} ${formatDate(d.date)}`,
+    heading: 'Rezervasyonunuz iptal edildi',
+    preheader: `${facility}, ${when}`,
+    blocks: [
+      { kind: 'p', text: `${unit} adına ${facility} için yaptığınız rezervasyon yönetim tarafından iptal edildi.` },
+      { kind: 'rows', rows: [...rows, ...(refund ? [['Ücret', refund] as [string, string]] : [])] },
+      ...(reason ? [{ kind: 'p' as const, text: `Gerekçe: ${reason}` }] : []),
+      ...(str(d.feeStatus) === 'reversal_pending' && fee > 0 ? [{ kind: 'note' as const, text: 'İade tamamlandığında tutar hesabınızda alacak olarak görünür; sorularınız için yönetimle iletişime geçebilirsiniz.' }] : []),
+    ],
+    cta,
+  };
 }
 
 const TICKET_STATUS_TEXT: Record<string, string> = {

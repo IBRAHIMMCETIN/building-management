@@ -12,6 +12,8 @@ import { isTicketEvent, operationsDigestRecipients, ticketRecipients } from '../
 import { type CourierSnapshot, gateRecipients, isGateEvent } from '../modules/gate/notifications.js';
 import { type GateRepository, gateRepository } from '../modules/gate/repository.js';
 import { type Courier, gateKeys } from '../modules/gate/types.js';
+import { type BookingSnapshot, isReservationEvent, reservationRecipients } from '../modules/reservations/notifications.js';
+import { type ReservationRepository, reservationRepository } from '../modules/reservations/repository.js';
 
 export type { DeliveryResult, Notification, NotificationTemplate, Notifier } from '../modules/notifications/notifier.js';
 export { createLogNotifier } from '../modules/notifications/notifier.js';
@@ -35,6 +37,8 @@ export { createLogNotifier } from '../modules/notifications/notifier.js';
  *       OPERATIONS_DIGEST      -> gunluk ozet: yonetim tumu, gorevli kendi kalemleri
  *       GATE_COURIER_ARRIVED   -> bolumde oturan guncel uyeler; kurye kaydi okunur (beklemiyorsa yok)
  *       GATE_GUEST_ENTERED     -> gecisi olusturan sakin (hala oturuyorsa)  (modules/gate/notifications.ts)
+ *       RESERVATION_*          -> rezervasyonu yapan sakin (hala uyeyse); gerekce ve ucret iadesinin
+ *                                 guncel durumu rezervasyon kaydindan (modules/reservations/notifications.ts)
  *  4. Her aliciya `Notifier` ile bildirim gonderilir: NOTIFICATION_CHANNEL=log (yapilandirilmis
  *     log) veya ses (e-posta; tercih, adres ve alici bazli tekrar korumasi kanal icinde, bkz.
  *     modules/notifications/email.ts). SMS / WhatsApp ayni arayuzle eklenecek.
@@ -109,7 +113,7 @@ const receives = (m: UnitMembership, item: { unitId: string; userId?: string }, 
  * Worker'in olay icin ayrica okudugu kayitlar (payload kisisel veri / serbest metin tasimaz).
  * `now`: zamana bagli kurallar (kurye yanit suresi); verilmezse su an.
  */
-export type NotificationRecords = { now?: Date; courier?: CourierSnapshot };
+export type NotificationRecords = { now?: Date; courier?: CourierSnapshot; booking?: BookingSnapshot };
 
 /** Olaydan alici bazli bildirimleri uretir (ayni kullaniciya ayni olay icin tek bildirim). */
 export function buildNotifications(
@@ -133,6 +137,15 @@ export function buildNotifications(
   }
   if (isGateEvent(event)) {
     return gateRecipients(event, memberships, day, { now: records.now ?? new Date(), ...('courier' in records ? { courier: records.courier } : {}) }).map((r) => ({
+      eventId: event.eventId,
+      apartmentId: event.apartmentId,
+      userId: r.userId,
+      template: r.template,
+      data: r.data,
+    }));
+  }
+  if (isReservationEvent(event)) {
+    return reservationRecipients(event, memberships, day, records.booking).map((r) => ({
       eventId: event.eventId,
       apartmentId: event.apartmentId,
       userId: r.userId,
@@ -277,6 +290,8 @@ export type WorkerDeps = {
   roles: Pick<ApartmentRoleRepository, 'list'>;
   /** Guvenlik kapisi: kurye kaydinin guncel durumu ve firmasi. */
   gate: Pick<GateRepository, 'get'>;
+  /** Rezervasyon: gerekce / not ve ucret iadesinin guncel durumu. */
+  reservations: Pick<ReservationRepository, 'getBooking'>;
   notifier: Notifier;
   /** Olay daha once islendi mi? */
   isProcessed: (apartmentId: string, eventId: string) => Promise<boolean>;
@@ -297,6 +312,7 @@ export function createNotificationWorker(overrides: Partial<WorkerDeps> = {}) {
     core: coreRepository,
     roles: apartmentRoleRepository,
     gate: gateRepository,
+    reservations: reservationRepository,
     notifier: overrides.notifier ?? createNotifierFromEnv(),
     isProcessed: async (apt, id) => Boolean(await getTenantItem(processedKey(apt, id))),
     markProcessed: async (apt, id, info) => {
@@ -332,6 +348,16 @@ export function createNotificationWorker(overrides: Partial<WorkerDeps> = {}) {
       const { courierId } = event.payload;
       const c = await deps.gate.get<Courier>(event.apartmentId, gateKeys.courier(event.apartmentId, courierId).SK);
       return { now: deps.now(), courier: c && c.apartmentId === event.apartmentId ? { courierId: c.courierId, unitId: c.unitId, status: c.status, ...(c.company ? { company: c.company } : {}) } : null };
+    }
+    if (isReservationEvent(event)) {
+      const b = await deps.reservations.getBooking(event.apartmentId, event.payload.bookingId);
+      return {
+        now: deps.now(),
+        booking:
+          b && b.apartmentId === event.apartmentId
+            ? { bookingId: b.bookingId, unitId: b.unitId, feeStatus: b.fee.status, ...(b.decisionNote ? { decisionNote: b.decisionNote } : {}), ...(b.cancelReason ? { cancelReason: b.cancelReason } : {}) }
+            : null,
+      };
     }
     return { now: deps.now() };
   }

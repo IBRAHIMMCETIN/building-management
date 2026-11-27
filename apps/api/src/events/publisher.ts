@@ -38,6 +38,9 @@ export const EVENT_TYPES = [
   'OPERATIONS_DIGEST',
   'GATE_COURIER_ARRIVED',
   'GATE_GUEST_ENTERED',
+  'RESERVATION_APPROVED',
+  'RESERVATION_REJECTED',
+  'RESERVATION_CANCELLED',
 ] as const;
 export type EventType = (typeof EVENT_TYPES)[number];
 
@@ -198,6 +201,28 @@ export type GateGuestEnteredPayload = {
   validUntil: IsoDate;
 };
 
+/**
+ * Ortak alan rezervasyonu: yonetimin onayi, reddi veya iptali (sakin kendi iptalinde olay yok;
+ * otomatik onay yonetim karari degildir). Alici rezervasyonu yapan sakin (hala dairenin guncel
+ * uyesiyse). Ret / iptal gerekcesi ve yonetimin notu serbest metindir: TASINMAZ, worker
+ * rezervasyon kaydindan okur; ucret iadesinin guncel durumu da oradan (iptal yazildiktan sonra
+ * ters kayit ayri yazimla tamamlanir). `feeStatus` yazim anindaki durumdur (yedek).
+ */
+export type ReservationDecisionPayload = {
+  bookingId: string;
+  facilityId: string;
+  facilityName: string;
+  unitId: string;
+  /** Rezervasyonu yapan sakin (alici). */
+  bookerId: string;
+  date: IsoDate;
+  start: IsoDateTime;
+  end: IsoDateTime;
+  /** Ucret (kurus, tam sayi); 0 = ucretsiz. */
+  feeKurus: number;
+  feeStatus: string;
+};
+
 type PayloadByType = {
   DUE_GENERATED: DueGeneratedPayload;
   PAYMENT_RECEIVED: PaymentReceivedPayload;
@@ -213,6 +238,9 @@ type PayloadByType = {
   OPERATIONS_DIGEST: OperationsDigestPayload;
   GATE_COURIER_ARRIVED: GateCourierArrivedPayload;
   GATE_GUEST_ENTERED: GateGuestEnteredPayload;
+  RESERVATION_APPROVED: ReservationDecisionPayload;
+  RESERVATION_REJECTED: ReservationDecisionPayload;
+  RESERVATION_CANCELLED: ReservationDecisionPayload;
 };
 
 export type DomainEvent<T extends EventType = EventType> = {

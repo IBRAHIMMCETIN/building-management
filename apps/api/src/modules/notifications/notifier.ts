@@ -21,6 +21,10 @@ export type NotificationTemplate =
   /** Guvenlik kapisi: kurye onay istegi (oturan sakinler) ve misafir girisi (gecisi olusturan). */
   | 'gate_courier_arrived'
   | 'gate_guest_entered'
+  /** Ortak alan rezervasyonu: yonetimin onayi / reddi / iptali (rezervasyonu yapan sakin). */
+  | 'reservation_approved'
+  | 'reservation_rejected'
+  | 'reservation_cancelled'
   | `dues_reminder_${'upcoming' | 'overdue_1' | 'overdue_7' | 'plan_default'}`;
 
 /** Ozet bildirimlerdeki kalem satiri (kisisel veri yok). */
