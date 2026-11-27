@@ -8,7 +8,7 @@ import { apiClient } from './client';
  * PUT yalnizca DEGISEN alani gonderir (ana anahtar dahil istege bagli): sunucu okumadan yalnizca o
  * alani yazar, iki cihaz / eski sekme birbirinin secimini ezmez.
  */
-export const NOTIFICATION_CATEGORIES = ['finance', 'announcements', 'tickets', 'gate', 'reservations', 'polls', 'assemblies'] as const;
+export const NOTIFICATION_CATEGORIES = ['finance', 'announcements', 'tickets', 'gate', 'reservations', 'polls', 'assemblies', 'tenders'] as const;
 export type NotificationCategory = (typeof NOTIFICATION_CATEGORIES)[number];
 
 const optionalFlag = z.boolean().optional();
@@ -23,6 +23,7 @@ export const notificationPreferencesSchema = z.object({
     reservations: optionalFlag,
     polls: optionalFlag,
     assemblies: optionalFlag,
+    tenders: optionalFlag,
   }),
   updatedAt: z.string().optional(),
 });
@@ -48,6 +49,7 @@ export const NOTIFICATION_CATEGORY_META: Record<NotificationCategory, { label: s
     label: 'Genel kurul',
     description: 'Kat malikleri kurulu toplantı çağrıları (kat maliklerine). Bilgilendirme amaçlıdır; yasal çağrı yönetiminizce ayrıca yapılır.',
   },
+  tenders: { label: 'İhale ve teklifler', description: 'Yönetimin teklifleri sakinlerle paylaşması, ihalenin karara bağlanması veya iptali ve ihaleye yazdığınız soruların yanıtlanması.' },
 };
 
 export const notificationPreferencesApi = {

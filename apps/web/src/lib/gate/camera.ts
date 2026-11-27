@@ -1,22 +1,45 @@
 /*
- * Kamera ile QR okuma: tarayicinin yerlesik `BarcodeDetector` API'si (Chrome / Edge / Samsung
- * Internet, Android). Ek kutuphane yok; desteklenmeyen tarayicida (ornek iOS Safari, Firefox)
- * gorevli kisa kodu elle girer. Kamera yalnizca guvenli baglantida (https / localhost) acilir.
+ * Kamera ile QR okuma. Iki motor:
+ *  - `native`: tarayicinin yerlesik `BarcodeDetector` API'si (Chrome / Edge / Samsung Internet,
+ *    Android). Ek kod yuklenmez.
+ *  - `fallback`: `BarcodeDetector` yoksa veya QR bicimini desteklemiyorsa (iPhone / iPad Safari,
+ *    Firefox) kamera kareleri kucultulmus bir tuvale cizilip `jsqr` (Apache-2.0, bagimliliksiz) ile
+ *    cozulur. Kutuphane yalnizca tarama ekraninda, ilk kullanimda ayri parca olarak yuklenir
+ *    (`qrDecode.ts`).
+ * Kamera yalnizca guvenli baglantida (https / localhost) acilir; okunamayan durumda gorevli kisa
+ * kodu elle girer.
  */
 
 export type DetectedBarcode = { rawValue: string };
 export type BarcodeDetectorLike = { detect(source: CanvasImageSource): Promise<DetectedBarcode[]> };
-type BarcodeDetectorCtor = new (opts?: { formats?: string[] }) => BarcodeDetectorLike;
+type BarcodeDetectorCtor = (new (opts?: { formats?: string[] }) => BarcodeDetectorLike) & { getSupportedFormats?: () => Promise<string[]> };
 
-export type ScannerSupport = 'ok' | 'insecure' | 'no_camera' | 'no_detector';
+export type ScannerSupport = 'ok' | 'insecure' | 'no_camera';
+export type ScanEngine = 'native' | 'fallback';
 
 type Env = { isSecureContext?: boolean; navigator?: { mediaDevices?: { getUserMedia?: unknown } }; BarcodeDetector?: unknown };
 
+/** Kamera acilabilir mi? QR cozumu her durumda vardir (yerlesik veya yedek motor). */
 export function scannerSupport(env: Env = globalThis as unknown as Env): ScannerSupport {
   if (env.isSecureContext === false) return 'insecure';
   if (typeof env.navigator?.mediaDevices?.getUserMedia !== 'function') return 'no_camera';
-  if (typeof env.BarcodeDetector !== 'function') return 'no_detector';
   return 'ok';
+}
+
+/**
+ * Motor secimi: yerlesik `BarcodeDetector` varsa ve (bildiriyorsa) `qr_code` bicimini destekliyorsa
+ * `native`, aksi halde `fallback`. Destek listesi sorgusu hata verirse yedek motor guvenli taraftir.
+ */
+export async function scanEngine(env: Env = globalThis as unknown as Env): Promise<ScanEngine> {
+  const Ctor = env.BarcodeDetector as BarcodeDetectorCtor | undefined;
+  if (typeof Ctor !== 'function') return 'fallback';
+  if (typeof Ctor.getSupportedFormats !== 'function') return 'native';
+  try {
+    const formats = await Ctor.getSupportedFormats();
+    return Array.isArray(formats) && formats.includes('qr_code') ? 'native' : 'fallback';
+  } catch {
+    return 'fallback';
+  }
 }
 
 export function createDetector(): BarcodeDetectorLike {
@@ -27,8 +50,10 @@ export function createDetector(): BarcodeDetectorLike {
 export const SUPPORT_TEXT: Record<Exclude<ScannerSupport, 'ok'>, string> = {
   insecure: 'Kamera yalnızca güvenli (https) bağlantıda açılır. Kısa kodu aşağıya yazın.',
   no_camera: 'Bu cihazda kamera erişimi yok. Kısa kodu aşağıya yazın.',
-  no_detector: 'Bu tarayıcı QR okumayı desteklemiyor (örneğin iPhone Safari). Kısa kodu aşağıya yazın veya Chrome ile açın.',
 };
+
+/** Yedek QR okuyucu (ayri parca) yuklenemedi: ag kesintisi veya eski surum onbellegi. */
+export const DECODER_LOAD_ERROR = 'QR okuyucu yüklenemedi. Bağlantınızı kontrol edip tekrar deneyin veya kısa kodu aşağıya yazın.';
 
 /** getUserMedia hatasi -> gorevliye ne yapacagini soyleyen metin. */
 export function cameraErrorMessage(err: unknown): string {

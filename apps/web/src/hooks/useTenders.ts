@@ -1,7 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import type { RecordExpenseInput } from '@/lib/api/finance';
 import { type QuoteInput, type Tender, type TenderInput, portalTendersApi, tendersApi } from '@/lib/api/tenders';
 import type { Role } from '@/types/roles';
 import { useAuth } from './useAuth';
+import { useInvalidateFinance } from './useFinance';
 import { portalKeys } from './usePortal';
 import { unitKeys } from './useUnits';
 
@@ -67,6 +69,16 @@ export function useTenderActions() {
     withdrawQuote: useTenderWrite((v: { id: string; quoteId: string; version: number; reason: string }) => tendersApi.withdrawQuote(v.id, v.quoteId, { version: v.version, reason: v.reason })),
     comment: useTenderWrite((v: { id: string; idempotencyKey: string; body: string }) => tendersApi.comment(v.id, { idempotencyKey: v.idempotencyKey, body: v.body })),
   };
+}
+
+/** Karardan gider: ihale ayrintisi yanitla guncellenir, Finans ozetleri yeniden cekilir. */
+export function useTenderExpense() {
+  const invalidateFinance = useInvalidateFinance();
+  return useTenderWrite(async (v: { id: string; input: RecordExpenseInput }) => {
+    const r = await tendersApi.createExpense(v.id, v.input);
+    void invalidateFinance();
+    return r;
+  });
 }
 
 export function useSaveQuote() {

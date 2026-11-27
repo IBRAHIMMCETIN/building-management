@@ -22,6 +22,8 @@ import { type EquipmentService, createEquipmentService } from '../modules/equipm
 import { type MaintenanceService, createMaintenanceService } from '../modules/maintenance/service.js';
 import { type TicketService, createTicketService } from '../modules/tickets/service.js';
 import { type PollService, createPollService } from '../modules/polls/service.js';
+import { type GateDepartures, createGateDepartures } from '../modules/gate/departures.js';
+import { gateRepository } from '../modules/gate/repository.js';
 import type { SqsBatchResponse, SqsEvent } from './notification-worker.js';
 import { createDynamoBulkJobRepository } from '../modules/bulkjobs/repository.js';
 import { loadBulkJobQueueFromEnv } from '../modules/bulkjobs/queue.js';
@@ -58,7 +60,9 @@ import { type BulkJobService, createBulkJobService } from '../modules/bulkjobs/s
  *                  `autoAccelerate` ise muaccel kilma, degilse yonetici onayi icin isaretleme.
  *   maintenance_tasks her gun 04:10 (O1-3): aktif bakim sablonlarinin penceresindeki (bugun .. +on
  *                  hazirlik + 30 gun) eksik gorevleri olusturur; gorev anahtari (vade + sablon)
- *                  sayesinde tekrar calismasi zararsizdir. Silme yapmaz.
+ *                  sayesinde tekrar calismasi zararsizdir. Silme yapmaz. Guvenlik kapisi: son 7 gunde
+ *                  uyeligi biten kullanicilarin o bolumdeki aktif misafir gecislerini iptal eder ve
+ *                  araclarini pasife alir (`taşınma`; gate/departures.ts, idempotent, denetimli).
  *   ticket_maintenance her gun 07:30 (O1-3): cozulup `autoCloseDays` gun onaylanmayan talepleri
  *                  kapatir (closeKind auto, bildirim outbox ile) ve yonetim / gorevliye gunluk
  *                  operasyon ozeti (`OPERATIONS_DIGEST`: SLA asimi, geciken ve yaklasan bakim; v2:
@@ -155,6 +159,8 @@ export type SchedulerDeps = {
   equipment: Pick<EquipmentService, 'digestItems'>;
   /** Y1: suresi dolup hic oy almamis oylamalarin oy listesini sistem olarak dondurur (`maintenance_tasks`). */
   polls: Pick<PollService, 'freezeEnded'>;
+  /** Guvenlik kapisi: tasinanlarin gecis / araclarini pasife alir (`maintenance_tasks`). */
+  gate: Pick<GateDepartures, 'sweep'>;
   /** null: online odeme kapali. Verilmezse ortam degiskenlerinden kurulur (ilk kullanimda). */
   payments: Pick<PaymentsService, 'reconcile' | 'reconcileRefunds'> | null;
   /** P4: platform transferi izleme (null: online odeme kapali). */
@@ -184,6 +190,7 @@ export function createSchedulerWorker(overrides: Partial<SchedulerDeps> = {}) {
     maintenance?: SchedulerDeps['maintenance'];
     equipment?: SchedulerDeps['equipment'];
     polls?: SchedulerDeps['polls'];
+    gate?: SchedulerDeps['gate'];
     payments?: SchedulerDeps['payments'];
     payouts?: SchedulerDeps['payouts'];
     invoices?: SchedulerDeps['invoices'];
@@ -218,6 +225,7 @@ export function createSchedulerWorker(overrides: Partial<SchedulerDeps> = {}) {
   const maintenance = () => (lazy.maintenance ??= overrides.maintenance ?? createMaintenanceService({ now, store: undefined, tickets: ticketService() }));
   const equipment = () => (lazy.equipment ??= overrides.equipment ?? createEquipmentService({ now, store: undefined }));
   const polls = () => (lazy.polls ??= overrides.polls ?? createPollService({ now, portal: createPortalService({ now }) }));
+  const gate = () => (lazy.gate ??= overrides.gate ?? createGateDepartures({ repo: gateRepository, memberships: membershipRepository, now, metrics: metrics(), log }));
   /** Odeme servisleri tek yapilandirmadan, ilk kullanimda kurulur. */
   function paymentServices() {
     if (lazy.payments !== undefined && lazy.payouts !== undefined && lazy.invoices !== undefined) return;
@@ -449,7 +457,10 @@ export function createSchedulerWorker(overrides: Partial<SchedulerDeps> = {}) {
         const r = await maintenance().generate(apartmentId, day);
         // Y1: bitmis ama hic oy almamis oylamalarin oy listesi (kesin sonucun paydasi) dondurulur.
         const pollsFrozen = await polls().freezeEnded(apartmentId);
-        return { apartmentId, status: 'done', detail: { date: day, ...r, ...(pollsFrozen > 0 ? { pollsFrozen } : {}) } };
+        // Guvenlik kapisi: tasinanlarin aktif gecis ve araclari (okuma anindaki kontrol guvenlik agi).
+        const g = await gate().sweep(apartmentId, day, SYSTEM_ACTOR);
+        const gateDetail = g.passesRevoked || g.vehiclesDeactivated || g.failed ? { gatePassesRevoked: g.passesRevoked, gateVehiclesDeactivated: g.vehiclesDeactivated, ...(g.failed ? { gateFailed: g.failed } : {}) } : {};
+        return { apartmentId, status: 'done', detail: { date: day, ...r, ...(pollsFrozen > 0 ? { pollsFrozen } : {}), ...gateDetail } };
       }
 
       case 'ticket_maintenance': {

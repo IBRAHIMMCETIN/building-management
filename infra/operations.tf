@@ -14,6 +14,8 @@
 #                               farkinin bekleyen (eslesmemis) satirlarla ACIKLANAMAYAN kismi, kurus,
 #                               apartman basina mutlak toplam (birim None)
 #   BankReconAccountsOff        (Faz B3) aciklanamayan farki olan banka hesabi sayisi
+#   GateDepartureFailed         maintenance_tasks: tasinanin gecis / araclarini pasife alma adimi
+#                               bir aday icin basarisiz (okuma anindaki kontrol guvenlik agidir)
 # ---------------------------------------------------------------------------
 
 locals {
@@ -27,6 +29,23 @@ resource "aws_cloudwatch_metric_alarm" "ledger_drift" {
   alarm_description   = "Gecelik defter denetimi sapma buldu (bakiye/denge/kapama kilidi/online odeme). Ayrinti: scheduler-worker loglarinda msg=ledger_audit. Duzeltme yalnizca ters kayitla."
   namespace           = local.metrics_namespace
   metric_name         = "LedgerDrift"
+  dimensions          = local.metrics_dimensions
+  statistic           = "Sum"
+  period              = 3600
+  evaluation_periods  = 1
+  threshold           = 0
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+}
+
+# Tasinmada gecis / arac pasife alma adimi basarisiz (gunluk maintenance_tasks). Kapi kararlari okuma
+# aninda uyelikten verildigi icin guvenlik acigi degil; kayitlar aktif gorunmeye devam eder.
+resource "aws_cloudwatch_metric_alarm" "gate_departure_failed" {
+  alarm_name          = "${local.name}-gate-departure-failed"
+  alarm_description   = "Tasinan sakinin kapi gecis / araclarini pasife alma adimi basarisiz oldu. Ayrinti: scheduler-worker loglarinda msg=gate_departure_failed (apartman, bolum). Sonraki gunluk calisma tekrar dener."
+  namespace           = local.metrics_namespace
+  metric_name         = "GateDepartureFailed"
   dimensions          = local.metrics_dimensions
   statistic           = "Sum"
   period              = 3600

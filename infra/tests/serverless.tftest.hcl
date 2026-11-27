@@ -196,6 +196,7 @@ run "prod_plan" {
       "GATE_COURIER_ARRIVED", "GATE_GUEST_ENTERED",
       "RESERVATION_APPROVED", "RESERVATION_REJECTED", "RESERVATION_CANCELLED",
       "ASSEMBLY_CALLED",
+      "TENDER_PUBLISHED", "TENDER_DECIDED", "TENDER_CANCELLED", "TENDER_REPLIED",
     ]
     error_message = "Bildirim kuyrugu worker'in isledigi tum olay turlerine abone olmali (ariza/talep, gunluk operasyon ozeti ve oylama yayini dahil)"
   }
@@ -367,13 +368,15 @@ run "prod_plan" {
   }
   assert {
     condition = alltrue([
-      for a in [aws_cloudwatch_metric_alarm.ledger_drift, aws_cloudwatch_metric_alarm.outbox_sweep_failed, aws_cloudwatch_metric_alarm.outbox_stuck] :
+      for a in [aws_cloudwatch_metric_alarm.ledger_drift, aws_cloudwatch_metric_alarm.outbox_sweep_failed, aws_cloudwatch_metric_alarm.outbox_stuck, aws_cloudwatch_metric_alarm.gate_departure_failed] :
       a.namespace == "BuildingManagement" && length(a.dimensions) == 1 && a.dimensions["Stack"] == "building-management" && a.treat_missing_data == "notBreaching"
     ])
     error_message = "Operasyon alarmlari worker'in EMF namespace ve Stack boyutunu dinlemeli"
   }
   assert {
     condition = (
+      aws_cloudwatch_metric_alarm.gate_departure_failed.metric_name == "GateDepartureFailed" &&
+      aws_cloudwatch_metric_alarm.gate_departure_failed.threshold == 0 &&
       aws_cloudwatch_metric_alarm.ledger_drift.metric_name == "LedgerDrift" &&
       aws_cloudwatch_metric_alarm.ledger_drift.statistic == "Sum" &&
       aws_cloudwatch_metric_alarm.ledger_drift.threshold == 0 &&
@@ -583,6 +586,7 @@ run "prod_plan" {
         "POST /api/support/sessions", "POST /api/residents/invite", "POST /api/finance/dues", "POST /api/imports",
         "POST /api/bank/statements/upload-url", "POST /api/bank/statements", "POST /api/bank/statements/{statementId}/commit",
         "POST /api/bank/statements/{statementId}/auto-match", "GET /api/bank/reconciliation/report",
+        "POST /api/gate/passes/verify", "GET /api/gate/plates",
       ]) &&
       alltrue([for r in aws_apigatewayv2_route.sensitive : r.authorization_type == "JWT"])
     )
@@ -595,10 +599,12 @@ run "prod_plan" {
         "POST /api/mfa/users/{userId}/reset" = [1, 3]
         "POST /api/support/sessions"         = [1, 3]
         "POST /api/finance/dues"             = [2, 5]
+        "POST /api/gate/passes/verify"       = [100, 200]
+        "GET /api/gate/plates"               = [100, 200]
       } :
       anytrue([for rs in aws_apigatewayv2_stage.default.route_settings : rs.route_key == k && rs.throttling_rate_limit == want[0] && rs.throttling_burst_limit == want[1]])
     ])
-    error_message = "Hassas rotalarda varsayilan throttling: MFA 1/5, yonetici guvenlik 1/3, toplu yazim 2/5"
+    error_message = "Hassas rotalarda varsayilan throttling: MFA 1/5, yonetici guvenlik 1/3, toplu yazim 2/5, guvenlik kapisi 100/200"
   }
   assert {
     condition = alltrue([
@@ -606,6 +612,7 @@ run "prod_plan" {
         aws_cloudwatch_metric_alarm.cognito_signin_failures, aws_cloudwatch_metric_alarm.mfa_verify_failed,
         aws_cloudwatch_metric_alarm.mfa_reset_spike, aws_cloudwatch_metric_alarm.api_5xx,
         aws_cloudwatch_metric_alarm.audit_chain_broken, aws_cloudwatch_metric_alarm.audit_run_missing[0],
+        aws_cloudwatch_metric_alarm.gate_lockout,
       ] : contains(a.alarm_actions, aws_sns_topic.alerts.arn)
     ])
     error_message = "Tum guvenlik alarmlari platform uyari topic'ine gitmeli"
@@ -624,7 +631,8 @@ run "prod_plan" {
       aws_cloudwatch_metric_alarm.mfa_verify_failed.metric_name == "MfaVerifyFailed" && aws_cloudwatch_metric_alarm.mfa_verify_failed.threshold == 10 &&
       aws_cloudwatch_metric_alarm.mfa_reset_spike.metric_name == "MfaReset" && aws_cloudwatch_metric_alarm.mfa_reset_spike.threshold == 3 && aws_cloudwatch_metric_alarm.mfa_reset_spike.period == 3600 &&
       aws_cloudwatch_metric_alarm.api_5xx.namespace == "AWS/ApiGateway" && aws_cloudwatch_metric_alarm.api_5xx.metric_name == "5xx" && aws_cloudwatch_metric_alarm.api_5xx.threshold == 5 &&
-      aws_cloudwatch_metric_alarm.audit_chain_broken.metric_name == "AuditChainBroken" && aws_cloudwatch_metric_alarm.audit_chain_broken.threshold == 0
+      aws_cloudwatch_metric_alarm.audit_chain_broken.metric_name == "AuditChainBroken" && aws_cloudwatch_metric_alarm.audit_chain_broken.threshold == 0 &&
+      aws_cloudwatch_metric_alarm.gate_lockout.metric_name == "GateLockout" && aws_cloudwatch_metric_alarm.gate_lockout.threshold == 3 && aws_cloudwatch_metric_alarm.gate_lockout.period == 3600
     )
     error_message = "MFA, 5xx ve denetim zinciri alarmlari dogru metrik ve esiklerle tanimlanmali"
   }

@@ -16,6 +16,8 @@
 #     MfaRequiredDenied  MFA'siz yetkili istek (403 MFA_REQUIRED) - yalnizca panelde izlenir
 #     AuditChainBroken   gece denetiminde hash zinciri bulgusu
 #     AuditRun           gece denetimi kalp atisi (her calismada 1)
+#     GateLockout        guvenlik kapisi deneme siniri asimi (QR / kisa kod dogrulama, plaka aramasi;
+#                        kullanici veya apartman sayaci, pencere basina bir kez; apps/api gate/throttle.ts)
 # ---------------------------------------------------------------------------
 
 locals {
@@ -37,6 +39,12 @@ locals {
     "POST /api/bank/statements/{statementId}/commit"     = { rate = var.bulk_write_route_rate_limit, burst = var.bulk_write_route_burst_limit }
     "POST /api/bank/statements/{statementId}/auto-match" = { rate = var.bulk_write_route_rate_limit, burst = var.bulk_write_route_burst_limit }
     "GET /api/bank/reconciliation/report"                = { rate = var.bulk_write_route_rate_limit, burst = var.bulk_write_route_burst_limit }
+    # Guvenlik kapisi: rota siniri platform genelidir (tum apartmanlar ayni kovayi paylasir), bu yuzden
+    # arka uc kapasitesine gore yuksek tutulur; dusuk tutulursa tek bir kullanici tum sitelerin
+    # gorevlilerini bloklayabilir. Istemci basina sinir uygulamadadir (kullanici / apartman sayaci,
+    # 429 + Retry-After; gate/throttle.ts), ileride Cloudflare ile IP basina.
+    "POST /api/gate/passes/verify" = { rate = var.gate_route_rate_limit, burst = var.gate_route_burst_limit }
+    "GET /api/gate/plates"         = { rate = var.gate_route_rate_limit, burst = var.gate_route_burst_limit }
   }
 }
 
@@ -123,6 +131,23 @@ resource "aws_cloudwatch_metric_alarm" "mfa_reset_spike" {
   evaluation_periods  = 1
   threshold           = var.mfa_reset_alarm_threshold
   comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+}
+
+# Guvenlik kapisinda deneme kilitlenmesi (hatali kisa kod / yogun plaka aramasi). Tek kilitlenme
+# olagan olabilir (gorevli kodu yanlis yaziyor); esik ustu tahmin denemesi belirtisidir.
+resource "aws_cloudwatch_metric_alarm" "gate_lockout" {
+  alarm_name          = "${local.name}-gate-lockout"
+  alarm_description   = "1 saatte ${var.gate_lockout_alarm_threshold}+ guvenlik kapisi deneme kilitlenmesi (kisa kod / QR dogrulama veya plaka aramasi). Ayrinti: API loglarinda msg=gate_lockout, denetim gunlugunde gate.lockout (kullanici, apartman)."
+  namespace           = local.metrics_namespace
+  metric_name         = "GateLockout"
+  dimensions          = local.metrics_dimensions
+  statistic           = "Sum"
+  period              = 3600
+  evaluation_periods  = 1
+  threshold           = var.gate_lockout_alarm_threshold
+  comparison_operator = "GreaterThanOrEqualToThreshold"
   treat_missing_data  = "notBreaching"
   alarm_actions       = [aws_sns_topic.alerts.arn]
 }

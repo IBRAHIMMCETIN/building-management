@@ -49,11 +49,11 @@ describe('QR / kisa kod', () => {
 });
 
 describe('kamera', () => {
-  it('destek: guvenli baglanti, kamera, BarcodeDetector', () => {
+  it('destek: guvenli baglanti ve kamera yeterli; BarcodeDetector yoksa da okunur (yedek motor)', () => {
     const cam = { mediaDevices: { getUserMedia: () => undefined } };
     expect(scannerSupport({ isSecureContext: false, navigator: cam, BarcodeDetector: class {} })).toBe('insecure');
     expect(scannerSupport({ isSecureContext: true, navigator: {} })).toBe('no_camera');
-    expect(scannerSupport({ isSecureContext: true, navigator: cam })).toBe('no_detector');
+    expect(scannerSupport({ isSecureContext: true, navigator: cam })).toBe('ok');
     expect(scannerSupport({ isSecureContext: true, navigator: cam, BarcodeDetector: class {} })).toBe('ok');
   });
 

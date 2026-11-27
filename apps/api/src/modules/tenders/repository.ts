@@ -1,6 +1,8 @@
 import { TransactionCanceledException } from '@aws-sdk/client-dynamodb';
 import type { TransactWriteCommandInput } from '@aws-sdk/lib-dynamodb';
 import { getDynamo, getTenantItem, queryTenantAll, tenantPk, toDataAccessError } from '../../config/dynamodb.js';
+import { toOutboxItem } from '../../events/outbox.js';
+import type { DomainEvent } from '../../events/publisher.js';
 import { AuditChainBusyError, type AuditDraft, WriteContentionError, sendWithAudit } from '../audit/log.js';
 import { type Tender, type TenderComment, type TenderIdempotency, type TenderStatus, tenderKeys } from './types.js';
 
@@ -26,6 +28,8 @@ export type TenderWrite = {
   /** Yeni yorum; ayni yazimda ihalenin verilen durumda oldugu kontrol edilir. */
   comment?: { item: TenderComment; requireStatus: TenderStatus };
   idempotency?: TenderIdempotency;
+  /** Bildirim olaylari (transactional outbox): ayni atomik yazimda `OUTBOX#<eventId>`. */
+  outbox?: DomainEvent[];
   audit?: AuditDraft;
 };
 
@@ -95,6 +99,8 @@ export function createTenderRepository(): TenderRepository {
         });
         add('duplicate', { Put: { TableName: tableName, Item: w.comment.item, ConditionExpression: 'attribute_not_exists(PK)' } });
       }
+      // Olay kimligi deterministik (gecis / yorum basina bir kez): ayni olay iki kez yazilamaz.
+      for (const e of w.outbox ?? []) add('version', { Put: { TableName: tableName, Item: toOutboxItem(e, e.occurredAt, apt), ConditionExpression: 'attribute_not_exists(PK)' } });
       try {
         await sendWithAudit(client, items, w.audit);
       } catch (err) {

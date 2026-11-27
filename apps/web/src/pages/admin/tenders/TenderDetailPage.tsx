@@ -1,11 +1,11 @@
-import { ArrowLeft, Ban, CheckCircle2, FileClock, Gavel, Pencil, Plus, Send, Undo2 } from 'lucide-react';
+import { ArrowLeft, Ban, CheckCircle2, FileClock, Gavel, Pencil, Plus, ReceiptText, Send, Undo2 } from 'lucide-react';
 import { useState } from 'react';
 import { Link, useParams } from 'react-router';
 import { QuoteComparison } from '@/components/tenders/QuoteComparison';
 import { TenderComments } from '@/components/tenders/TenderComments';
 import { Alert, Badge, Button, Card, CardTitle, Skeleton } from '@/components/ui';
 import { useOpenDocument } from '@/hooks/useOpenDocument';
-import { useTender, useTenderActions, useTenderPermissions } from '@/hooks/useTenders';
+import { useTender, useTenderActions, useTenderExpense, useTenderPermissions } from '@/hooks/useTenders';
 import { errorMessage } from '@/lib/api/errors';
 import { type Quote, type Tender, tendersApi } from '@/lib/api/tenders';
 import { formatDate, formatDateTime } from '@/lib/dates';
@@ -13,6 +13,7 @@ import { formatTRY } from '@/lib/money';
 import { istanbulToday } from '@/lib/reservations/model';
 import { TENDER_CATEGORY_LABELS, TENDER_STATUS_LABELS, TENDER_STATUS_TONES, allowedActions, canEditQuotes, deadlineText, publishBlockers } from '@/lib/tenders/model';
 import { ROLE_LABELS, isRole } from '@/types/roles';
+import { ExpenseDialog, type ExpensePreset } from '../finance/ExpenseDialog';
 import { DecideDialog, PublishDialog, ReasonDialog } from './ActionDialogs';
 import { QuoteDialog } from './QuoteDialog';
 import { TenderDialog } from './TenderDialog';
@@ -32,11 +33,15 @@ export function TenderDetailPage() {
   );
 }
 
-type Open = null | 'edit' | 'quote' | 'publish' | 'decide' | 'cancel' | { edit: Quote } | { withdraw: Quote };
+type Open = null | 'edit' | 'quote' | 'publish' | 'decide' | 'cancel' | 'expense' | { edit: Quote } | { withdraw: Quote };
 
 function Detail({ tender: t }: { tender: Tender }) {
   const { canWrite } = useTenderPermissions();
   const actions = useTenderActions();
+  const expense = useTenderExpense();
+  // On dolum acilista sabitlenir: kayittan sonra ayrinti yaniti on dolumu kaldirsa da pencere
+  // basari ekranini gostermeye devam eder.
+  const [expensePreset, setExpensePreset] = useState<ExpensePreset>();
   const [open, setOpenState] = useState<Open>(null);
   // Diyalog acildigindaki ihale surumu: arada baska yonetici degistirirse islem 409 alir, yeni surumle
   // sessizce tekrar denenmez (kullanici guncel ekrani gorup pencereyi yeniden acar).
@@ -131,7 +136,14 @@ function Detail({ tender: t }: { tender: Tender }) {
       )}
       {t.status === 'draft' && canWrite && <Alert>Taslak yalnızca yönetimde görünür. Firmalardan teklif istemeye başladığınızda “Teklif toplamaya başla”yı seçin.</Alert>}
 
-      <DecisionCard tender={t} canWrite={canWrite} />
+      <DecisionCard
+        tender={t}
+        canWrite={canWrite}
+        onExpense={() => {
+          if (t.expenseDraft) setExpensePreset({ ...t.expenseDraft, amount: t.expenseDraft.amountKurus });
+          setOpen('expense');
+        }}
+      />
       {t.shortfallReason && (
         <Alert>
           Asgari {t.minQuotes} teklif yerine {t.quoteCount} teklifle paylaşıldı. Gerekçe: {t.shortfallReason}
@@ -216,6 +228,19 @@ function Detail({ tender: t }: { tender: Tender }) {
             onConfirm={(shortfallReason) => actions.publish.mutateAsync({ id: t.tenderId, version: openedVersion, ...(shortfallReason ? { shortfallReason } : {}) })}
           />
           <DecideDialog open={open === 'decide'} onClose={close} tender={t} pending={actions.decide.isPending} onConfirm={(v) => actions.decide.mutateAsync({ id: t.tenderId, version: openedVersion, ...v })} />
+          {expensePreset && (
+            // Odeme kaynagi ihalede yok: Finans gider penceresi karardan on doldurulur, yonetici onaylar.
+            <ExpenseDialog
+              open={open === 'expense'}
+              onClose={close}
+              title="İhale için gider kaydı"
+              preset={expensePreset}
+              onRecord={async (input) => {
+                const r = await expense.mutateAsync({ id: t.tenderId, input });
+                return { amount: r.tender.expense?.amountKurus ?? input.amount };
+              }}
+            />
+          )}
           <ReasonDialog
             open={open === 'cancel'}
             onClose={close}
@@ -250,8 +275,11 @@ function Detail({ tender: t }: { tender: Tender }) {
   );
 }
 
-/** Karar ozeti; yonetim icin Finans'a gider kaydi yonlendirmesi (gider otomatik olusturulmaz). */
-function DecisionCard({ tender: t, canWrite }: { tender: Tender; canWrite: boolean }) {
+/**
+ * Karar ozeti. Yonetim: "Gider kaydı oluştur" Finans gider penceresini karardan on doldurulmus acar
+ * (gider sessizce olusturulmaz); kaydedilen gider burada baglantisiyla gorunur.
+ */
+function DecisionCard({ tender: t, canWrite, onExpense }: { tender: Tender; canWrite: boolean; onExpense: () => void }) {
   const d = t.decision;
   if (!d) return null;
   const lowest = t.comparison.lowestQuoteIds.includes(d.quoteId);
@@ -271,14 +299,28 @@ function DecisionCard({ tender: t, canWrite }: { tender: Tender; canWrite: boole
           {d.reference && <p className="text-small text-muted">Karar referansı: {d.reference}</p>}
         </div>
       </div>
-      {canWrite && (
-        <p className="text-small text-muted">
-          İş tamamlanıp fatura geldiğinde gideri{' '}
-          <Link to="/admin/finance" className="font-medium text-accent underline-offset-4 hover:underline">
-            Finans
-          </Link>{' '}
-          ekranından “{d.supplierName}” tedarikçisiyle kaydedin.
-        </p>
+      {t.expense && (
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+          <p className="text-small text-muted">
+            {t.expense.reversed ? 'Gider ters kaydedildi' : 'Gider kaydedildi'}: <span className="tabular-nums">{formatTRY(t.expense.amountKurus)}</span> · {formatDate(t.expense.date)}
+          </p>
+          <Link to="/admin/finance" className="text-xs text-accent underline-offset-4 hover:underline">
+            Finans'ta görüntüle
+          </Link>
+        </div>
+      )}
+      {canWrite && t.expenseDraft && (
+        <div className="flex flex-col items-start gap-2">
+          <p className="text-small text-muted">
+            {t.expense?.reversed
+              ? 'Bağlı gider Finans’ta ters kayıtla iptal edildi; gerekiyorsa yeni gider kaydı oluşturun. Tutar, tedarikçi, açıklama ve gider kalemi karardan doldurulur, ödeme kaynağını siz seçersiniz.'
+              : `İş tamamlanıp fatura geldiğinde gideri buradan kaydedin; tutar, tedarikçi (“${d.supplierName}”), açıklama ve gider kalemi karardan doldurulur, ödeme kaynağını siz seçersiniz.`}
+          </p>
+          <Button size="sm" variant="secondary" onClick={onExpense}>
+            <ReceiptText className="size-4" aria-hidden="true" />
+            Gider kaydı oluştur
+          </Button>
+        </div>
       )}
     </Card>
   );

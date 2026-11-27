@@ -17,6 +17,8 @@ import { type BookingSnapshot, isReservationEvent, refundSettling, reservationRe
 import { type ReservationRepository, reservationRepository } from '../modules/reservations/repository.js';
 import { type AssemblyCallSnapshot, assemblyCallRecipients, isAssemblyEvent, meetingHash } from '../modules/assemblies/notifications.js';
 import { type AssemblyRepository, assemblyRepository } from '../modules/assemblies/repository.js';
+import { type TenderSnapshot, isTenderEvent, tenderRecipients } from '../modules/tenders/notifications.js';
+import { type TenderRepository, tenderRepository } from '../modules/tenders/repository.js';
 
 export type { DeliveryResult, Notification, NotificationTemplate, Notifier } from '../modules/notifications/notifier.js';
 export { createLogNotifier } from '../modules/notifications/notifier.js';
@@ -45,6 +47,9 @@ export { createLogNotifier } from '../modules/notifications/notifier.js';
  *                                 guncel durumu rezervasyon kaydindan (modules/reservations/notifications.ts)
  *       ASSEMBLY_CALLED        -> cagri kaydindaki malik kullanicilar (hala apartman uyesiyse); toplanti
  *                                 iptal edildiyse / basladiysa kimse (modules/assemblies/notifications.ts)
+ *       TENDER_PUBLISHED / _DECIDED / _CANCELLED -> apartmanin guncel uyeleri; ihalenin guncel durumu
+ *                                 olayla uyusmuyorsa kimse. TENDER_REPLIED -> yanitlanan acik sorularin
+ *                                 yazarlari (hala uyeyse) (modules/tenders/notifications.ts)
  *  4. Her aliciya `Notifier` ile bildirim gonderilir: NOTIFICATION_CHANNEL=log (yapilandirilmis
  *     log) veya ses (e-posta; tercih, adres ve alici bazli tekrar korumasi kanal icinde, bkz.
  *     modules/notifications/email.ts). SMS / WhatsApp ayni arayuzle eklenecek.
@@ -130,7 +135,7 @@ const receives = (m: UnitMembership, item: { unitId: string; userId?: string }, 
  * Worker'in olay icin ayrica okudugu kayitlar (payload kisisel veri / serbest metin tasimaz).
  * `now`: zamana bagli kurallar (kurye yanit suresi); verilmezse su an.
  */
-export type NotificationRecords = { now?: Date; courier?: CourierSnapshot; booking?: BookingSnapshot; assemblyCall?: AssemblyCallSnapshot };
+export type NotificationRecords = { now?: Date; courier?: CourierSnapshot; booking?: BookingSnapshot; assemblyCall?: AssemblyCallSnapshot; tender?: TenderSnapshot };
 
 /** Olaydan alici bazli bildirimleri uretir (ayni kullaniciya ayni olay icin tek bildirim). */
 export function buildNotifications(
@@ -172,6 +177,15 @@ export function buildNotifications(
   }
   if (isAssemblyEvent(event)) {
     return assemblyCallRecipients(event, memberships, day, records.now ?? new Date(), records.assemblyCall).map((r) => ({
+      eventId: event.eventId,
+      apartmentId: event.apartmentId,
+      userId: r.userId,
+      template: r.template,
+      data: r.data,
+    }));
+  }
+  if (isTenderEvent(event)) {
+    return tenderRecipients(event, memberships, day, records.tender).map((r) => ({
       eventId: event.eventId,
       apartmentId: event.apartmentId,
       userId: r.userId,
@@ -330,6 +344,8 @@ export type WorkerDeps = {
   reservations: Pick<ReservationRepository, 'getBooking'>;
   /** Genel kurul cagrisi: cagri kaydi (alicilar) ve toplantinin guncel durumu. */
   assemblies: Pick<AssemblyRepository, 'get' | 'getCall'>;
+  /** Ihale: guncel durum (bayat olay elenir) ve yanit olayinda yorumlar. */
+  tenders: Pick<TenderRepository, 'get' | 'listComments'>;
   notifier: Notifier;
   /** Olay daha once islendi mi? */
   isProcessed: (apartmentId: string, eventId: string) => Promise<boolean>;
@@ -352,6 +368,7 @@ export function createNotificationWorker(overrides: Partial<WorkerDeps> = {}) {
     gate: gateRepository,
     reservations: reservationRepository,
     assemblies: assemblyRepository,
+    tenders: tenderRepository,
     notifier: overrides.notifier ?? createNotifierFromEnv(),
     isProcessed: async (apt, id) => Boolean(await getTenantItem(processedKey(apt, id))),
     markProcessed: async (apt, id, info) => {
@@ -425,6 +442,14 @@ export function createNotificationWorker(overrides: Partial<WorkerDeps> = {}) {
               }
             : null,
       };
+    }
+    if (isTenderEvent(event)) {
+      const { tenderId } = event.payload;
+      const [t, comments] = await Promise.all([
+        deps.tenders.get(event.apartmentId, tenderId),
+        event.type === 'TENDER_REPLIED' ? deps.tenders.listComments(event.apartmentId, tenderId) : Promise.resolve(undefined),
+      ]);
+      return { now: deps.now(), tender: t && t.apartmentId === event.apartmentId ? { tender: t, ...(comments ? { comments: comments.filter((c) => c.apartmentId === event.apartmentId) } : {}) } : null };
     }
     return { now: deps.now() };
   }
