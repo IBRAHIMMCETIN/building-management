@@ -1,4 +1,4 @@
-import { ArrowLeftRight, Building, ClipboardPen, Contact, CreditCard, Gauge, FileText, FileUp, LayoutDashboard, ListChecks, Megaphone, ScrollText, Settings, ShieldCheck, UserCog, Users, Vote, Wallet, Wrench } from 'lucide-react';
+import { ArrowLeftRight, Building, ClipboardPen, Contact, CreditCard, Gauge, FileText, FileUp, Landmark, LayoutDashboard, ListChecks, Megaphone, ScrollText, Settings, ShieldCheck, UserCog, Users, Vote, Wallet, Wrench } from 'lucide-react';
 import type { ComponentType } from 'react';
 import { AUDIT_ROLES, METER_READING_ROLES, METER_ROLES, MY_TASKS_ROLES, OFFICE_ROLES, type Role, SECURITY_ROLES, TEAM_ROLES, TICKET_ROLES, isPlatformRole } from '@/types/roles';
 
@@ -23,6 +23,7 @@ export const APARTMENT_NAV: readonly NavItem[] = [
   { to: '/admin/team', label: 'Ekip', icon: Contact, roles: TEAM_ROLES },
   { to: '/admin/announcements', label: 'Duyurular', icon: Megaphone, roles: OFFICE_ROLES },
   { to: '/admin/polls', label: 'Oylamalar', icon: Vote, roles: OFFICE_ROLES },
+  { to: '/admin/assemblies', label: 'Genel Kurul', icon: Landmark, roles: OFFICE_ROLES },
   { to: '/admin/import', label: 'Toplu Aktarım', icon: FileUp, roles: OFFICE_ROLES },
   { to: '/admin/settings', label: 'Ayarlar', icon: Settings, roles: OFFICE_ROLES },
   { to: '/admin/audit', label: 'Denetim Günlüğü', icon: ScrollText, roles: AUDIT_ROLES },
