@@ -11,6 +11,7 @@ import {
   type Decision,
   type DecisionOutcome,
   MAJORITY_LABELS,
+  PERSON_RULES,
   type Quorum,
   VOTE_CHOICES,
   type VoteChoice,
@@ -22,7 +23,7 @@ import {
 import { errorMessage } from '@/lib/api/errors';
 import { formatBps, formatFraction } from '@/lib/api/pollModel';
 import { formatDateTime } from '@/lib/dates';
-import { needsUnitVotes, setUnitVote, tallyIssue, unitVotesInput } from './schemas';
+import { needsUnitVotes, prefillUnitVotes, setUnitVote, tallyIssue, unitVotesInput } from './schemas';
 
 type Props = {
   index: number;
@@ -39,9 +40,10 @@ type Props = {
   unitLabel: (u: AssemblyUnit) => string;
 };
 
-/** Oy / bolum / arsa payi ozeti. */
+/** Oy / kisi / bolum / arsa payi ozeti. */
 function outcomeLine(o: DecisionOutcome, k: VoteChoice) {
   const parts = [`${o.votes[k]} oy`];
+  if (o.persons) parts.push(`${o.persons[k]} kat maliki`);
   if (o.units) parts.push(`${o.units[k]} bölüm`);
   if (o.landShare && o.landShareBps) parts.push(`arsa payı ${formatFraction(o.landShare[k])} (${formatBps(o.landShareBps[k])})`);
   return `${CHOICE_LABELS[k]}: ${parts.join(' · ')}`;
@@ -67,6 +69,15 @@ export function AgendaDecision({ index, item, assembly, quorum, units, records, 
   const [issue, setIssue] = useState<string | null>(null);
   const present = useMemo(() => units.filter((u) => u.attendance && u.attendance.mode !== 'absent'), [units]);
   const open = decided ? editing && canCorrect : canTally;
+  const preset = kind === 'custom' ? undefined : DECISION_PRESETS[kind];
+
+  /** Duzeltme kayitli oylarla on doldurulur (yalnizca degisen girilir). */
+  const startCorrection = () => {
+    const t = item.tally;
+    if (t) setCounts({ yes: String(t.yes), no: String(t.no), abstain: String(t.abstain) });
+    setVotes(prefillUnitVotes(latest?.unitVotes));
+    setEditing(true);
+  };
 
   const save = async () => {
     let body: { yes: number; no: number; abstain: number } | { votes: Record<string, VoteChoice> };
@@ -100,9 +111,10 @@ export function AgendaDecision({ index, item, assembly, quorum, units, records, 
       </div>
       {item.description && <p className="text-small text-muted">{item.description}</p>}
       <p className="text-xs text-muted">
-        {kindLabel(kind)} · Gerekli: {MAJORITY_LABELS[rule]}
-        {kind !== 'custom' ? ` (${DECISION_PRESETS[kind].legal})` : ''}
+        {item.decisionKind ? kindLabel(kind) : 'Karar türü kaydı yok (Y1 sayımı)'} · Gerekli: {MAJORITY_LABELS[rule]}
+        {preset ? ` (${preset.legal})` : ''}
       </p>
+      {preset?.hint && <p className="text-xs text-muted">{preset.hint}</p>}
 
       {latest ? (
         <div className="flex flex-col gap-1 text-xs text-muted tabular-nums">
@@ -120,8 +132,13 @@ export function AgendaDecision({ index, item, assembly, quorum, units, records, 
           ))}
           <span>
             Kayıt: {formatDateTime(latest.recordedAt)}
-            {latest.supersedes ? ` · düzeltme (gerekçe: ${latest.correctionReason ?? ''})` : ''}
+            {latest.correctionReason ? ` · düzeltme (gerekçe: ${latest.correctionReason})` : ''}
           </span>
+          {records[0]?.legacyTally && (
+            <span>
+              Düzeltilen Y1 sayımı: kabul {records[0].legacyTally.yes} · ret {records[0].legacyTally.no} · çekimser {records[0].legacyTally.abstain} ({formatDateTime(records[0].legacyTally.recordedAt)})
+            </span>
+          )}
           {records.length > 1 && (
             <span>
               Önceki kayıtlar silinmez: {records.slice(0, -1).map((r) => `${formatDateTime(r.recordedAt)} ${DECISION_LABELS[r.outcome.decision].toLocaleLowerCase('tr')} (kabul ${r.outcome.votes.yes})`).join(' · ')}
@@ -138,7 +155,7 @@ export function AgendaDecision({ index, item, assembly, quorum, units, records, 
 
       {decided && canCorrect && !editing && (
         <div>
-          <Button size="xs" variant="subtle" onClick={() => setEditing(true)}>
+          <Button size="xs" variant="subtle" onClick={startCorrection}>
             Kararı düzelt
           </Button>
         </div>
@@ -150,7 +167,7 @@ export function AgendaDecision({ index, item, assembly, quorum, units, records, 
           {byUnit ? (
             <div className="flex flex-col gap-2">
               <p className="text-small text-muted">
-                Payda bütün kat malikleridir ({quorum.totalUnits} bölüm); katılmayan bölüm kabul sayılmaz. Aynı kişinin oyunu kullandığı bölümler birlikte işaretlenir.
+                Payda bütün kat malikleridir ({quorum.totalUnits} bölüm); katılmayan bölüm kabul sayılmaz. Aynı kişinin oyunu kullandığı bölümler{PERSON_RULES.includes(rule) ? ' ve aynı kat malikine düşen bölümler (kişi sayımı)' : ''} birlikte işaretlenir.
               </p>
               {present.length === 0 ? (
                 <p className="text-small">Katılım girilmedi.</p>
@@ -180,7 +197,7 @@ export function AgendaDecision({ index, item, assembly, quorum, units, records, 
                             <Select
                               aria-label={`${unitLabel(u)} oyu`}
                               value={votes[u.unitId] ?? ''}
-                              onChange={(e) => setVotes(setUnitVote(votes, present, u.unitId, e.target.value as VoteChoice | ''))}
+                              onChange={(e) => setVotes(setUnitVote(votes, present, u.unitId, e.target.value as VoteChoice | '', rule))}
                             >
                               <option value="">Oy kullanmadı</option>
                               {VOTE_CHOICES.map((c) => (

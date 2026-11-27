@@ -10,10 +10,13 @@ import type { Assembly, AssemblyUnit, Quorum } from '@/lib/api/assemblyModel';
 const mutation = () => ({ isPending: false, isError: false, isSuccess: false, error: null, data: undefined, mutate: vi.fn(), mutateAsync: vi.fn(async () => ({})) });
 const send = mutation();
 const tally = mutation();
-vi.mock('@/hooks/useAssemblies', () => ({ useSendCall: () => send, useRecordTally: () => tally }));
+const saveMinutes = mutation();
+const finalize = mutation();
+vi.mock('@/hooks/useAssemblies', () => ({ useSendCall: () => send, useRecordTally: () => tally, useSaveMinutes: () => saveMinutes, useFinalizeAssembly: () => finalize }));
 
 const { AssemblyCallCard } = await import('./AssemblyCallCard');
 const { AgendaDecision } = await import('./AgendaDecision');
+const { MinutesCard } = await import('./MinutesCard');
 
 const base: Assembly = {
   assemblyId: 'asm1',
@@ -22,7 +25,7 @@ const base: Assembly = {
   scheduledAt: '2026-12-15T16:00:00.000Z',
   location: 'Salon',
   rollDate: '2026-12-15',
-  agenda: [{ itemId: 'a1', title: 'Yönetici seçimi', decisionKind: 'manager_election', majority: 'owners_and_land' }],
+  agenda: [{ itemId: 'a1', title: 'Yönetici seçimi', decisionKind: 'manager_election', majority: 'persons_and_land' }],
   status: 'planned',
   createdAt: '2026-11-27T09:00:00.000Z',
   version: 4,
@@ -79,7 +82,7 @@ describe('gundem karari', () => {
     await render(
       <AgendaDecision index={0} item={base.agenda[0]!} assembly={base} quorum={quorum} units={units} records={[]} canTally canCorrect unitLabel={(u) => u.number} />,
     );
-    expect(container.textContent).toContain('Gerekli: Bütün kat maliklerinin sayı ve arsa payı çoğunluğu (KMK m.34)');
+    expect(container.textContent).toContain('Gerekli: Bütün kat maliklerinin sayı (kişi) ve arsa payı çoğunluğu (KMK m.34)');
     expect(container.querySelector('input[type="number"]')).toBeNull();
     const select = container.querySelector('select[aria-label="U1 oyu"]') as HTMLSelectElement;
     await act(async () => {
@@ -97,6 +100,8 @@ describe('gundem karari', () => {
     expect(button('Kararı kaydet')).toBeUndefined();
     await act(async () => button('Kararı düzelt')?.click());
     const inputs = container.querySelectorAll('input[type="number"]');
+    // Duzeltme formu kayitli oylarla on dolu.
+    expect([...inputs].map((i) => (i as HTMLInputElement).value)).toEqual(['2', '1', '0']);
     await act(async () => {
       const yes = inputs[0] as HTMLInputElement;
       const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
@@ -110,6 +115,20 @@ describe('gundem karari', () => {
       reason.dispatchEvent(new Event('input', { bubbles: true }));
     });
     await act(async () => button('Düzeltmeyi kaydet')?.click());
-    expect(tally.mutateAsync).toHaveBeenCalledWith({ itemId: 'a2', input: { version: 4, yes: 1, no: 0, abstain: 0, correctionReason: 'Sayım hatası' } });
+    expect(tally.mutateAsync).toHaveBeenCalledWith({ itemId: 'a2', input: { version: 4, yes: 1, no: 1, abstain: 0, correctionReason: 'Sayım hatası' } });
+  });
+});
+
+describe('tutanak karti', () => {
+  it('bos genel notla kaydeder (API bos metni temizler) ve kayit sonrasi onay gosterir', async () => {
+    const held = { ...base, minutes: { chair: 'Ayşe Yılmaz', clerks: ['Mehmet Kaya'], voteCounters: [], notes: {}, updatedAt: '2026-12-15T17:00:00.000Z' } };
+    await render(<MinutesCard assembly={held} editable />);
+    await act(async () => button('Tutanağı kaydet')?.click());
+    expect(saveMinutes.mutate).toHaveBeenCalledWith({ version: 4, chair: 'Ayşe Yılmaz', clerks: ['Mehmet Kaya'], voteCounters: [], notes: {}, generalNotes: '' });
+    container.remove();
+    saveMinutes.isSuccess = true;
+    await render(<MinutesCard assembly={held} editable />);
+    expect(container.textContent).toContain('Tutanak kaydedildi.');
+    saveMinutes.isSuccess = false;
   });
 });

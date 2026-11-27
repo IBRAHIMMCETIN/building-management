@@ -22,7 +22,7 @@ import {
 import { errorMessage } from '@/lib/api/errors';
 import { applyApiFieldError } from '@/lib/api/formErrors';
 import { formatDateTime } from '@/lib/dates';
-import { type AgendaRow, type AssemblyForm, type AssemblyValues, FORM_FIELDS, emptyAgendaRow, formDefaults, makeAssemblyFormSchema, planGapWarning, toInput } from './schemas';
+import { type AgendaRow, type AssemblyForm, type AssemblyValues, FORM_FIELDS, emptyAgendaRow, formDefaults, makeAssemblyFormSchema, toInput } from './schemas';
 
 type Props = { open: boolean; onClose: () => void; assembly?: Assembly };
 
@@ -40,7 +40,6 @@ export function AssemblyDialog({ open, onClose, assembly }: Props) {
   const { errors } = form.formState;
   const agenda = form.watch('agenda');
   const firstMeetingId = form.watch('firstMeetingId');
-  const gapWarning = planGapWarning({ scheduledAt: form.watch('scheduledAt'), planAt: form.watch('planAt'), firstMeetingId });
 
   useEffect(() => {
     if (!open) return;
@@ -112,7 +111,7 @@ export function AssemblyDialog({ open, onClose, assembly }: Props) {
             <FormField
               label="Yeter sayı sağlanamazsa ikinci toplantı (isteğe bağlı)"
               error={errors.planAt?.message}
-              hint={`KMK m.29: çağrıda bildirilir; ilk toplantıdan en az 7, en geç ${SECOND_MEETING_MAX_DAYS} gün sonra.`}
+              hint={`KMK m.29/3: ilk çağrıda bildirilir; ilk toplantıdan en az 7, en geç ${SECOND_MEETING_MAX_DAYS} gün sonra.`}
             >
               <Input type="datetime-local" {...form.register('planAt')} />
             </FormField>
@@ -121,7 +120,6 @@ export function AssemblyDialog({ open, onClose, assembly }: Props) {
             </FormField>
           </div>
         )}
-        {gapWarning && <Alert>{gapWarning}</Alert>}
 
         <fieldset className="flex flex-col gap-2">
           <legend className="text-small font-medium">Gündem</legend>
@@ -178,6 +176,12 @@ export function AssemblyDialog({ open, onClose, assembly }: Props) {
                     <p className="self-center text-xs text-muted">
                       {MAJORITY_LABELS[DECISION_PRESETS[row.decisionKind].rule]} ({DECISION_PRESETS[row.decisionKind].legal})
                     </p>
+                  )}
+                  {row.decisionKind !== 'custom' && DECISION_PRESETS[row.decisionKind].hint && (
+                    <p className="text-xs text-muted sm:col-span-2">{DECISION_PRESETS[row.decisionKind].hint}</p>
+                  )}
+                  {row.decisionKind === 'custom' && row.majority === 'two_thirds_votes' && (
+                    <p className="text-xs text-muted sm:col-span-2">Toplu yapı yönetim planı değişikliği gibi kanun veya yönetim planında üçte iki aranan haller için (KMK m.70; teyit edilmeli).</p>
                   )}
                 </div>
               </li>

@@ -3,7 +3,7 @@ vi.mock('@/lib/api/client', () => ({ apiClient: {} }));
 import { navItemsFor } from '@/layouts/adminNav';
 import { type Assembly, type Quorum, assemblyDetailSchema, firstMeetingCandidates, quorumSchema, quorumText } from '@/lib/api/assemblyModel';
 import { actionLabel } from '@/lib/audit/labels';
-import { type AgendaRow, assemblyFormSchema, attendanceInput, formDefaults, makeAssemblyFormSchema, minutesInput, planGapWarning, setUnitVote, tallyIssue, toInput, unitVotesInput } from './schemas';
+import { type AgendaRow, assemblyFormSchema, attendanceInput, formDefaults, makeAssemblyFormSchema, minutesInput, secondMeetingGapIssue, setUnitVote, tallyIssue, toInput, unitVotesInput } from './schemas';
 
 const row = (title: string, decisionKind: AgendaRow['decisionKind'] = 'general', majority: AgendaRow['majority'] = '') => ({ title, decisionKind, majority });
 const valid = { kind: 'ordinary' as const, scheduledAt: '2026-12-15T19:00', location: ' Toplantı salonu ', onlineUrl: '', firstMeetingId: '', planAt: '', planLocation: '', agenda: [row(' Açılış '), row('Bütçe')] };
@@ -147,10 +147,10 @@ describe('genel kurul modeli', () => {
 
 describe('genel kurul devami: karar turu, ikinci toplanti plani, bolum bazinda oy, tutanak', () => {
   it('karar turu: hazir turde cogunluk gonderilmez (kanundan), ozel turde secilen cogunluk gider; duzenlemede geri okunur', () => {
-    const v = assemblyFormSchema.parse({ ...valid, agenda: [row('Yönetici', 'manager_election'), row('Aidat maddesi', 'custom', 'four_fifths_owners_and_land')] });
+    const v = assemblyFormSchema.parse({ ...valid, agenda: [row('Yönetici', 'manager_election'), row('Aidat maddesi', 'custom', 'four_fifths_persons_and_land')] });
     expect(toInput(v).agenda).toEqual([
       { title: 'Yönetici', decisionKind: 'manager_election' },
-      { title: 'Aidat maddesi', decisionKind: 'custom', majority: 'four_fifths_owners_and_land' },
+      { title: 'Aidat maddesi', decisionKind: 'custom', majority: 'four_fifths_persons_and_land' },
     ]);
     const a = assembly({ agenda: [{ itemId: 'a1', title: 'X', decisionKind: 'custom', majority: 'unanimous' }, { itemId: 'a2', title: 'Y', decisionKind: 'use_change', majority: 'unanimous' }, { itemId: 'a3', title: 'Eski' }] });
     expect(formDefaults(a).agenda).toEqual([row('X', 'custom', 'unanimous'), row('Y', 'use_change'), row('Eski')]);
@@ -160,9 +160,9 @@ describe('genel kurul devami: karar turu, ikinci toplanti plani, bolum bazinda o
     const v = assemblyFormSchema.parse({ ...valid, planAt: '2026-12-29T19:00' });
     expect(toInput(v).secondMeetingPlan).toEqual({ scheduledAt: '2026-12-29T19:00:00+03:00', location: 'Toplantı salonu' });
     expect(toInput(assemblyFormSchema.parse({ ...valid, planAt: '2026-12-29T19:00', planLocation: 'Bahçe' })).secondMeetingPlan).toMatchObject({ location: 'Bahçe' });
-    expect(planGapWarning({ scheduledAt: '2026-12-15T19:00', planAt: '2026-12-18T19:00', firstMeetingId: '' })).toContain('en az 7 gün');
-    expect(planGapWarning({ scheduledAt: '2026-12-15T19:00', planAt: '2026-12-22T19:00', firstMeetingId: '' })).toBeNull();
-    expect(planGapWarning({ scheduledAt: '2026-12-15T19:00', planAt: '2026-12-18T19:00', firstMeetingId: 'f1' })).toBeNull();
+    expect(secondMeetingGapIssue('2026-12-15T19:00', '2026-12-18T19:00')).toContain('en az 7 gün');
+    expect(secondMeetingGapIssue('2026-12-15T19:00', '2026-12-22T10:00')).toBeNull();
+    expect(assemblyFormSchema.safeParse({ ...valid, planAt: '2026-12-18T19:00' }).error?.issues[0]?.message).toContain('KMK m.29/3');
   });
 
   it('bolum bazinda oy: ayni kisinin bolumleri birlikte isaretlenir; bos secim gonderilmez', () => {
@@ -171,6 +171,13 @@ describe('genel kurul devami: karar turu, ikinci toplanti plani, bolum bazinda o
     expect(v).toEqual({ u1: 'yes', u2: 'yes' });
     const w = setUnitVote(v, units, 'u3', 'no');
     expect(unitVotesInput(setUnitVote(w, units, 'u2', ''))).toEqual({ u3: 'no' });
+  });
+
+  it('kisi sayimli kuralda ayni kat malikine dusen bolumler de birlikte isaretlenir; oy kuralinda degil', () => {
+    // u2: hisseli, oy listesinde temsilci P ama toplantida Q temsil ediyor (oy kimligi Q, kisi kimligi P).
+    const units = [{ unitId: 'u1', voterKey: 'user:P', personKey: 'user:P' }, { unitId: 'u2', voterKey: 'user:Q', personKey: 'user:P' }, { unitId: 'u3', voterKey: 'user:R', personKey: 'user:R' }];
+    expect(setUnitVote({}, units, 'u1', 'yes', 'persons_and_land')).toEqual({ u1: 'yes', u2: 'yes' });
+    expect(setUnitVote({}, units, 'u1', 'yes', 'four_fifths_votes')).toEqual({ u1: 'yes' });
   });
 
   it('tutanak girisi: adlar virgulle ayrilir, en fazla 3 kisi; bos baskan temizlenir', () => {

@@ -32,18 +32,32 @@ export type AttendanceMode = (typeof ATTENDANCE_MODES)[number];
 export const MAX_AGENDA_ITEMS = 30;
 /** KMK m.30: ikinci toplanti ilk toplantidan en gec bu kadar gun sonra. */
 export const SECOND_MEETING_MAX_DAYS = 15;
+/** KMK m.29/3: ilk ve ikinci toplanti arasinda en az bu kadar gun (7 dahil gecerli). */
+export const SECOND_MEETING_MIN_DAYS = 7;
 
 /** API ile ayni (apps/api/src/modules/assemblies/majority.ts). */
-export const MAJORITY_RULES = ['attendees', 'owners_and_land', 'four_fifths_owners', 'four_fifths_owners_and_land', 'unanimous'] as const;
+export const MAJORITY_RULES = [
+  'attendees',
+  'persons_and_land',
+  'four_fifths_persons',
+  'four_fifths_votes',
+  'four_fifths_persons_and_land',
+  'two_thirds_votes',
+  'unanimous',
+] as const;
 export type MajorityRule = (typeof MAJORITY_RULES)[number];
 /** Bolum bazinda oy gereken (payda butun kat malikleri) kurallar. */
-export const QUALIFIED_RULES: readonly MajorityRule[] = ['owners_and_land', 'four_fifths_owners', 'four_fifths_owners_and_land', 'unanimous'];
+export const QUALIFIED_RULES: readonly MajorityRule[] = MAJORITY_RULES.filter((r) => r !== 'attendees');
+/** Kat maliki KISI sayisiyla sayilan kurallar ("sayi ... cogunlugu", "yazili riza"). */
+export const PERSON_RULES: readonly MajorityRule[] = ['persons_and_land', 'four_fifths_persons', 'four_fifths_persons_and_land'];
 
 export const MAJORITY_LABELS: Record<MajorityRule, string> = {
   attendees: 'Katılanların oy çokluğu',
-  owners_and_land: 'Bütün kat maliklerinin sayı ve arsa payı çoğunluğu',
-  four_fifths_owners: 'Bütün kat maliklerinin beşte dördü (sayıca)',
-  four_fifths_owners_and_land: 'Bütün kat maliklerinin sayı ve arsa payı bakımından beşte dördü',
+  persons_and_land: 'Bütün kat maliklerinin sayı (kişi) ve arsa payı çoğunluğu',
+  four_fifths_persons: 'Bütün kat maliklerinin beşte dördü (kişi sayısı)',
+  four_fifths_votes: 'Bütün kat maliklerinin oylarının beşte dördü',
+  four_fifths_persons_and_land: 'Bütün kat maliklerinin kişi sayısı ve arsa payı bakımından beşte dördü',
+  two_thirds_votes: 'Bütün kat maliklerinin oylarının üçte ikisi',
   unanimous: 'Bütün kat maliklerinin oybirliği',
 };
 
@@ -51,6 +65,7 @@ export const DECISION_KINDS = [
   'general',
   'operating_budget',
   'manager_election',
+  'auditor_election',
   'beneficial_improvement',
   'common_area_change',
   'management_plan_change',
@@ -63,15 +78,26 @@ export const DECISION_KINDS = [
 export type DecisionKind = (typeof DECISION_KINDS)[number];
 
 /** Hazir karar turleri (API ile ayni cogunluklar); `custom` icin cogunluk secilir. */
-export const DECISION_PRESETS: Record<Exclude<DecisionKind, 'custom'>, { rule: MajorityRule; label: string; legal: string }> = {
+export const DECISION_PRESETS: Record<Exclude<DecisionKind, 'custom'>, { rule: MajorityRule; label: string; legal: string; hint?: string }> = {
   general: { rule: 'attendees', label: 'Genel karar', legal: 'KMK m.30' },
   operating_budget: { rule: 'attendees', label: 'İşletme projesi', legal: 'KMK m.37, m.30' },
-  manager_election: { rule: 'owners_and_land', label: 'Yönetici seçimi', legal: 'KMK m.34' },
-  beneficial_improvement: { rule: 'owners_and_land', label: 'Ortak yerlerde faydalı yenilik / ilave, ısı yalıtımı, yakıt veya ısıtma sistemi değişikliği', legal: 'KMK m.42' },
-  common_area_change: { rule: 'four_fifths_owners', label: 'Ortak yerlerde inşaat, onarım, tesis veya dış cephede farklı renk boya', legal: 'KMK m.19/2' },
-  management_plan_change: { rule: 'four_fifths_owners', label: 'Yönetim planı değişikliği', legal: 'KMK m.28' },
-  use_change: { rule: 'unanimous', label: 'Konut bölümünün işyeri vb. olarak kullanılması (kullanım amacı değişikliği)', legal: 'KMK m.24' },
-  central_heating_conversion: { rule: 'unanimous', label: '2.000 m² ve üzeri binada merkezi ısıtmadan bireysel ısıtmaya geçiş', legal: 'KMK m.42/3' },
+  manager_election: { rule: 'persons_and_land', label: 'Yönetici seçimi', legal: 'KMK m.34' },
+  auditor_election: { rule: 'persons_and_land', label: 'Denetçi seçimi', legal: 'KMK m.41' },
+  beneficial_improvement: { rule: 'persons_and_land', label: 'Ortak yerlerde faydalı yenilik / ilave, ısı yalıtımı, yakıt veya ısıtma sistemi değişikliği', legal: 'KMK m.42' },
+  common_area_change: {
+    rule: 'four_fifths_persons',
+    label: 'Ortak yerlerde inşaat veya tesis, dış cephede farklı renk boya (kat maliklerinin yazılı rızası)',
+    legal: 'KMK m.19/2',
+    hint: 'Olağan bakım ve onarım yöneticinin görevidir (KMK m.35/b) ve beşte dört gerektirmez.',
+  },
+  management_plan_change: { rule: 'four_fifths_votes', label: 'Yönetim planı değişikliği', legal: 'KMK m.28' },
+  use_change: {
+    rule: 'unanimous',
+    label: 'Konut olarak kayıtlı bölümün m.24/2’de sayılan işyerine (eğlence yeri, lokanta, fırın, imalathane vb.) dönüştürülmesi',
+    legal: 'KMK m.24/2',
+    hint: 'Konut olarak kayıtlı bölümde hastane, dispanser, klinik, poliklinik, ilaç laboratuvarı gibi müesseseler oybirliğiyle de açılamaz (KMK m.24/1).',
+  },
+  central_heating_conversion: { rule: 'unanimous', label: '2.000 m² ve üzeri binada merkezi ısıtmadan bireysel ısıtmaya geçiş', legal: 'KMK m.42/4' },
   major_disposition: { rule: 'unanimous', label: 'Ana gayrimenkulün hakla kayıtlanması, arsanın bölünmesi, çatı / dış duvar reklam kirası', legal: 'KMK m.45' },
   additional_floor: { rule: 'unanimous', label: 'Kat veya bağımsız bölüm ilavesi', legal: 'KMK m.44' },
 };
@@ -155,6 +181,8 @@ export const assemblySchema = z.object({
   secondMeetingPlan: z.object({ scheduledAt: z.string(), ...placeSchema }).optional(),
   calls: z.array(callSummarySchema).optional(),
   minutes: minutesSchema.optional(),
+  /** Ilk karar ani: sonra katilim degistirilemez. */
+  attendanceLockedAt: z.string().optional(),
   status: z.enum(ASSEMBLY_STATUSES),
   heldAt: z.string().optional(),
   cancelReason: z.string().optional(),
@@ -216,6 +244,8 @@ export const assemblyUnitSchema = z.object({
     .optional(),
   /** Katilan bolumde oyu kullanan kisi: ayni anahtarli bolumler ayni oyu alir (KMK m.31). */
   voterKey: z.string().optional(),
+  /** Kisi sayimli kurallarda ayni kat malikine dusen bolumler ayni oyu alir. */
+  personKey: z.string().optional(),
   warnings: z.array(z.string()),
 });
 export type AssemblyUnit = z.infer<typeof assemblyUnitSchema>;
@@ -226,6 +256,7 @@ export const outcomeSchema = z.object({
   decision: z.enum(['accepted', 'rejected']),
   votes: choiceCounts.extend({ notVoted: z.number().int() }),
   units: choiceCounts.extend({ notVoted: z.number().int(), absent: z.number().int() }).nullable(),
+  persons: choiceCounts.extend({ notVoted: z.number().int(), absent: z.number().int(), total: z.number().int() }).nullable(),
   landShare: z.object({ yes: fractionSchema, no: fractionSchema, abstain: fractionSchema }).nullable(),
   landShareBps: choiceCounts.nullable(),
   presentVotes: z.number().int(),
@@ -234,7 +265,7 @@ export const outcomeSchema = z.object({
   voteCap: z.number().int(),
   totalLandShare: fractionSchema.nullable(),
   landShareComputable: z.boolean(),
-  required: z.object({ votes: z.number().int(), landShare: fractionSchema.nullable(), units: z.number().int().nullable() }),
+  required: z.object({ votes: z.number().int().nullable(), persons: z.number().int().nullable(), landShare: fractionSchema.nullable(), units: z.number().int().nullable() }),
   reasons: z.array(z.string()),
   warnings: z.array(z.string()),
 });
@@ -247,6 +278,8 @@ export const decisionSchema = z.object({
   unitVotes: z.record(z.string(), z.enum(VOTE_CHOICES)).optional(),
   supersedes: z.number().int().optional(),
   correctionReason: z.string().optional(),
+  /** Y1 sayimini duzelten ilk kayit: eski sayim. */
+  legacyTally: tallySchema.optional(),
   recordedAt: z.string(),
 });
 export type Decision = z.infer<typeof decisionSchema>;
@@ -308,6 +341,7 @@ export const portalAssemblySchema = z.object({
           rule: z.enum(MAJORITY_RULES),
           votes: choiceCounts,
           units: choiceCounts.nullable(),
+          persons: choiceCounts.extend({ total: z.number().int() }).nullable().optional(),
           landShareBps: choiceCounts.nullable(),
           corrected: z.boolean(),
           recordedAt: z.string(),
@@ -383,9 +417,13 @@ export const firstMeetingCandidates = (items: readonly Assembly[], selfId?: stri
 /** Gerekli cogunlugun sayisal ifadesi (karar kaydindan). */
 export function requiredText(o: DecisionOutcome): string {
   const fr = (f: { numerator: string; denominator: string }) => `${f.numerator}/${f.denominator}`;
-  const parts = [o.rule === 'unanimous' ? `${o.required.units ?? 0} bölümün tamamı` : `en az ${o.required.votes} kabul oyu`];
+  const parts: string[] = [];
+  if (o.rule === 'unanimous') parts.push(`${o.required.units ?? 0} bölümün tamamı`);
+  else if (o.required.votes !== null) parts.push(`en az ${o.required.votes} kabul oyu`);
+  if (o.required.persons !== null) parts.push(`en az ${o.required.persons} kat maliki (kişi)`);
   if (o.required.landShare) parts.push(`en az ${fr(o.required.landShare)} arsa payı`);
-  const base = o.rule === 'attendees' ? `katılan ${o.presentVotes} oy` : `bütün kat maliklerinin ${o.allVotes} oyu`;
+  const base =
+    o.rule === 'attendees' ? `katılan ${o.presentVotes} oy` : o.required.persons !== null ? `bütün kat malikleri ${o.persons?.total ?? '?'} kişi` : `bütün kat maliklerinin ${o.allVotes} oyu`;
   return `${parts.join(' ve ')} (${base})`;
 }
 

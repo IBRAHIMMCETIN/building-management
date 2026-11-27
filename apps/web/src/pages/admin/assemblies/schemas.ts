@@ -11,16 +11,15 @@ import {
   MAX_AGENDA_ITEMS,
   type MajorityRule,
   type MinutesInput,
+  PERSON_RULES,
   QUALIFIED_RULES,
   SECOND_MEETING_MAX_DAYS,
+  SECOND_MEETING_MIN_DAYS,
   type VoteChoice,
   itemKind,
   itemRule,
 } from '@/lib/api/assemblyModel';
 import { isoToIstanbulLocal, istanbulLocalToIso } from '@/lib/dates';
-
-/** KMK m.29: ilk ve ikinci toplanti arasinda en az bu kadar gun (uyari). */
-export const SECOND_MEETING_MIN_DAYS = 7;
 
 const dayOf = (local: string) => local.slice(0, 10);
 const addDays = (day: string, n: number) => {
@@ -63,32 +62,29 @@ export function makeAssemblyFormSchema(firstMeetings: readonly Pick<Assembly, 'a
       else if (v.agenda.some((a) => a.decisionKind === 'custom' && !a.majority)) ctx.addIssue({ code: 'custom', path: ['agenda'], message: 'Özel karar türündeki maddeler için gerekli çoğunluğu seçin' });
       const first = firstMeetings.find((a) => a.assemblyId === v.firstMeetingId);
       if (first && v.scheduledAt) {
-        const firstLocal = isoToIstanbulLocal(first.scheduledAt);
-        if (v.scheduledAt <= firstLocal) ctx.addIssue({ code: 'custom', path: ['scheduledAt'], message: 'İkinci toplantı ilk toplantıdan sonra olmalıdır' });
-        else if (dayOf(v.scheduledAt) > addDays(dayOf(firstLocal), SECOND_MEETING_MAX_DAYS)) {
-          ctx.addIssue({ code: 'custom', path: ['scheduledAt'], message: `İkinci toplantı ilk toplantıdan en geç ${SECOND_MEETING_MAX_DAYS} gün sonra yapılmalıdır (KMK m.30)` });
-        }
+        const issue = secondMeetingGapIssue(isoToIstanbulLocal(first.scheduledAt), v.scheduledAt);
+        if (issue) ctx.addIssue({ code: 'custom', path: ['scheduledAt'], message: issue });
       }
       if (!v.firstMeetingId && v.planAt && v.scheduledAt) {
-        if (v.planAt <= v.scheduledAt) ctx.addIssue({ code: 'custom', path: ['planAt'], message: 'İkinci toplantı ilk toplantıdan sonra olmalıdır' });
-        else if (dayOf(v.planAt) > addDays(dayOf(v.scheduledAt), SECOND_MEETING_MAX_DAYS)) {
-          ctx.addIssue({ code: 'custom', path: ['planAt'], message: `İkinci toplantı ilk toplantıdan en geç ${SECOND_MEETING_MAX_DAYS} gün sonra yapılmalıdır (KMK m.30)` });
-        }
+        const issue = secondMeetingGapIssue(v.scheduledAt, v.planAt);
+        if (issue) ctx.addIssue({ code: 'custom', path: ['planAt'], message: issue });
       }
     });
+}
+
+/** KMK m.29/3 ve m.30: ikinci toplanti ilk toplantidan sonra, en az 7 en fazla 15 takvim gunu sonra (API ile ayni). */
+export function secondMeetingGapIssue(firstLocal: string, secondLocal: string): string | null {
+  if (secondLocal <= firstLocal) return 'İkinci toplantı ilk toplantıdan sonra olmalıdır';
+  const gap = Math.round((Date.parse(`${dayOf(secondLocal)}T00:00:00Z`) - Date.parse(`${dayOf(firstLocal)}T00:00:00Z`)) / 86_400_000);
+  if (gap < SECOND_MEETING_MIN_DAYS) return `İlk ve ikinci toplantı arasında en az ${SECOND_MEETING_MIN_DAYS} gün olmalıdır (KMK m.29/3; şu an ${gap} gün)`;
+  if (dayOf(secondLocal) > addDays(dayOf(firstLocal), SECOND_MEETING_MAX_DAYS)) return `İkinci toplantı ilk toplantıdan en geç ${SECOND_MEETING_MAX_DAYS} gün sonra yapılmalıdır (KMK m.30)`;
+  return null;
 }
 
 export const assemblyFormSchema = makeAssemblyFormSchema();
 export type AssemblyForm = z.input<typeof assemblyFormSchema>;
 export type AssemblyValues = z.output<typeof assemblyFormSchema>;
 export const FORM_FIELDS = ['kind', 'scheduledAt', 'location', 'onlineUrl', 'firstMeetingId', 'agenda'] as const;
-
-/** Ikinci toplanti plani ilk toplantidan 7 gunden kisa ise KMK m.29 uyarisi (engel degil). */
-export function planGapWarning(v: Pick<AssemblyForm, 'scheduledAt' | 'planAt' | 'firstMeetingId'>): string | null {
-  if (v.firstMeetingId || !v.planAt || !v.scheduledAt || v.planAt <= v.scheduledAt) return null;
-  const gap = Math.round((Date.parse(`${dayOf(v.planAt)}T00:00:00Z`) - Date.parse(`${dayOf(v.scheduledAt)}T00:00:00Z`)) / 86_400_000);
-  return gap < SECOND_MEETING_MIN_DAYS ? `KMK m.29: ilk ve ikinci toplantı arasında en az ${SECOND_MEETING_MIN_DAYS} gün olmalıdır (şu an ${gap} gün).` : null;
-}
 
 /** Varsayilan gundem: KMK uygulamasindaki olagan toplanti maddeleri. */
 export function formDefaults(a?: Assembly): AssemblyForm {
@@ -182,14 +178,37 @@ export const needsUnitVotes = (rule: MajorityRule) => QUALIFIED_RULES.includes(r
 
 /**
  * Bolum bazinda oy: secilen bolumun oyu, ayni kisinin oyunu kullandigi (ayni `voterKey`) tum
- * katilan bolumlere de yazilir (kisinin tek oyu vardir; KMK m.31).
+ * katilan bolumlere de yazilir (kisinin tek oyu vardir; KMK m.31). Kisi sayimli kurallarda ayni
+ * kat malikine dusen (ayni `personKey`) bolumler de birlikte isaretlenir (API ayni kurali dogrular).
  */
-export function setUnitVote(votes: Record<string, VoteChoice | ''>, units: readonly { unitId: string; voterKey?: string }[], unitId: string, choice: VoteChoice | ''): Record<string, VoteChoice | ''> {
-  const key = units.find((u) => u.unitId === unitId)?.voterKey;
+export function setUnitVote(
+  votes: Record<string, VoteChoice | ''>,
+  units: readonly { unitId: string; voterKey?: string; personKey?: string }[],
+  unitId: string,
+  choice: VoteChoice | '',
+  rule: MajorityRule = 'attendees',
+): Record<string, VoteChoice | ''> {
+  const byPerson = PERSON_RULES.includes(rule);
   const next = { ...votes };
-  for (const u of units) if (u.unitId === unitId || (key && u.voterKey === key)) next[u.unitId] = choice;
+  // Ayni kimlige baglanan bolumler zincirleme birlesir (oy kimligi ve kisi kimligi).
+  const group = new Set([unitId]);
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const u of units) {
+      if (group.has(u.unitId)) continue;
+      const linked = units.some((g) => group.has(g.unitId) && ((g.voterKey && g.voterKey === u.voterKey) || (byPerson && g.personKey && g.personKey === u.personKey)));
+      if (linked) {
+        group.add(u.unitId);
+        grew = true;
+      }
+    }
+  }
+  for (const id of group) next[id] = choice;
   return next;
 }
+
+/** Duzeltme formunun on dolumu: son kaydin bolum oylari (bolum bazinda giriste). */
+export const prefillUnitVotes = (unitVotes: Record<string, VoteChoice> | undefined): Record<string, VoteChoice | ''> => ({ ...(unitVotes ?? {}) });
 
 /** Ad listesi <-> virgullu metin (yazman, oy toplayici). */
 export const namesText = (names: readonly string[] | undefined) => (names ?? []).join(', ');

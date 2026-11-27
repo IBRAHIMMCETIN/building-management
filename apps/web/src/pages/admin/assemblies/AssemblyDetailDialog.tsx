@@ -43,6 +43,8 @@ export function AssemblyDetailDialog({ assemblyId, canWrite, onClose, onEdit }: 
   const started = Boolean(a && Date.now() >= Date.parse(a.scheduledAt));
   const editable = canWrite && a?.status === 'planned';
   const live = editable && started;
+  // Ilk karardan sonra katilim donar (API de 409 doner).
+  const attendanceLocked = Boolean(a?.attendanceLockedAt || a?.agenda.some((i) => i.tally));
   const blockNames = useMemo(() => new Map((blocks.data ?? []).map((b) => [b.blockId, b.name])), [blocks.data]);
   const multiBlock = new Set((data?.units ?? []).map((u) => u.blockId)).size > 1;
   const unitLabel = (u: AssemblyUnit) => `${multiBlock ? `${blockNames.get(u.blockId) ?? 'Blok'} · ` : ''}${u.number}`;
@@ -145,9 +147,9 @@ export function AssemblyDetailDialog({ assemblyId, canWrite, onClose, onEdit }: 
               </ol>
             </Card>
 
-            {started && data.rollFrozen && a.status !== 'cancelled' && <MinutesCard key={`${a.assemblyId}-${a.minutes?.updatedAt ?? 'new'}`} assembly={a} editable={live} />}
+            {started && data.rollFrozen && a.status !== 'cancelled' && <MinutesCard key={a.assemblyId} assembly={a} editable={live} />}
 
-            <AttendanceTable assembly={a} units={data.units} editable={live} />
+            <AttendanceTable assembly={a} units={data.units} editable={live && !attendanceLocked} locked={live && attendanceLocked} />
 
             {editable && !a.agenda.some((i) => i.tally) && <CancelBox assembly={a} />}
           </div>
@@ -216,7 +218,7 @@ function QuorumCard({ assembly: a, quorum: q, editable }: { assembly: Assembly; 
   );
 }
 
-function AttendanceTable({ assembly, units, editable }: { assembly: Assembly; units: AssemblyUnit[]; editable: boolean }) {
+function AttendanceTable({ assembly, units, editable, locked = false }: { assembly: Assembly; units: AssemblyUnit[]; editable: boolean; locked?: boolean }) {
   const blocks = useBlocks();
   const people = usePeople();
   const blockNames = useMemo(() => new Map((blocks.data ?? []).map((b) => [b.blockId, b.name])), [blocks.data]);
@@ -225,6 +227,7 @@ function AttendanceTable({ assembly, units, editable }: { assembly: Assembly; un
   return (
     <Card className="flex flex-col gap-3">
       <CardTitle>Katılım (hazirun)</CardTitle>
+      {locked && <Alert>Karar kaydedildi: katılım artık değiştirilemez (kararlar ve tutanak bu katılıma dayanır).</Alert>}
       <p className="text-small text-muted">
         Hisseli bölümü paydaşların seçtiği tek kişi temsil eder. Vekil (KMK m.31) yazılı vekaletnameyle katılır; 40 ve daha az bölümde en fazla iki kat malikini, üstünde oyların %5&apos;ini
         temsil edebilir.

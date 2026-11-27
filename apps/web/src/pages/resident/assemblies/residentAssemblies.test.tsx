@@ -38,9 +38,9 @@ const assembly = (over: Partial<PortalAssembly> = {}) =>
     phase: 'upcoming',
     calledAt: '2026-11-27T09:00:00.000Z',
     lastCalledAt: '2026-11-27T09:00:00.000Z',
-    secondMeetingPlan: { scheduledAt: '2026-12-29T16:00:00.000Z', location: 'Bahçe' },
+    secondMeetingPlan: { scheduledAt: '2026-12-29T16:00:00.000Z', location: 'Bahçe', onlineUrl: 'https://meet.example/ikinci' },
     agenda: [
-      { itemId: 'a1', title: 'Yönetici seçimi', decisionKind: 'manager_election', majority: 'owners_and_land' },
+      { itemId: 'a1', title: 'Yönetici seçimi', decisionKind: 'manager_election', majority: 'persons_and_land' },
       { itemId: 'a2', title: 'İşletme projesi', decisionKind: 'operating_budget', majority: 'attendees' },
     ],
     minutesAvailable: false,
@@ -73,7 +73,8 @@ describe('sakin genel kurul ayrintisi', () => {
     expect(container.querySelector('a[href="https://meet.example/x"]')).not.toBeNull();
     expect(text).toContain('Yeter sayı sağlanamazsa ikinci toplantı');
     expect(text).toContain('29 Ara 2026 19:00 · Bahçe');
-    expect(text).toContain('Gerekli çoğunluk: Bütün kat maliklerinin sayı ve arsa payı çoğunluğu');
+    expect(container.querySelector('a[href="https://meet.example/ikinci"]')).not.toBeNull();
+    expect(text).toContain('Gerekli çoğunluk: Bütün kat maliklerinin sayı (kişi) ve arsa payı çoğunluğu');
     expect(text).toContain('yasal çağrı yönetiminizce ayrıca yapılır');
     expect(text).not.toContain('Kabul edildi');
     expect(button('Tutanağı görüntüle')).toBeUndefined();
@@ -91,8 +92,8 @@ describe('sakin genel kurul ayrintisi', () => {
           {
             itemId: 'a1',
             title: 'Yönetici seçimi',
-            majority: 'owners_and_land',
-            decision: { decision: 'accepted', rule: 'owners_and_land', votes: { yes: 3, no: 0, abstain: 0 }, units: { yes: 3, no: 0, abstain: 0 }, landShareBps: { yes: 9000, no: 0, abstain: 0 }, corrected: true, recordedAt: '2026-12-15T17:00:00.000Z' },
+            majority: 'persons_and_land',
+            decision: { decision: 'accepted', rule: 'persons_and_land', votes: { yes: 3, no: 0, abstain: 0 }, units: { yes: 3, no: 0, abstain: 0 }, landShareBps: { yes: 9000, no: 0, abstain: 0 }, corrected: true, recordedAt: '2026-12-15T17:00:00.000Z' },
           },
           { itemId: 'a2', title: 'İşletme projesi', majority: 'attendees' },
         ],

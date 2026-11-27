@@ -45,6 +45,7 @@ export function MyAssemblyDetailPage() {
 function decisionLine(d: PortalDecision) {
   return VOTE_CHOICES.map((k) => {
     const parts = [`${d.votes[k]} oy`];
+    if (d.persons) parts.push(`${d.persons[k]} kat maliki`);
     if (d.units) parts.push(`${d.units[k]} bölüm`);
     if (d.landShareBps) parts.push(`arsa payı ${formatBps(d.landShareBps[k])}`);
     return `${CHOICE_LABELS[k]} ${parts.join(' · ')}`;
@@ -109,6 +110,14 @@ function Detail({ assembly: a }: { assembly: PortalAssembly }) {
               <dd className="break-words">
                 {formatDateTime(a.secondMeetingPlan.scheduledAt)}
                 {a.secondMeetingPlan.location ? ` · ${a.secondMeetingPlan.location}` : ''}
+                {a.secondMeetingPlan.onlineUrl && (
+                  <>
+                    {' · '}
+                    <a href={a.secondMeetingPlan.onlineUrl} target="_blank" rel="noreferrer" className="break-all text-accent hover:text-accent-hover">
+                      {a.secondMeetingPlan.onlineUrl}
+                    </a>
+                  </>
+                )}
               </dd>
             </div>
           )}

@@ -75,7 +75,7 @@ describe('bildirim tercihleri karti', () => {
   it('kaydedilirken tum anahtarlar devre disi; kayit hatasi gosterilir', () => {
     const { el } = render({ data: { email: { enabled: true } }, saving: true, saveError: new NetworkError('kapali') });
     const inputs = [...el.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')];
-    expect(inputs.length).toBe(7);
+    expect(inputs.length).toBe(1 + NOTIFICATION_CATEGORIES.length);
     expect(inputs.every((i) => i.disabled)).toBe(true);
     expect(el.textContent).toContain('Sunucuya ulaşılamadı');
   });

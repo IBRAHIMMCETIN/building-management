@@ -6,7 +6,8 @@ import type { NavItem } from './adminNav';
  * cekmecesinde (dar telefonda sekmeler sigsin, etiketler okunur kalsin).
  *
  * Genel Kurul ayri oge (yonetim menusundeki Oylamalar / Genel Kurul ayrimi gibi): oylamalar daire
- * bazinda ve kiraciya da acik olabilir, genel kurul apartman geneli ve yalnizca kat maliklerine.
+ * bazinda ve kiraciya da acik olabilir, genel kurul apartman geneli ve yalnizca kat maliklerine:
+ * malik uyeligi olmayan kullanicida menude hic gorunmez (`ownersOnly`).
  */
 export const RESIDENT_NAV: readonly NavItem[] = [
   { to: '/app', label: 'Ana Sayfa', icon: Home, end: true },
@@ -16,12 +17,15 @@ export const RESIDENT_NAV: readonly NavItem[] = [
   { to: '/app/ziyaretci', label: 'Ziyaretçi', icon: DoorOpen },
   { to: '/app/rezervasyon', label: 'Rezervasyon', icon: CalendarDays },
   { to: '/app/oylamalar', label: 'Oylamalar', icon: Vote },
-  { to: '/app/genel-kurul', label: 'Genel Kurul', icon: Landmark },
+  { to: '/app/genel-kurul', label: 'Genel Kurul', icon: Landmark, ownersOnly: true },
   { to: '/app/tuketim', label: 'Tüketimim', icon: Gauge },
   { to: '/app/ihale', label: 'İhaleler', icon: Scale },
 ];
 
 export const PRIMARY_TABS = 4;
+
+/** Kullaniciya gorunen ogeler: malik degilse yalnizca maliklere ait ogeler (Genel Kurul) cikar. */
+export const residentNavFor = (isOwner: boolean, items: readonly NavItem[] = RESIDENT_NAV) => items.filter((n) => !n.ownersOnly || isOwner);
 
 export function splitResidentNav(items: readonly NavItem[] = RESIDENT_NAV, primaryCount = PRIMARY_TABS) {
   // Tek bir oge cekmeceye kalacaksa cekmece yerine onu da cubukta goster.

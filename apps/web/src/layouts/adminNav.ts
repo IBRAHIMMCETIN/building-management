@@ -9,6 +9,8 @@ export type NavItem = {
   end?: boolean;
   /** Verilirse yalnizca bu rollere gorunur (yetki kontrolu yine API'de). */
   roles?: readonly Role[];
+  /** Sakin menusu: yalnizca aktif apartmanda malik uyeligi olana gorunur (yetki kontrolu yine API'de). */
+  ownersOnly?: boolean;
 };
 
 /** Apartmana ozel yonetim menusu (aktif apartman baglami gerektirir). */
