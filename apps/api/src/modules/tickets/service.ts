@@ -52,6 +52,7 @@ import {
   type TicketEvent,
   type TicketIndex,
   type TicketLocation,
+  type TicketPriority,
   type TicketSettings,
   type TicketStatus,
   ticketKeys,
@@ -435,6 +436,19 @@ export function createTicketService(overrides: Partial<TicketServiceDeps> = {}) 
     };
   }
 
+  /**
+   * Yalnizca sayilar (yonetim portfoyu): panoyla ayni gorunurluk ve SLA kurali, talep icerigi yok.
+   * `openByPriority`: cozum bekleyen (SLA isleyen) talepler; `overdueCount`: SLA'si asilanlar.
+   */
+  async function stats(ctx: TicketContext) {
+    const [actor, settings] = await Promise.all([actorOf(ctx), settingsOf(ctx.apartmentId)]);
+    if (actor.kind === 'resident' || actor.kind === 'security') throw new TicketError('forbidden', 'Pano yönetim ve görevli ekranıdır');
+    const now = deps.now();
+    const active = (await visibleTickets(actor, settings)).filter((t) => ACTIVE_STATUSES.includes(t.status));
+    const openByPriority = Object.fromEntries(TICKET_PRIORITIES.map((p) => [p, active.filter((t) => t.priority === p).length])) as Record<TicketPriority, number>;
+    return { openCount: active.length, openByPriority, overdueCount: active.filter((t) => isOverdue(t, now)).length };
+  }
+
   async function get(ctx: TicketContext, ticketId: string) {
     const { actor, settings, ticket } = await load(ctx, ticketId);
     const events = await repo.listEvents(ctx.apartmentId, ticketId);
@@ -794,7 +808,7 @@ export function createTicketService(overrides: Partial<TicketServiceDeps> = {}) 
     return { autoClosed, conflicts, breached };
   }
 
-  return { create, list, board, get, update, estimate, assignees, assign, transition, comment, photoUploadUrl, photo, similar, runDaily, actorOf, settingsOf };
+  return { create, list, board, stats, get, update, estimate, assignees, assign, transition, comment, photoUploadUrl, photo, similar, runDaily, actorOf, settingsOf };
 }
 
 export type TicketService = ReturnType<typeof createTicketService>;

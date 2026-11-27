@@ -41,6 +41,13 @@ import type { Transaction } from './types.js';
 
 export type ReportContext = { apartmentId: string; userId: string };
 
+/** Ayin tahakkuku (gelir hesaplarina net alacak) ve tahsilati (tahsilat islemlerinin kasa/banka girisi). */
+export type MonthCollection = { period: string; charged: number; collected: number; collectionRatePct?: number };
+
+export function monthCollection(period: string, charged: number, collected: number): MonthCollection {
+  return { period, charged, collected, ...(charged > 0 ? { collectionRatePct: Math.round((collected / charged) * 10_000) / 100 } : {}) };
+}
+
 export const REPORT_KINDS = ['trial-balance', 'income-expense', 'budget-vs-actual', 'annual-statement', 'debtors', 'funds-ledger'] as const;
 export type ReportKind = (typeof REPORT_KINDS)[number];
 
@@ -156,8 +163,15 @@ export function createReportService(overrides: Partial<ReportServiceDeps> & Pick
    * Rapor verisi. Kapali aylar donem anlik goruntusunden; acik aylar P1-c ile hesap-ay ozetinden
    * (site `ready` ise; yoksa donem islemlerinden - sonuc ayni). `paymentsIn`: ay -> kasa/banka
    * hesaplarina `payment` turu islemlerin borc satirlari toplami (Genel Bakis "tahsilat").
+   * `opening: false`: acilis bakiyeleri okunmaz (bos); yalnizca aylik hareket gereken cagiranlar icin
+   * (gelir-gider toplamlari acilisi kullanmaz).
    */
-  async function loadActivity(apartmentId: string, fromMonth: string, toMonth: string): Promise<ReportActivity & { paymentsIn: Map<string, number> }> {
+  async function loadActivity(
+    apartmentId: string,
+    fromMonth: string,
+    toMonth: string,
+    opts: { opening?: boolean } = {},
+  ): Promise<ReportActivity & { paymentsIn: Map<string, number> }> {
     const months = monthsBetween(fromMonth, toMonth);
     const [accounts, periods, useMsum] = await Promise.all([deps.finance.listAccounts(apartmentId), deps.fiscal.listPeriods(apartmentId), monthSummaryReady(apartmentId)]);
     const closed = new Map(periods.filter((p) => p.status === 'closed').map((p) => [p.period, p]));
@@ -168,7 +182,8 @@ export function createReportService(overrides: Partial<ReportServiceDeps> & Pick
     // Acilis bakiyeleri
     let opening: Map<string, number>;
     const prev = closed.get(previousPeriod(fromMonth));
-    if (prev) opening = closingOf(prev);
+    if (opts.opening === false) opening = new Map();
+    else if (prev) opening = closingOf(prev);
     else {
       const earlier = [...closed.keys()].filter((m) => m < fromMonth).sort().at(-1);
       if (earlier) {
@@ -399,9 +414,7 @@ export function createReportService(overrides: Partial<ReportServiceDeps> & Pick
     const ie = buildIncomeExpense(activity);
     const series = activity.months.map((m, i) => ({ period: m, income: ie.totals.income[i] ?? 0, expense: ie.totals.expense[i] ?? 0, result: ie.totals.result[i] ?? 0 }));
 
-    // Bu ay: tahakkuk (gelir hesaplarina net alacak) ve tahsilat (tahsilat islemlerinin kasa/banka girisi).
-    const charged = series.at(-1)?.income ?? 0;
-    const collected = activity.paymentsIn.get(current) ?? 0;
+    const thisMonth = monthCollection(current, series.at(-1)?.income ?? 0, activity.paymentsIn.get(current) ?? 0);
 
     // Butce kullanimi: yilbasindan bu aya kadar gider butcesi vs gerceklesen.
     let budgetInfo: { year: number; expenseBudgetYtd: number; expenseActualYtd: number; utilizationPct?: number } | null = null;
@@ -440,12 +453,23 @@ export function createReportService(overrides: Partial<ReportServiceDeps> & Pick
       accruedLateFees: summary.accruedLateFees,
       formerReceivables: summary.formerReceivables,
       payables: summary.payables,
-      thisMonth: { period: current, charged, collected, ...(charged > 0 ? { collectionRatePct: Math.round((collected / charged) * 10_000) / 100 } : {}) },
+      thisMonth,
       series,
       budget: budgetInfo,
       lockedThrough: lock?.lockedThrough ?? null,
       pending,
     };
+  }
+
+  /**
+   * Bu ayin tahakkuk / tahsilati: Genel Bakis'in `thisMonth` alaniyla ayni hesap, ama yalnizca bu
+   * ayin hareketleri okunur (12 aylik seri, butce ve acilis yok). Yonetim portfoyu kullanir.
+   */
+  async function collection(ctx: ReportContext): Promise<MonthCollection> {
+    const current = today().slice(0, 7);
+    const activity = await loadActivity(ctx.apartmentId, current, current, { opening: false });
+    const ie = buildIncomeExpense(activity);
+    return monthCollection(current, ie.totals.income[0] ?? 0, activity.paymentsIn.get(current) ?? 0);
   }
 
   // -------------------------------------------------------------------------
@@ -635,7 +659,7 @@ export function createReportService(overrides: Partial<ReportServiceDeps> & Pick
     return { url, fileName, contentType: 'application/pdf', expiresAt: new Date(deps.now().getTime() + URL_TTL_SECONDS * 1000).toISOString() };
   }
 
-  return { trialBalance, incomeExpense, budgetVsActual, annualStatement, debtors, fundsLedger, dashboard, pdf };
+  return { trialBalance, incomeExpense, budgetVsActual, annualStatement, debtors, fundsLedger, dashboard, collection, pdf };
 }
 
 export type ReportService = ReturnType<typeof createReportService>;

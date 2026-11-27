@@ -562,6 +562,22 @@ export function createMaintenanceService(overrides: Partial<MaintenanceServiceDe
     };
   }
 
+  /**
+   * Yalnizca sayilar (yonetim portfoyu), tek sorgu: geciken acik gorevler (takvimle ayni kural:
+   * son 1 yil, son gunu bugunden once) ve onumuzdeki 7 gunde (bugun dahil) son gunu gelen acik gorevler.
+   */
+  async function stats(ctx: MaintenanceContext) {
+    kindOf(ctx);
+    const d = today();
+    const weekEnd = addDays(d, 6);
+    const [settings, tasks] = await Promise.all([deps.tickets.settingsOf(ctx.apartmentId), repo.listTasks(ctx.apartmentId, addDays(d, -365), weekEnd)]);
+    const open = tasks.filter((t) => OPEN_TASK_STATUSES.includes(t.status) && canSee(ctx, t, settings));
+    return {
+      overdueCount: open.filter((t) => t.dueDate < d).length,
+      dueThisWeekCount: open.filter((t) => t.dueDate >= d && t.dueDate <= weekEnd).length,
+    };
+  }
+
   async function getTask(ctx: MaintenanceContext, taskId: string) {
     kindOf(ctx);
     const { task, view } = await loadTask(ctx, taskId);
@@ -776,6 +792,7 @@ export function createMaintenanceService(overrides: Partial<MaintenanceServiceDe
     generate,
     listTasks,
     calendar,
+    stats,
     getTask,
     assignTask,
     startTask,
