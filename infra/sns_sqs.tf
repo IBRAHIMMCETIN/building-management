@@ -12,7 +12,14 @@
 # ---------------------------------------------------------------------------
 
 locals {
-  notification_event_types = ["DUE_GENERATED", "PAYMENT_RECEIVED", "ANNOUNCEMENT_PUBLISHED", "LATE_FEE_POSTED", "DUES_REMINDER", "DUES_BATCH_SUMMARY", "METER_PERIOD_REVERSED"]
+  # Bildirim worker'inin isledigi TUM olay turleri. apps/api/src/events/publisher.ts EVENT_TYPES ile
+  # birebir ayni olmali (apps/api/test/notification-filter.test.ts denetler): listede olmayan tur
+  # SNS'te sessizce elenir ve bildirim hic gitmez.
+  notification_event_types = [
+    "DUE_GENERATED", "PAYMENT_RECEIVED", "ANNOUNCEMENT_PUBLISHED", "LATE_FEE_POSTED", "DUES_REMINDER",
+    "DUES_BATCH_SUMMARY", "METER_PERIOD_REVERSED",
+    "TICKET_CREATED", "TICKET_ASSIGNED", "TICKET_STATUS_CHANGED", "TICKET_COMMENTED", "OPERATIONS_DIGEST",
+  ]
   # Worker Lambda zaman asimi x 6 (AWS onerisi); worker 30 sn varsayilir.
   notification_visibility_timeout = 180
 }

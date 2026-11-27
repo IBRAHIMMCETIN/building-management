@@ -189,9 +189,11 @@ run "prod_plan" {
   # --- SNS / SQS ---
   assert {
     condition = jsondecode(aws_sns_topic_subscription.notification.filter_policy).eventType == [
-      "DUE_GENERATED", "PAYMENT_RECEIVED", "ANNOUNCEMENT_PUBLISHED", "LATE_FEE_POSTED", "DUES_REMINDER", "DUES_BATCH_SUMMARY", "METER_PERIOD_REVERSED",
+      "DUE_GENERATED", "PAYMENT_RECEIVED", "ANNOUNCEMENT_PUBLISHED", "LATE_FEE_POSTED", "DUES_REMINDER",
+      "DUES_BATCH_SUMMARY", "METER_PERIOD_REVERSED",
+      "TICKET_CREATED", "TICKET_ASSIGNED", "TICKET_STATUS_CHANGED", "TICKET_COMMENTED", "OPERATIONS_DIGEST",
     ]
-    error_message = "Bildirim kuyrugu yedi olay turune abone olmali (zamanlanmis gorev olaylari, toplu tahakkuk ozeti ve sayac donemi geri alma dahil)"
+    error_message = "Bildirim kuyrugu worker'in isledigi tum olay turlerine abone olmali (ariza/talep ve gunluk operasyon ozeti dahil)"
   }
   assert {
     condition     = aws_sns_topic_subscription.notification.raw_message_delivery
