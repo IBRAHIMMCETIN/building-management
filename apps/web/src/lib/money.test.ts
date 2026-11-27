@@ -21,6 +21,15 @@ describe('parseTRYToKurus', () => {
     expect(parseTRYToKurus(input)).toBeNull();
   });
 
+  it('allowZero: sifir kabul edilir, diger kurallar ayni; varsayilan davranis degismez', () => {
+    expect(parseTRYToKurus('0', { allowZero: true })).toBe(0);
+    expect(parseTRYToKurus('0,00', { allowZero: true })).toBe(0);
+    expect(parseTRYToKurus('1.250,50', { allowZero: true })).toBe(125050);
+    expect(parseTRYToKurus('-5', { allowZero: true })).toBeNull();
+    expect(parseTRYToKurus('', { allowZero: true })).toBeNull();
+    expect(parseTRYToKurus('0')).toBeNull();
+  });
+
   it('kayan nokta hatasi yok (0,29 * 100)', () => {
     expect(parseTRYToKurus('0,29')).toBe(29);
     expect(parseTRYToKurus('1.000.000,07')).toBe(100000007);

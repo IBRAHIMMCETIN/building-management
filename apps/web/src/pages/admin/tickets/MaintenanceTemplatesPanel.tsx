@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { Alert, Badge, Button, Card, Dialog, FilterChips, FormField, Input, Select, Skeleton, Textarea } from '@/components/ui';
 import { useFinanceAccounts } from '@/hooks/useFinance';
 import { useArchiveMaintenanceTemplate, useCreateMaintenanceTemplate, useMaintenancePresets, useMaintenanceTemplates, useUpdateMaintenanceTemplate } from '@/hooks/useMaintenance';
+import { useEquipmentNames } from '@/hooks/useEquipment';
 import { useTicketPermissions } from '@/hooks/useTickets';
 import { errorMessage } from '@/lib/api/errors';
 import type { MaintenancePreset, MaintenanceTemplate, TemplateInput } from '@/lib/api/maintenance';
@@ -10,6 +11,7 @@ import { formatDate } from '@/lib/dates';
 import { MAX_KURUS, formatTRY, kurusToInput, parseTRYToKurus } from '@/lib/money';
 import { SCHEDULE_UNITS, type ScheduleUnit, istanbulToday, scheduleText } from '@/lib/maintenance/schedule';
 import { CATEGORY_LABELS, TICKET_CATEGORIES, type TicketCategory } from '@/lib/tickets/model';
+import { EquipmentSelect } from './EquipmentSelect';
 import { useTicketLabels } from './shared';
 
 const UNIT_LABELS: Record<ScheduleUnit, string> = { week: 'hafta', month: 'ay', year: 'yıl' };
@@ -22,6 +24,7 @@ export function MaintenanceTemplatesPanel({ onOpenTask: _onOpenTask }: { onOpenT
   const templates = useMaintenanceTemplates(status);
   const archive = useArchiveMaintenanceTemplate();
   const [editing, setEditing] = useState<MaintenanceTemplate | 'new' | null>(null);
+  const equipmentName = useEquipmentNames((templates.data ?? []).map((t) => t.equipmentId));
 
   return (
     <div className="flex flex-col gap-4">
@@ -51,6 +54,7 @@ export function MaintenanceTemplatesPanel({ onOpenTask: _onOpenTask }: { onOpenT
                   <p className="text-xs text-muted">
                     {CATEGORY_LABELS[t.category]}
                     {t.asset ? ` · ${t.asset}` : ''}
+                    {t.equipmentId && equipmentName(t.equipmentId) !== t.asset ? ` · ekipman: ${equipmentName(t.equipmentId) ?? 'Ekipman kaydı'}` : ''}
                   </p>
                 </div>
                 <Badge tone="accent">
@@ -122,6 +126,7 @@ function TemplateDialog({ template, onClose }: { template: MaintenanceTemplate |
   const [name, setName] = useState(template?.name ?? '');
   const [category, setCategory] = useState<TicketCategory>(template?.category ?? 'other');
   const [asset, setAsset] = useState(template?.asset ?? '');
+  const [equipmentId, setEquipmentId] = useState(template?.equipmentId ?? '');
   const [every, setEvery] = useState(String(template?.schedule.every ?? 1));
   const [unit, setUnit] = useState<ScheduleUnit>(template?.schedule.unit ?? 'month');
   const [startDate, setStartDate] = useState(template?.schedule.startDate ?? istanbulToday());
@@ -164,6 +169,7 @@ function TemplateDialog({ template, onClose }: { template: MaintenanceTemplate |
       name: name.trim(),
       category,
       asset: asset.trim() || null,
+      equipmentId: equipmentId || null,
       schedule: { every: n, unit, startDate },
       checklist: checklist.map((c) => ({ text: c.text.trim(), required: c.required })),
       defaultAssigneeId: assignee || null,
@@ -200,6 +206,7 @@ function TemplateDialog({ template, onClose }: { template: MaintenanceTemplate |
         <FormField label="Ekipman / yer (isteğe bağlı)" hint="Örn. B Blok asansörü">
           <Input value={asset} onChange={(e) => setAsset(e.target.value)} maxLength={80} />
         </FormField>
+        <EquipmentSelect className="sm:col-span-2" label="Ekipman kaydı (isteğe bağlı)" hint="Görevler ve görevden açılan arızalar ekipmanın geçmişinde görünür." value={equipmentId} onChange={(id) => setEquipmentId(id)} />
         <FormField label="Kategori" hint="Görevden açılan arızanın kategorisi.">
           <Select value={category} onChange={(e) => setCategory(e.target.value as TicketCategory)}>
             {TICKET_CATEGORIES.map((c) => (

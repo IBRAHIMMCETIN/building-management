@@ -26,11 +26,12 @@ export function kurusToInput(kurus: number): string {
 export const MAX_KURUS = 99_999_999_999;
 
 /**
- * "1.500,50", "1500,5", "1500.50", "1 500", "₺1.500" -> kurus. Gecersiz/negatif/sifir -> null.
+ * "1.500,50", "1500,5", "1500.50", "1 500", "₺1.500" -> kurus. Gecersiz/negatif/sifir -> null
+ * (`allowZero: true`: "0" / "0,00" -> 0; yalnizca sifir tutarin anlamli oldugu alanlarda, ornek tahmini tutar).
  * Kural: virgul varsa ondalik ayiraci virguldur (nokta binlik). Virgul yoksa ve nokta
  * sonrasinda 1-2 hane varsa nokta ondaliktir; aksi halde noktalar binlik ayiracidir.
  */
-export function parseTRYToKurus(input: string): number | null {
+export function parseTRYToKurus(input: string, opts: { allowZero?: boolean } = {}): number | null {
   const text = input.replace(/\s|₺|TL/gi, '');
   if (!text || !/^[\d.,]+$/.test(text)) return null;
 
@@ -56,6 +57,6 @@ export function parseTRYToKurus(input: string): number | null {
   if (!/^\d*$/.test(fraction) || fraction.length > 2 || integer === '') return null;
 
   const kurus = Number(integer) * 100 + Number(fraction.padEnd(2, '0'));
-  if (!Number.isSafeInteger(kurus) || kurus < 1 || kurus > MAX_KURUS) return null;
+  if (!Number.isSafeInteger(kurus) || kurus < (opts.allowZero ? 0 : 1) || kurus > MAX_KURUS) return null;
   return kurus;
 }

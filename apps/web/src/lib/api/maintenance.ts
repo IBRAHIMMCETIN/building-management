@@ -3,7 +3,7 @@ import { SCHEDULE_UNITS, TASK_STATUSES, type ScheduleUnit } from '@/lib/maintena
 import { TICKET_CATEGORIES, type TicketCategory, type TicketPriority } from '@/lib/tickets/model';
 import { apiClient } from './client';
 import { signedDownloadSchema } from './documentModel';
-import { type NewCostInput, photoUploadSchema, putPhoto, ticketSchema, workCostsSchema } from './tickets';
+import { type EstimateInput, type NewCostInput, photoUploadSchema, putPhoto, staffEstimateSchema, ticketSchema, workCostsSchema } from './tickets';
 
 /*
  * Faz 3 (O1-3) periyodik bakim - /api/maintenance (yonetim yazar; gorevli gorev akisinda; denetci okur).
@@ -31,6 +31,8 @@ export const templateSchema = z.object({
   kind: z.string(),
   category: z.enum(TICKET_CATEGORIES),
   asset: z.string().optional(),
+  /** v2: ekipman sicili baglantisi (gorevlere kopyalanir). */
+  equipmentId: z.string().optional(),
   blockIds: z.array(z.string()).optional(),
   schedule,
   checklist: z.array(checklistItem),
@@ -53,6 +55,7 @@ export const taskSchema = z.object({
   kind: z.string(),
   category: z.enum(TICKET_CATEGORIES),
   asset: z.string().optional(),
+  equipmentId: z.string().optional(),
   checklist: z.array(checklistItem),
   status: z.enum(TASK_STATUSES),
   assigneeId: z.string().optional(),
@@ -66,6 +69,8 @@ export const taskSchema = z.object({
   cancelReason: z.string().optional(),
   ticketIds: z.array(z.string()).default([]),
   costSummary: z.object({ total: z.number().int(), expenseIds: z.array(z.string()) }).optional(),
+  /** v2: gorevlinin tahmini tutar notu (bilgi amacli). */
+  estimate: staffEstimateSchema.optional(),
   overdue: z.boolean().default(false),
   actions: z.array(z.string()).default([]),
   version: z.number().int(),
@@ -80,6 +85,7 @@ export type TemplateInput = {
   name?: string;
   category?: TicketCategory;
   asset?: string | null;
+  equipmentId?: string | null;
   schedule?: { every?: number; unit?: ScheduleUnit; startDate?: string };
   checklist?: (string | { text: string; required?: boolean })[];
   defaultAssigneeId?: string | null;
@@ -119,6 +125,7 @@ export const maintenanceApi = {
   complete: (id: string, input: CompleteTaskInput) =>
     apiClient.post(`${B}/tasks/${enc(id)}/complete`, input, { schema: z.object({ task: taskSchema, failedItems: z.number().int(), suggestTicket: z.boolean() }) }),
   skip: (id: string, input: { version: number; reason: string }) => apiClient.post(`${B}/tasks/${enc(id)}/skip`, input, { schema: z.object({ task: taskSchema }) }),
+  estimate: (id: string, input: EstimateInput) => apiClient.put(`${B}/tasks/${enc(id)}/estimate`, input, { schema: z.object({ task: taskSchema }) }),
   openTicket: (id: string, input: { idempotencyKey: string; title?: string; description?: string; priority?: TicketPriority; photos?: string[] }) =>
     apiClient.post(`${B}/tasks/${enc(id)}/ticket`, input, { schema: z.object({ ticket: ticketSchema, replayed: z.boolean() }).loose() }),
   async uploadPhoto(file: File): Promise<string> {

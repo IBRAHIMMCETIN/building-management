@@ -18,6 +18,7 @@ import { type PaymentsService, createPaymentsService } from '../modules/payments
 import { portalRepository } from '../modules/portal/repository.js';
 import { createPortalService } from '../modules/portal/service.js';
 import { createOwnershipReader } from '../modules/ownership/reader.js';
+import { type EquipmentService, createEquipmentService } from '../modules/equipment/service.js';
 import { type MaintenanceService, createMaintenanceService } from '../modules/maintenance/service.js';
 import { type TicketService, createTicketService } from '../modules/tickets/service.js';
 import { type PollService, createPollService } from '../modules/polls/service.js';
@@ -60,7 +61,10 @@ import { type BulkJobService, createBulkJobService } from '../modules/bulkjobs/s
  *                  sayesinde tekrar calismasi zararsizdir. Silme yapmaz.
  *   ticket_maintenance her gun 07:30 (O1-3): cozulup `autoCloseDays` gun onaylanmayan talepleri
  *                  kapatir (closeKind auto, bildirim outbox ile) ve yonetim / gorevliye gunluk
- *                  operasyon ozeti (`OPERATIONS_DIGEST`: SLA asimi, geciken ve yaklasan bakim) yayinlar.
+ *                  operasyon ozeti (`OPERATIONS_DIGEST`: SLA asimi, geciken ve yaklasan bakim; v2:
+ *                  ekipman garanti, servis sozlesmesi ve periyodik kontrol tarihleri, yalnizca
+ *                  yonetime: her gun 30 gun icinde dolacak / son 30 gunde dolmus, pazartesi uzun
+ *                  suredir dolmus sozlesme ve kontroller de) yayinlar.
  *                  Olay kimligi gun bazli deterministiktir (tekrar teslimde bildirim bir kez).
  *   outbox_sweep   5 dakikada bir: esikten (varsayilan 2 dk) eski, hala bekleyen outbox
  *                  kayitlarini relay cekirdegiyle yeniden yayinlar (apartman dongusu yok; tek tur).
@@ -147,6 +151,8 @@ export type SchedulerDeps = {
   /** O1-3: talep otomatik kapanisi + SLA listesi ve bakim gorevi uretimi / ozet kalemleri. */
   tickets: Pick<TicketService, 'runDaily'>;
   maintenance: Pick<MaintenanceService, 'generate' | 'digestItems'>;
+  /** v2: ekipman garanti / sozlesme / periyodik kontrol hatirlatmalari (gunluk ozete eklenir). */
+  equipment: Pick<EquipmentService, 'digestItems'>;
   /** Y1: suresi dolup hic oy almamis oylamalarin oy listesini sistem olarak dondurur (`maintenance_tasks`). */
   polls: Pick<PollService, 'freezeEnded'>;
   /** null: online odeme kapali. Verilmezse ortam degiskenlerinden kurulur (ilk kullanimda). */
@@ -176,6 +182,7 @@ export function createSchedulerWorker(overrides: Partial<SchedulerDeps> = {}) {
     plans?: SchedulerDeps['plans'];
     tickets?: SchedulerDeps['tickets'];
     maintenance?: SchedulerDeps['maintenance'];
+    equipment?: SchedulerDeps['equipment'];
     polls?: SchedulerDeps['polls'];
     payments?: SchedulerDeps['payments'];
     payouts?: SchedulerDeps['payouts'];
@@ -209,6 +216,7 @@ export function createSchedulerWorker(overrides: Partial<SchedulerDeps> = {}) {
   const ticketService = () => createTicketService({ now, store: undefined });
   const tickets = () => (lazy.tickets ??= overrides.tickets ?? ticketService());
   const maintenance = () => (lazy.maintenance ??= overrides.maintenance ?? createMaintenanceService({ now, store: undefined, tickets: ticketService() }));
+  const equipment = () => (lazy.equipment ??= overrides.equipment ?? createEquipmentService({ now, store: undefined }));
   const polls = () => (lazy.polls ??= overrides.polls ?? createPollService({ now, portal: createPortalService({ now }) }));
   /** Odeme servisleri tek yapilandirmadan, ilk kullanimda kurulur. */
   function paymentServices() {
@@ -447,7 +455,10 @@ export function createSchedulerWorker(overrides: Partial<SchedulerDeps> = {}) {
       case 'ticket_maintenance': {
         const r = await tickets().runDaily(apartmentId);
         const m = await maintenance().digestItems(apartmentId, day);
-        const hasItems = r.breached.length > 0 || m.dueSoon.length > 0 || m.overdue.length > 0 || r.autoClosed > 0;
+        // v2: ekipman son tarihleri (yalnizca yonetim ozetinde; olayda ilk 100 kalem, sayi kesilmeden).
+        const eqDigest = await equipment().digestItems(apartmentId, day);
+        const eq = eqDigest.items.slice(0, 100);
+        const hasItems = r.breached.length > 0 || m.dueSoon.length > 0 || m.overdue.length > 0 || r.autoClosed > 0 || eq.length > 0;
         if (hasItems) {
           await events().publish(
             buildEvent(
@@ -456,7 +467,14 @@ export function createSchedulerWorker(overrides: Partial<SchedulerDeps> = {}) {
                 type: 'OPERATIONS_DIGEST',
                 apartmentId,
                 actorId: SYSTEM_ACTOR,
-                payload: { date: day, slaBreached: r.breached, maintenanceDue: m.dueSoon, maintenanceOverdue: m.overdue, autoClosed: r.autoClosed },
+                payload: {
+                  date: day,
+                  slaBreached: r.breached,
+                  maintenanceDue: m.dueSoon,
+                  maintenanceOverdue: m.overdue,
+                  autoClosed: r.autoClosed,
+                  ...(eq.length ? { equipmentExpiring: eq, equipmentTotal: eqDigest.items.length, ...(eqDigest.weekly ? { equipmentWeekly: true } : {}) } : {}),
+                },
               },
               now,
             ),
@@ -465,7 +483,16 @@ export function createSchedulerWorker(overrides: Partial<SchedulerDeps> = {}) {
         return {
           apartmentId,
           status: 'done',
-          detail: { date: day, autoClosed: r.autoClosed, conflicts: r.conflicts, slaBreached: r.breached.length, maintenanceDue: m.dueSoon.length, maintenanceOverdue: m.overdue.length, digest: hasItems },
+          detail: {
+            date: day,
+            autoClosed: r.autoClosed,
+            conflicts: r.conflicts,
+            slaBreached: r.breached.length,
+            maintenanceDue: m.dueSoon.length,
+            maintenanceOverdue: m.overdue.length,
+            equipmentExpiring: eqDigest.items.length,
+            digest: hasItems,
+          },
         };
       }
 

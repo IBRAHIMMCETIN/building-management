@@ -17,6 +17,11 @@ const location = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('common'), area: z.string(), blockId: z.string().optional() }),
 ]);
 
+/** v2: gorevlinin tahmini tutar notu (talep ve bakim gorevi). Deftere yazilmaz. */
+export const staffEstimateSchema = z.object({ amount: z.number().int(), note: z.string().optional(), at: z.string(), by: z.string(), byRole: z.string().optional() });
+export type StaffEstimate = z.infer<typeof staffEstimateSchema>;
+export type EstimateInput = { version: number; amount: number | null; note?: string };
+
 export const ticketSchema = z.object({
   ticketId: z.string(),
   number: z.string(),
@@ -45,11 +50,16 @@ export const ticketSchema = z.object({
   reopenCount: z.number().int().default(0),
   photoCount: z.number().int().default(0),
   costSummary: z.object({ total: z.number().int(), expenseIds: z.array(z.string()) }).optional(),
+  /** v2: ekipman sicili baglantisi (sakin uclarina donmez). */
+  equipmentId: z.string().optional(),
+  /** v2: gorevlinin tahmini tutar notu (kurus; bilgi amacli; sakin uclarina donmez). */
+  estimate: staffEstimateSchema.optional(),
   overdue: z.boolean().default(false),
   mine: z.boolean().default(false),
   actions: z.array(z.string()).default([]),
   canAssign: z.boolean().default(false),
   canEdit: z.boolean().default(false),
+  canEstimate: z.boolean().default(false),
   version: z.number().int(),
 });
 export type Ticket = z.infer<typeof ticketSchema>;
@@ -178,6 +188,7 @@ export type TicketListQuery = {
   priority?: string;
   overdue?: 'true';
   q?: string;
+  equipmentId?: string;
   cursor?: string;
   limit?: number;
 };
@@ -190,7 +201,11 @@ export type CreateTicketInput = {
   priority?: TicketPriority;
   location: { kind: 'unit'; unitId: string } | { kind: 'common'; area: string; blockId?: string };
   photos?: string[];
+  /** v2: yonetim ve gorevli (ayni apartmanin ekipmani). */
+  equipmentId?: string;
 };
+
+export type UpdateTicketInput = { version: number; title?: string; description?: string; category?: TicketCategory; priority?: TicketPriority; equipmentId?: string | null };
 
 const enc = encodeURIComponent;
 const T = '/api/tickets';
@@ -213,8 +228,9 @@ export const ticketsApi = {
   assignees: (signal?: AbortSignal) => apiClient.get(`${T}/assignees`, { signal, schema: assigneesSchema }),
   get: (id: string, signal?: AbortSignal) => apiClient.get(`${T}/${enc(id)}`, { signal, schema: ticketDetailSchema }),
   create: (input: CreateTicketInput) => apiClient.post(T, input, { schema: z.object({ ticket: ticketSchema, replayed: z.boolean() }) }),
-  update: (id: string, input: { version: number; title?: string; description?: string; category?: TicketCategory; priority?: TicketPriority }) =>
-    apiClient.patch(`${T}/${enc(id)}`, input, { schema: z.object({ ticket: ticketSchema }) }),
+  update: (id: string, input: UpdateTicketInput) => apiClient.patch(`${T}/${enc(id)}`, input, { schema: z.object({ ticket: ticketSchema }) }),
+  /** v2: tahmini tutar notu (`amount: null` kaldirir). */
+  estimate: (id: string, input: EstimateInput) => apiClient.put(`${T}/${enc(id)}/estimate`, input, { schema: z.object({ ticket: ticketSchema }) }),
   assign: (id: string, input: { version: number; assigneeId: string | null; note?: string }) =>
     apiClient.post(`${T}/${enc(id)}/assign`, input, { schema: z.object({ ticket: ticketSchema }) }),
   transition: (id: string, input: { version: number; action: TransitionAction; note?: string; photos?: string[] }) =>

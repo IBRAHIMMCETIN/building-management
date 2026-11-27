@@ -183,6 +183,15 @@ export type OperationsDigestPayload = {
   maintenanceDue: { taskId: string; name: string; dueDate: IsoDate; assigneeId?: string }[];
   maintenanceOverdue: { taskId: string; name: string; dueDate: IsoDate; assigneeId?: string }[];
   autoClosed: number;
+  /**
+   * v2: ekipman garanti / servis sozlesmesi / periyodik kontrol tarihleri: her gun 30 gun icinde
+   * dolacak ve son 30 gunde dolmus olanlar; pazartesi (`equipmentWeekly`) daha once dolmus sozlesme
+   * / kontroller de. Yalnizca yonetime gider; liste en fazla 100 kalem, `equipmentTotal` kesilmeden
+   * onceki sayi. Eski olaylarda yoktur.
+   */
+  equipmentExpiring?: { equipmentId: string; name: string; kind: 'warranty' | 'contract' | 'inspection'; date: IsoDate; expired: boolean }[];
+  equipmentTotal?: number;
+  equipmentWeekly?: boolean;
 };
 
 /**

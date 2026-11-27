@@ -6,7 +6,10 @@ import { useCreateTicket, useTicketPermissions } from '@/hooks/useTickets';
 import { useBlocks } from '@/hooks/useUnits';
 import { errorMessage } from '@/lib/api/errors';
 import { ticketsApi } from '@/lib/api/tickets';
+import type { Equipment } from '@/lib/api/equipment';
+import { EQUIPMENT_TICKET_CATEGORY } from '@/lib/equipment/model';
 import { CATEGORY_LABELS, PRIORITY_LABELS, TICKET_CATEGORIES, TICKET_PRIORITIES, type TicketCategory, type TicketPriority } from '@/lib/tickets/model';
+import { EquipmentSelect } from './EquipmentSelect';
 import { useTicketLabels } from './shared';
 
 /** Yonetim / gorevli / guvenlik talep acma: daire ici (yonetim, gorevli) veya ortak alan. */
@@ -25,6 +28,7 @@ export function NewTicketDialog({ open, onClose, onCreated }: { open: boolean; o
   const [description, setDescription] = useState('');
   const [category, setCategory] = useState<TicketCategory>('other');
   const [priority, setPriority] = useState<TicketPriority>('normal');
+  const [equipmentId, setEquipmentId] = useState('');
   const [files, setFiles] = useState<File[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -34,9 +38,19 @@ export function NewTicketDialog({ open, onClose, onCreated }: { open: boolean; o
     setDescription('');
     setArea('');
     setUnitId('');
+    setEquipmentId('');
     setFiles([]);
     setError(null);
     renew();
+  };
+
+  /** v2: ekipman secilince bos alan, blok ve "Diger" kategori ekipmandan onerilir. */
+  const chooseEquipment = (id: string, e?: Equipment) => {
+    setEquipmentId(id);
+    if (!e) return;
+    if (kind === 'common' && !area.trim()) setArea((e.location ? `${e.name} · ${e.location}` : e.name).slice(0, 80));
+    if (kind === 'common' && !blockId && e.blockId) setBlockId(e.blockId);
+    if (category === 'other') setCategory(EQUIPMENT_TICKET_CATEGORY[e.category]);
   };
   const valid = title.trim().length >= 3 && description.trim().length > 0 && (kind === 'unit' ? !!unitId : area.trim().length >= 2);
 
@@ -53,6 +67,7 @@ export function NewTicketDialog({ open, onClose, onCreated }: { open: boolean; o
         priority,
         location: kind === 'unit' ? { kind, unitId } : { kind, area: area.trim(), ...(blockId ? { blockId } : {}) },
         ...(photos.length ? { photos } : {}),
+        ...(canUnit && equipmentId ? { equipmentId } : {}),
       });
       reset();
       onClose();
@@ -109,6 +124,9 @@ export function NewTicketDialog({ open, onClose, onCreated }: { open: boolean; o
               </Select>
             </FormField>
           </>
+        )}
+        {canUnit && (
+          <EquipmentSelect className="sm:col-span-2" label="Ekipman (isteğe bağlı)" hint="Arıza ekipmanın geçmişinde ve masraf toplamında görünür." value={equipmentId} onChange={chooseEquipment} />
         )}
         <FormField label="Kategori">
           <Select value={category} onChange={(e) => setCategory(e.target.value as TicketCategory)}>

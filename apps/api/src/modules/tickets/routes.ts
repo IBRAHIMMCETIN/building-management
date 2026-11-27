@@ -16,12 +16,13 @@ export type TicketRoutesDeps = { authenticate: Authenticator; service: TicketSer
 /**
  * `/api/tickets` - Faz 3 (O1) ariza / talep yonetimi.
  *
- *   GET   /                      ?status=&assignee=me|none|<id>&category=&priority=&unitId=&blockId=&overdue=&q=&from=&to=&cursor=&limit=
+ *   GET   /                      ?status=&assignee=me|none|<id>&category=&priority=&unitId=&blockId=&equipmentId=&overdue=&q=&from=&to=&cursor=&limit=
  *   GET   /board                 durum sutunlari + SLA ozeti (yonetim, gorevli, denetci)
  *   GET   /assignees             aktif bina gorevlileri
- *   POST  /                      { idempotencyKey, title, description, category, priority?, location }
+ *   POST  /                      { idempotencyKey, title, description, category, priority?, location, equipmentId? }
  *   GET   /:id                   talep + zaman cizelgesi
- *   PATCH /:id                   { version, title?, description?, category?, priority?, location? }   (yonetim)
+ *   PATCH /:id                   { version, title?, description?, category?, priority?, location?, equipmentId? }   (yonetim)
+ *   PUT   /:id/estimate          { version, amount: kurus | null, note? }   (v2; yonetim + guncel gorevli, atanmamissa acan gorevli; bilgi amacli)
  *   POST  /:id/assign            { version, assigneeId | null, note? }
  *   POST  /:id/status            { version, action, note?, rating? }
  *   POST  /:id/comments          { body, visibility?, photos? }
@@ -59,6 +60,7 @@ export function ticketRoutes({ authenticate, service, costs }: TicketRoutesDeps)
   });
   r.get('/:id', requireRole(READ_ROLES), async (c) => c.json(await service.get(ctx(c), id(c))));
   r.patch('/:id', requireRole(MANAGE_ROLES), async (c) => c.json(await service.update(ctx(c), id(c), await readJson(c))));
+  r.put('/:id/estimate', requireRole(STAFF_ROLES), async (c) => c.json(await service.estimate(ctx(c), id(c), await readJson(c))));
   r.post('/:id/assign', requireRole(STAFF_ROLES), async (c) => c.json(await service.assign(ctx(c), id(c), await readJson(c))));
   r.post('/:id/status', requireRole(WRITE_ROLES), async (c) => c.json(await service.transition(ctx(c), id(c), await readJson(c))));
   r.post('/:id/comments', requireRole(WRITE_ROLES), async (c) => c.json(await service.comment(ctx(c), id(c), await readJson(c)), 201));

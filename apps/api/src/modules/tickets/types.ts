@@ -12,7 +12,7 @@
  * Hicbir kayit silinmez (API ve zamanlayici Lambda'larinin DeleteItem yetkisi yok); iptal ve kapanis
  * birer durumdur.
  */
-import type { CostSummary } from '../workcosts/types.js';
+import type { CostSummary, StaffEstimate } from '../workcosts/types.js';
 import type { AuditFields, IsoDateTime, TableKeys } from '../core/types.js';
 
 export const TICKET_CATEGORIES = [
@@ -106,6 +106,10 @@ export type Ticket = TableKeys &
     photoCount: number;
     /** O1-4: bagli masraflar ve daireye yansitmalar (Finans). */
     costSummary?: CostSummary;
+    /** v2: ekipman sicili baglantisi (ayni apartman; istege bagli). */
+    equipmentId?: string;
+    /** v2: gorevlinin tahmini tutar notu (bilgi amacli, deftere yazilmaz; sakine donmez). */
+    estimate?: StaffEstimate;
   };
 
 export const TICKET_EVENT_KINDS = [
@@ -119,6 +123,8 @@ export const TICKET_EVENT_KINDS = [
   'cost_unlinked',
   /** O1-4: masrafin daireye yansitilmasi (yonetici onayli tahakkuk). */
   'cost_charged',
+  /** v2: tahmini tutar notu girildi / degisti / kaldirildi (ic olay). */
+  'estimate_set',
 ] as const;
 export type TicketEventKind = (typeof TICKET_EVENT_KINDS)[number];
 

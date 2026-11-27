@@ -987,6 +987,18 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
     return !!(await repo.getIdempotency(ctx.apartmentId, `REV_${transactionId}`));
   }
 
+  /** Toplu `isReversed`: ters kayitla iptal edilmis islem kimlikleri (depo destekliyorsa tek BatchGet turu). */
+  async function reversedTransactions(ctx: FinanceContext, transactionIds: readonly string[]): Promise<Set<string>> {
+    const ids = [...new Set(transactionIds)];
+    if (!ids.length) return new Set();
+    if (repo.existingIdempotencyIds) {
+      const found = await repo.existingIdempotencyIds(ctx.apartmentId, ids.map((id) => `REV_${id}`));
+      return new Set(ids.filter((id) => found.has(`REV_${id}`)));
+    }
+    const flags = await Promise.all(ids.map((id) => isReversed(ctx, id)));
+    return new Set(ids.filter((_, i) => flags[i]));
+  }
+
   async function loadTx(ctx: FinanceContext, transactionId: string): Promise<Transaction> {
     const tx = await repo.getTransaction(ctx.apartmentId, transactionId);
     if (!tx) throw new FinanceError('not_found', 'Islem bulunamadi');
@@ -3143,6 +3155,7 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
     postWorkDocuments,
     expenseInfo,
     isReversed,
+    reversedTransactions,
     reverseTransaction,
     /** Finans 2.3: toplu geri alma onizlemesi (ayni engel kurallari). */
     reversalStatus,

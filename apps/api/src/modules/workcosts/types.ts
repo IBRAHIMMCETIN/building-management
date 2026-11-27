@@ -86,3 +86,16 @@ export const CATEGORY_EXPENSE_ACCOUNT: Record<string, string> = {
 };
 export const DEFAULT_REPAIR_ACCOUNT = 'exp-repair';
 export const expenseAccountFor = (category: string) => CATEGORY_EXPENSE_ACCOUNT[category] ?? DEFAULT_REPAIR_ACCOUNT;
+
+/**
+ * Gorevlinin tahmini tutar notu (talep ve bakim gorevi). Yalnizca bilgi amaclidir: deftere hicbir
+ * kayit yazmaz. Yonetim, denetci ve gorevli gorur; sakin ve guvenlik uclarina donmez.
+ */
+export type StaffEstimate = {
+  /** Kurus (tam sayi). */
+  amount: number;
+  note?: string;
+  at: IsoDateTime;
+  by: string;
+  byRole: string;
+};

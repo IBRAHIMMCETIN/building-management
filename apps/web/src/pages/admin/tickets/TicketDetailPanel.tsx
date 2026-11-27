@@ -1,10 +1,12 @@
 import { Pencil, Send, UserCheck } from 'lucide-react';
 import { useEffect, useState } from 'react';
+import { Link } from 'react-router';
 import { PhotoPicker, uploadPhotos } from '@/components/tickets/PhotoPicker';
 import { PriorityBadge, SlaBadge, TicketStatusBadge } from '@/components/tickets/TicketBadges';
 import { TicketTimeline } from '@/components/tickets/TicketTimeline';
 import { Alert, Button, Dialog, FormField, Input, Select, Skeleton, Textarea } from '@/components/ui';
-import { useAssignTicket, useCommentTicket, useTicket, useTicketPermissions, useTransitionTicket, useUpdateTicket } from '@/hooks/useTickets';
+import { useEquipmentNames, useEquipmentPermissions } from '@/hooks/useEquipment';
+import { useAssignTicket, useCommentTicket, useEstimateTicket, useTicket, useTicketPermissions, useTransitionTicket, useUpdateTicket } from '@/hooks/useTickets';
 import { errorMessage } from '@/lib/api/errors';
 import { type Ticket, ticketsApi } from '@/lib/api/tickets';
 import { formatDateTime } from '@/lib/dates';
@@ -20,6 +22,8 @@ import {
   locationText,
   noteRequired,
 } from '@/lib/tickets/model';
+import { EquipmentSelect } from './EquipmentSelect';
+import { EstimateCard } from './EstimateCard';
 import { WorkCostCard } from './WorkCostCard';
 import { type TicketLabels, useTicketLabels } from './shared';
 
@@ -42,7 +46,14 @@ export function TicketDetailPanel({ ticketId, onClose }: { ticketId: string | nu
 
 function TicketDetail({ ticket, events }: { ticket: Ticket; events: Parameters<typeof TicketTimeline>[0]['events'] }) {
   const p = useTicketPermissions();
+  const { canRead: canReadEquipment } = useEquipmentPermissions();
   const labels = useTicketLabels();
+  // Bagli ekipman ve zaman cizelgesindeki eski / yeni baglantilar (durumdan bagimsiz adlar).
+  const equipmentName = useEquipmentNames([
+    ticket.equipmentId,
+    ...events.flatMap((e) => (e.changes?.equipmentId ? e.changes.equipmentId.filter((v): v is string => typeof v === 'string') : [])),
+  ]);
+  const estimate = useEstimateTicket(ticket.ticketId);
   const [action, setAction] = useState<TransitionAction | null>(null);
   const [editing, setEditing] = useState(false);
   const loadPhoto = (photoId: string) => ticketsApi.photo(ticket.ticketId, photoId);
@@ -67,6 +78,20 @@ function TicketDetail({ ticket, events }: { ticket: Ticket; events: Parameters<t
         <dd>{locationText(ticket.location, labels.unitLabel)}</dd>
         <dt className="text-muted">Kategori</dt>
         <dd>{CATEGORY_LABELS[ticket.category]}</dd>
+        {ticket.equipmentId && (
+          <>
+            <dt className="text-muted">Ekipman</dt>
+            <dd>
+              {canReadEquipment ? (
+                <Link to={`/admin/equipment?equipment=${encodeURIComponent(ticket.equipmentId)}`} className="text-accent underline-offset-2 hover:underline">
+                  {equipmentName(ticket.equipmentId) ?? 'Ekipman kaydı'}
+                </Link>
+              ) : (
+                (equipmentName(ticket.equipmentId) ?? 'Ekipman kaydı')
+              )}
+            </dd>
+          </>
+        )}
         <dt className="text-muted">Açılış</dt>
         <dd>{formatDateTime(ticket.createdAt)}</dd>
         <dt className="text-muted">SLA hedefi</dt>
@@ -96,11 +121,13 @@ function TicketDetail({ ticket, events }: { ticket: Ticket; events: Parameters<t
         </div>
       )}
 
+      <EstimateCard key={`estimate-${ticket.version}`} estimate={ticket.estimate} canEdit={ticket.canEstimate} version={ticket.version} mutation={estimate} nameOf={labels.nameOf} />
+
       {p.canReadCosts && <WorkCostCard target={{ kind: 'ticket', id: ticket.ticketId }} ticketStatus={ticket.status} />}
 
       <section className="flex flex-col gap-3">
         <h3 className="text-small font-semibold">Zaman çizelgesi</h3>
-        <TicketTimeline events={events} loadPhoto={loadPhoto} nameOf={labels.nameOf} />
+        <TicketTimeline events={events} loadPhoto={loadPhoto} nameOf={labels.nameOf} equipmentName={equipmentName} />
       </section>
 
       {p.canCreate && ticket.status !== 'cancelled' && <CommentBox ticket={ticket} canInternal={p.canInternal} />}
@@ -271,6 +298,7 @@ function EditDialog({ ticket, onClose }: { ticket: Ticket; onClose: () => void }
   const [title, setTitle] = useState(ticket.title);
   const [category, setCategory] = useState<TicketCategory>(ticket.category);
   const [priority, setPriority] = useState<TicketPriority>(ticket.priority);
+  const [equipmentId, setEquipmentId] = useState(ticket.equipmentId ?? '');
   const submit = () =>
     update.mutate(
       {
@@ -278,6 +306,7 @@ function EditDialog({ ticket, onClose }: { ticket: Ticket; onClose: () => void }
         ...(title.trim() !== ticket.title ? { title: title.trim() } : {}),
         ...(category !== ticket.category ? { category } : {}),
         ...(priority !== ticket.priority ? { priority } : {}),
+        ...(equipmentId !== (ticket.equipmentId ?? '') ? { equipmentId: equipmentId || null } : {}),
       },
       { onSuccess: onClose },
     );
@@ -305,6 +334,7 @@ function EditDialog({ ticket, onClose }: { ticket: Ticket; onClose: () => void }
             ))}
           </Select>
         </FormField>
+        <EquipmentSelect label="Ekipman (isteğe bağlı)" hint="Arıza ekipmanın geçmişinde ve masraf toplamında görünür." value={equipmentId} onChange={(id) => setEquipmentId(id)} />
         {update.isError && <Alert tone="danger">{errorMessage(update.error)}</Alert>}
         <div className="flex justify-end gap-2">
           <Button variant="ghost" onClick={onClose}>

@@ -83,8 +83,8 @@ describe('sayac dagitimi menusu (Finans 2.3)', () => {
 });
 
 describe('bina gorevlisi ve guvenlik menu izolasyonu', () => {
-  it('bina gorevlisi yalnizca Genel Bakis, Islerim, Ariza & Bakim ve Sayac Okuma gorur', () => {
-    expect(navItemsFor('building_staff').map((n) => n.label)).toEqual(['Genel Bakış', 'İşlerim', 'Arıza & Bakım', 'Sayaç Okuma']);
+  it('bina gorevlisi yalnizca Genel Bakis, Islerim, Ariza & Bakim, Ekipman (salt okur) ve Sayac Okuma gorur', () => {
+    expect(navItemsFor('building_staff').map((n) => n.label)).toEqual(['Genel Bakış', 'İşlerim', 'Arıza & Bakım', 'Ekipman', 'Sayaç Okuma']);
   });
 
   it('guvenlik yalnizca Genel Bakis, Guvenlik Kapisi ve Ariza & Bakim gorur', () => {

@@ -603,6 +603,8 @@ export type FinanceRepository = {
    */
   listExpensesByDate?(apartmentId: string, q: ExpenseDateQuery): Promise<{ items: Expense[]; cursor?: string }>;
   getIdempotency(apartmentId: string, id: string): Promise<IdempotencyRecord | undefined>;
+  /** Var olan idempotency kayitlarinin kimlikleri (BatchGet, 100'erli). Yoksa tek tek `getIdempotency`. */
+  existingIdempotencyIds?(apartmentId: string, ids: readonly string[]): Promise<Set<string>>;
   getCounter(apartmentId: string, name: string): Promise<number>;
 
   /**
@@ -1024,6 +1026,37 @@ export function createFinanceRepository(): FinanceRepository {
     },
     getIdempotency: (apartmentId, id) =>
       getTenantItem<IdempotencyRecord>(financeKeys.idempotency(apartmentId, id)),
+    async existingIdempotencyIds(apartmentId, ids) {
+      const { client, tableName } = getDynamo();
+      const unique = [...new Set(ids)];
+      const bySk = new Map(unique.map((id) => [financeKeys.idempotency(apartmentId, id).SK, id]));
+      const chunks: string[][] = [];
+      for (let i = 0; i < unique.length; i += BATCH_GET_SIZE) chunks.push(unique.slice(i, i + BATCH_GET_SIZE));
+      const found = new Set<string>();
+      await mapLimit(chunks, BATCH_GET_CONCURRENCY, async (chunk) => {
+        let keys: Record<string, unknown>[] | undefined = chunk.map((id) => financeKeys.idempotency(apartmentId, id));
+        for (let round = 0; keys && keys.length > 0; round++) {
+          if (round >= MAX_BATCH_ROUNDS) throw toDataAccessError(new Error('BatchGet islenemeyen anahtarlar kaldi'));
+          if (round > 0) await sleep(50 * 2 ** round);
+          let res: BatchGetCommandOutput;
+          try {
+            // Yalnizca anahtar okunur (kayit icerigi gerekmez).
+            res = await client.send(
+              new BatchGetCommand({ RequestItems: { [tableName]: { Keys: keys, ConsistentRead: true, ProjectionExpression: '#pk, #sk', ExpressionAttributeNames: { '#pk': 'PK', '#sk': 'SK' } } } }),
+            );
+          } catch (err) {
+            throw toDataAccessError(err);
+          }
+          for (const item of res.Responses?.[tableName] ?? []) {
+            const id = item.PK === tenantPk(apartmentId) ? bySk.get(String(item.SK)) : undefined;
+            if (id) found.add(id);
+          }
+          keys = res.UnprocessedKeys?.[tableName]?.Keys;
+        }
+        return [];
+      });
+      return found;
+    },
     async getCounter(apartmentId, name) {
       const item = await getTenantItem<{ value?: number }>(financeKeys.counter(apartmentId, name));
       return item?.value ?? 0;

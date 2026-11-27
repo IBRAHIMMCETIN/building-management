@@ -16,18 +16,19 @@ export type MaintenanceRoutesDeps = { authenticate: Authenticator; service: Main
  *
  *   GET   /presets
  *   GET   /templates                ?status=active|archived|all
- *   POST  /templates                { preset?, name, category, schedule{every,unit,startDate}, checklist?, asset?, blockIds?,
+ *   POST  /templates                { preset?, name, category, schedule{every,unit,startDate}, checklist?, asset?, equipmentId?, blockIds?,
  *                                     defaultAssigneeId?, supplierAccountId?, expenseAccountId?, expectedCost?, legalNote?, leadDays? }
  *   GET   /templates/:id            sablon + penceredeki gorevler
  *   PUT   /templates/:id            { version, ...kismi }
  *   POST  /templates/:id/archive    { version }
- *   GET   /tasks                    ?from=&to=&status=open|...&assignee=me|none|<id>&templateId=&overdue=true
+ *   GET   /tasks                    ?from=&to=&status=open|...&assignee=me|none|<id>&templateId=&equipmentId=&overdue=true
  *   GET   /calendar                 ?month=YYYY-MM
  *   GET   /tasks/:id
  *   POST  /tasks/:id/assign         { version, assigneeId | null }
  *   POST  /tasks/:id/start          { version }
  *   POST  /tasks/:id/complete       { version, checklistResults[{id, ok, note?}], note?, photos? }
  *   POST  /tasks/:id/skip           { version, reason }
+ *   PUT   /tasks/:id/estimate       { version, amount: kurus | null, note? }   (v2; yonetim + gorevin gorevlisi; bilgi amacli)
  *   POST  /tasks/:id/ticket         { idempotencyKey, title?, description?, priority?, photos? }
  *   POST  /photos/upload-url        { contentType, size }
  *   GET   /tasks/:id/photos/:photoId
@@ -61,6 +62,7 @@ export function maintenanceRoutes({ authenticate, service, costs }: MaintenanceR
   r.post('/tasks/:id/start', requireRole(STAFF_ROLES), async (c) => c.json(await service.startTask(ctx(c), id(c), await readJson(c))));
   r.post('/tasks/:id/complete', requireRole(STAFF_ROLES), async (c) => c.json(await service.completeTask(ctx(c), id(c), await readJson(c))));
   r.post('/tasks/:id/skip', requireRole(MANAGE_ROLES), async (c) => c.json(await service.skipTask(ctx(c), id(c), await readJson(c))));
+  r.put('/tasks/:id/estimate', requireRole(STAFF_ROLES), async (c) => c.json(await service.estimateTask(ctx(c), id(c), await readJson(c))));
   r.post('/tasks/:id/ticket', requireRole(STAFF_ROLES), async (c) => {
     const result = await service.openTicket(ctx(c), id(c), await readJson(c));
     return c.json(result, result.replayed ? 200 : 201);

@@ -7,7 +7,7 @@ import type { Ticket } from '@/lib/api/tickets';
 import { cn } from '@/lib/cn';
 import { CATEGORY_LABELS, locationText } from '@/lib/tickets/model';
 
-/** Daire numarasi ve gorevli adi cozumleyicileri (yonetim gorunumu). */
+/** Daire numarasi ve gorevli adi cozumleyicileri (yonetim gorunumu). Ekipman adlari: `useEquipmentNames`. */
 export function useTicketLabels() {
   const units = useUnits();
   const assignees = useAssignees();

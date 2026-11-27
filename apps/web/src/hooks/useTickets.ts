@@ -1,6 +1,6 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { type ChargeInput, type CreateTicketInput, type NewCostInput, type TicketListQuery, expenseOptionsApi, ticketsApi } from '@/lib/api/tickets';
-import type { TicketCategory, TicketPriority, TransitionAction } from '@/lib/tickets/model';
+import { type ChargeInput, type CreateTicketInput, type EstimateInput, type NewCostInput, type TicketListQuery, type UpdateTicketInput, expenseOptionsApi, ticketsApi } from '@/lib/api/tickets';
+import type { TransitionAction } from '@/lib/tickets/model';
 import type { Role } from '@/types/roles';
 import { useAuth } from './useAuth';
 import { financeKeys } from './useFinance';
@@ -92,10 +92,13 @@ export function useCreateTicket() {
 
 export function useUpdateTicket(id: string) {
   const invalidate = useInvalidateOperations();
-  return useMutation({
-    mutationFn: (input: { version: number; title?: string; description?: string; category?: TicketCategory; priority?: TicketPriority }) => ticketsApi.update(id, input),
-    onSuccess: () => invalidate(),
-  });
+  return useMutation({ mutationFn: (input: UpdateTicketInput) => ticketsApi.update(id, input), onSuccess: () => invalidate() });
+}
+
+/** v2: gorevlinin tahmini tutar notu (bilgi amacli; Finans'a yazilmaz). */
+export function useEstimateTicket(id: string) {
+  const invalidate = useInvalidateOperations();
+  return useMutation({ mutationFn: (input: EstimateInput) => ticketsApi.estimate(id, input), onSuccess: () => invalidate() });
 }
 
 export function useAssignTicket(id: string) {
