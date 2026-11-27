@@ -18,6 +18,9 @@ export type NotificationTemplate =
   | 'ticket_comment'
   /** Faz 3 (O1-3): gunluk operasyon ozeti (yonetim / gorevli). */
   | 'operations_digest'
+  /** Guvenlik kapisi: kurye onay istegi (oturan sakinler) ve misafir girisi (gecisi olusturan). */
+  | 'gate_courier_arrived'
+  | 'gate_guest_entered'
   | `dues_reminder_${'upcoming' | 'overdue_1' | 'overdue_7' | 'plan_default'}`;
 
 /** Ozet bildirimlerdeki kalem satiri (kisisel veri yok). */

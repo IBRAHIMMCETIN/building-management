@@ -192,6 +192,7 @@ run "prod_plan" {
       "DUE_GENERATED", "PAYMENT_RECEIVED", "ANNOUNCEMENT_PUBLISHED", "LATE_FEE_POSTED", "DUES_REMINDER",
       "DUES_BATCH_SUMMARY", "METER_PERIOD_REVERSED",
       "TICKET_CREATED", "TICKET_ASSIGNED", "TICKET_STATUS_CHANGED", "TICKET_COMMENTED", "OPERATIONS_DIGEST",
+      "GATE_COURIER_ARRIVED", "GATE_GUEST_ENTERED",
     ]
     error_message = "Bildirim kuyrugu worker'in isledigi tum olay turlerine abone olmali (ariza/talep ve gunluk operasyon ozeti dahil)"
   }

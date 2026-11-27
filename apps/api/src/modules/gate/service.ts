@@ -9,6 +9,8 @@
  * sakinin adi, telefonu, e-postasi veya borcu hicbir gorevli yanitinda yoktur.
  */
 import { createHash, randomUUID } from 'node:crypto';
+import { toOutboxItems } from '../../events/outbox.js';
+import { type DomainEvent, type NewEvent, buildEvent } from '../../events/publisher.js';
 import { type ApartmentRoleRepository, apartmentRoleRepository } from '../apartment-roles/repository.js';
 import { type CoreRepository, coreRepository } from '../core/repository.js';
 import type { Block, IsoDate, IsoDateTime, Unit } from '../core/types.js';
@@ -279,6 +281,15 @@ export function createGateService(overrides: Partial<GateServiceDeps> = {}) {
     refId,
     createdAt: at,
   });
+
+  /**
+   * Bildirim olayi (transactional outbox): kaydi doguran yazimla AYNI `TransactWriteItems` icinde
+   * `OUTBOX#<eventId>` ogesi. Kimlik deterministik; payload'da kisisel veri yok (bkz. publisher.ts).
+   */
+  function outboxPuts(ctx: GateContext, at: IsoDateTime, events: NewEvent[], reason: GatePut['reason']): GatePut[] {
+    const built: DomainEvent[] = events.map((e) => buildEvent({ ...e, occurredAt: at }, deps.now));
+    return toOutboxItems(built, at, ctx.apartmentId).map((item) => ({ item, condition: { kind: 'new' }, reason }));
+  }
 
   function logItems(ctx: GateContext, at: IsoDateTime, e: Omit<GateLogEntry, 'PK' | 'SK' | 'entityType' | 'apartmentId' | 'logId' | 'at' | 'recordedBy' | 'recordedByRole'>): { entry: GateLogEntry; puts: GatePut[] } {
     const logId = rand(16);
@@ -907,12 +918,32 @@ export function createGateService(overrides: Partial<GateServiceDeps> = {}) {
       const condition: Record<string, string | number | boolean> =
         direction === 'entry' ? { version: pass.version, status: 'active', inside: false, ...(pass.entryMode === 'single' ? { entryCount: 0 } : {}) } : { version: pass.version, inside: true };
       const log = logItems(ctx, ts, { direction, kind: 'guest', unitId: pass.unitId, passId, visitorName: pass.guestName, ...(pass.plate ? { plate: pass.plate } : {}) });
+      // Giriste gecisi olusturan sakine bildirim (misafir adi / plaka olayda yok). Kimlik giris sirasindan:
+      // ayni giris iki kez yazilamaz (surum kosulu), tekrar teslimde worker `eventId` ile atlar.
+      const entered =
+        direction === 'entry'
+          ? outboxPuts(
+              ctx,
+              ts,
+              [
+                {
+                  eventId: `GATE_GUEST_ENTERED:${passId}:${next.entryCount}`,
+                  type: 'GATE_GUEST_ENTERED',
+                  apartmentId: ctx.apartmentId,
+                  actorId: ctx.userId,
+                  payload: { passId, unitId: pass.unitId, hostUserId: pass.createdBy, entryMode: pass.entryMode, entryCount: next.entryCount, enteredAt: ts, validUntil: pass.validUntil },
+                },
+              ],
+              'version',
+            )
+          : [];
       try {
         await repo.write(ctx.apartmentId, {
           puts: [
             { item: idemItem(ctx, key, kind, passId, fp, ts, log.entry.logId), condition: { kind: 'new' }, reason: 'duplicate' },
             { item: next, condition: { kind: 'match', fields: condition }, reason: 'version' },
             ...log.puts,
+            ...entered,
           ],
         });
         const after = direction === 'entry' && next.status === 'used' ? 'used' : verdict;
@@ -1010,6 +1041,13 @@ export function createGateService(overrides: Partial<GateServiceDeps> = {}) {
           { item: idemItem(ctx, key, 'courier', courierId, fp, ts), condition: { kind: 'new' }, reason: 'duplicate' },
           { item: courier, condition: { kind: 'new' }, reason: 'exists' },
           { item: pointer(gateKeys.courierUnit(ctx.apartmentId, unitId, courierId), ctx.apartmentId, unitId, courierId, ts), condition: { kind: 'new' }, reason: 'exists' },
+          // Bolumde oturan sakinlere onay istegi (firma / not olayda yok; worker kaydi okur).
+          ...outboxPuts(
+            ctx,
+            ts,
+            [{ eventId: `GATE_COURIER_ARRIVED:${courierId}`, type: 'GATE_COURIER_ARRIVED', apartmentId: ctx.apartmentId, actorId: ctx.userId, payload: { courierId, unitId, respondBy: responseDeadline(courier) } }],
+            'exists',
+          ),
         ],
       });
     } catch (err) {

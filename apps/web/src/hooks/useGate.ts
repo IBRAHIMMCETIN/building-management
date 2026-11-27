@@ -130,7 +130,10 @@ export function useMyPasses() {
   return useQuery({ queryKey: [...key, 'passes'], queryFn: ({ signal }) => gatePortalApi.passes(signal).then((r) => r.items), enabled });
 }
 
-/** Bekleyen kurye onayi: sayfa acikken 15 sn'de bir yenilenir. */
+/**
+ * Bekleyen kurye onayi: sayfa acikken 15 sn'de bir yenilenir. Kurye kaydinda oturan sakinlere
+ * e-posta da gider (`GATE_COURIER_ARRIVED`); yenileme e-posta kapali / gecikmeli ise yedektir.
+ */
 export function useMyCouriers() {
   const { key, enabled } = usePortalScope();
   return useQuery({ queryKey: [...key, 'couriers'], queryFn: ({ signal }) => gatePortalApi.couriers(signal).then((r) => r.items), enabled, refetchInterval: COURIER_POLL_MS });

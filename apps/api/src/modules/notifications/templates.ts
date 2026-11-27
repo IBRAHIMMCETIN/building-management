@@ -66,6 +66,25 @@ export function formatDate(iso: unknown): string {
 
 const MONTHS = ['Ocak', 'Şubat', 'Mart', 'Nisan', 'Mayıs', 'Haziran', 'Temmuz', 'Ağustos', 'Eylül', 'Ekim', 'Kasım', 'Aralık'];
 
+const ISTANBUL_PARTS = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'Europe/Istanbul',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  hourCycle: 'h23',
+});
+
+/** ISO an -> Istanbul saatiyle "GG.AA.YYYY SS:DD" (`timeOnly`: "SS:DD"); gecersizse oldugu gibi. */
+export function formatDateTime(iso: unknown, timeOnly = false): string {
+  const ms = Date.parse(String(iso ?? ''));
+  if (!Number.isFinite(ms)) return String(iso ?? '');
+  const p = Object.fromEntries(ISTANBUL_PARTS.formatToParts(new Date(ms)).map((x) => [x.type, x.value]));
+  const time = `${p.hour}:${p.minute}`;
+  return timeOnly ? time : `${p.day}.${p.month}.${p.year} ${time}`;
+}
+
 /** YYYY-MM -> "Ekim 2026". */
 export function formatPeriod(period: unknown): string {
   const m = /^(\d{4})-(\d{2})$/.exec(String(period ?? ''));
@@ -220,6 +239,43 @@ function spec(n: Notification, ctx: EmailContext): Spec | undefined {
       return ticketSpec(n, ctx);
     case 'operations_digest':
       return digestSpec(n);
+    // Guvenlik kapisi (portal 15 sn'de bir yenilemeye devam eder; e-posta ek kanaldir).
+    case 'gate_courier_arrived': {
+      const company = str(d.company);
+      return {
+        subject: `Kapıda kurye var - ${unit}`,
+        heading: 'Kapıda kuryeniz var',
+        preheader: `Yanıt için son saat ${formatDateTime(d.respondBy, true)}.`,
+        blocks: [
+          { kind: 'p', text: `Güvenlik, ${unit} için ${company ? `${company} kuryesi` : 'bir kurye'} kaydetti. Kuryenin içeri alınması için sakin portalından onaylayın veya reddedin.` },
+          { kind: 'rows', rows: [['Bağımsız bölüm', unit], ...(company ? [['Firma', company] as [string, string]] : []), ['Yanıt için son saat', formatDateTime(d.respondBy, true)]] },
+          { kind: 'note', text: 'Süresi içinde yanıt verilmezse istek düşer ve kurye içeri alınmaz. Onayınız 2 saat geçerlidir.' },
+        ],
+        cta: { label: 'Onayla veya reddet', path: 'ziyaretci' },
+      };
+    }
+    case 'gate_guest_entered': {
+      const single = d.entryMode === 'single';
+      return {
+        subject: `Misafiriniz giriş yaptı - ${unit}`,
+        heading: 'Misafir girişi kaydedildi',
+        preheader: `${formatDateTime(d.enteredAt)} - ${unit}`,
+        blocks: [
+          { kind: 'p', text: `${unit} için oluşturduğunuz misafir geçişiyle güvenlikten giriş yapıldı.` },
+          {
+            kind: 'rows',
+            rows: [
+              ['Giriş', formatDateTime(d.enteredAt)],
+              ['Geçiş türü', single ? 'Tek girişlik' : `Çok girişli (${num(d.entryCount)}. giriş)`],
+              ['Geçerlilik sonu', formatDate(d.validUntil)],
+              ['Bağımsız bölüm', unit],
+            ],
+          },
+          { kind: 'note', text: single ? 'Tek girişlik geçiş kullanıldı; yeni bir ziyaret için yeni geçiş oluşturun. Bu girişi beklemiyorsanız güvenliğe haber verin.' : 'Bu girişi beklemiyorsanız geçişi portaldan iptal edin ve güvenliğe haber verin.' },
+        ],
+        cta: { label: 'Geçişlerimi görüntüle', path: 'ziyaretci' },
+      };
+    }
     default:
       return undefined;
   }

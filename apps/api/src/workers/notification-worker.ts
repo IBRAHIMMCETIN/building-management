@@ -9,6 +9,9 @@ import { type UnitMembership, visibleParties } from '../modules/portal/types.js'
 import { type ApartmentRoleRepository, apartmentRoleRepository } from '../modules/apartment-roles/repository.js';
 import type { ApartmentRole } from '../modules/apartment-roles/types.js';
 import { isTicketEvent, operationsDigestRecipients, ticketRecipients } from '../modules/tickets/notifications.js';
+import { type CourierSnapshot, gateRecipients, isGateEvent } from '../modules/gate/notifications.js';
+import { type GateRepository, gateRepository } from '../modules/gate/repository.js';
+import { type Courier, gateKeys } from '../modules/gate/types.js';
 
 export type { DeliveryResult, Notification, NotificationTemplate, Notifier } from '../modules/notifications/notifier.js';
 export { createLogNotifier } from '../modules/notifications/notifier.js';
@@ -30,6 +33,8 @@ export { createLogNotifier } from '../modules/notifications/notifier.js';
  *       DUES_REMINDER          -> hatirlatilan alt cariyi goren uyeler (ilk kalem)
  *       TICKET_*               -> yonetim / gorevli / talep tarafi (modules/tickets/notifications.ts)
  *       OPERATIONS_DIGEST      -> gunluk ozet: yonetim tumu, gorevli kendi kalemleri
+ *       GATE_COURIER_ARRIVED   -> bolumde oturan guncel uyeler; kurye kaydi okunur (beklemiyorsa yok)
+ *       GATE_GUEST_ENTERED     -> gecisi olusturan sakin (hala oturuyorsa)  (modules/gate/notifications.ts)
  *  4. Her aliciya `Notifier` ile bildirim gonderilir: NOTIFICATION_CHANNEL=log (yapilandirilmis
  *     log) veya ses (e-posta; tercih, adres ve alici bazli tekrar korumasi kanal icinde, bkz.
  *     modules/notifications/email.ts). SMS / WhatsApp ayni arayuzle eklenecek.
@@ -100,6 +105,12 @@ const seesParty = (m: UnitMembership, party: LiableParty) => visibleParties(m).i
 const receives = (m: UnitMembership, item: { unitId: string; userId?: string }, party: LiableParty) =>
   m.unitId === item.unitId && seesParty(m, party) && (!item.userId || m.userId === item.userId);
 
+/**
+ * Worker'in olay icin ayrica okudugu kayitlar (payload kisisel veri / serbest metin tasimaz).
+ * `now`: zamana bagli kurallar (kurye yanit suresi); verilmezse su an.
+ */
+export type NotificationRecords = { now?: Date; courier?: CourierSnapshot };
+
 /** Olaydan alici bazli bildirimleri uretir (ayni kullaniciya ayni olay icin tek bildirim). */
 export function buildNotifications(
   event: DomainEvent,
@@ -107,6 +118,7 @@ export function buildNotifications(
   unitBlocks: Map<string, string>,
   day: IsoDate,
   roles: readonly ApartmentRole[] = [],
+  records: NotificationRecords = {},
 ): Notification[] {
   const current = memberships.filter((m) => m.apartmentId === event.apartmentId && isCurrent(m, day));
   const out = new Map<string, Notification>();
@@ -118,6 +130,15 @@ export function buildNotifications(
 
   if (event.type === 'OPERATIONS_DIGEST') {
     return operationsDigestRecipients(event, roles, day).map((r) => ({ eventId: event.eventId, apartmentId: event.apartmentId, userId: r.userId, template: r.template, data: r.data }));
+  }
+  if (isGateEvent(event)) {
+    return gateRecipients(event, memberships, day, { now: records.now ?? new Date(), ...('courier' in records ? { courier: records.courier } : {}) }).map((r) => ({
+      eventId: event.eventId,
+      apartmentId: event.apartmentId,
+      userId: r.userId,
+      template: r.template,
+      data: r.data,
+    }));
   }
   if (isTicketEvent(event)) {
     return ticketRecipients(event, memberships, roles, day).map((r) => ({
@@ -254,6 +275,8 @@ export type WorkerDeps = {
   core: Pick<CoreRepository, 'listUnits'>;
   /** O1-2: talep olaylarinda yonetim / gorevli alicilari. */
   roles: Pick<ApartmentRoleRepository, 'list'>;
+  /** Guvenlik kapisi: kurye kaydinin guncel durumu ve firmasi. */
+  gate: Pick<GateRepository, 'get'>;
   notifier: Notifier;
   /** Olay daha once islendi mi? */
   isProcessed: (apartmentId: string, eventId: string) => Promise<boolean>;
@@ -273,6 +296,7 @@ export function createNotificationWorker(overrides: Partial<WorkerDeps> = {}) {
     memberships: membershipRepository,
     core: coreRepository,
     roles: apartmentRoleRepository,
+    gate: gateRepository,
     notifier: overrides.notifier ?? createNotifierFromEnv(),
     isProcessed: async (apt, id) => Boolean(await getTenantItem(processedKey(apt, id))),
     markProcessed: async (apt, id, info) => {
@@ -302,6 +326,16 @@ export function createNotificationWorker(overrides: Partial<WorkerDeps> = {}) {
 
   type Outcome = { skipped: boolean; recipients: number; sent?: number; skippedRecipients?: Record<string, number> };
 
+  /** Olayin ihtiyac duydugu kayitlar (yalnizca ilgili olay turlerinde okunur). */
+  async function recordsFor(event: DomainEvent): Promise<NotificationRecords> {
+    if (event.type === 'GATE_COURIER_ARRIVED') {
+      const { courierId } = event.payload;
+      const c = await deps.gate.get<Courier>(event.apartmentId, gateKeys.courier(event.apartmentId, courierId).SK);
+      return { now: deps.now(), courier: c && c.apartmentId === event.apartmentId ? { courierId: c.courierId, unitId: c.unitId, status: c.status, ...(c.company ? { company: c.company } : {}) } : null };
+    }
+    return { now: deps.now() };
+  }
+
   async function processEvent(event: DomainEvent): Promise<Outcome> {
     if (await deps.isProcessed(event.apartmentId, event.eventId)) {
       return { skipped: true, recipients: 0 };
@@ -313,7 +347,8 @@ export function createNotificationWorker(overrides: Partial<WorkerDeps> = {}) {
         : new Map<string, string>();
 
     const roles = isTicketEvent(event) || event.type === 'OPERATIONS_DIGEST' ? await deps.roles.list(event.apartmentId) : [];
-    const notifications = buildNotifications(event, memberships, unitBlocks, today(), roles);
+    const records = await recordsFor(event);
+    const notifications = buildNotifications(event, memberships, unitBlocks, today(), roles, records);
     let sent = 0;
     const skippedRecipients: Record<string, number> = {};
     for (const n of notifications) {
