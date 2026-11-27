@@ -27,6 +27,8 @@ import {
   EDITABLE_STATUSES,
   MAX_COMMENT_LENGTH,
   MAX_COMMENTS_PER_USER,
+  MAX_DOCUMENT_HISTORY,
+  MAX_MANAGEMENT_COMMENTS,
   MAX_DELIVERY_DAYS,
   MAX_MIN_QUOTES,
   MAX_QUOTE_KURUS,
@@ -224,11 +226,15 @@ export function createTenderService(overrides: Partial<TenderServiceDeps> = {}) 
   // -------------------------------------------------------------------------
 
   function quoteView(q: TenderQuote, audience: Audience) {
-    const { document, createdBy, updatedBy, withdrawnBy, ...rest } = q;
+    const { document, documentHistory, createdBy, updatedBy, withdrawnBy, ...rest } = q;
     return {
       ...rest,
       ...normalizeQuote(q),
       ...(document ? { document: { fileName: document.fileName, contentType: document.contentType, size: document.size } } : {}),
+      // Degistirilen belgeler yalnizca yonetime (S3 anahtari donmez; sira numarasiyla acilir).
+      ...(audience === 'manager' && documentHistory?.length
+        ? { documentHistory: documentHistory.map((d) => ({ fileName: d.fileName, contentType: d.contentType, size: d.size, replacedAt: d.replacedAt, replacedBy: d.replacedBy })) }
+        : {}),
       ...(audience === 'resident' ? {} : { createdBy, updatedBy, ...(withdrawnBy ? { withdrawnBy } : {}) }),
     };
   }
@@ -251,7 +257,8 @@ export function createTenderService(overrides: Partial<TenderServiceDeps> = {}) 
       minQuotes: t.minQuotes,
       quoteCount: comparison.rows.length,
       ...(comparison.lowestTotalKurus !== undefined ? { lowestTotalKurus: comparison.lowestTotalKurus } : {}),
-      ...(t.ticket ? { ticket: t.ticket } : {}),
+      // KVKK: arıza talepleri daireye ozeldir; sakin gorunumune talep bagi (kimlik / baslik) konmaz.
+      ...(t.ticket && audience !== 'resident' ? { ticket: t.ticket } : {}),
       ...(t.publishedAt ? { publishedAt: t.publishedAt } : {}),
       ...decisionView(t, audience),
       ...(t.cancelledAt ? { cancelledAt: t.cancelledAt } : {}),
@@ -268,8 +275,8 @@ export function createTenderService(overrides: Partial<TenderServiceDeps> = {}) 
       authorKind: c.authorKind,
       mine: c.authorId === ctx.userId,
       createdAt: c.createdAt,
-      // KVKK: sakinler birbirinin kimligini gormez; yonetim / denetci yazar kimligini gorur.
-      ...(audience === 'resident' ? {} : { authorId: c.authorId, authorRole: c.authorRole }),
+      // KVKK: sakin ve denetci yazar kimligini gormez (denetciye sakin kisisel verisi maskelenir); yalnizca yonetim.
+      ...(audience === 'manager' ? { authorId: c.authorId, authorRole: c.authorRole } : {}),
     };
   }
 
@@ -339,15 +346,23 @@ export function createTenderService(overrides: Partial<TenderServiceDeps> = {}) 
    * Teklif belgesi (5 dk imzali link). Yonetim her asamada; denetci ve sakin yalnizca yayinlanmis
    * (paylasilmis) ihalede - aksi halde 404.
    */
-  async function documentFor(ctx: TenderContext, tenderId: string, quoteId: string, audience: Audience) {
+  async function documentFor(ctx: TenderContext, tenderId: string, quoteId: string, audience: Audience, historyIndex?: string) {
     const t = await loadVisible(ctx, tenderId, audience);
     assertId(quoteId, 'quoteId');
     const quote = t.quotes.find((q) => q.quoteId === quoteId);
+    if (historyIndex !== undefined) {
+      // Degistirilmis (onceki) belge: yalnizca yonetim; ayni imzali link ve on ek kontrolu.
+      if (audience !== 'manager') throw new TenderError('not_found', 'Teklif belgesi bulunamadı');
+      if (!/^\d{1,3}$/.test(historyIndex)) throw new ValidationError('history geçersiz', 'history');
+      const old = quote?.documentHistory?.[Number(historyIndex)];
+      if (!old) throw new TenderError('not_found', 'Teklif belgesi bulunamadı');
+      return requireDocuments().sign(ctx.apartmentId, old);
+    }
     if (!quote?.document) throw new TenderError('not_found', 'Teklif belgesi bulunamadı');
     return requireDocuments().sign(ctx.apartmentId, quote.document);
   }
 
-  const quoteDocument = (ctx: TenderContext, tenderId: string, quoteId: string) => documentFor(ctx, tenderId, quoteId, staffOf(ctx));
+  const quoteDocument = (ctx: TenderContext, tenderId: string, quoteId: string, q: { history?: string } = {}) => documentFor(ctx, tenderId, quoteId, staffOf(ctx), q.history);
   async function portalQuoteDocument(ctx: TenderContext, tenderId: string, quoteId: string) {
     await residentOf(ctx);
     return documentFor(ctx, tenderId, quoteId, 'resident');
@@ -470,6 +485,10 @@ export function createTenderService(overrides: Partial<TenderServiceDeps> = {}) 
     if (!EDITABLE_STATUSES.includes(t.status)) throw new TenderError('invalid_state', 'Yalnızca taslak veya teklif toplanan ihale düzenlenebilir');
     assertVersion(t, version);
     const fields = readTender(o, t);
+    // Asgari teklif sayisi taslaktan cikinca kilitli: toplama sirasinda dusurulup eksik teklif gerekcesi atlanamaz.
+    if (t.status !== 'draft' && fields.minQuotes !== t.minQuotes) {
+      throw new TenderError('invalid_state', 'Asgari teklif sayısı teklif toplamaya başlandıktan sonra değiştirilemez', { field: 'minQuotes' });
+    }
     const ticket = await readTicket(ctx, o, t.ticket);
     const changed: string[] = TENDER_FIELDS.filter((k) => fields[k] !== t[k]);
     if ((ticket?.ticketId ?? null) !== (t.ticket?.ticketId ?? null)) changed.push('ticketId');
@@ -587,12 +606,12 @@ export function createTenderService(overrides: Partial<TenderServiceDeps> = {}) 
 
     let t = await load(ctx, tenderId);
     assertEditable(t);
-    if (t.quotes.length >= MAX_QUOTES) throw new TenderError('unprocessable', `Bir ihalede en fazla ${MAX_QUOTES} teklif olabilir`);
+    if (t.quotes.length >= MAX_QUOTES) throw new TenderError('unprocessable', `Bir ihalede en fazla ${MAX_QUOTES} teklif olabilir (geri çekilen teklifler de sayılır)`);
     const quoteId = `q-${shortId(10)}`;
     const document = upload ? await requireDocuments().promote(ctx.apartmentId, upload, { tenderId, quoteId }) : undefined;
     for (let attempt = 1; ; attempt++) {
       assertEditable(t);
-      if (t.quotes.length >= MAX_QUOTES) throw new TenderError('unprocessable', `Bir ihalede en fazla ${MAX_QUOTES} teklif olabilir`);
+      if (t.quotes.length >= MAX_QUOTES) throw new TenderError('unprocessable', `Bir ihalede en fazla ${MAX_QUOTES} teklif olabilir (geri çekilen teklifler de sayılır)`);
       const ts = stamp();
       const quote: TenderQuote = { quoteId, ...fields, ...(document ? { document } : {}), status: 'active', createdAt: ts, createdBy: ctx.userId, updatedAt: ts, updatedBy: ctx.userId };
       const next: Tender = { ...t, quotes: [...t.quotes, quote], ...touch(ctx, t, ts) };
@@ -640,12 +659,28 @@ export function createTenderService(overrides: Partial<TenderServiceDeps> = {}) 
     const changed: string[] = QUOTE_FIELDS.filter((k) => fields[k] !== current[k]);
     if (upload) changed.push('document');
     if (!changed.length) return { tender: await detailView(ctx, t, 'manager') };
+    const history = current.documentHistory ?? [];
+    if (upload && current.document && history.length >= MAX_DOCUMENT_HISTORY) {
+      throw new TenderError('unprocessable', `Bir teklifin belgesi en fazla ${MAX_DOCUMENT_HISTORY} kez değiştirilebilir; yeni teklif olarak ekleyin`);
+    }
     const document = upload ? await requireDocuments().promote(ctx.apartmentId, upload, { tenderId, quoteId }) : current.document;
     const ts = stamp();
-    const { validUntil: _v, deliveryDays: _d, warrantyMonths: _w, notes: _n, document: _doc, ...base } = current;
-    const quote: TenderQuote = { ...base, ...fields, ...(document ? { document } : {}), updatedAt: ts, updatedBy: ctx.userId };
+    // Degistirilen belge silinmez: S3'te kalir, kaydi teklifte tutulur (yonetim acabilir).
+    const replaced = upload && current.document ? { ...current.document, replacedAt: ts, replacedBy: ctx.userId } : undefined;
+    const documentHistory = replaced ? [...history, replaced] : history;
+    const { validUntil: _v, deliveryDays: _d, warrantyMonths: _w, notes: _n, document: _doc, documentHistory: _h, ...base } = current;
+    const quote: TenderQuote = { ...base, ...fields, ...(document ? { document } : {}), ...(documentHistory.length ? { documentHistory } : {}), updatedAt: ts, updatedBy: ctx.userId };
     const next: Tender = { ...t, quotes: t.quotes.map((q) => (q.quoteId === quoteId ? quote : q)), ...touch(ctx, t, ts) };
-    await write(ctx, { tender: { item: next, expectedVersion: version }, audit: audit(ctx, 'tender.quote_update', tenderId, { quoteId, fields: changed, ...normalizeQuote(fields) }) });
+    await write(ctx, {
+      tender: { item: next, expectedVersion: version },
+      audit: audit(ctx, 'tender.quote_update', tenderId, {
+        quoteId,
+        fields: changed,
+        ...normalizeQuote(fields),
+        ...(upload && document ? { documentKey: document.key } : {}),
+        ...(replaced ? { replacedDocumentKey: replaced.key } : {}),
+      }),
+    });
     return { tender: await detailView(ctx, next, 'manager') };
   }
 
@@ -682,8 +717,15 @@ export function createTenderService(overrides: Partial<TenderServiceDeps> = {}) 
     const result = async () => ({ tender: await detailView(ctx, await load(ctx, tenderId), audience) });
     if (await replayOf(ctx, key, 'comment', fp)) return { ...(await result()), replayed: true };
     if (t.status !== 'published') throw new TenderError('invalid_state', 'Yalnızca yayındaki ihaleye soru yazılabilir');
-    const mine = (await repo.listComments(ctx.apartmentId, tenderId)).filter((c) => c.authorId === ctx.userId).length;
-    if (mine >= MAX_COMMENTS_PER_USER) throw new TenderError('unprocessable', `Bir ihaleye en fazla ${MAX_COMMENTS_PER_USER} mesaj yazabilirsiniz`);
+    const existing = await repo.listComments(ctx.apartmentId, tenderId);
+    if (audience === 'resident') {
+      // Sinir yalnizca sakine (kullanici basina); yonetim yanitlari ayri, genis bir sinirla.
+      if (existing.filter((c) => c.authorId === ctx.userId).length >= MAX_COMMENTS_PER_USER) {
+        throw new TenderError('unprocessable', `Bir ihaleye en fazla ${MAX_COMMENTS_PER_USER} mesaj yazabilirsiniz`);
+      }
+    } else if (existing.filter((c) => c.authorKind === 'management').length >= MAX_MANAGEMENT_COMMENTS) {
+      throw new TenderError('unprocessable', `Bir ihaleye en fazla ${MAX_MANAGEMENT_COMMENTS} yönetim yanıtı yazılabilir`);
+    }
     const ts = stamp();
     const commentId = `c-${shortId()}`;
     const item: TenderComment = {
@@ -699,7 +741,12 @@ export function createTenderService(overrides: Partial<TenderServiceDeps> = {}) 
       createdAt: ts,
     };
     try {
-      await repo.write(ctx.apartmentId, { comment: { item, requireStatus: 'published' }, idempotency: idempotency(ctx, key, 'comment', tenderId, commentId, fp, ts) });
+      await repo.write(ctx.apartmentId, {
+        comment: { item, requireStatus: 'published' },
+        idempotency: idempotency(ctx, key, 'comment', tenderId, commentId, fp, ts),
+        // Yonetim yaniti sakinlere yapilan resmi aciklamadir: denetime yazilir (metin degil, kimlik + uzunluk).
+        ...(audience === 'manager' ? { audit: audit(ctx, 'tender.comment', tenderId, { commentId, length: text.length }) } : {}),
+      });
     } catch (err) {
       if (err instanceof TenderConflictError && err.reason === 'duplicate' && (await replayOf(ctx, key, 'comment', fp))) return { ...(await result()), replayed: true };
       if (err instanceof TenderConflictError && err.reason === 'status') throw new TenderError('invalid_state', 'İhale artık yorumlara açık değil');

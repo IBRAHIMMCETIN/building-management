@@ -224,6 +224,24 @@ describe('ihale olusturma ve roller', () => {
     const p = await w.published();
     expect(await codeOf(w.service.update(ctxs.mgr, p.tenderId, { version: p.version, title: 'Yayından sonra' }))).toBe('invalid_state');
   });
+
+  it('asgari teklif sayisi taslaktan cikinca kilitlenir: toplamada dusurulerek gerekce atlanamaz', async () => {
+    const w = world();
+    const t = await w.create({ minQuotes: 3 });
+    // Taslakta degisebilir.
+    expect((await w.service.update(ctxs.mgr, t.tenderId, { version: 1, minQuotes: 4 })).tender.minQuotes).toBe(4);
+    const c = await w.service.collect(ctxs.mgr, t.tenderId, { version: 2 });
+    const q = await w.addQuote(t.tenderId, 10_000_00);
+    await expect(w.service.update(ctxs.mgr, t.tenderId, { version: q.tender.version, minQuotes: 1 })).rejects.toMatchObject({ code: 'invalid_state', details: { field: 'minQuotes' } });
+    // Ayni deger veya diger alanlar serbest.
+    const u = await w.service.update(ctxs.mgr, t.tenderId, { version: q.tender.version, minQuotes: 4, title: 'Mantolama (A Blok)' });
+    expect(u.tender).toMatchObject({ minQuotes: 4, title: 'Mantolama (A Blok)' });
+    expect(c.tender.status).toBe('collecting');
+    // Yayin hala asgari 4 teklife gore: gerekce zorunlu ve sakin gorur.
+    await expect(w.service.publish(ctxs.mgr, t.tenderId, { version: u.tender.version })).rejects.toMatchObject({ code: 'unprocessable', details: { shortfall: true } });
+    await w.service.publish(ctxs.mgr, t.tenderId, { version: u.tender.version, shortfallReason: 'Yalnızca bir firma teklif verdi' });
+    expect((await w.service.portalGet(ctxs.a, t.tenderId)).tender).toMatchObject({ minQuotes: 4, quoteCount: 1, shortfallReason: 'Yalnızca bir firma teklif verdi' });
+  });
 });
 
 describe('durum gecisleri', () => {
@@ -344,7 +362,7 @@ describe('teklifler ve belge yukleme', () => {
     const b = await w.service.addQuote(ctxs.mgr, t.tenderId, { ...body, idempotencyKey: 'second', supplierName: 'Deniz Mühendislik' });
     expect(b.tender.quotes.map((q) => q.supplierName)).toEqual(['Kaya Yapı', 'Araya Giren', 'Deniz Mühendislik']);
     for (let i = 0; i < 9; i++) await w.service.addQuote(ctxs.mgr, t.tenderId, { ...body, idempotencyKey: `fill-${i}` });
-    expect(await codeOf(w.service.addQuote(ctxs.mgr, t.tenderId, { ...body, idempotencyKey: 'too-many' }))).toBe('unprocessable');
+    await expect(w.service.addQuote(ctxs.mgr, t.tenderId, { ...body, idempotencyKey: 'too-many' })).rejects.toMatchObject({ code: 'unprocessable', message: expect.stringContaining('geri çekilen teklifler de sayılır') });
     expect(await codeOf(w.service.addQuote(ctxs.observer, t.tenderId, { ...body, idempotencyKey: 'obs' }))).toBe('forbidden');
   });
 
@@ -364,6 +382,38 @@ describe('teklifler ve belge yukleme', () => {
     expect(wd.tender.quoteCount).toBe(1);
     expect(await codeOf(w.service.updateQuote(ctxs.mgr, t.tenderId, b.quoteId, { version: wd.tender.version, amountKurus: 1 }))).toBe('invalid_state');
     expect(w.fake.audits.at(-1)).toMatchObject({ action: 'tender.quote_withdraw', reason: 'Firma teklifini geri çekti' });
+  });
+
+  it('degistirilen belge silinmez: gecmiste tutulur, denetimde eski anahtar, yalnizca yonetim acar', async () => {
+    const w = world();
+    const t = await w.create();
+    const first = await w.upload('application/pdf', 100);
+    const a = await w.addQuote(t.tenderId, 10_000_00, { document: first });
+    const firstKey = tenderQuoteKey(APT, t.tenderId, a.quoteId, first.uploadId, 'pdf');
+    const second = await w.upload('image/png', 200);
+    const u = await w.service.updateQuote(ctxs.mgr, t.tenderId, a.quoteId, { version: a.tender.version, document: second });
+    const view = u.tender.quotes[0];
+    expect(view?.document).toMatchObject({ contentType: 'image/png', size: 200 });
+    expect(view?.documentHistory).toEqual([{ fileName: 'Teklif — Yılmaz İnşaat.pdf', contentType: 'application/pdf', size: 100, replacedAt: T0, replacedBy: 'mgr' }]);
+    expect(JSON.stringify(u)).not.toContain(firstKey);
+    expect(w.memory.objects.has(firstKey)).toBe(true);
+    const stored = w.fake.store.get(`APT#${APT}|TENDER#${t.tenderId}`) as unknown as Tender;
+    expect(stored.quotes[0]?.documentHistory?.[0]).toMatchObject({ key: firstKey, replacedBy: 'mgr' });
+    expect(w.fake.audits.at(-1)).toMatchObject({
+      action: 'tender.quote_update',
+      details: { fields: ['document'], replacedDocumentKey: firstKey, documentKey: tenderQuoteKey(APT, t.tenderId, a.quoteId, second.uploadId, 'png') },
+    });
+    // Yonetim eski belgeyi ayni imzali link yoluyla acar; gecersiz / olmayan sira 400 / 404.
+    expect((await w.service.quoteDocument(ctxs.mgr, t.tenderId, a.quoteId, { history: '0' })).url).toContain(`${firstKey}?ttl=300`);
+    expect((await w.service.quoteDocument(ctxs.mgr, t.tenderId, a.quoteId)).url).toContain('.png?ttl=300');
+    expect(await codeOf(w.service.quoteDocument(ctxs.mgr, t.tenderId, a.quoteId, { history: '1' }))).toBe('not_found');
+    await expect(w.service.quoteDocument(ctxs.mgr, t.tenderId, a.quoteId, { history: '-1' })).rejects.toMatchObject({ field: 'history' });
+    // Yayindan sonra da denetci / sakin onceki belgeyi goremez ve acamaz.
+    await w.service.collect(ctxs.mgr, t.tenderId, { version: u.tender.version });
+    await w.service.publish(ctxs.mgr, t.tenderId, { version: u.tender.version + 1, shortfallReason: 'Tek firma teklif verdi, diğerleri ret' });
+    expect((await w.service.get(ctxs.observer, t.tenderId)).tender.quotes[0]).not.toHaveProperty('documentHistory');
+    expect((await w.service.portalGet(ctxs.a, t.tenderId)).tender.quotes[0]).not.toHaveProperty('documentHistory');
+    expect(await codeOf(w.service.quoteDocument(ctxs.observer, t.tenderId, a.quoteId, { history: '0' }))).toBe('not_found');
   });
 
   it('belge deposu yoksa belge eklenemez (503), belgesiz teklif eklenebilir', async () => {
@@ -393,6 +443,23 @@ describe('seffaflik: sakin ve denetci yalnizca yayinlanmis ihaleyi gorur', () =>
     // Tasinmis (uyeligi bitmis) sakin goremez.
     expect(await codeOf(w.service.portalList(ctxs.former))).toBe('forbidden');
     expect(await codeOf(w.service.portalList(ctxs.mgr))).toBe('forbidden');
+  });
+
+  it('KVKK: ilgili ariza talebi (kimlik / numara / baslik) sakin yanitlarinda yok; yonetim ve denetci gorur', async () => {
+    const w = world();
+    const t = await w.create({ ticketId: 'tk1' });
+    await w.service.collect(ctxs.mgr, t.tenderId, { version: 1 });
+    const q = await w.addQuote(t.tenderId, 10_000_00);
+    await w.service.publish(ctxs.mgr, t.tenderId, { version: q.tender.version, shortfallReason: 'Tek firma teklif verdi, diğerleri ret' });
+    for (const body of [await w.service.portalList(ctxs.a), await w.service.portalGet(ctxs.a, t.tenderId)]) {
+      const json = JSON.stringify(body);
+      expect(json).not.toContain('"ticket"');
+      expect(json).not.toContain('tk1');
+      expect(json).not.toContain('T-000007');
+      expect(json).not.toContain('Çatıdan su sızıyor');
+    }
+    expect((await w.service.get(ctxs.observer, t.tenderId)).tender.ticket).toEqual({ ticketId: 'tk1', number: 'T-000007', title: 'Çatıdan su sızıyor' });
+    expect((await w.service.list(ctxs.mgr)).items[0]?.ticket?.ticketId).toBe('tk1');
   });
 
   it('sakin teklifleri yan yana gorur (KDV normalize, en dusuk vurgulu); yonetim alanlari donmez', async () => {
@@ -457,7 +524,20 @@ describe('sorular ve yanitlar', () => {
       ['management', false],
     ]);
     expect(forB[0]).not.toHaveProperty('authorId');
-    expect((await w.service.get(ctxs.observer, p.tenderId)).tender.comments[0]).toMatchObject({ authorId: 'res-a', authorRole: 'resident' });
+    // Denetci de sakin kimligini gormez (kisisel veri maskesi); yalnizca yonetim.
+    const forObserver = (await w.service.get(ctxs.observer, p.tenderId)).tender.comments;
+    expect(forObserver.map((c) => c.authorKind)).toEqual(['resident', 'management']);
+    for (const c of forObserver) {
+      expect(c).not.toHaveProperty('authorId');
+      expect(c).not.toHaveProperty('authorRole');
+    }
+    expect((await w.service.get(ctxs.mgr, p.tenderId)).tender.comments[0]).toMatchObject({ authorId: 'res-a', authorRole: 'resident' });
+    // Yonetim yaniti denetime yazilir (kimlik + uzunluk, metin yok); sakin sorusu yazilmaz.
+    const commentAudits = w.fake.audits.filter((a) => a.action === 'tender.comment');
+    expect(commentAudits).toHaveLength(1);
+    expect(commentAudits[0]).toMatchObject({ target: { type: 'tender', id: p.tenderId }, details: { length: 'Evet, üç teklifte de iskele dahil.'.length } });
+    expect(commentAudits[0]?.details?.commentId).toMatch(/^c-/);
+    expect(JSON.stringify(commentAudits[0])).not.toContain('iskele');
     expect(await codeOf(w.service.comment(ctxs.observer, p.tenderId, { idempotencyKey: 'c3', body: 'Denetçi notu' }))).toBe('forbidden');
     await expect(w.service.comment(ctxs.b, p.tenderId, { idempotencyKey: 'c4', body: 'ab' })).rejects.toMatchObject({ field: 'body' });
     expect(await codeOf(w.service.comment(ctxs.former, p.tenderId, { idempotencyKey: 'c5', body: 'Eski sakin sorusu' }))).toBe('forbidden');
@@ -480,6 +560,10 @@ describe('sorular ve yanitlar', () => {
     const q = await w.published();
     for (let i = 0; i < 20; i++) await w.service.comment(ctxs.b, q.tenderId, { idempotencyKey: `m-${i}`, body: `Soru numarası ${i}` });
     expect(await codeOf(w.service.comment(ctxs.b, q.tenderId, { idempotencyKey: 'm-20', body: 'Bir soru daha' }))).toBe('unprocessable');
+    // Sinir yalnizca sakine: yonetim 20'den fazla yanit yazabilir, diger sakin etkilenmez.
+    for (let i = 0; i < 25; i++) await w.service.comment(ctxs.mgr, q.tenderId, { idempotencyKey: `r-${i}`, body: `Yanıt numarası ${i}` });
+    expect((await w.service.comment(ctxs.a, q.tenderId, { idempotencyKey: 'a-1', body: 'Başka bir sakin sorusu' })).replayed).toBe(false);
+    expect((await w.service.get(ctxs.mgr, q.tenderId)).tender.comments).toHaveLength(46);
   });
 });
 

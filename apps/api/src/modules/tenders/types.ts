@@ -30,7 +30,7 @@ export const CANCELLABLE_STATUSES: readonly TenderStatus[] = ['draft', 'collecti
 
 export const DEFAULT_MIN_QUOTES = 3;
 export const MAX_MIN_QUOTES = 10;
-/** Bir ihaledeki teklif sayisi ust siniri (geri cekilenler dahil; kayit boyutu sinirli kalir). */
+/** Bir ihaledeki teklif sayisi ust siniri: geri cekilenler de sayilir (silinmez, kayit boyutu sinirli kalir). */
 export const MAX_QUOTES = 12;
 /** API ve web ile ayni ust sinir: 999.999.999,99 TL. */
 export const MAX_QUOTE_KURUS = 99_999_999_999;
@@ -39,9 +39,15 @@ export const MAX_DELIVERY_DAYS = 3650;
 export const MAX_WARRANTY_MONTHS = 600;
 /** Yorum: kisa soru / yanit. Kullanici basina ihale icinde ust sinir. */
 export const MAX_COMMENT_LENGTH = 500;
+/** Sakin basina ihale icinde mesaj siniri (yonetim yanitlarina uygulanmaz; onlar MAX_MANAGEMENT_COMMENTS ile sinirli). */
 export const MAX_COMMENTS_PER_USER = 20;
+export const MAX_MANAGEMENT_COMMENTS = 500;
+/** Degistirilen teklif belgelerinin kaydi (teklif basina; en eskisi dusmez, yeni degisim reddedilir). */
+export const MAX_DOCUMENT_HISTORY = 10;
 
 export type QuoteDocument = { key: string; fileName: string; contentType: string; size: number };
+/** Yerine yenisi yuklenen belge: S3'te kalir, yonetim ayni imzali link yoluyla acabilir. */
+export type ReplacedQuoteDocument = QuoteDocument & { replacedAt: IsoDateTime; replacedBy: string };
 
 export type TenderQuote = {
   quoteId: string;
@@ -57,6 +63,8 @@ export type TenderQuote = {
   warrantyMonths?: number;
   notes?: string;
   document?: QuoteDocument;
+  /** Eskiden yeniye degistirilen belgeler (yalnizca yonetim gorur). */
+  documentHistory?: ReplacedQuoteDocument[];
   status: 'active' | 'withdrawn';
   withdrawnAt?: IsoDateTime;
   withdrawnBy?: string;
@@ -91,8 +99,9 @@ export type Tender = TableKeys &
     title: string;
     description: string;
     category: TenderCategory;
-    /** Ilgili ariza / bakim talebi (O1), varsa. */
+    /** Ilgili ariza / bakim talebi (O1), varsa. KVKK: yalnizca yonetim / denetci gorur (talepler daireye ozeldir). */
     ticket?: TenderTicketLink;
+    /** Asgari teklif sayisi: taslaktan cikinca kilitlenir (yayin gerekcesi kurali bu sayiyla). */
     minQuotes: number;
     /** Teklif toplama son gunu (Europe/Istanbul takvim gunu). */
     deadline: IsoDate;

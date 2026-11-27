@@ -51,8 +51,9 @@ const quoteId = (c: Context<Env>) => c.req.param('quoteId') ?? '';
  *                                              deliveryDays?, warrantyMonths?, notes?, document?: { uploadId, fileName } }
  *   PATCH /:id/quotes/:quoteId               { version, ...teklif alanlari, document? }
  *   POST  /:id/quotes/:quoteId/withdraw      { version, reason }
- *   GET   /:id/quotes/:quoteId/document      5 dk imzali link (denetci: yalnizca yayinlanmis ihale)
- *   POST  /:id/comments                      { idempotencyKey, body }   yonetim yaniti (yalnizca yayinda)
+ *   GET   /:id/quotes/:quoteId/document      ?history=<sira>  5 dk imzali link (denetci: yalnizca yayinlanmis ihale;
+ *                                              `history`: degistirilmis onceki belge, yalnizca yonetim)
+ *   POST  /:id/comments                      { idempotencyKey, body }   yonetim yaniti (yalnizca yayinda; `tender.comment` denetimi)
  * Belge yukleme: `POST /api/documents/invoice-uploads` (gider faturasiyla ayni sinirlar).
  */
 export function tenderRoutes({ authenticate, service }: TenderRoutesDeps) {
@@ -74,7 +75,7 @@ export function tenderRoutes({ authenticate, service }: TenderRoutesDeps) {
   });
   r.patch('/:id/quotes/:quoteId', requireRole(WRITE_ROLES), async (c) => c.json(await service.updateQuote(ctxOf(c), id(c), quoteId(c), await readJson(c))));
   r.post('/:id/quotes/:quoteId/withdraw', requireRole(WRITE_ROLES), async (c) => c.json(await service.withdrawQuote(ctxOf(c), id(c), quoteId(c), await readJson(c))));
-  r.get('/:id/quotes/:quoteId/document', requireRole(READ_ROLES), async (c) => c.json(await service.quoteDocument(ctxOf(c), id(c), quoteId(c))));
+  r.get('/:id/quotes/:quoteId/document', requireRole(READ_ROLES), async (c) => c.json(await service.quoteDocument(ctxOf(c), id(c), quoteId(c), { history: c.req.query('history') })));
   r.post('/:id/comments', requireRole(WRITE_ROLES), async (c) => {
     const result = await service.comment(ctxOf(c), id(c), await readJson(c));
     return c.json(result, result.replayed ? 200 : 201);
