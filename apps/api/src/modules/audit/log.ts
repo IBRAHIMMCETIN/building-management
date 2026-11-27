@@ -54,6 +54,11 @@ export type AuditDraft = {
   actorId?: string;
   reason?: string;
   details?: Record<string, unknown>;
+  /**
+   * Islem kullanici adina degil SISTEM adina (ornegin gizli oylamada ilk oyla tetiklenen oy listesi
+   * dondurma): istek baglamindaki aktor ve istek bilgisi (IP, UA, requestId) kayda yazilmaz.
+   */
+  systemActor?: boolean;
 };
 
 export type AuditEntry = {
@@ -181,7 +186,8 @@ export async function readTail(client: DynamoDBDocumentClient, table: string, sc
 }
 
 export function buildEntry(draft: AuditDraft, tail: ChainTail, now: Date = new Date()): AuditEntry {
-  const ctx = getRequestContext();
+  // Sistem islemi: istegi yapan kullanicinin kimligi / istek bilgisi kayda girmez.
+  const ctx = draft.systemActor ? undefined : getRequestContext();
   const scope = auditScope(draft.apartmentId);
   const seq = tail.seq + 1;
   const at = now.toISOString();

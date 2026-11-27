@@ -6,7 +6,8 @@ import { createApp } from '../src/app.js';
 import { createMockAuthenticator, encodeMockToken } from '../src/auth/authenticators.js';
 import { DataAccessError, resetDynamoCache } from '../src/config/dynamodb.js';
 import type { DomainEvent } from '../src/events/publisher.js';
-import type { AuditDraft } from '../src/modules/audit/log.js';
+import { type AuditDraft, buildEntry } from '../src/modules/audit/log.js';
+import { runWithRequestContext } from '../src/modules/audit/context.js';
 import type { Block, LandShare, Unit } from '../src/modules/core/types.js';
 import { renderEmail } from '../src/modules/notifications/templates.js';
 import type { OwnershipRecord } from '../src/modules/ownership/types.js';
@@ -182,7 +183,7 @@ function setup(opts: { units?: Unit[]; members?: UnitMembership[]; records?: Own
     return pub.body;
   };
 
-  return { ...fake, app, call, portalCall, vote, token, clock, published, units, members, records, rolls };
+  return { ...fake, app, call, portalCall, vote, token, clock, published, units, members, records, rolls, pollService };
 }
 
 const draft = { title: 'Asansör yenilensin mi?', options: ['Evet', 'Hayır'], closesAt: '2026-11-17T18:00:00+03:00' };
@@ -788,6 +789,54 @@ describe('polls repository (DynamoDB)', () => {
     expect(items).toHaveLength(2);
     expect(items[1]!.Put).toMatchObject({ ConditionExpression: 'attribute_not_exists(PK)', Item: { SK: 'POLLROLL#p1#000', entityType: 'ROLL_SNAPSHOT' } });
     await expect(repo.update(poll, 1, { roll: [{ ...snap.chunks[0]!, ownerId: 'other' }] })).rejects.toThrow(/ait degil/);
+  });
+});
+
+describe('polls - gizli oylamada ilk oyu veren ve sonuc paydasi', () => {
+  const later = { opensAt: '2026-11-12T09:00:00+03:00', closesAt: '2026-11-19T18:00:00+03:00' };
+
+  it('planli gizli oylamada ilk oyla dondurma sistem islemidir: yonetici hicbir uctan ve denetim kaydindan ilk oyu vereni ogrenemez', async () => {
+    const { published, vote, call, polls, audits, clock } = setup();
+    await published(later);
+    const before = polls.get(`${APT}|poll1`)!;
+    clock.set('2026-11-12T07:30:00.000Z');
+    expect((await vote('own-2a', 'o1')).status).toBe(200);
+    const after = polls.get(`${APT}|poll1`)!;
+    expect(after.roll).toBeDefined();
+    expect({ updatedBy: after.updatedBy, updatedAt: after.updatedAt }).toEqual({ updatedBy: before.updatedBy, updatedAt: before.updatedAt });
+
+    const freeze = audits.find((a) => a.action === 'poll.roll_freeze')!;
+    expect(freeze).toMatchObject({ actorId: 'system', systemActor: true });
+    // Denetim kaydi sakinin istek baglaminda uretilse de aktor ve istek bilgisi yazilmaz.
+    const entry = runWithRequestContext({ requestId: 'req-1', ip: '10.0.0.x', userAgent: 'ua', actor: { userId: 'own-2a', role: 'resident' } }, () => buildEntry(freeze, { seq: 0, hash: '0'.repeat(64) }));
+    expect(entry.actor).toEqual({ userId: 'system', role: 'system' });
+    expect(entry.request).toBeUndefined();
+
+    const seen = JSON.stringify([
+      (await call('GET', '')).body,
+      (await call('GET', '/poll1')).body,
+      (await call('GET', '/poll1/results')).body,
+      (await call('GET', '/poll1/participation')).body,
+      audits,
+      entry,
+    ]);
+    expect(seen).not.toContain('own-2a');
+  });
+
+  it('hic oy almadan biten planli oylama zamanlanmis isle sistem olarak dondurulur; acilmadan kapatilan dondurulmaz', async () => {
+    const { published, call, polls, audits, clock, pollService } = setup();
+    await published({ ...later, secret: false }); // poll1: oy almadan bitecek
+    await published({ title: 'İptal', opensAt: '2026-11-20T09:00:00+03:00', closesAt: '2026-11-25T18:00:00+03:00' }); // poll2
+    await call('POST', '/poll2/close', { version: 2, reason: 'Vazgeçildi' });
+    clock.set('2026-11-18T07:00:00.000Z');
+    expect(await pollService.freezeEnded(APT)).toBe(0); // poll1 hala acik
+    clock.set('2026-11-21T07:00:00.000Z');
+    expect(await pollService.freezeEnded(APT)).toBe(1);
+    expect(polls.get(`${APT}|poll1`)!.roll).toMatchObject({ rollDate: '2026-11-12', frozenAt: '2026-11-21T07:00:00.000Z' });
+    expect(polls.get(`${APT}|poll2`)!.roll).toBeUndefined();
+    expect(audits.filter((a) => a.action === 'poll.roll_freeze')).toEqual([expect.objectContaining({ actorId: 'system', systemActor: true })]);
+    expect((await call('GET', '/poll1/results')).body).toMatchObject({ rollFrozen: true, results: { final: true, participation: { units: 0 } } });
+    expect(await pollService.freezeEnded(APT)).toBe(0); // tekrar calisma etkisiz
   });
 });
 

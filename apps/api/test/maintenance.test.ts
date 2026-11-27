@@ -359,10 +359,19 @@ describe('zamanlayici isleri', () => {
 
   it('maintenance_tasks gorev uretimini Istanbul gunuyle cagirir', async () => {
     const maintenance = { generate: vi.fn(async () => ({ templates: 2, created: 3, existing: 1 })), digestItems: vi.fn() };
-    const worker = base({ maintenance, tickets: {} as never, events: createInMemoryEventPublisher() });
+    const polls = { freezeEnded: vi.fn(async () => 0) };
+    const worker = base({ maintenance, polls, tickets: {} as never, events: createInMemoryEventPublisher() });
     const out = await worker.runJob({ job: 'maintenance_tasks', scheduledTime: '2026-11-25T01:10:00Z' });
     expect(maintenance.generate).toHaveBeenCalledWith(APT, TODAY);
+    expect(polls.freezeEnded).toHaveBeenCalledWith(APT);
     expect(out).toEqual([{ apartmentId: APT, status: 'done', detail: { date: TODAY, templates: 2, created: 3, existing: 1 } }]);
+  });
+
+  it('maintenance_tasks: biten ve oy almamis oylamalarin oy listesi dondurulur (Y1)', async () => {
+    const maintenance = { generate: vi.fn(async () => ({ templates: 0, created: 0, existing: 0 })), digestItems: vi.fn() };
+    const worker = base({ maintenance, polls: { freezeEnded: vi.fn(async () => 2) }, tickets: {} as never, events: createInMemoryEventPublisher() });
+    const out = await worker.runJob({ job: 'maintenance_tasks', scheduledTime: '2026-11-25T01:10:00Z' });
+    expect(out[0]).toMatchObject({ status: 'done', detail: { pollsFrozen: 2 } });
   });
 
   it('ticket_maintenance: otomatik kapanis + gun bazli deterministik ozet olayi; bos gunde olay yok', async () => {

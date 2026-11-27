@@ -3,7 +3,7 @@ vi.mock('@/lib/api/client', () => ({ apiClient: {} }));
 import { navItemsFor } from '@/layouts/adminNav';
 import { type Assembly, type Quorum, assemblyDetailSchema, firstMeetingCandidates, quorumSchema, quorumText } from '@/lib/api/assemblyModel';
 import { actionLabel } from '@/lib/audit/labels';
-import { assemblyFormSchema, formDefaults, makeAssemblyFormSchema, tallyIssue, toInput } from './schemas';
+import { assemblyFormSchema, attendanceInput, formDefaults, makeAssemblyFormSchema, tallyIssue, toInput } from './schemas';
 
 const valid = { kind: 'ordinary' as const, scheduledAt: '2026-12-15T19:00', location: ' Toplantı salonu ', onlineUrl: '', firstMeetingId: '', agenda: [' Açılış ', 'Bütçe'] };
 
@@ -88,6 +88,17 @@ describe('genel kurul formu', () => {
     const met = assembly({ assemblyId: 'm1', quorumRecord: { met: true, presentOwners: 3, totalOwners: 4, presentVotes: 3, totalVotes: 4, noAttendance: false, recordedAt: '2026-12-15T17:00:00.000Z' } });
     expect(firstMeetingCandidates([first, met, assembly({ assemblyId: 'x' }), assembly({ assemblyId: 's', secondMeeting: true, quorumRecord: first.quorumRecord })]).map((a) => a.assemblyId)).toEqual(['f1']);
     expect(firstMeetingCandidates([first], 'f1')).toEqual([]);
+  });
+
+  it('katilim girisi: hisseli bolumde temsilci paydas zorunlu (asaleten ve vekaleten)', () => {
+    const base = { coOwned: true, attendee: '', proxyUserId: '', proxyName: '' };
+    expect(attendanceInput({ ...base, mode: 'present' })).toBeNull();
+    expect(attendanceInput({ ...base, mode: 'proxy', proxyUserId: 'p1' })).toBeNull();
+    expect(attendanceInput({ ...base, mode: 'present', attendee: 'a' })).toEqual({ mode: 'present', attendeeUserId: 'a' });
+    expect(attendanceInput({ ...base, mode: 'proxy', attendee: 'a', proxyUserId: 'p1' })).toEqual({ mode: 'proxy', attendeeUserId: 'a', proxyUserId: 'p1' });
+    expect(attendanceInput({ ...base, coOwned: false, mode: 'proxy', proxyName: '  Ali Demir ' })).toEqual({ mode: 'proxy', proxyName: 'Ali Demir' });
+    expect(attendanceInput({ ...base, coOwned: false, mode: 'proxy', proxyName: 'Al' })).toBeNull();
+    expect(attendanceInput({ ...base, mode: 'absent' })).toEqual({ mode: 'absent' });
   });
 
   it('sayim: toplam katilani asamaz, negatif / kesirli olamaz', () => {

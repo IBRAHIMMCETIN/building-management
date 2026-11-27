@@ -59,37 +59,50 @@ export type Quorum = {
 export const voteCap = (totalVotes: number) => Math.max(1, Math.floor(totalVotes / 3));
 
 /**
- * Bolumun oyunu kullanan gercek kisi: tek malikte malik; hisseli bolumde toplantida katilan paydas,
- * yoksa oy listesindeki temsilci. Belirlenemiyorsa bolumun kendisi (baska bolumle birlestirilmez).
+ * Kat maliki SAYISI icin kimlik (m.30): tek malikte malik; hisseli bolumde dondurulmus oy listesindeki
+ * temsilci, yoksa bolumun kendisi (bir kez). Katilim girildikce DEGISMEZ: toplam malik sayisi sabit.
  */
-export function voterOf(e: Pick<RollEntry, 'unitId' | 'owners' | 'representativeUserId'>, att?: Pick<Att, 'attendee'>): string {
+export function ownerOf(e: Pick<RollEntry, 'unitId' | 'owners' | 'representativeUserId'>): string {
   if (e.owners.length === 1) return `user:${e.owners[0]?.userId}`;
-  const rep = att?.attendee?.userId ?? e.representativeUserId;
+  const rep = e.representativeUserId;
   if (rep && e.owners.some((o) => o.userId === rep)) return `user:${rep}`;
   return `unit:${e.unitId}`;
 }
 
-/** Kisi basina bolum sayilari ve m.31 sinirli oylar. */
+/**
+ * Oyu kullanan gercek kisi (m.31 siniri icin): tek malikte malik; hisseli bolumde katilim kaydindaki
+ * temsilci paydas (asaleten ve vekaleten katilimda zorunlu). Eski / eksik kayitta `ownerOf`.
+ */
+export function voterOf(e: Pick<RollEntry, 'unitId' | 'owners' | 'representativeUserId'>, att?: Pick<Att, 'attendee'>): string {
+  if (e.owners.length === 1) return `user:${e.owners[0]?.userId}`;
+  const rep = att?.attendee?.userId;
+  if (rep && e.owners.some((o) => o.userId === rep)) return `user:${rep}`;
+  return ownerOf(e);
+}
+
+/** Kat maliki sayilari (sabit kimlik) ve m.31 kisi sinirli katilan oy. */
 export function countVotes(entries: readonly Pick<RollEntry, 'unitId' | 'owners' | 'representativeUserId'>[], attendance: readonly Att[]) {
   const attOf = new Map(attendance.map((a) => [a.unitId, a]));
   const totalVotes = entries.length;
   const cap = voteCap(totalVotes);
-  const persons = new Map<string, { units: number; present: number }>();
+  const owners = new Set<string>();
+  const presentOwnerSet = new Set<string>();
+  const castBy = new Map<string, number>();
   for (const e of entries) {
+    owners.add(ownerOf(e));
     const a = attOf.get(e.unitId);
-    const key = voterOf(e, a);
-    const p = persons.get(key) ?? { units: 0, present: 0 };
-    persons.set(key, { units: p.units + 1, present: p.present + (a && a.mode !== 'absent' ? 1 : 0) });
+    if (!a || a.mode === 'absent') continue;
+    presentOwnerSet.add(ownerOf(e));
+    const voter = voterOf(e, a);
+    castBy.set(voter, (castBy.get(voter) ?? 0) + 1);
   }
   let presentVotes = 0;
   let cappedOwners = 0;
-  let presentOwners = 0;
-  for (const p of persons.values()) {
-    if (p.units > cap) cappedOwners += 1;
-    presentVotes += Math.min(p.present, cap);
-    if (p.present > 0) presentOwners += 1;
+  for (const n of castBy.values()) {
+    if (n > cap) cappedOwners += 1;
+    presentVotes += Math.min(n, cap);
   }
-  return { totalVotes, presentVotes, cap, cappedOwners, totalOwners: persons.size, presentOwners };
+  return { totalVotes, presentVotes, cap, cappedOwners, totalOwners: owners.size, presentOwners: presentOwnerSet.size };
 }
 
 /** Vekalet siniri: 40 ve alti bolumde en fazla iki kat maliki; ustunde butun oylarin %5'i (kesir atilir). */

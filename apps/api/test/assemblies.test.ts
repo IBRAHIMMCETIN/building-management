@@ -201,7 +201,7 @@ describe('assemblies - KMK m.30 yeter sayi', () => {
   it('yeter sayi sayi VE arsa payi cogunlugu ister; katilan malik adlari ve paylar', async () => {
     const { call, attend } = setup();
     await call('POST', '', meeting);
-    for (const u of ['u1', 'u2', 'u3']) expect((await attend(u, 'present')).status).toBe(200);
+    for (const u of ['u1', 'u2', 'u3']) expect((await attend(u, 'present', u === 'u2' ? { attendeeUserId: 'own-2a' } : {})).status).toBe(200);
     let d = (await call('GET', '/asm1')).body;
     expect(d.units[1].owners).toEqual([
       { userId: 'own-2a', name: 'Kişi own-2a', share: { numerator: 1, denominator: 2 } },
@@ -227,7 +227,7 @@ describe('assemblies - KMK m.30 yeter sayi', () => {
     const units = [...defaultUnits(), unit('u5', '5')];
     const { call, attend } = setup({ units, members: [...defaultMembers(), owner('own-5', 'u5')] });
     await call('POST', '', meeting);
-    for (const u of ['u1', 'u2', 'u3', 'u4', 'u5']) await attend(u, 'present');
+    for (const u of ['u1', 'u2', 'u3', 'u4', 'u5']) await attend(u, 'present', u === 'u2' ? { attendeeUserId: 'own-2a' } : {});
     const q = (await call('GET', '/asm1')).body.quorum;
     expect(q).toMatchObject({ ownersMajority: true, landShareComputable: false, landShareMajority: false, met: false, totalLandShare: null });
     expect(q.reasons[0]).toContain('1 bölümün arsa payı girilmemiş; arsa payı çoğunluğu hesaplanamıyor');
@@ -302,7 +302,7 @@ describe('assemblies - sayim, tutanak ve ikinci toplanti', () => {
     const blocked = await call('POST', '/asm1/agenda/a1/tally', { version: version(), yes: 1, no: 0, abstain: 0 });
     expect(blocked.status).toBe(422);
     expect(blocked.body.message).toContain('İkinci toplantıda');
-    await attend('u2', 'present');
+    await attend('u2', 'present', { attendeeUserId: 'own-2b' });
     await attend('u4', 'present');
     expect((await call('POST', '/asm1/agenda/a1/tally', { version: version(), yes: 3, no: 1, abstain: 0 })).status).toBe(400);
     const accepted = await call('POST', '/asm1/agenda/a1/tally', { version: version(), yes: 2, no: 1, abstain: 0 });
@@ -487,10 +487,33 @@ describe('assemblies - zamanlama, yan etkisiz okuma ve tutanak', () => {
     // P hisseli bolumu temsil ederse uc bolumun oyunu kullanir: siniri floor(6/3) = 2.
     await attend('u3', 'present', { attendeeUserId: 'P' });
     let q = (await call('GET', '/asm1')).body.quorum;
-    expect(q).toMatchObject({ totalVotes: 6, presentUnits: 3, presentVotes: 2, cappedOwners: 1, presentOwners: 1 });
-    // Q temsil ederse P iki bolumle sinirin altinda: 3 oy, 2 kat maliki.
+    // Kat maliki sayisi oy listesinden sabit kimlikle (P ve hisseli u3 bir kez): 5; kim temsil ederse etsin degismez.
+    expect(q).toMatchObject({ totalVotes: 6, totalOwners: 5, presentUnits: 3, presentVotes: 2, cappedOwners: 1, presentOwners: 2 });
+    // Q temsil ederse P iki bolumle sinirin altinda: 3 oy; malik sayilari ayni kalir.
     await attend('u3', 'present', { attendeeUserId: 'Q' });
     q = (await call('GET', '/asm1')).body.quorum;
-    expect(q).toMatchObject({ presentVotes: 3, cappedOwners: 0, presentOwners: 2 });
+    expect(q).toMatchObject({ totalOwners: 5, presentVotes: 3, cappedOwners: 0, presentOwners: 2 });
+  });
+
+  it('hisseli bolum temsilcisiz katilim kaydedilemez (asaleten / vekaleten); 4 tek + 4 hisseli bolumle siniri asmak mumkun degil', async () => {
+    const units = Array.from({ length: 12 }, (_, i) => unit(`u${i + 1}`, String(i + 1), ls(80)));
+    const half = { numerator: 1, denominator: 2 };
+    const members = [
+      ...['u1', 'u2', 'u3', 'u4'].map((u) => owner('P', u)),
+      ...['u5', 'u6', 'u7', 'u8'].flatMap((u) => [owner('P', u, { ownershipShare: half }), owner('Q', u, { ownershipShare: half })]),
+      ...['u9', 'u10', 'u11', 'u12'].map((u, i) => owner(`o${i + 9}`, u)),
+    ];
+    const { call, attend } = setup({ units, members });
+    await call('POST', '', meeting);
+    const before = (await call('GET', '/asm1')).body.quorum.totalOwners;
+    expect((await attend('u5', 'present')).status).toBe(400);
+    expect((await attend('u5', 'proxy', { proxyUserId: 'prx-1' })).status).toBe(400);
+    expect((await attend('u5', 'present', { attendeeUserId: 'o9' })).status).toBe(400);
+    for (const u of ['u1', 'u2', 'u3', 'u4']) await attend(u, 'present');
+    for (const u of ['u5', 'u6', 'u7', 'u8']) await attend(u, 'present', { attendeeUserId: 'P' });
+    const q = (await call('GET', '/asm1')).body.quorum;
+    // Bütün oylar 12, kisi siniri 4: P sekiz bolumun oyunu kullanir ama 4 oy sayilir.
+    expect(q).toMatchObject({ totalVotes: 12, voteCap: 4, presentUnits: 8, presentVotes: 4, cappedOwners: 1 });
+    expect(q.totalOwners).toBe(before);
   });
 });
