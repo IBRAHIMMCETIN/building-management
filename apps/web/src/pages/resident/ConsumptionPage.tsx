@@ -39,7 +39,7 @@ export function ConsumptionPage() {
   if (!unitId && summary.isError) return <PortalQueryState error={summary.error} onRetry={() => void summary.refetch()} />;
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="mx-auto flex w-full max-w-2xl flex-col gap-4">
       <div className="flex items-end justify-between gap-3">
         <div>
           <h1 className="text-title font-bold">Tüketimim</h1>

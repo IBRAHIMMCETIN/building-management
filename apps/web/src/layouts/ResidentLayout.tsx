@@ -93,7 +93,7 @@ export function ResidentLayout() {
 
       {/* Icerik sutunu: min-w-0 + overflow-x-clip -> genis icerik ust bari ve sutunu genisletemez. */}
       <div className="flex min-w-0 flex-1 flex-col overflow-x-clip">
-        <header className="sticky top-0 z-10 flex h-14 w-full min-w-0 items-center justify-between gap-3 border-b border-border bg-surface px-4 md:h-16 md:justify-end md:px-6 lg:px-8">
+        <header className="sticky top-0 z-10 flex h-14 w-full min-w-0 items-center justify-between gap-3 overflow-x-hidden border-b border-border bg-surface px-4 md:h-16 md:justify-end md:px-6 lg:px-8">
           <div className="min-w-0 md:hidden">
             <PortalBrand />
           </div>
