@@ -1,7 +1,7 @@
 import type { DomainEvent } from '../../src/events/publisher.js';
 import type { AuditDraft } from '../../src/modules/audit/log.js';
 import { ReservationConflictError, type ReservationRepository, type ReservationWrite } from '../../src/modules/reservations/repository.js';
-import type { Booking, BookingIndex, Facility, ReservationIdempotency, SlotLock } from '../../src/modules/reservations/types.js';
+import type { Booking, BookingIndex, Facility, FeeQueueEntry, ReservationIdempotency, SlotLock } from '../../src/modules/reservations/types.js';
 
 type Doc = Record<string, unknown> & { PK: string; SK: string };
 
@@ -41,7 +41,7 @@ export function createFakeReservationRepo(store: Map<string, Doc> = new Map()) {
     listHeldSlots: async (apt, fac, from, to) => between<SlotLock>(apt, `RSLOT#${fac}#${from}`, `RSLOT#${fac}#${to}`).filter((s) => s.state === 'held' && s.slotStart < to),
     getGuard: async (apt, fac, unit) => (store.get(`APT#${apt}|RGUARD#${fac}#${unit}`)?.seq as number | undefined) ?? 0,
     getIdempotency: async (apt, key) => get<ReservationIdempotency>({ PK: `APT#${apt}`, SK: `RIDEM#${key}` }),
-    listFeeQueue: async (apt) => between<BookingIndex>(apt, 'RFEEQ#', 'RFEEQ#~').map((i) => i.bookingId),
+    listFeeQueue: async (apt) => between<FeeQueueEntry>(apt, 'RFEEQ#', 'RFEEQ#~').filter((i) => i.status === 'open').map((i) => i.bookingId),
     async write(apt, w) {
       // Kanca ve hata bu yazima aittir: kancanin icindeki (araya giren) yazim etkilenmez.
       const hook = beforeWrite;
@@ -51,7 +51,7 @@ export function createFakeReservationRepo(store: Map<string, Doc> = new Map()) {
       if (hook) await hook();
       if (fail) throw fail;
       const pk = `APT#${apt}`;
-      for (const d of [w.facility?.item, w.booking?.item, ...(w.hold ?? []), ...(w.release ?? []), ...(w.indexes ?? []), w.idempotency]) {
+      for (const d of [w.facility?.item, w.booking?.item, ...(w.hold ?? []), ...(w.release ?? []), ...(w.indexes ?? []), w.feeQueue, w.idempotency]) {
         if (d && d.PK !== pk) throw new Error('Kiraci uyusmazligi');
       }
       // 1) Kosullar (atomik: hicbir sey yazilmadan once)
@@ -86,6 +86,7 @@ export function createFakeReservationRepo(store: Map<string, Doc> = new Map()) {
       for (const s of w.release ?? []) put({ ...s, state: 'released' } as unknown as Doc);
       if (w.guard) put({ PK: pk, SK: `RGUARD#${w.guard.facilityId}#${w.guard.unitId}`, entityType: 'RESERVATION_GUARD', seq: w.guard.expected + 1 });
       for (const i of w.indexes ?? []) put(i as unknown as Doc);
+      if (w.feeQueue) put(w.feeQueue as unknown as Doc);
       if (w.audit) audits.push(w.audit);
       outbox.push(...(w.outbox ?? []));
       writes.push(structuredClone(w));

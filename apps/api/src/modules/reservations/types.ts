@@ -11,8 +11,9 @@
  *   RBFAC#<facilityId>#<startIso>#<bookingId>  takvim indeksi (yalnizca eklenir; baslangic degismez)
  *   RBUNIT#<unitId>#<startIso>#<bookingId>     daire indeksi (sakin "rezervasyonlarim", aktif sayim)
  *   RIDEM#<idempotencyKey>                     olusturma idempotency kaydi (alan ve rezervasyon)
- *   RFEEQ#<bookingId>                          iade kuyrugu: ters kaydi yapilamayan ucret (yalnizca eklenir;
- *                                              okuma rezervasyonun guncel ucret durumuna gore suzer)
+ *   RFEEQ#<bookingId>                          iade kuyrugu: YALNIZCA ters kaydi yapilamayan ucret icin yazilir
+ *                                              (`status: open`); yeniden deneme / elle cozum `resolved` yapar
+ *                                              (silme yok). Onay bekleyenler ekrani yalnizca acik kayitlari okur
  *
  * Saatler Europe/Istanbul duvar saatiyle girilir (`HH:MM`), kayitlarda UTC ISO tutulur.
  * Ucret (kurus) onay aninda Finans `chargeUnit` ile oturan alt carisine tahakkuk eder; iptalde
@@ -156,6 +157,16 @@ export type BookingIndex = TableKeys & {
   facilityId: string;
   unitId: string;
   start: IsoDateTime;
+};
+
+export type FeeQueueEntry = TableKeys & {
+  entityType: 'RESERVATION_FEE_QUEUE';
+  apartmentId: string;
+  bookingId: string;
+  status: 'open' | 'resolved';
+  at: IsoDateTime;
+  /** Son hata (open) veya cozum bicimi (resolved). */
+  note?: string;
 };
 
 export type ReservationIdempotency = TableKeys & {
