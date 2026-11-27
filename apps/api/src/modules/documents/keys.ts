@@ -123,3 +123,21 @@ export function financeReportKey(apartmentId: string, generatedOn: IsoDate, kind
 export function assemblySheetKey(apartmentId: string, meetingDate: IsoDate, assemblyId: string, dataHash: string): string {
   return `apartments/${apartmentId}/reports/${ym(meetingDate)}/assembly-hazirun-${assemblyId}-${dataHash.slice(0, 16)}.pdf`;
 }
+
+/**
+ * Genel kurul devami: toplanti tutanagi. `dataHash` toplanti + yeter sayi + kararlar + divan /
+ * notlar + sablon ozetidir: tutanak veya karar (duzeltme) degisince yeni dosya uretilir.
+ *   apartments/{apt}/reports/{yyyy}/{mm}/assembly-minutes-{assemblyId}-{hash}.pdf
+ */
+export function assemblyMinutesKey(apartmentId: string, meetingDate: IsoDate, assemblyId: string, dataHash: string): string {
+  return `apartments/${apartmentId}/reports/${ym(meetingDate)}/assembly-minutes-${assemblyId}-${dataHash.slice(0, 16)}.pdf`;
+}
+
+/**
+ * Genel kurul devami: apartmanin karar defteri (tum kararlar, tarih sirasi). Ay klasoru son
+ * toplantinin gunu; `dataHash` tum karar kayitlari + sablon ozeti.
+ *   apartments/{apt}/reports/{yyyy}/{mm}/assembly-decision-book-{hash}.pdf
+ */
+export function assemblyDecisionBookKey(apartmentId: string, asOf: IsoDate, dataHash: string): string {
+  return `apartments/${apartmentId}/reports/${ym(asOf)}/assembly-decision-book-${dataHash.slice(0, 16)}.pdf`;
+}

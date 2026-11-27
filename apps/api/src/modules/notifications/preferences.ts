@@ -14,7 +14,7 @@ import { NOTIFICATION_CATEGORIES, type NotificationCategory, isNotificationCateg
  * sakinin tercihini degistiremez. Kisisel veri tasimaz (yalnizca acik/kapali + zaman damgasi).
  *
  * Kategori bazli e-posta (bkz. `categories.ts`): `email.finance | announcements | tickets | gate |
- * reservations | polls`; yalnizca acikca secilenler saklanir, verilmeyen kategori ACIK sayilir. Ana
+ * reservations | polls | assemblies`; yalnizca acikca secilenler saklanir, verilmeyen kategori ACIK sayilir. Ana
  * anahtar (`enabled`) kapaliysa hicbiri gitmez. Kayit: `emailCategories` haritasi; O1-2'nin
  * `ticketEmails` alani `tickets` icin geriye donuk okunur.
  */
@@ -99,7 +99,7 @@ export function createDynamoPreferencesRepository(): PreferencesRepository {
 
 /**
  * PUT govdesi: `{ email: { enabled: boolean, finance?, announcements?, tickets?, gate?, reservations?,
- * polls?: boolean } }` (bilinmeyen alan reddedilir).
+ * polls?, assemblies?: boolean } }` (bilinmeyen alan reddedilir).
  */
 export function parsePreferences(body: unknown): NotificationPreferences {
   const o = asObject(body);

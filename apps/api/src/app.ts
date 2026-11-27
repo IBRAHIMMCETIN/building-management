@@ -16,7 +16,7 @@ import { type AnnouncementService, createAnnouncementService } from './modules/a
 import { gatePortalRoutes, gateRoutes } from './modules/gate/routes.js';
 import { type GateService, createGateService } from './modules/gate/service.js';
 import { pollPortalRoutes, pollRoutes } from './modules/polls/routes.js';
-import { assemblyRoutes } from './modules/assemblies/routes.js';
+import { assemblyPortalRoutes, assemblyRoutes } from './modules/assemblies/routes.js';
 import { type AssemblyService, createAssemblyService } from './modules/assemblies/service.js';
 import { type PollService, createPollService } from './modules/polls/service.js';
 import { maintenanceRoutes } from './modules/maintenance/routes.js';
@@ -155,7 +155,7 @@ export type AppConfig = {
   announcementService?: AnnouncementService;
   /** Y1: anket / oylama (yonetici + sakin portali). */
   pollService?: PollService;
-  /** Y1-3: kat malikleri kurulu hazirligi (hazirun cetveli, katilim, yeter sayi, sayim). */
+  /** Y1-3: kat malikleri kurulu (hazirun, katilim, yeter sayi, karar, cagri, tutanak; sakin portali). */
   assemblyService?: AssemblyService;
   /** Faz 3 (O1): ariza / talep. */
   ticketService?: TicketService;
@@ -368,7 +368,8 @@ export function createApp(config: AppConfig) {
   // Y1: anket / oylama. Oy hakki ve agirlik mulkiyet modulunun oy listesinden; sakin dairesi portal kuraliyla.
   const pollService = config.pollService ?? createPollService({ portal: portalService });
   app.route('/api/polls', pollRoutes({ authenticate, service: pollService }));
-  app.route('/api/assemblies', assemblyRoutes({ authenticate, service: config.assemblyService ?? createAssemblyService() }));
+  const assemblyService = config.assemblyService ?? createAssemblyService();
+  app.route('/api/assemblies', assemblyRoutes({ authenticate, service: assemblyService }));
 
   // Faz 3 (O1): ariza / talep (yonetim, gorevli, guvenlik, denetci).
   const ticketService = config.ticketService ?? createTicketService();
@@ -393,6 +394,8 @@ export function createApp(config: AppConfig) {
   app.route('/api/portal/tickets', ticketPortalRoutes({ authenticate, service: ticketService }));
   app.route('/api/portal/reservations', reservationPortalRoutes({ authenticate, service: reservationService }));
   app.route('/api/portal/polls', pollPortalRoutes({ authenticate, service: pollService }));
+  // Genel kurul devami: kat maliki sakinler icin toplantilar, kararlar ve tutanak.
+  app.route('/api/portal/assemblies', assemblyPortalRoutes({ authenticate, service: assemblyService }));
   app.route(
     '/api/portal',
     portalRoutes({

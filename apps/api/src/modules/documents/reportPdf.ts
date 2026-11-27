@@ -20,6 +20,11 @@ export type ReportSection = {
   rowHeight?: number;
   /** Her veri satirinin altina ince cizgi (elle doldurulan cizelgeler). */
   ruled?: boolean;
+  /**
+   * Basliktan sonra, tablodan once satir kaydirmali metin paragraflari (genel kurul tutanagindaki
+   * gorusme notlari). `columns` bos ise yalnizca paragraflar basilir.
+   */
+  paragraphs?: string[];
 };
 
 export type ReportPdfData = {
@@ -50,6 +55,33 @@ function fit(text: string, font: PDFFont, size: number, maxWidth: number): strin
   let t = text;
   while (t.length > 1 && font.widthOfTextAtSize(`${t}…`, size) > maxWidth) t = t.slice(0, -1);
   return `${t.trimEnd()}…`;
+}
+
+/** Metni genislige gore satirlara boler (satir sonlari korunur; sigmayan uzun kelime bolunur). */
+export function wrapText(text: string, font: Pick<PDFFont, 'widthOfTextAtSize'>, size: number, maxWidth: number): string[] {
+  const out: string[] = [];
+  const width = (s: string) => font.widthOfTextAtSize(s, size);
+  for (const para of text.split(/\r?\n/)) {
+    let line = '';
+    for (const word of para.split(/\s+/).filter(Boolean)) {
+      const candidate = line ? `${line} ${word}` : word;
+      if (width(candidate) <= maxWidth) {
+        line = candidate;
+        continue;
+      }
+      if (line) out.push(line);
+      let rest = word;
+      while (rest.length > 1 && width(rest) > maxWidth) {
+        let k = rest.length - 1;
+        while (k > 1 && width(rest.slice(0, k)) > maxWidth) k -= 1;
+        out.push(rest.slice(0, k));
+        rest = rest.slice(k);
+      }
+      line = rest;
+    }
+    out.push(line);
+  }
+  return out;
 }
 
 export async function renderReportPdf(data: ReportPdfData, fonts?: PdfFonts): Promise<Uint8Array> {
@@ -123,6 +155,19 @@ export async function renderReportPdf(data: ReportPdfData, fonts?: PdfFonts): Pr
       page.drawText(fit(section.title, fb, 10.5, contentW), { x: M, y, size: 10.5, font: fb, color: INK });
       y -= 16;
     }
+    for (const p of section.paragraphs ?? []) {
+      for (const line of wrapText(p, f, 9, contentW)) {
+        if (y < M + 20) header();
+        if (line) page.drawText(line, { x: M, y, size: 9, font: f, color: INK });
+        y -= 12;
+      }
+      y -= 4;
+    }
+    if (section.columns.length === 0) {
+      y -= 6;
+      continue;
+    }
+    if (y < M + 15 + ROW_H * 2) header();
     headerRow();
     const rowH = section.rowHeight ?? ROW_H;
     for (const row of section.rows) {

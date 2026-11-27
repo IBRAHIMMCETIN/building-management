@@ -42,6 +42,7 @@ export const EVENT_TYPES = [
   'RESERVATION_APPROVED',
   'RESERVATION_REJECTED',
   'RESERVATION_CANCELLED',
+  'ASSEMBLY_CALLED',
 ] as const;
 export type EventType = (typeof EVENT_TYPES)[number];
 
@@ -236,6 +237,27 @@ export type ReservationDecisionPayload = {
   feeStatus: string;
 };
 
+/**
+ * Genel kurul devami: yonetici kat malikleri kurulu cagrisini gonderdi (ilk gonderim veya acik,
+ * denetimli yeniden gonderim; `callSeq` 1'den baslar, `eventId` = `ASSEMBLY_CALLED:<id>:<sira>`).
+ * Alicilar (cagri anindaki oy listesinde malik olan apartman kullanicilari) `ASMCALL#` kaydindadir:
+ * worker kaydi okur, toplanti iptal edilmisse veya baslamissa e-posta gondermez. Toplanti bilgisi
+ * (tarih, yer / baglanti, gundem basliklari, ikinci toplanti) cagridaki haliyle tasinir; kisisel
+ * veri yok. E-posta nezaketen gonderilir, KMK m.29'daki cagrinin yerine gecmez.
+ */
+export type AssemblyCalledPayload = {
+  assemblyId: string;
+  callSeq: number;
+  kind: 'ordinary' | 'extraordinary';
+  secondMeeting: boolean;
+  scheduledAt: IsoDateTime;
+  location?: string;
+  onlineUrl?: string;
+  agenda: string[];
+  secondMeetingPlan?: { scheduledAt: IsoDateTime; location?: string; onlineUrl?: string };
+  resend: boolean;
+};
+
 type PayloadByType = {
   DUE_GENERATED: DueGeneratedPayload;
   PAYMENT_RECEIVED: PaymentReceivedPayload;
@@ -255,6 +277,7 @@ type PayloadByType = {
   RESERVATION_APPROVED: ReservationDecisionPayload;
   RESERVATION_REJECTED: ReservationDecisionPayload;
   RESERVATION_CANCELLED: ReservationDecisionPayload;
+  ASSEMBLY_CALLED: AssemblyCalledPayload;
 };
 
 export type DomainEvent<T extends EventType = EventType> = {
