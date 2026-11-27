@@ -1,18 +1,23 @@
 import { Plus } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { VehicleList } from '@/components/gate/VehicleList';
-import { Alert, Button, Card, CardTitle, FormField, Input, Skeleton } from '@/components/ui';
-import { useAllVehicles, useDeskActions } from '@/hooks/useGate';
+import { Alert, Button, Card, CardTitle, FormField, Input, Select, Skeleton } from '@/components/ui';
+import { useAllVehicles, useDeskActions, useUnitResidents } from '@/hooks/useGate';
 import { errorMessage } from '@/lib/api/errors';
 import { normalizePlate, plateError } from '@/lib/gate/plate';
 import { UnitPicker } from './shared';
 
-/** Yonetim: sitedeki tum araclar; daire adina plaka ekleme, pasife alma (denetim gunlugune yazilir). */
+/**
+ * Yonetim: sitedeki tum araclar; daire sakini adina plaka ekleme (sahip secimi zorunlu: sahip
+ * tasininca arac gorevliye pasif gorunur), pasife alma (denetim gunlugune yazilir).
+ */
 export function VehiclesPanel() {
   const list = useAllVehicles();
   const a = useDeskActions();
   const [q, setQ] = useState('');
   const [unitId, setUnitId] = useState('');
+  const [ownerUserId, setOwnerUserId] = useState('');
+  const residents = useUnitResidents(unitId);
   const [plate, setPlate] = useState('');
   const [note, setNote] = useState('');
   const [touched, setTouched] = useState(false);
@@ -28,9 +33,9 @@ export function VehiclesPanel() {
 
   const add = () => {
     setTouched(true);
-    if (plateError(plate) || !unitId) return;
+    if (plateError(plate) || !unitId || !ownerUserId) return;
     a.createVehicle.mutate(
-      { unitId, plate: normalizePlate(plate), ...(note.trim() ? { note: note.trim() } : {}) },
+      { unitId, ownerUserId, plate: normalizePlate(plate), ...(note.trim() ? { note: note.trim() } : {}) },
       {
         onSuccess: () => {
           setPlate('');
@@ -48,7 +53,25 @@ export function VehiclesPanel() {
         <div className="grid gap-4 md:grid-cols-2">
           <div className="flex flex-col gap-1.5">
             <span className="text-small font-medium">Bağımsız bölüm</span>
-            <UnitPicker value={unitId} onChange={setUnitId} />
+            <UnitPicker
+              value={unitId}
+              onChange={(u) => {
+                setUnitId(u);
+                setOwnerUserId('');
+              }}
+            />
+            {unitId && (
+              <FormField label="Aracın sahibi" hint="Bölümde oturan sakin; taşınınca araç güvenliğe pasif görünür">
+                <Select value={ownerUserId} onChange={(e) => setOwnerUserId(e.target.value)} disabled={residents.isPending}>
+                  <option value="">{residents.data?.length === 0 ? 'Bu bölümde oturan sakin yok' : 'Sakin seçin'}</option>
+                  {(residents.data ?? []).map((r) => (
+                    <option key={r.userId} value={r.userId}>
+                      {r.name}
+                    </option>
+                  ))}
+                </Select>
+              </FormField>
+            )}
           </div>
           <div className="flex flex-col gap-4">
             <FormField label="Plaka" error={plateMsg} hint="Örnek: 34 ABC 123">
@@ -61,7 +84,7 @@ export function VehiclesPanel() {
         </div>
         {a.createVehicle.error && <Alert tone="danger">{errorMessage(a.createVehicle.error)}</Alert>}
         <div className="flex justify-end">
-          <Button disabled={!unitId} loading={a.createVehicle.isPending} onClick={add}>
+          <Button disabled={!unitId || !ownerUserId} loading={a.createVehicle.isPending} onClick={add}>
             <Plus className="size-4" aria-hidden="true" />
             Aracı kaydet
           </Button>

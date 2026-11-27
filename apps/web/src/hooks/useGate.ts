@@ -43,6 +43,12 @@ export function useGateUnits(q: string) {
   return useQuery({ queryKey: gateKeys.units(apt, q), queryFn: ({ signal }) => gateDeskApi.units(q, signal).then((r) => r.items), enabled, staleTime: 5 * 60_000 });
 }
 
+/** Yonetici: bolumde oturan uyeler (arac sahibi secimi). */
+export function useUnitResidents(unitId: string) {
+  const { apt, manage } = useDesk();
+  return useQuery({ queryKey: [...gateKeys.all(apt), 'unit-residents', unitId] as const, queryFn: ({ signal }) => gateDeskApi.unitResidents(unitId, signal).then((r) => r.items), enabled: manage && !!unitId });
+}
+
 /** Plaka sorgusu: yalnizca gonderildiginde (her tus vurusunda degil). */
 export function usePlateLookup(q: string | undefined) {
   const { apt, enabled } = useDesk();

@@ -31,9 +31,10 @@ function base(authenticate: Authenticator, roles: readonly Role[]) {
  * `/api/gate` - guvenlik kapisi (yonetim + guvenlik gorevlisi).
  *
  *   GET   /units?q=                       bolum secici (yalnizca etiket)
+ *   GET   /units/:id/residents            (yonetim) bolumde oturan uyeler: arac sahibi secimi (yalnizca ad)
  *   GET   /plates?q=                      plaka sorgusu: tam veya sondan >= 3 karakter, en fazla 10 sonuc
  *   GET   /vehicles?unitId=&status=&q=    (yonetim) tum araclar
- *   POST  /vehicles                       (yonetim) { unitId, plate, note? }
+ *   POST  /vehicles                       (yonetim) { unitId, ownerUserId, plate, note? }
  *   PATCH /vehicles/:id                   (yonetim) { version, status?, note? }
  *   GET   /passes?status=active|past&unitId=   (yonetim) misafir gecisleri
  *   POST  /passes/verify                  { token } | { code }  -> gecis + karar
@@ -52,6 +53,7 @@ export function gateRoutes({ authenticate, service }: GateRoutesDeps) {
   const manage = requireRole(MANAGE_ROLES);
 
   r.get('/units', async (c) => c.json(await service.listUnits(gateContext(c), c.req.query('q'))));
+  r.get('/units/:id/residents', manage, async (c) => c.json(await service.unitResidents(gateContext(c), id(c))));
   r.get('/plates', async (c) => c.json(await service.lookupPlate(gateContext(c), c.req.query('q'))));
 
   r.get('/vehicles', manage, async (c) => c.json(await service.listVehicles(gateContext(c), c.req.query())));
