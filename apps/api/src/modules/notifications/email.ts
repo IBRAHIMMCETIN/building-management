@@ -9,6 +9,7 @@ import { type ApartmentRoleRepository, apartmentRoleRepository } from '../apartm
 import { type CoreRepository, coreRepository } from '../core/repository.js';
 import { type PersonRepository, personRepository } from '../residents/repository.js';
 import { type DeliveryResult, type Notification, type Notifier, createLogNotifier } from './notifier.js';
+import { categoryOfTemplate } from './categories.js';
 import { type PreferencesRepository, createDynamoPreferencesRepository } from './preferences.js';
 import { type EmailContext, renderEmail } from './templates.js';
 
@@ -19,7 +20,8 @@ import { type EmailContext, renderEmail } from './templates.js';
  *  1. Alici bazli tekrar korumasi: `NOTIFSENT#<eventId>#<userId>` varsa atlanir. (Olay, baska
  *     bir alicinin gecici hatasi yuzunden yeniden islendiginde onceki alicilara ikinci e-posta
  *     gitmez.)
- *  2. Kullanici tercihi: e-posta kapaliysa `skipped: opted_out`.
+ *  2. Kullanici tercihi: e-posta veya bildirimin kategorisi (aidat, duyuru, ariza, ziyaretci,
+ *     rezervasyon, oylama; bkz. categories.ts) kapaliysa `skipped: opted_out`.
  *  3. Adres: apartmanin `PERSON#<userId>` kaydi. Kisi kaydinda gecerli adres yoksa (ekip
  *     davetiyle eklenen yonetici / gorevli / denetci / guvenlik; davet kisi kaydi olusturmaz)
  *     kullanicinin o gun AKTIF ekip kaydindaki (`ROLE#`) davet e-postasi kullanilir; bitmis ekip
@@ -222,7 +224,8 @@ export function createEmailNotifier(deps: EmailNotifierDeps): Notifier {
 
     const prefs = await deps.preferences.get(n.userId);
     if (!prefs.email.enabled) return { status: 'skipped', reason: 'opted_out' };
-    if (n.template.startsWith('ticket_') && prefs.email.tickets === false) return { status: 'skipped', reason: 'opted_out' };
+    const category = n.category ?? categoryOfTemplate(n.template);
+    if (category && prefs.email[category] === false) return { status: 'skipped', reason: 'opted_out' };
 
     const person = await deps.people.get(n.apartmentId, n.userId);
     const personEmail = person?.email?.trim();

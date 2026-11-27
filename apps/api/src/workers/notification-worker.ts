@@ -3,6 +3,7 @@ import { type DomainEvent, EVENT_TYPES, type EventType } from '../events/publish
 import { type CoreRepository, coreRepository } from '../modules/core/repository.js';
 import type { IsoDate, LiableParty } from '../modules/core/types.js';
 import { type MembershipRepository, membershipRepository } from '../modules/memberships/repository.js';
+import { categoryOfEvent } from '../modules/notifications/categories.js';
 import { createNotifierFromEnv } from '../modules/notifications/email.js';
 import type { DeliveryResult, Notification, NotificationLine, NotificationTemplate, Notifier } from '../modules/notifications/notifier.js';
 import { type UnitMembership, visibleParties } from '../modules/portal/types.js';
@@ -374,7 +375,9 @@ export function createNotificationWorker(overrides: Partial<WorkerDeps> = {}) {
 
     const roles = isTicketEvent(event) || event.type === 'OPERATIONS_DIGEST' ? await deps.roles.list(event.apartmentId) : [];
     const records = await recordsFor(event);
-    const notifications = buildNotifications(event, memberships, unitBlocks, today(), roles, records);
+    // Tercih kategorisi olay turunden (kanal kullanicinin kapattigi kategoriyi atlar).
+    const category = categoryOfEvent(event.type);
+    const notifications = buildNotifications(event, memberships, unitBlocks, today(), roles, records).map((n) => (category && !n.category ? { ...n, category } : n));
     let sent = 0;
     const skippedRecipients: Record<string, number> = {};
     for (const n of notifications) {
