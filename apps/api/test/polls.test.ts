@@ -145,6 +145,7 @@ function setup(opts: { units?: Unit[]; members?: UnitMembership[]; records?: Own
     repository: fake.repo,
     core,
     ownership: {
+      getHead: async () => undefined,
       listHeads: async () => [],
       listRecords: async (apt, unitId) => records.filter((r) => r.apartmentId === apt && (!unitId || r.unitId === unitId)),
     },
@@ -787,6 +788,54 @@ describe('polls repository (DynamoDB)', () => {
     expect(items).toHaveLength(2);
     expect(items[1]!.Put).toMatchObject({ ConditionExpression: 'attribute_not_exists(PK)', Item: { SK: 'POLLROLL#p1#000', entityType: 'ROLL_SNAPSHOT' } });
     await expect(repo.update(poll, 1, { roll: [{ ...snap.chunks[0]!, ownerId: 'other' }] })).rejects.toThrow(/ait degil/);
+  });
+});
+
+describe('polls - oy listesi acilistan once dondurulmaz', () => {
+  const later = { opensAt: '2026-11-12T09:00:00+03:00', closesAt: '2026-11-19T18:00:00+03:00' };
+
+  it('planli oylama yayinda dondurulmaz; acilistan sonraki okumalar dondurmaz (on izleme); ilk oy dondurur', async () => {
+    const { published, vote, call, portalCall, polls, rolls, audits, clock, members, token } = setup();
+    await published(later);
+    expect(polls.get(`${APT}|poll1`)!.roll).toBeUndefined();
+    expect(await rolls.entries(APT, 'poll', 'poll1')).toEqual([]);
+    expect(audits.find((a) => a.action === 'poll.publish')?.details).toMatchObject({ rollFrozen: false, rollDate: '2026-11-12' });
+
+    // Yayin ile acilis arasinda eklenen malik (oy listesi gunu itibariyla malik) oy hakkini alir.
+    members.push(member('late-3', 'u3', 'owner', { ownershipShare: { numerator: 1, denominator: 2 } }));
+    const own3 = members.find((m) => m.userId === 'own-3')!;
+    Object.assign(own3, { ownershipShare: { numerator: 1, denominator: 2 } });
+
+    clock.set('2026-11-12T07:00:00.000Z');
+    expect((await portalCall('GET', '', 'late-3')).body.items[0]).toMatchObject({ eligible: true, canVote: true });
+    // Denetci / yonetici okumalari yan etkisizdir.
+    expect((await call('GET', '/poll1/results', undefined, token('o', 'observer'))).status).toBe(200);
+    expect((await call('GET', '/poll1/participation', undefined, token('o', 'observer'))).status).toBe(200);
+    const preview = await call('GET', '/poll1/results');
+    expect(preview.body).toMatchObject({ rollFrozen: false, results: { eligible: { units: 3 } } });
+    expect(polls.get(`${APT}|poll1`)!.roll).toBeUndefined();
+    expect(audits.some((a) => a.action === 'poll.roll_freeze')).toBe(false);
+
+    expect((await vote('late-3', 'o1')).status).toBe(200);
+    expect(polls.get(`${APT}|poll1`)!.roll).toMatchObject({ rollDate: '2026-11-12', frozenAt: '2026-11-12T07:00:00.000Z' });
+    expect(audits.filter((a) => a.action === 'poll.roll_freeze')).toHaveLength(1);
+    expect((await rolls.entries(APT, 'poll', 'poll1')).find((e) => e.unitId === 'u3')?.voters.map((v) => v.userId).sort()).toEqual(['late-3', 'own-3']);
+    expect((await call('GET', '/poll1/results')).body.rollFrozen).toBe(true);
+    // Dondurulduktan sonraki degisiklik etkisiz.
+    members.push(member('later-1', 'u1', 'owner'));
+    expect((await vote('later-1', 'o1')).body.error).toBe('not_eligible');
+  });
+
+  it('planli oylamaya acilistan once oy verilemez ve liste dondurulmaz; acik ama dondurulmamis oylamanin erken kapatilmasi dondurur', async () => {
+    const { published, vote, call, polls, clock } = setup();
+    await published({ ...later, secret: false });
+    expect((await vote('own-1', 'o1')).status).toBe(409);
+    expect(polls.get(`${APT}|poll1`)!.roll).toBeUndefined();
+    clock.set('2026-11-12T07:00:00.000Z');
+    const closed = await call('POST', '/poll1/close', { version: 2, reason: 'Gerek kalmadı' });
+    expect(closed.status).toBe(200);
+    expect(closed.body.roll).toMatchObject({ rollDate: '2026-11-12' });
+    expect(closed.body.version).toBe(4); // dondurma (3) + kapatma (4)
   });
 });
 

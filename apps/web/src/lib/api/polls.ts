@@ -27,7 +27,8 @@ export const pollsApi = {
   close: (id: string, version: number, reason: string) => apiClient.post(`${one(id)}/close`, { version, reason }, { schema: pollSchema }),
   cancel: (id: string, version: number) => apiClient.post(`${one(id)}/cancel`, { version }, { schema: pollSchema }),
   results: (id: string, signal?: AbortSignal) =>
-    apiClient.get(`${one(id)}/results`, { signal, schema: z.object({ poll: pollSchema, results: pollResultsSchema }) }),
+    // `rollFrozen: false`: planli oylamada ilk oydan once paydalar canli on izlemedir.
+    apiClient.get(`${one(id)}/results`, { signal, schema: z.object({ poll: pollSchema, rollFrozen: z.boolean(), results: pollResultsSchema }) }),
   participation: (id: string, signal?: AbortSignal) => apiClient.get(`${one(id)}/participation`, { signal, schema: participationSchema }),
 
   portalList: (unitId: string | undefined, signal?: AbortSignal) =>

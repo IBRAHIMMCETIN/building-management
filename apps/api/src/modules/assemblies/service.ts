@@ -3,7 +3,7 @@ import { DataAccessError } from '../../config/dynamodb.js';
 import type { AuditDraft } from '../audit/log.js';
 import { type CoreRepository, coreRepository } from '../core/repository.js';
 import type { IsoDateTime } from '../core/types.js';
-import { type Obj, ValidationError, asObject, assertId, optString, reqEnum, reqInt, reqString } from '../core/validation.js';
+import { type Obj, ValidationError, asObject, assertId, optBool, optString, reqEnum, reqInt, reqString } from '../core/validation.js';
 import { DocumentError } from '../documents/errors.js';
 import { assemblySheetKey, contentDisposition } from '../documents/keys.js';
 import { renderReportPdf } from '../documents/reportPdf.js';
@@ -234,9 +234,19 @@ export function createAssemblyService(overrides: Partial<AssemblyServiceDeps> = 
     });
   }
 
-  /** Oy listesi dondurulmamissa toplanti kaydiyla ayni atomik yazimda dondurur (denetimli). */
+  /** Toplanti basladi mi? Katilim, yeter sayi ve sayim yalnizca baslangictan sonra yazilir. */
+  function requireStarted(a: Assembly, what: string): void {
+    if (stamp() < a.scheduledAt) throw new AssemblyError('conflict', `${what} toplantı başladıktan sonra (${formatDateTime(a.scheduledAt)}) kaydedilir`);
+  }
+
+  /**
+   * Oy listesi dondurulmamissa toplanti kaydiyla ayni atomik yazimda dondurur (denetimli). Yalnizca
+   * toplanti basladiktan sonraki ilk katilim / yeter sayi / sayim YAZIMINDA cagrilir; okumalar
+   * (ayrinti, hazirun) hicbir sey dondurmaz.
+   */
   async function ensureRoll(ctx: AssemblyContext, a: Assembly): Promise<Assembly & { roll: RollMeta }> {
     if (a.roll) return a as Assembly & { roll: RollMeta };
+    requireStarted(a, 'Oy listesi');
     const now = stamp();
     const snapshot = await liveSnapshot(ctx, a, now);
     const next: Assembly = { ...a, roll: snapshot.meta, updatedAt: now, updatedBy: ctx.userId, version: a.version + 1 };
@@ -364,6 +374,7 @@ export function createAssemblyService(overrides: Partial<AssemblyServiceDeps> = 
     const mode = reqEnum(o, 'mode', ATTENDANCE_MODES);
     const loaded = await requireAssembly(ctx, id);
     requirePlanned(loaded);
+    requireStarted(loaded, 'Katılım');
     const a = await ensureRoll(ctx, loaded);
     const entry = await deps.rolls.entry(ctx.apartmentId, 'assembly', a.assemblyId, a.roll, unitId);
     if (!entry) throw new AssemblyError('not_found', 'Bölüm dondurulmuş oy listesinde yok');
@@ -425,30 +436,44 @@ export function createAssemblyService(overrides: Partial<AssemblyServiceDeps> = 
     return { attendance: rest };
   }
 
-  const toRecord = (ctx: AssemblyContext, q: Quorum): QuorumRecord => ({
+  const toRecord = (ctx: AssemblyContext, q: Quorum, noAttendance = false): QuorumRecord => ({
     met: q.met,
     presentUnits: q.presentUnits,
     totalUnits: q.totalUnits,
+    presentOwners: q.presentOwners,
+    totalOwners: q.totalOwners,
     presentVotes: q.presentVotes,
     totalVotes: q.totalVotes,
-    unitsMajority: q.unitsMajority,
+    noAttendance,
+    ownersMajority: q.ownersMajority,
     landShareMajority: q.landShareMajority,
     landShareComputable: q.landShareComputable,
     recordedAt: stamp(),
     recordedBy: ctx.userId,
   });
 
-  /** Toplanti yeter sayisini tutanaga gecirir (saglanamadiysa ikinci toplantinin dayanagi). */
+  /**
+   * Toplanti yeter sayisini tutanaga gecirir (saglanamadiysa ikinci toplantinin dayanagi). Yalnizca
+   * toplanti basladiktan sonra. "Saglanmadi" sonucu icin katilim girilmis olmali; hic kimse
+   * gelmediyse `noAttendance: true` ile ve katilim kaydi olmadan acikca belirtilir.
+   */
   async function recordQuorum(ctx: AssemblyContext, id: string, body: unknown): Promise<{ assembly: AssemblyView; quorum: Quorum }> {
     const o = asObject(body);
     const version = reqInt(o, 'version', 1, Number.MAX_SAFE_INTEGER);
+    const noAttendance = optBool(o, 'noAttendance') ?? false;
     const loaded = await requireAssembly(ctx, id);
     assertVersion(loaded, version);
     requirePlanned(loaded);
+    requireStarted(loaded, 'Yeter sayı');
     if (loaded.agenda.some((i) => i.tally)) throw new AssemblyError('conflict', 'Sayım kaydedilmiş toplantının yeter sayısı yeniden kaydedilemez');
     const a = await ensureRoll(ctx, loaded);
-    const { quorum } = await frozenState(ctx, a);
-    const record = toRecord(ctx, quorum);
+    const { quorum, attendance } = await frozenState(ctx, a);
+    const recorded = attendance.length;
+    if (noAttendance && quorum.presentUnits > 0) throw new ValidationError('Katılım kaydı varken "kimse gelmedi" seçilemez', 'noAttendance');
+    if (!quorum.met && recorded === 0 && !noAttendance) {
+      throw new AssemblyError('unprocessable', 'Yeter sayısızlığı tutanağa geçirmek için önce katılımı girin; kimse gelmediyse "kimse gelmedi" seçeneğiyle kaydedin');
+    }
+    const record = toRecord(ctx, quorum, noAttendance);
     const next: Assembly = { ...a, quorumRecord: record, updatedAt: record.recordedAt, updatedBy: ctx.userId, version: a.version + 1 };
     const saved = await save(next, a.version, audit(ctx, next, 'assembly.quorum', { ...record, recordedAt: undefined, recordedBy: undefined, reasons: quorum.reasons }));
     return { assembly: saved, quorum };
@@ -465,6 +490,7 @@ export function createAssemblyService(overrides: Partial<AssemblyServiceDeps> = 
     requirePlanned(loaded);
     const item = loaded.agenda.find((i) => i.itemId === itemId);
     if (!item) throw new AssemblyError('not_found', 'Gündem maddesi bulunamadı');
+    requireStarted(loaded, 'Sayım');
     if (loaded.quorumRecord?.met === false) {
       throw new AssemblyError('conflict', 'Bu toplantıda yeter sayının sağlanamadığı tutanağa geçti; karar için ikinci toplantı oluşturun');
     }
@@ -494,12 +520,21 @@ export function createAssemblyService(overrides: Partial<AssemblyServiceDeps> = 
   // Hazirun cetveli (PDF) - dondurulmus oy listesinden
   // -------------------------------------------------------------------------
 
+  /**
+   * Hazirun cetveli: okuma, HICBIR SEY dondurmaz (denetci de cagirabilir). Oy listesi dondurulmussa
+   * anlik goruntuden; degilse (toplanti oncesi veya henuz katilim yokken) canli listeden "ön izleme".
+   */
   async function attendanceSheet(ctx: AssemblyContext, id: string) {
     if (!deps.store) throw new DocumentError('unavailable', 'Belge deposu yapılandırılmamış (DOCUMENTS_BUCKET)');
-    const loaded = await requireAssembly(ctx, id);
-    const a = loaded.status === 'planned' ? await ensureRoll(ctx, loaded) : loaded.roll ? (loaded as Assembly & { roll: RollMeta }) : undefined;
-    if (!a) throw new AssemblyError('conflict', 'İptal edilen ve oy listesi dondurulmamış toplantının hazirun cetveli üretilemez');
-    const [s, site, blocks] = await Promise.all([frozenState(ctx, a), deps.core.getSite(ctx.apartmentId), deps.core.listBlocks(ctx.apartmentId)]);
+    const a = await requireAssembly(ctx, id);
+    const preview = !a.roll;
+    const s = a.roll
+      ? await frozenState(ctx, a as Assembly & { roll: RollMeta })
+      : await (async () => {
+          const live = await liveSnapshot(ctx, a, stamp());
+          return { entries: live.entries, attendance: [] as AssemblyAttendance[], quorum: assemblyQuorum({ entries: live.entries, meta: live.meta, attendance: [], secondMeeting: a.secondMeeting }) };
+        })();
+    const [site, blocks] = await Promise.all([deps.core.getSite(ctx.apartmentId), deps.core.listBlocks(ctx.apartmentId)]);
     const blockName = new Map(blocks.map((b) => [b.blockId, b.name]));
     const multiBlock = new Set(s.entries.map((r) => r.blockId)).size > 1;
     const units = await rows(ctx, s.entries, s.attendance);
@@ -508,8 +543,8 @@ export function createAssemblyService(overrides: Partial<AssemblyServiceDeps> = 
     const place = [a.location, a.onlineUrl ? `Çevrim içi: ${a.onlineUrl}` : undefined].filter(Boolean).join(' · ');
     const modeText = { present: 'Asaleten', proxy: 'Vekaleten', absent: '' } as const;
     const sheet = {
-      title: 'Hazirun Cetveli',
-      subtitle: `${KIND_LABELS[a.kind]} Kat Malikleri Kurulu${a.secondMeeting ? ' (ikinci toplantı)' : ''} · ${formatDateTime(a.scheduledAt)} · ${place} · Oy listesi: ${formatDate(a.rollDate)}`,
+      title: preview ? 'Hazirun Cetveli (ön izleme)' : 'Hazirun Cetveli',
+      subtitle: `${preview ? 'ÖN İZLEME - oy listesi henüz dondurulmadı · ' : ''}${KIND_LABELS[a.kind]} Kat Malikleri Kurulu${a.secondMeeting ? ' (ikinci toplantı)' : ''} · ${formatDateTime(a.scheduledAt)} · ${place} · Oy listesi: ${formatDate(a.rollDate)}`,
       sections: [
         {
           columns: [
@@ -538,27 +573,29 @@ export function createAssemblyService(overrides: Partial<AssemblyServiceDeps> = 
             {
               bold: true,
               rule: true,
-              cells: ['', `${q.totalUnits} bölüm`, `${q.totalVotes} oy`, q.totalLandShare ? shareText(q.totalLandShare) : '—', `${q.presentVotes} katılan oy`, `${q.proxyUnits} vekaleten`, ''],
+              cells: ['', `${q.totalUnits} bölüm`, `${q.totalOwners} kat maliki`, q.totalLandShare ? shareText(q.totalLandShare) : '—', `${q.presentOwners} malik / ${q.presentUnits} bölüm`, `${q.proxyUnits} vekaleten`, ''],
             },
           ],
         },
       ],
       notes: [
-        'Toplantı yeter sayısı (KMK m.30): kat maliklerinin sayı ve arsa payı çoğunluğu (her ikisinde yarıdan fazlası); ikinci toplantıda aranmaz. Karar yeter sayısı: katılanların oy çokluğu.',
-        'Oy (KMK m.31): her bağımsız bölüm bir oy; birden fazla bölümü olan malikin oyu toplam oyların üçte birini aşamaz. Vekil oyların %5\'inden fazlasını, 40 ve daha az bölümde ikiden fazla kat malikini temsil edemez.',
-        `Kayıtlı katılım: ${q.presentVotes}/${q.totalVotes} oy${q.presentLandShare ? ` · arsa payı ${shareText(q.presentLandShare)}` : ''} · yeter sayı ${q.met ? 'sağlandı' : 'sağlanmadı'}${q.reasons.length ? ` (${q.reasons.join('; ')})` : ''}.`,
+        'Toplantı yeter sayısı (KMK m.30): kat maliklerinin sayıca (ayrı kişiler; hisseli bölüm temsilcisiyle bir kez) ve toplam arsa payının yarısından fazlası; ikinci toplantıda aranmaz. Karar: katılanların oylarının çoğunluğu.',
+        `Oy (KMK m.31): her bağımsız bölüm bir oy (bütün oylar ${q.totalVotes}); birden fazla bölümün oyunu kullanan kişinin oyu en fazla ${q.voteCap}. Vekil bütün oyların %5'inden fazlasını, 40 ve daha az bölümde ikiden fazla kat malikini temsil edemez.`,
+        preview
+          ? 'Ön izleme: katılım ve yeter sayı toplantıda girilir; oy listesi toplantı başladıktan sonraki ilk katılım kaydıyla dondurulur.'
+          : `Kayıtlı katılım: ${q.presentOwners}/${q.totalOwners} kat maliki · ${q.presentVotes} oy${q.presentLandShare ? ` · arsa payı ${shareText(q.presentLandShare)}` : ''} · yeter sayı ${q.met ? 'sağlandı' : 'sağlanmadı'}${q.reasons.length ? ` (${q.reasons.join('; ')})` : ''}.`,
         ...q.warnings,
         'Toplantı Başkanı: ..............................   Yazman: ..............................   Oy Toplayıcı: ..............................',
       ],
     };
-    const dataHash = createHash('sha256').update(JSON.stringify({ v: 2, apartmentName, assembly: view(a), sheet })).digest('hex');
+    const dataHash = createHash('sha256').update(JSON.stringify({ v: 3, preview, apartmentName, assembly: view(a), sheet })).digest('hex');
     const key = assemblySheetKey(ctx.apartmentId, a.rollDate, a.assemblyId, dataHash);
     if (!(await deps.store.head(key))) {
       await deps.store.put(key, await renderReportPdf({ ...sheet, apartmentName, generatedAt: stamp(), dataHash }), 'application/pdf');
     }
-    const fileName = `hazirun-cetveli-${a.rollDate}.pdf`;
+    const fileName = preview ? `hazirun-cetveli-${a.rollDate}-on-izleme.pdf` : `hazirun-cetveli-${a.rollDate}.pdf`;
     const url = await deps.store.presignGet(key, { contentDisposition: contentDisposition(fileName, 'inline'), contentType: 'application/pdf', expiresIn: URL_TTL_SECONDS });
-    return { url, fileName, contentType: 'application/pdf', expiresAt: new Date(deps.now().getTime() + URL_TTL_SECONDS * 1000).toISOString() };
+    return { url, fileName, preview, contentType: 'application/pdf', expiresAt: new Date(deps.now().getTime() + URL_TTL_SECONDS * 1000).toISOString() };
   }
 
   return { create, list, detail, update, cancel, setAttendance, recordQuorum, recordTally, attendanceSheet };

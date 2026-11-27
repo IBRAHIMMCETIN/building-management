@@ -62,7 +62,10 @@ export function useSetAttendance(id: string) {
 /** Toplanti yeter sayisini tutanaga gecirir (saglanamadiysa ikinci toplantinin dayanagi). */
 export function useRecordQuorum(id: string) {
   const invalidate = useInvalidate();
-  return useMutation({ mutationFn: (version: number) => assembliesApi.recordQuorum(id, version), onSettled: invalidate });
+  return useMutation({
+    mutationFn: ({ version, noAttendance }: { version: number; noAttendance?: boolean }) => assembliesApi.recordQuorum(id, version, noAttendance),
+    onSettled: invalidate,
+  });
 }
 
 export function useRecordTally(id: string) {

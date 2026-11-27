@@ -69,9 +69,13 @@ export type QuorumRecord = {
   met: boolean;
   presentUnits: number;
   totalUnits: number;
+  presentOwners: number;
+  totalOwners: number;
   presentVotes: number;
   totalVotes: number;
-  unitsMajority: boolean;
+  /** "Kimse gelmedi": katilim kaydi olmadan yeter sayisizlik tutanagi. */
+  noAttendance: boolean;
+  ownersMajority: boolean;
   landShareMajority: boolean;
   landShareComputable: boolean;
   recordedAt: IsoDateTime;

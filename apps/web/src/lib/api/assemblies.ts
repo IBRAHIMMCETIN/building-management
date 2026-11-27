@@ -16,9 +16,12 @@ export const assembliesApi = {
   detail: (id: string, signal?: AbortSignal) => apiClient.get(one(id), { signal, schema: assemblyDetailSchema }),
   attendance: (id: string, unitId: string, input: AttendanceInput) =>
     apiClient.put(`${one(id)}/attendance/${encodeURIComponent(unitId)}`, input, { schema: z.object({ attendance: z.object({ mode: z.string() }).passthrough() }) }),
-  recordQuorum: (id: string, version: number) => apiClient.post(`${one(id)}/quorum`, { version }, { schema: withQuorum }),
+  /** `noAttendance`: toplantiya kimse gelmedi (katilim kaydi yokken yeter sayisizlik tutanagi). */
+  recordQuorum: (id: string, version: number, noAttendance = false) =>
+    apiClient.post(`${one(id)}/quorum`, { version, ...(noAttendance ? { noAttendance } : {}) }, { schema: withQuorum }),
   tally: (id: string, itemId: string, input: { version: number; yes: number; no: number; abstain: number }) =>
     apiClient.post(`${one(id)}/agenda/${encodeURIComponent(itemId)}/tally`, input, { schema: withQuorum }),
   cancel: (id: string, version: number, reason: string) => apiClient.post(`${one(id)}/cancel`, { version, reason }, { schema: assemblySchema }),
-  attendanceSheet: (id: string) => apiClient.get(`${one(id)}/attendance-sheet`, { schema: signedDownloadSchema }),
+  /** Hazirun: oy listesi dondurulmadiysa `preview: true` (on izleme; okuma hicbir sey dondurmaz). */
+  attendanceSheet: (id: string) => apiClient.get(`${one(id)}/attendance-sheet`, { schema: signedDownloadSchema.extend({ preview: z.boolean() }) }),
 };
