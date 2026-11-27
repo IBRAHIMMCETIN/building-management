@@ -1,25 +1,15 @@
-import { CalendarDays, DoorOpen, Gauge, Home, Megaphone, Receipt, Wrench } from 'lucide-react';
-import type { ComponentType } from 'react';
-import { NavLink, Outlet } from 'react-router';
+import { Ellipsis } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { NavLink, Outlet, useLocation } from 'react-router';
 import { BrandMark } from '@/components/BrandMark';
+import { Dialog } from '@/components/ui';
 import { PortalUnitProvider } from '@/context/PortalUnitContext';
 import { useActiveApartmentName } from '@/hooks/useActiveContextLabel';
 import { BRAND_NAME } from '@/lib/brand';
 import { cn } from '@/lib/cn';
+import { isMoreActive, splitResidentNav } from './residentNav';
 import { UserMenu } from './UserMenu';
 import { PageSuspense } from '@/router/lazyPage';
-
-type NavItem = { to: string; label: string; icon: ComponentType<{ className?: string }>; end?: boolean };
-
-const NAV: NavItem[] = [
-  { to: '/app', label: 'Ana Sayfa', icon: Home, end: true },
-  { to: '/app/dues', label: 'Borçlarım', icon: Receipt },
-  { to: '/app/talepler', label: 'Talepler', icon: Wrench },
-  { to: '/app/ziyaretci', label: 'Ziyaretçi', icon: DoorOpen },
-  { to: '/app/rezervasyon', label: 'Rezervasyon', icon: CalendarDays },
-  { to: '/app/tuketim', label: 'Tüketimim', icon: Gauge },
-  { to: '/app/announcements', label: 'Duyurular', icon: Megaphone },
-];
 
 /**
  * Sol ust marka: aktif sitenin adi (baglam listesi yuklenince), yoksa urun markasi. Uzun site
@@ -35,8 +25,18 @@ export function PortalBrand() {
   );
 }
 
+const tabClass = 'flex min-w-0 flex-col items-center gap-1 px-0.5 py-2 text-xs text-muted sm:text-small';
+
 /** Mobil oncelikli: ust bar + altta sekme cubugu (PWA'da ana ekrandan acilinca da rahat). */
 export function ResidentLayout() {
+  const [moreOpen, setMoreOpen] = useState(false);
+  const { pathname } = useLocation();
+  const { primary, more } = splitResidentNav();
+  const moreActive = isMoreActive(pathname, more);
+
+  // Sayfa degisince (geri tusu dahil) cekmece kapanir.
+  useEffect(() => setMoreOpen(false), [pathname]);
+
   return (
     <div className="flex min-h-dvh flex-col">
       <header className="sticky top-0 z-10 flex h-14 min-w-0 items-center justify-between gap-3 border-b border-border bg-surface px-4">
@@ -56,21 +56,48 @@ export function ResidentLayout() {
         aria-label="Sakin menüsü"
         className="fixed inset-x-0 bottom-0 z-10 grid auto-cols-fr grid-flow-col border-t border-border bg-surface pb-[env(safe-area-inset-bottom)]"
       >
-        {NAV.map(({ to, label, icon: Icon, end }) => (
-          <NavLink
-            key={to}
-            to={to}
-            end={end}
-            className={({ isActive }) =>
-              cn('flex min-w-0 flex-col items-center gap-1 px-0.5 py-2 text-xs text-muted sm:text-small', isActive && 'text-accent')
-            }
-          >
+        {primary.map(({ to, label, icon: Icon, end }) => (
+          <NavLink key={to} to={to} end={end} className={({ isActive }) => cn(tabClass, isActive && 'text-accent')}>
             <Icon className="size-5" aria-hidden="true" />
             {/* Sekmeler dar telefonda da tek satir: uzun etiket kirpilir. */}
             <span className="max-w-full truncate">{label}</span>
           </NavLink>
         ))}
+        {more.length > 0 && (
+          <button
+            type="button"
+            onClick={() => setMoreOpen(true)}
+            aria-haspopup="dialog"
+            aria-expanded={moreOpen}
+            className={cn(tabClass, 'cursor-pointer', moreActive && 'text-accent')}
+          >
+            <Ellipsis className="size-5" aria-hidden="true" />
+            <span className="max-w-full truncate">Diğer</span>
+          </button>
+        )}
       </nav>
+
+      <Dialog open={moreOpen} onClose={() => setMoreOpen(false)} title="Diğer" variant="sheet">
+        <nav aria-label="Diğer sayfalar" className="flex flex-col gap-1">
+          {more.map(({ to, label, icon: Icon, end }) => (
+            <NavLink
+              key={to}
+              to={to}
+              end={end}
+              onClick={() => setMoreOpen(false)}
+              className={({ isActive }) =>
+                cn(
+                  'flex items-center gap-3 rounded-md px-3 py-2.5 text-small text-muted hover:bg-surface-muted hover:text-text',
+                  isActive && 'bg-surface-muted font-medium text-text [&>svg]:text-accent',
+                )
+              }
+            >
+              <Icon className="size-4" aria-hidden="true" />
+              {label}
+            </NavLink>
+          ))}
+        </nav>
+      </Dialog>
     </div>
   );
 }
