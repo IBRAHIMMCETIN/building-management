@@ -13,7 +13,7 @@ const qualified = {
     { title: 'Ahmet Bey yönetici seçilsin', decisionKind: 'manager_election' },
     { title: 'İşletme projesi', decisionKind: 'operating_budget' },
     { title: 'Dış cephe boyası', decisionKind: 'common_area_change' },
-    { title: 'Yönetim planında aidat maddesi', decisionKind: 'custom', majority: 'four_fifths_owners_and_land' },
+    { title: 'Yönetim planında aidat maddesi', decisionKind: 'custom', majority: 'four_fifths_persons_and_land' },
   ],
 };
 
@@ -33,10 +33,10 @@ describe('gundem karar turu ve kayit', () => {
     const res = await call('POST', '', qualified);
     expect(res.status).toBe(201);
     expect(res.body.agenda.map((i: any) => [i.decisionKind, i.majority])).toEqual([
-      ['manager_election', 'owners_and_land'],
+      ['manager_election', 'persons_and_land'],
       ['operating_budget', 'attendees'],
-      ['common_area_change', 'four_fifths_owners'],
-      ['custom', 'four_fifths_owners_and_land'],
+      ['common_area_change', 'four_fifths_persons'],
+      ['custom', 'four_fifths_persons_and_land'],
     ]);
     expect((await call('POST', '', meeting)).body.agenda[0]).toMatchObject({ decisionKind: 'general', majority: 'attendees' });
     for (const bad of [{ title: 'X', decisionKind: 'manager_election', majority: 'attendees' }, { title: 'X', decisionKind: 'custom' }, { title: 'X', decisionKind: 'nope' }]) {
@@ -52,15 +52,15 @@ describe('gundem karar turu ve kayit', () => {
     expect((await call('POST', '/asm1/agenda/a1/tally', { version: version(), votes: { u3: 'yes' } })).status).toBe(400);
     const r = await call('POST', '/asm1/agenda/a1/tally', { version: version(), votes: { u1: 'yes', u2: 'yes', u4: 'no' } });
     expect(r.status).toBe(200);
-    expect(r.body.decision.outcome).toMatchObject({ rule: 'owners_and_land', decision: 'rejected', allVotes: 4, presentVotes: 3, units: { yes: 2, no: 1, absent: 1 } });
-    expect(r.body.assembly.agenda[0].tally).toMatchObject({ decision: 'rejected', rule: 'owners_and_land', mode: 'units', seq: 1, yes: 2, no: 1 });
+    expect(r.body.decision.outcome).toMatchObject({ rule: 'persons_and_land', decision: 'rejected', allVotes: 4, presentVotes: 3, units: { yes: 2, no: 1, absent: 1 }, persons: { yes: 2, no: 1, absent: 1, total: 4 } });
+    expect(r.body.assembly.agenda[0].tally).toMatchObject({ decision: 'rejected', rule: 'persons_and_land', mode: 'units', seq: 1, yes: 2, no: 1 });
     expect([...extra.keys()]).toContain(`APT#${APT}|ASMDEC#asm1#a1#001`);
     // Ayni oylar katilanlarin cogunlugu kuralinda kabul.
     const b = await call('POST', '/asm1/agenda/a2/tally', { version: version(), votes: { u1: 'yes', u2: 'yes', u4: 'no' } });
     expect(b.body.decision.outcome).toMatchObject({ rule: 'attendees', decision: 'accepted' });
     // Besde dort: 3 katilan bolumun hepsi kabul etse de 4 oyun 4'u gerekir.
     const c = await call('POST', '/asm1/agenda/a3/tally', { version: version(), votes: { u1: 'yes', u2: 'yes', u4: 'yes' } });
-    expect(c.body.decision.outcome).toMatchObject({ decision: 'rejected', required: { votes: 4 } });
+    expect(c.body.decision.outcome).toMatchObject({ decision: 'rejected', required: { persons: 4 }, persons: { yes: 3, total: 4 } });
   });
 
   it('karar degismez: ikinci kayit yalnizca gerekceli duzeltme (yeni sira, onceki kayit korunur, denetimli)', async () => {
@@ -106,7 +106,7 @@ describe('gundem karar turu ve kayit', () => {
     expect(bad.body.message).toContain('Aynı kişinin');
     const ok = await call('POST', '/asm1/agenda/a1/tally', { version: version(), votes: { u1: 'yes', u2: 'yes', u3: 'no' } });
     // Sinir floor(4/3) = 1: P iki bolumle 1 oy; butun oylar P1 + R1 + S1 = 3; kabul 1 -> ret.
-    expect(ok.body.decision.outcome).toMatchObject({ allVotes: 3, votes: { yes: 1, no: 1 }, units: { yes: 2, no: 1 }, decision: 'rejected' });
+    expect(ok.body.decision.outcome).toMatchObject({ allVotes: 3, votes: { yes: 1, no: 1 }, units: { yes: 2, no: 1 }, persons: { yes: 2, total: 4 }, decision: 'rejected' });
   });
 });
 

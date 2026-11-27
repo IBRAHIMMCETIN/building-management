@@ -70,13 +70,19 @@ describe('cagri: kayit, olay ve uyarilar', () => {
     expect(w.audits.at(-1)).toMatchObject({ action: 'assembly.call_resend', reason: 'Yer değişti' });
   });
 
-  it('15 gunden az kala cagri uyari verir ama gonderilir; toplanti basladiysa 409; denetci gonderemez', async () => {
+  it('olaganustu toplantida 15 gunden az kala cagri uyari verir (m.29/2) ama gonderilir; olaganda yalnizca yumusak not; baslamissa 409; denetci gonderemez', async () => {
     const w = setup({ now: '2026-12-05T09:00:00.000Z' });
-    await w.call('POST', '', meeting);
+    await w.call('POST', '', { ...meeting, kind: 'extraordinary' });
     const res = await w.call('POST', '/asm1/call', { version: w.version() });
     expect(res.status).toBe(200);
     expect(res.body.call).toMatchObject({ daysBefore: 10, lateNotice: true });
-    expect(res.body.warnings[0]).toContain('en az 15 gün önce');
+    expect(res.body.warnings[0]).toContain('KMK m.29/2: olağanüstü toplantıya çağrı toplantıdan en az 15 gün önce');
+    const ord = setup({ now: '2026-12-05T09:00:00.000Z' });
+    await ord.call('POST', '', meeting);
+    const soft = await ord.call('POST', '/asm1/call', { version: ord.version() });
+    expect(soft.body.call).toMatchObject({ daysBefore: 10, lateNotice: false });
+    expect(soft.body.warnings[0]).toContain('yönetim planında belirtilen zamanda');
+    expect(soft.body.warnings[0]).not.toContain('m.29/2');
     const late = setup();
     await late.call('POST', '', meeting);
     expect((await late.call('POST', '/asm1/call', { version: late.version() })).status).toBe(409);
@@ -85,14 +91,16 @@ describe('cagri: kayit, olay ve uyarilar', () => {
     expect((await o.call('POST', '/asm1/call', { version: o.version() }, o.token('obs', 'observer'))).status).toBe(403);
   });
 
-  it('ikinci toplanti plani: 15 gunu asamaz (400), 7 gunden kisa ise uyari; cagri sonrasi duzenleme cagriyi eskitir', async () => {
+  it('ikinci toplanti plani: 15 gunu asamaz, 7 gunden az olamaz (m.29/3, 400); cagri sonrasi duzenleme cagriyi eskitir', async () => {
     const w = beforeMeeting();
     expect((await w.call('POST', '', { ...meeting, secondMeetingPlan: { scheduledAt: '2027-01-05T19:00:00+03:00', location: 'Bahçe' } })).status).toBe(400);
     expect((await w.call('POST', '', { ...meeting, secondMeetingPlan: { scheduledAt: '2026-12-20T19:00:00+03:00' } })).status).toBe(400);
-    await w.call('POST', '', { ...meeting, secondMeetingPlan: { scheduledAt: '2026-12-18T19:00:00+03:00', location: 'Bahçe' } });
-    const d = (await w.call('GET', '/asm1')).body;
-    expect(d.warnings[0]).toContain('en az 7 gün');
-    expect(d.callCheck.warnings).toContain(d.warnings[0]);
+    const short = await w.call('POST', '', { ...meeting, secondMeetingPlan: { scheduledAt: '2026-12-21T19:00:00+03:00', location: 'Bahçe' } });
+    expect(short.status).toBe(400);
+    expect(short.body.message).toContain('en az 7 gün');
+    // 7 gun dahil gecerli.
+    expect((await w.call('POST', '', { ...meeting, secondMeetingPlan: { scheduledAt: '2026-12-22T19:00:00+03:00', location: 'Bahçe' } })).status).toBe(201);
+    expect((await w.call('GET', '/asm1')).body.warnings).toEqual([]);
     await w.call('POST', '/asm1/call', { version: w.version() });
     expect((await w.call('GET', '/asm1')).body.callOutdated).toBe(false);
     await w.call('PATCH', '/asm1', { version: w.version(), location: 'Kafeterya' });
@@ -121,6 +129,22 @@ describe('cagri bildirimi: worker, e-posta ve tercih', () => {
     expect(cancelled).toEqual([]);
   });
 
+  it('cagridan sonra toplanti tasindiysa gecikmis / yeniden surulen teslim eski bilgiyi e-postalamaz; yeniden gonderilen cagri gider', async () => {
+    const w = beforeMeeting();
+    await w.call('POST', '', meeting);
+    await w.call('POST', '/asm1/call', { version: w.version() });
+    const first = [...w.outbox];
+    await w.call('PATCH', '/asm1', { version: w.version(), location: 'Kafeterya' });
+    const stale: Notification[] = [];
+    expect((await workerFor(w, stale)(sqs(first))).batchItemFailures).toEqual([]);
+    expect(stale).toEqual([]);
+    await w.call('POST', '/asm1/call', { version: w.version(), resend: true, reason: 'Yer değişti' });
+    const fresh: Notification[] = [];
+    await workerFor(w, fresh)(sqs(w.outbox.slice(1)));
+    expect(fresh).toHaveLength(5);
+    expect(fresh[0]).toMatchObject({ eventId: 'ASSEMBLY_CALLED:asm1:2', data: { location: 'Kafeterya', resend: 'true' } });
+  });
+
   it('e-posta: tarih Istanbul saatiyle, yer, gundem, ikinci toplanti ve yasal cagrinin yerine gecmedigi notu; HTML escape', () => {
     const r = renderEmail(
       {
@@ -128,7 +152,7 @@ describe('cagri bildirimi: worker, e-posta ve tercih', () => {
         apartmentId: APT,
         userId: 'own-1',
         template: 'assembly_called',
-        data: { kind: 'ordinary', secondMeeting: 'false', scheduledAt: '2026-12-15T16:00:00.000Z', location: 'Salon', onlineUrl: 'https://meet.example/x', agenda: [{ label: 'Bütçe <b>' }, { label: 'Dilekler' }], secondMeetingAt: '2026-12-29T16:00:00.000Z', secondMeetingLocation: 'Bahçe', resend: 'false' },
+        data: { assemblyId: 'asm1', kind: 'ordinary', secondMeeting: 'false', scheduledAt: '2026-12-15T16:00:00.000Z', location: 'Salon', onlineUrl: 'https://meet.example/x', agenda: [{ label: 'Bütçe <b>' }, { label: 'Dilekler' }], secondMeetingAt: '2026-12-29T16:00:00.000Z', secondMeetingLocation: 'Bahçe', resend: 'false' },
       },
       { siteName: 'Lale', unitLabel: () => '', portalUrl: 'https://site.example/app' },
     )!;
@@ -137,7 +161,7 @@ describe('cagri bildirimi: worker, e-posta ve tercih', () => {
     expect(r.text).toContain('Gündem:\n1. Bütçe <b>\n2. Dilekler');
     expect(r.text).toContain('ikinci toplantı 29.12.2026 19:00 tarihinde (Bahçe)');
     expect(r.text).toContain(ASSEMBLY_CALL_DISCLAIMER);
-    expect(r.text).toContain('https://site.example/app/genel-kurul');
+    expect(r.text).toContain('https://site.example/app/genel-kurul/asm1');
     expect(r.html).toContain('Bütçe &lt;b&gt;');
     expect(r.html).not.toContain('Bütçe <b>');
   });
@@ -191,7 +215,7 @@ describe('sakin portali: kat maliki gorunumu', () => {
     const list = await w.portal('', ownerTok);
     expect(list.status).toBe(200);
     expect(list.body.items.map((a: any) => a.assemblyId)).toEqual(['asm1']);
-    expect(list.body.items[0]).toMatchObject({ phase: 'upcoming', location: 'Site toplantı salonu', calledAt: T0, minutesAvailable: false, agenda: [{ title: 'Yönetici seçimi', majority: 'owners_and_land' }, { majority: 'attendees' }] });
+    expect(list.body.items[0]).toMatchObject({ phase: 'upcoming', location: 'Site toplantı salonu', calledAt: T0, minutesAvailable: false, agenda: [{ title: 'Yönetici seçimi', majority: 'persons_and_land' }, { majority: 'attendees' }] });
     expect((await w.portal('/asm2', ownerTok)).status).toBe(404);
     expect((await w.portal('', w.token('ten-1', 'resident'))).status).toBe(403);
     expect((await w.portal('', w.token('mgr-1', 'apartment_manager'))).status).toBe(403);
@@ -221,7 +245,7 @@ describe('sakin portali: kat maliki gorunumu', () => {
       minutesAvailable: true,
       quorum: { met: true, presentOwners: 3, totalOwners: 4, presentVotes: 3, totalVotes: 4 },
       agenda: [
-        { decision: { decision: 'accepted', rule: 'owners_and_land', votes: { yes: 3, no: 0, abstain: 0 }, units: { yes: 3 }, landShareBps: { yes: 9000 }, corrected: false } },
+        { decision: { decision: 'accepted', rule: 'persons_and_land', votes: { yes: 3, no: 0, abstain: 0 }, units: { yes: 3 }, landShareBps: { yes: 9000 }, corrected: false } },
         { decision: { decision: 'accepted', rule: 'attendees', votes: { yes: 2, no: 1 }, units: null } },
       ],
     });

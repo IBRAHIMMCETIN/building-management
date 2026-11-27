@@ -98,7 +98,8 @@ export function setup(opts: { store?: boolean; units?: Unit[]; members?: UnitMem
     listAttendance: async (apt, id) => [...atts.values()].filter((x) => x.apartmentId === apt && x.assemblyId === id).map(clone),
     getAttendance: async (apt, id, unitId) => clone(atts.get(`${apt}|${id}|${unitId}`)),
     putAttendance: async (att, expected, audit) => {
-      if (docs.get(`${att.apartmentId}|${att.assemblyId}`)?.status !== 'planned') throw new DataAccessError('conflict', 'iptal');
+      const host = docs.get(`${att.apartmentId}|${att.assemblyId}`);
+      if (host?.status !== 'planned' || host.attendanceLockedAt) throw new DataAccessError('conflict', 'iptal veya karar sonrasi');
       const k = `${att.apartmentId}|${att.assemblyId}|${att.unitId}`;
       if (expected === 0 ? atts.has(k) : atts.get(k)?.version !== expected) throw new DataAccessError('conflict', 'surum');
       atts.set(k, clone(att));

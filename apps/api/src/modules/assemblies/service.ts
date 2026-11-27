@@ -23,6 +23,7 @@ import {
   DECISION_KINDS,
   DECISION_PRESETS,
   type DecisionOutcome,
+  LAND_RULES,
   MAJORITY_LABELS,
   MAJORITY_RULES,
   type MajorityRule,
@@ -31,10 +32,13 @@ import {
   type VoteChoice,
   decideByCounts,
   decideByUnits,
+  landShareMissing,
+  personKeys,
   unitVotesIssue,
   voterKeys,
 } from './majority.js';
 import { type ReportContent, decisionBookReport, itemKind, itemRule, minutesReport } from './minutes.js';
+import { meetingHash } from './notifications.js';
 import { type ProxyRef, type Quorum, assemblyQuorum, proxyViolation } from './quorum.js';
 import { type AssemblyRepository, type AssemblyWriteExtras, assemblyKeys, assemblyRepository } from './repository.js';
 import {
@@ -112,6 +116,8 @@ export type AssemblyUnitRow = {
   attendance?: { mode: AssemblyAttendance['mode']; attendee?: { userId: string; name?: string }; proxy?: ProxyRef; recordedAt: IsoDateTime; version: number };
   /** Katilan bolumde oyu kullanan kisinin anahtari: ayni anahtarli bolumler birlikte oylanir (m.31). */
   voterKey?: string;
+  /** Katilan bolumun kat maliki (kisi) anahtari: kisi sayimli kurallarda ayni anahtarli bolumler birlikte oylanir. */
+  personKey?: string;
   warnings: string[];
 };
 
@@ -125,6 +131,8 @@ export type PortalDecision = {
   votes: { yes: number; no: number; abstain: number };
   units: { yes: number; no: number; abstain: number } | null;
   landShareBps: { yes: number; no: number; abstain: number } | null;
+  /** Kat maliki kisi sayilari (kisi sayimli kurallarda). */
+  persons: { yes: number; no: number; abstain: number; total: number } | null;
   corrected: boolean;
   recordedAt: IsoDateTime;
 };
@@ -219,25 +227,19 @@ const shareText = (s: { numerator: number | string; denominator: number | string
 const sha256 = (v: unknown) => createHash('sha256').update(JSON.stringify(v)).digest('hex');
 const activeOn = (m: UnitMembership, day: IsoDate) => m.status === 'active' && m.startDate <= day && (!m.endDate || m.endDate >= day);
 
-/** Cagridaki toplanti bilgisi ozeti: degisirse onceki cagri eskimistir. */
-export const meetingHash = (a: Pick<Assembly, 'kind' | 'scheduledAt' | 'location' | 'onlineUrl' | 'agenda' | 'secondMeetingPlan'>) =>
-  sha256({
-    kind: a.kind,
-    scheduledAt: a.scheduledAt,
-    location: a.location ?? null,
-    onlineUrl: a.onlineUrl ?? null,
-    agenda: a.agenda.map((i) => [i.title, i.description ?? null, itemKind(i), itemRule(i)]),
-    plan: a.secondMeetingPlan ?? null,
-  });
+export { meetingHash };
 
-/** Toplanti planina iliskin uyarilar (engel degil). */
-export function meetingWarnings(a: Pick<Assembly, 'scheduledAt' | 'secondMeetingPlan'>): string[] {
-  const out: string[] = [];
-  if (a.secondMeetingPlan) {
-    const gap = dayDiff(istanbulDate(a.scheduledAt), istanbulDate(a.secondMeetingPlan.scheduledAt));
-    if (gap < SECOND_MEETING_MIN_DAYS) out.push(`KMK m.29: ilk ve ikinci toplantı arasında en az ${SECOND_MEETING_MIN_DAYS} gün olmalıdır (planlanan ${gap} gün)`);
+/**
+ * KMK m.29/3 ve m.30: ikinci toplanti ilk toplantidan sonra, en az 7 en fazla 15 Istanbul takvim gunu
+ * sonra. "Yedi gunden az olamaz": 7 gun dahil gecerli.
+ */
+function assertSecondMeetingGap(first: IsoDateTime, second: IsoDateTime, field: string): void {
+  if (second <= first) throw new ValidationError('İkinci toplantı ilk toplantıdan sonra olmalıdır', field);
+  const gap = dayDiff(istanbulDate(first), istanbulDate(second));
+  if (gap < SECOND_MEETING_MIN_DAYS) throw new ValidationError(`İlk ve ikinci toplantı arasında en az ${SECOND_MEETING_MIN_DAYS} gün olmalıdır (KMK m.29/3; şu an ${gap} gün)`, field);
+  if (istanbulDate(second) > addDays(istanbulDate(first), SECOND_MEETING_MAX_DAYS)) {
+    throw new ValidationError(`İkinci toplantı ilk toplantıdan en geç ${SECOND_MEETING_MAX_DAYS} gün sonra yapılmalıdır (KMK m.30)`, field);
   }
-  return out;
 }
 
 export function createAssemblyService(overrides: Partial<AssemblyServiceDeps> = {}) {
@@ -320,10 +322,35 @@ export function createAssemblyService(overrides: Partial<AssemblyServiceDeps> = 
     if (first.quorumRecord?.met !== false) {
       throw new AssemblyError('unprocessable', 'İlk toplantıda yeter sayının sağlanamadığı tutanağa geçirilmemiş; önce ilk toplantının yeter sayısını kaydedin');
     }
-    if (scheduledAt <= first.scheduledAt) throw new ValidationError('İkinci toplantı ilk toplantıdan sonra olmalıdır', 'scheduledAt');
-    if (istanbulDate(scheduledAt) > addDays(istanbulDate(first.scheduledAt), SECOND_MEETING_MAX_DAYS)) {
-      throw new ValidationError(`İkinci toplantı ilk toplantıdan en geç ${SECOND_MEETING_MAX_DAYS} gün sonra yapılmalıdır (KMK m.30)`, 'scheduledAt');
+    assertSecondMeetingGap(first.scheduledAt, scheduledAt, 'scheduledAt');
+  }
+
+  /**
+   * Toplantiya iliskin uyarilar (engel degil): ikinci toplanti ilk toplantinin cagrisinda bildirilen
+   * yer / zamandan farkliysa (KMK m.29/3); arsa payi gereken gundem maddesi varken arsa payi eksik
+   * bolum varsa (oy listesi dondurulmadan once duzeltilmeli; sonra karar hesaplanamaz).
+   */
+  async function meetingWarnings(ctx: AssemblyContext, a: Assembly, meta?: Pick<RollMeta, 'missingLandShare' | 'denominator'>): Promise<string[]> {
+    const out: string[] = [];
+    if (a.secondMeeting && a.firstMeetingId) {
+      const first = await repo.get(ctx.apartmentId, a.firstMeetingId);
+      const plan = first?.apartmentId === ctx.apartmentId ? first.secondMeetingPlan : undefined;
+      if (!plan) out.push('İlk toplantının çağrısında ikinci toplantının yeri ve zamanı kayıtlı değil; KMK m.29/3 uyarınca ilk çağrıda bildirilmiş olmalıdır.');
+      else {
+        const diff = [
+          formatDateTime(plan.scheduledAt) !== formatDateTime(a.scheduledAt) ? `zaman (${formatDateTime(plan.scheduledAt)})` : '',
+          (plan.location ?? '') !== (a.location ?? '') || (plan.onlineUrl ?? '') !== (a.onlineUrl ?? '') ? `yer (${[plan.location, plan.onlineUrl].filter(Boolean).join(' · ')})` : '',
+        ].filter(Boolean);
+        if (diff.length) out.push(`İkinci toplantı, ilk toplantının çağrısında bildirilenden farklı: ${diff.join(', ')} (KMK m.29/3).`);
+      }
     }
+    const landItems = a.agenda.filter((i) => LAND_RULES.includes(itemRule(i)));
+    if (landItems.length && meta && landShareMissing(itemRule(landItems[0] as AgendaItem), meta)) {
+      out.push(
+        `${meta.missingLandShare || 'Bazı'} bölümün arsa payı girilmemiş: arsa payı çoğunluğu gereken ${landItems.length} gündem maddesi için karar hesaplanamaz.${a.roll ? '' : ' Oy listesi toplantı başlayınca dondurulur; arsa paylarını önce girin.'}`,
+      );
+    }
+    return out;
   }
 
   async function meetingFields(ctx: AssemblyContext, o: Obj, current?: Assembly) {
@@ -338,12 +365,7 @@ export function createAssemblyService(overrides: Partial<AssemblyServiceDeps> = 
     const agenda = o.agenda === undefined && current ? current.agenda : parseAgenda(o.agenda);
     const plan = o.secondMeetingPlan === undefined ? current?.secondMeetingPlan : o.secondMeetingPlan === null ? undefined : parsePlan(o.secondMeetingPlan);
     if (plan && firstMeetingId) throw new ValidationError('İkinci toplantının çağrısına yeniden ikinci toplantı planı girilemez', 'secondMeetingPlan');
-    if (plan) {
-      if (plan.scheduledAt <= scheduledAt) throw new ValidationError('İkinci toplantı ilk toplantıdan sonra olmalıdır', 'secondMeetingPlan');
-      if (istanbulDate(plan.scheduledAt) > addDays(istanbulDate(scheduledAt), SECOND_MEETING_MAX_DAYS)) {
-        throw new ValidationError(`İkinci toplantı ilk toplantıdan en geç ${SECOND_MEETING_MAX_DAYS} gün sonra yapılmalıdır (KMK m.30)`, 'secondMeetingPlan');
-      }
-    }
+    if (plan) assertSecondMeetingGap(scheduledAt, plan.scheduledAt, 'secondMeetingPlan');
     return {
       kind,
       scheduledAt,
@@ -424,6 +446,7 @@ export function createAssemblyService(overrides: Partial<AssemblyServiceDeps> = 
     const nameOf = new Map(people.filter((p) => p.apartmentId === ctx.apartmentId).map((p) => [p.userId, p.fullName]));
     const attOf = new Map(attendance.map((x) => [x.unitId, x]));
     const keys = voterKeys(entries, attendance);
+    const pkeys = personKeys(entries, attendance);
     return entries.map((r) => {
       const att = attOf.get(r.unitId);
       const voterKey = keys.get(r.unitId);
@@ -445,6 +468,7 @@ export function createAssemblyService(overrides: Partial<AssemblyServiceDeps> = 
             }
           : {}),
         ...(voterKey ? { voterKey } : {}),
+        ...(pkeys.get(r.unitId) ? { personKey: pkeys.get(r.unitId) } : {}),
         warnings: r.warnings,
       };
     });
@@ -498,15 +522,23 @@ export function createAssemblyService(overrides: Partial<AssemblyServiceDeps> = 
     return { recipients, ownersWithoutAccount: owners.length - recipients.length };
   }
 
-  function callTiming(a: Assembly): { daysBefore: number; lateNotice: boolean; warnings: string[] } {
+  /**
+   * Cagri zamanlamasi. 15 gun ve imza / taahhutlu mektup kurali KMK m.29/2'de olaganustu toplanti
+   * icindir: yalnizca olaganustu toplantida `lateNotice` uyarisi. Olagan toplanti yonetim planindaki
+   * zamanda yapilir (m.29/1): yalnizca yumusak hatirlatma. Ikinci toplantinin yeri ve zamani ilk
+   * cagrida bildirilir (m.29/3).
+   */
+  function callTiming(a: Assembly, extra: string[] = []): { daysBefore: number; lateNotice: boolean; warnings: string[] } {
     const daysBefore = dayDiff(istanbulDate(stamp()), a.rollDate);
-    const lateNotice = !a.secondMeeting && daysBefore < CALL_NOTICE_DAYS;
+    const lateNotice = !a.secondMeeting && a.kind === 'extraordinary' && daysBefore < CALL_NOTICE_DAYS;
     const warnings: string[] = [];
     if (lateNotice) {
-      warnings.push(`KMK m.29: çağrı toplantıdan en az ${CALL_NOTICE_DAYS} gün önce yapılmalıdır; toplantıya ${daysBefore} gün kaldı. E-posta gönderilebilir, ancak yasal çağrı süresi karşılanmamış olabilir.`);
+      warnings.push(`KMK m.29/2: olağanüstü toplantıya çağrı toplantıdan en az ${CALL_NOTICE_DAYS} gün önce yapılır; toplantıya ${daysBefore} gün kaldı. E-posta gönderilebilir, ancak yasal çağrı süresi karşılanmamış olabilir.`);
+    } else if (!a.secondMeeting && a.kind === 'ordinary' && daysBefore < CALL_NOTICE_DAYS) {
+      warnings.push(`Olağan toplantı yönetim planında belirtilen zamanda yapılır (KMK m.29/1); yönetim planınız bir çağrı süresi öngörüyorsa ona uyulduğunu kontrol edin (toplantıya ${daysBefore} gün kaldı).`);
     }
-    if (a.secondMeeting) warnings.push('İkinci toplantının yeri ve zamanı ilk toplantının çağrısında bildirilmiş olmalıdır (KMK m.29); bu e-posta hatırlatma niteliğindedir.');
-    return { daysBefore, lateNotice, warnings: [...warnings, ...meetingWarnings(a)] };
+    if (a.secondMeeting) warnings.push('İkinci toplantının yeri ve zamanı ilk toplantının çağrısında bildirilmiş olmalıdır (KMK m.29/3); bu e-posta hatırlatma niteliğindedir.');
+    return { daysBefore, lateNotice, warnings: [...warnings, ...extra] };
   }
 
   /** Ayrinti: dondurulmussa anlik goruntuden; degilse canli onizleme (`rollFrozen: false`, katilim yok). */
@@ -514,20 +546,21 @@ export function createAssemblyService(overrides: Partial<AssemblyServiceDeps> = 
     const a = await requireAssembly(ctx, id);
     const decisions = sortDecisions(await repo.listDecisions(ctx.apartmentId, a.assemblyId)).map(decisionView);
     const last = a.calls?.at(-1);
-    const common = { decisions, warnings: meetingWarnings(a), callOutdated: Boolean(last && last.meetingHash !== meetingHash(a)) };
+    const common = { decisions, callOutdated: Boolean(last && last.meetingHash !== meetingHash(a)) };
     if (a.roll) {
       const s = await frozenState(ctx, a as Assembly & { roll: RollMeta });
-      return { assembly: view(a), rollFrozen: true, quorum: s.quorum, units: await rows(ctx, s.entries, s.attendance), ...common };
+      return { assembly: view(a), rollFrozen: true, quorum: s.quorum, units: await rows(ctx, s.entries, s.attendance), ...common, warnings: await meetingWarnings(ctx, a, a.roll) };
     }
     const preview = await liveSnapshot(ctx, a, stamp());
     const quorum = assemblyQuorum({ entries: preview.entries, meta: preview.meta, attendance: [], secondMeeting: a.secondMeeting });
+    const warnings = await meetingWarnings(ctx, a, preview.meta);
     let callCheck: CallCheck | undefined;
     if (a.status === 'planned' && stamp() < a.scheduledAt) {
       const audience = await callAudience(ctx, a, preview.entries);
-      const t = callTiming(a);
+      const t = callTiming(a, warnings);
       callCheck = { daysBefore: t.daysBefore, lateNotice: t.lateNotice, recipients: audience.recipients.length, ownersWithoutAccount: audience.ownersWithoutAccount, warnings: t.warnings };
     }
-    return { assembly: view(a), rollFrozen: false, quorum, units: await rows(ctx, preview.entries, []), ...common, ...(callCheck ? { callCheck } : {}) };
+    return { assembly: view(a), rollFrozen: false, quorum, units: await rows(ctx, preview.entries, []), ...common, warnings, ...(callCheck ? { callCheck } : {}) };
   }
 
   async function update(ctx: AssemblyContext, id: string, body: unknown): Promise<AssemblyView> {
@@ -581,7 +614,7 @@ export function createAssemblyService(overrides: Partial<AssemblyServiceDeps> = 
     const reason = resend ? reqString(o, 'reason', 500, 3) : undefined;
 
     const audience = await callAudience(ctx, a);
-    const t = callTiming(a);
+    const t = callTiming(a, await meetingWarnings(ctx, a));
     const now = stamp();
     const seq = calls.length + 1;
     const eventId = `ASSEMBLY_CALLED:${a.assemblyId}:${seq}`;
@@ -647,6 +680,10 @@ export function createAssemblyService(overrides: Partial<AssemblyServiceDeps> = 
     const loaded = await requireAssembly(ctx, id);
     requirePlanned(loaded);
     requireStarted(loaded, 'Katılım');
+    // Ilk karardan sonra katilim donar: kararlarin ve tutanagin dayandigi oy / yeter sayi degismez.
+    if (loaded.attendanceLockedAt || loaded.agenda.some((i) => i.tally)) {
+      throw new AssemblyError('conflict', 'Karar kaydedildikten sonra katılım değiştirilemez; karar ve tutanak bu katılıma dayanır');
+    }
     const a = await ensureRoll(ctx, loaded);
     const entry = await deps.rolls.entry(ctx.apartmentId, 'assembly', a.assemblyId, a.roll, unitId);
     if (!entry) throw new AssemblyError('not_found', 'Bölüm dondurulmuş oy listesinde yok');
@@ -726,6 +763,11 @@ export function createAssemblyService(overrides: Partial<AssemblyServiceDeps> = 
     ownersMajority: q.ownersMajority,
     landShareMajority: q.landShareMajority,
     landShareComputable: q.landShareComputable,
+    // Tutanak yalnizca bu anlik goruntuden yazilir (canli katilimla karismaz).
+    proxyUnits: q.proxyUnits,
+    presentLandShare: q.presentLandShare,
+    totalLandShare: q.totalLandShare,
+    landShareBps: q.landShareBps,
     recordedAt: stamp(),
     recordedBy: ctx.userId,
   });
@@ -802,11 +844,14 @@ export function createAssemblyService(overrides: Partial<AssemblyServiceDeps> = 
       throw new AssemblyError('unprocessable', `Toplantı yeter sayısı sağlanmadı: ${quorum.reasons.join('; ')}. İkinci toplantıda yeter sayı aranmaz.`);
     }
     const rule = itemRule(item);
+    // Arsa payi eksikse arsa payi gereken karar hesaplanamaz: ret olarak yazilmaz (kalici yanlis kayit olurdu).
+    const missing = landShareMissing(rule, a.roll);
+    if (missing) throw new AssemblyError('unprocessable', `${missing}; karar kaydedilmedi. Arsa payı oy listesi dondurulduğu andaki kayıtlardan alınır.`);
     let outcome: DecisionOutcome;
     let unitVotes: Record<string, VoteChoice> | undefined;
     if (o.votes !== undefined) {
       const votes = parseUnitVotes(o.votes, entries.length);
-      const issue = unitVotesIssue(entries, attendance, votes);
+      const issue = unitVotesIssue(entries, attendance, votes, rule);
       if (issue) throw new ValidationError(issue, 'votes');
       outcome = decideByUnits({ rule, entries, meta: a.roll, attendance, votes });
       unitVotes = Object.fromEntries([...votes.entries()].sort(([x], [y]) => x.localeCompare(y)));
@@ -822,8 +867,11 @@ export function createAssemblyService(overrides: Partial<AssemblyServiceDeps> = 
     }
 
     const now = stamp();
+    // Y1 (bu daldan once) sayimi: `seq` yok ve ASMDEC# kaydi yok. Duzeltme ilk degismez kayittir (sira 1);
+    // eski sayim kaydin icinde `legacyTally` olarak korunur.
     const prevSeq = item.tally?.seq;
-    const seq = (prevSeq ?? (correction ? 1 : 0)) + 1;
+    const legacy = correction && prevSeq === undefined ? item.tally : undefined;
+    const seq = (prevSeq ?? 0) + 1;
     const decision: AssemblyDecision = {
       ...assemblyKeys.decision(ctx.apartmentId, a.assemblyId, item.itemId, seq),
       entityType: 'ASSEMBLY_DECISION',
@@ -838,7 +886,9 @@ export function createAssemblyService(overrides: Partial<AssemblyServiceDeps> = 
       decisionKind: itemKind(item),
       outcome,
       ...(unitVotes ? { unitVotes } : {}),
-      ...(correction ? { supersedes: seq - 1, correctionReason } : {}),
+      ...(correction ? { correctionReason } : {}),
+      ...(correction && prevSeq !== undefined ? { supersedes: prevSeq } : {}),
+      ...(legacy ? { legacyTally: legacy } : {}),
       recordedAt: now,
       recordedBy: ctx.userId,
     };
@@ -857,6 +907,7 @@ export function createAssemblyService(overrides: Partial<AssemblyServiceDeps> = 
     const next: Assembly = {
       ...a,
       ...(a.quorumRecord ? {} : { quorumRecord: toRecord(ctx, quorum) }),
+      attendanceLockedAt: a.attendanceLockedAt ?? now,
       agenda: a.agenda.map((i) => (i.itemId === itemId ? { ...i, tally } : i)),
       updatedAt: now,
       updatedBy: ctx.userId,
@@ -876,7 +927,8 @@ export function createAssemblyService(overrides: Partial<AssemblyServiceDeps> = 
       ...(outcome.units ? { units: outcome.units } : {}),
       ...(unitVotes ? { votesHash: sha256(unitVotes) } : {}),
       corrected: correction,
-      ...(correction ? { supersedes: seq - 1 } : {}),
+      ...(decision.supersedes ? { supersedes: decision.supersedes } : {}),
+      ...(legacy ? { correctsLegacyTally: true } : {}),
     };
     const saved = await save(next, a.version, audit(ctx, next, correction ? 'assembly.tally_correction' : 'assembly.tally', details, correctionReason), { decision });
     return { assembly: saved, quorum, decision: decisionView(decision) };
@@ -917,7 +969,11 @@ export function createAssemblyService(overrides: Partial<AssemblyServiceDeps> = 
         if (text.trim()) notes[itemId] = text.trim();
       }
     }
-    const generalNotes = o.generalNotes === undefined ? cur?.generalNotes : optString(o, 'generalNotes', NOTE_MAX) || undefined;
+    // Bos metin / null notu temizler (web bos alani '' olarak gonderir).
+    const rawGeneral = o.generalNotes;
+    if (rawGeneral !== undefined && rawGeneral !== null && typeof rawGeneral !== 'string') throw new ValidationError('generalNotes metin olmalıdır', 'generalNotes');
+    if (typeof rawGeneral === 'string' && rawGeneral.length > NOTE_MAX) throw new ValidationError(`Not en fazla ${NOTE_MAX} karakter olabilir`, 'generalNotes');
+    const generalNotes = rawGeneral === undefined ? cur?.generalNotes : typeof rawGeneral === 'string' && rawGeneral.trim() ? rawGeneral.trim() : undefined;
     const minutes: AssemblyMinutes = {
       ...(chair ? { chair } : {}),
       clerks,
@@ -948,7 +1004,8 @@ export function createAssemblyService(overrides: Partial<AssemblyServiceDeps> = 
     requirePlanned(a);
     requireStarted(a, 'Tutanak');
     if (!a.quorumRecord) throw new AssemblyError('unprocessable', 'Önce toplantı yeter sayısını tutanağa geçirin');
-    const decided = a.quorumRecord.met || a.secondMeeting;
+    // Kimse gelmediyse (ikinci toplantida da) divan kurulamaz: baskan / yazman aranmaz.
+    const decided = (a.quorumRecord.met || a.secondMeeting) && !a.quorumRecord.noAttendance;
     if (decided && !a.minutes?.chair) throw new AssemblyError('unprocessable', 'Tutanak için toplantı başkanını girin');
     if (decided && !a.minutes?.clerks.length) throw new AssemblyError('unprocessable', 'Tutanak için en az bir yazman girin');
     const pending = decided ? a.agenda.filter((i) => !i.tally).length : 0;
@@ -1110,8 +1167,9 @@ export function createAssemblyService(overrides: Partial<AssemblyServiceDeps> = 
       rule: t.rule ?? 'attendees',
       votes: { yes: t.yes, no: t.no, abstain: t.abstain },
       units: o?.units ? { yes: o.units.yes, no: o.units.no, abstain: o.units.abstain } : null,
+      persons: o?.persons ? { yes: o.persons.yes, no: o.persons.no, abstain: o.persons.abstain, total: o.persons.total } : null,
       landShareBps: o?.landShareBps ?? null,
-      corrected: (t.seq ?? 1) > 1,
+      corrected: (t.seq ?? 1) > 1 || Boolean(record?.correctionReason),
       recordedAt: t.recordedAt,
     };
   }

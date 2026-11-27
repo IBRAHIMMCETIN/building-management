@@ -15,7 +15,7 @@ import { type GateRepository, gateRepository } from '../modules/gate/repository.
 import { type Courier, gateKeys } from '../modules/gate/types.js';
 import { type BookingSnapshot, isReservationEvent, refundSettling, reservationRecipients } from '../modules/reservations/notifications.js';
 import { type ReservationRepository, reservationRepository } from '../modules/reservations/repository.js';
-import { type AssemblyCallSnapshot, assemblyCallRecipients, isAssemblyEvent } from '../modules/assemblies/notifications.js';
+import { type AssemblyCallSnapshot, assemblyCallRecipients, isAssemblyEvent, meetingHash } from '../modules/assemblies/notifications.js';
 import { type AssemblyRepository, assemblyRepository } from '../modules/assemblies/repository.js';
 
 export type { DeliveryResult, Notification, NotificationTemplate, Notifier } from '../modules/notifications/notifier.js';
@@ -414,7 +414,15 @@ export function createNotificationWorker(overrides: Partial<WorkerDeps> = {}) {
         now: deps.now(),
         assemblyCall:
           a && call && a.apartmentId === event.apartmentId && call.apartmentId === event.apartmentId
-            ? { assemblyId, seq: call.seq, status: a.status, scheduledAt: a.scheduledAt, recipientUserIds: call.recipientUserIds }
+            ? {
+                assemblyId,
+                seq: call.seq,
+                status: a.status,
+                scheduledAt: a.scheduledAt,
+                recipientUserIds: call.recipientUserIds,
+                ...(a.calls?.find((c) => c.seq === call.seq)?.meetingHash ? { callMeetingHash: a.calls.find((c) => c.seq === call.seq)?.meetingHash } : {}),
+                currentMeetingHash: meetingHash(a),
+              }
             : null,
       };
     }

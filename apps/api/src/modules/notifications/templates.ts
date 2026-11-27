@@ -318,7 +318,7 @@ function spec(n: Notification, ctx: EmailContext): Spec | undefined {
 
 /** E-posta nezaketen gonderilir: KMK m.29'daki cagri usulunun yerine gecmez (README "Hukuki yorum"). */
 export const ASSEMBLY_CALL_DISCLAIMER =
-  'Bu e-posta bilgilendirme amaçlıdır; Kat Mülkiyeti Kanunu m.29 uyarınca yapılması gereken çağrının (imza karşılığı tebliğ veya taahhütlü mektup) yerine geçmez.';
+  'Bu e-posta bilgilendirme amaçlıdır; kanunda ve yönetim planında öngörülen çağrı usulünün (olağanüstü toplantıda imza karşılığı tebliğ veya taahhütlü mektup, Kat Mülkiyeti Kanunu m.29/2) yerine geçmez.';
 
 /** Genel kurul cagrisi: tarih-saat (Istanbul), yer / baglanti, gundem ve (ilk toplantida) ikinci toplanti. */
 function assemblyCallSpec(n: Notification): Spec {
@@ -352,13 +352,13 @@ function assemblyCallSpec(n: Notification): Spec {
         ? [
             {
               kind: 'p' as const,
-              text: `İlk toplantıda yeter sayı sağlanamazsa ikinci toplantı ${formatDateTime(secondAt)} tarihinde${secondPlace ? ` (${secondPlace})` : ''} yapılacaktır; ikinci toplantıda toplantı yeter sayısı aranmaz (KMK m.29, m.30).`,
+              text: `İlk toplantıda yeter sayı sağlanamazsa ikinci toplantı ${formatDateTime(secondAt)} tarihinde${secondPlace ? ` (${secondPlace})` : ''} yapılacaktır; ikinci toplantıda toplantı yeter sayısı aranmaz (KMK m.29/3, m.30).`,
             },
           ]
         : []),
       { kind: 'note', text: ASSEMBLY_CALL_DISCLAIMER },
     ],
-    cta: { label: 'Toplantı ayrıntıları', path: 'genel-kurul' },
+    cta: { label: 'Toplantı ayrıntıları', path: str(d.assemblyId) ? `genel-kurul/${encodeURIComponent(str(d.assemblyId))}` : 'genel-kurul' },
   };
 }
 

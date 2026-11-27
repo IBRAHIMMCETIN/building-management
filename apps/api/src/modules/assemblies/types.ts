@@ -14,6 +14,7 @@
  */
 import type { IsoDate, IsoDateTime, TableKeys, AuditFields } from '../core/types.js';
 import type { RollMeta } from '../polls/rollSnapshot.js';
+import type { Fraction } from '../polls/types.js';
 import type { DecisionKind, DecisionOutcome, MajorityRule, VoteChoice } from './majority.js';
 
 export const ASSEMBLY_KINDS = ['ordinary', 'extraordinary'] as const;
@@ -130,6 +131,8 @@ export type Assembly = TableKeys &
     /** Gonderilen cagrilar (en eski once). */
     calls?: AssemblyCallSummary[];
     minutes?: AssemblyMinutes;
+    /** Ilk karar ani: sonra katilim degistirilemez (katilim yazimi bunu `ConditionCheck` ile dogrular). */
+    attendanceLockedAt?: IsoDateTime;
     status: AssemblyStatus;
     heldAt?: IsoDateTime;
     heldBy?: string;
@@ -159,6 +162,8 @@ export type AssemblyDecision = TableKeys & {
   /** Duzeltme: yerine gectigi kaydin sirasi ve gerekcesi. */
   supersedes?: number;
   correctionReason?: string;
+  /** Y1'den kalan (ASMDEC# kaydi olmayan) sayimi duzelten ilk kayit: eski sayim burada korunur. */
+  legacyTally?: AgendaTally;
   recordedAt: IsoDateTime;
   recordedBy: string;
 };
@@ -187,6 +192,11 @@ export type QuorumRecord = {
   ownersMajority: boolean;
   landShareMajority: boolean;
   landShareComputable: boolean;
+  /** Kayit anindaki anlik goruntu (tutanak yalnizca bundan yazilir); eski kayitta yok. */
+  proxyUnits?: number;
+  presentLandShare?: Fraction | null;
+  totalLandShare?: Fraction | null;
+  landShareBps?: number | null;
   recordedAt: IsoDateTime;
   recordedBy: string;
 };

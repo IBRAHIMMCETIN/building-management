@@ -131,8 +131,9 @@ export function createAssemblyRepository(): AssemblyRepository {
           ConditionCheck: {
             TableName: tableName,
             Key: assemblyKeys.assembly(att.apartmentId, att.assemblyId),
-            ConditionExpression: '#status = :planned',
-            ExpressionAttributeNames: { '#status': 'status' },
+            // Ilk karardan sonra katilim donar (eszamanli karar yazimiyla yarisa karsi).
+            ConditionExpression: '#status = :planned AND attribute_not_exists(#locked)',
+            ExpressionAttributeNames: { '#status': 'status', '#locked': 'attendanceLockedAt' },
             ExpressionAttributeValues: { ':planned': 'planned' },
           },
         },

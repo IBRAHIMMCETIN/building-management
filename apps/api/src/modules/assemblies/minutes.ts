@@ -2,10 +2,11 @@
  * Genel kurul devami - toplanti tutanagi ve karar defteri PDF icerigi (SAF; `renderReportPdf`
  * sablonuna veri). Ayni girdi ayni icerik: S3'te veri ozetiyle onbelleklenir.
  *
- * Tutanak: toplanti bilgisi, cagri, divan, KMK m.30 yeter sayi, her gundem maddesi icin karar turu,
- * gerekli cogunluk, kabul / ret / cekimser (oy, bolum, arsa payi), sonuc ve duzeltmeler, gorusme
- * notlari ve imza satirlari. Bolum bazinda katilim / oy listesi TUTANAKTA YOKTUR (hazirun cetveli ayri
- * belgedir); sakin portalinda da ayni tutanak verilir.
+ * Tutanak: toplanti bilgisi, cagri, divan, KMK m.30 yeter sayi (TUTANAGA GECIRILEN anlik goruntuden;
+ * canli katilimla karistirilmaz), her gundem maddesi icin karar turu, gerekli cogunluk, kabul / ret /
+ * cekimser (oy, kat maliki, bolum, arsa payi), sonuc ve duzeltmeler, gorusme notlari ve imza
+ * satirlari. Y1'den kalan (karar kaydi olmayan) sayimlar "Y1 sayimi" olarak gosterilir. Bolum bazinda
+ * katilim / oy listesi TUTANAKTA YOKTUR (hazirun cetveli ayri belgedir).
  */
 import type { ReportPdfData, ReportRow, ReportSection } from '../documents/reportPdf.js';
 import { formatDate, formatDateTime } from '../notifications/templates.js';
@@ -13,7 +14,7 @@ import { istanbulDate } from '../polls/results.js';
 import type { Fraction } from '../polls/types.js';
 import { DECISION_PRESETS, type DecisionKind, type DecisionOutcome, MAJORITY_LABELS, type MajorityRule, kindLabel } from './majority.js';
 import type { Quorum } from './quorum.js';
-import type { AgendaItem, Assembly, AssemblyDecision, QuorumRecord } from './types.js';
+import type { AgendaItem, AgendaTally, Assembly, AssemblyDecision, QuorumRecord } from './types.js';
 
 export type ReportContent = Omit<ReportPdfData, 'generatedAt' | 'dataHash'>;
 
@@ -38,18 +39,27 @@ export function placeText(a: Pick<Assembly, 'location' | 'onlineUrl'>): string {
   return [a.location, a.onlineUrl ? `Çevrim içi: ${a.onlineUrl}` : undefined].filter(Boolean).join(' · ');
 }
 
-/** "Kabul ... oy" satiri icin: oy, (varsa) bolum ve arsa payi. */
+/** "Kabul ... oy" satiri icin: oy, (varsa) kisi, bolum ve arsa payi. */
 function choiceRow(label: string, o: DecisionOutcome, k: 'yes' | 'no' | 'abstain' | 'notVoted'): ReportRow {
+  const persons = o.persons ? String(o.persons[k]) : '—';
   const units = o.units ? String(o.units[k]) : '—';
   const land = k !== 'notVoted' && o.landShare && o.landShareBps ? `${shareText(o.landShare[k])} (${pct(o.landShareBps[k])})` : '—';
-  return { cells: [label, String(o.votes[k]), units, land] };
+  return { cells: [label, String(o.votes[k]), persons, units, land] };
 }
 
 /** Gerekli cogunlugun sayisal ifadesi. */
 export function requiredText(o: DecisionOutcome): string {
-  const parts = [o.rule === 'unanimous' ? `${o.required.units} bölümün tamamı` : `en az ${o.required.votes} oy`];
+  const parts: string[] = [];
+  if (o.rule === 'unanimous') parts.push(`${o.required.units ?? 0} bölümün tamamı`);
+  if (o.required.votes !== null && o.rule !== 'unanimous') parts.push(`en az ${o.required.votes} oy`);
+  if (o.required.persons !== null) parts.push(`en az ${o.required.persons} kat maliki (kişi)`);
   if (o.required.landShare) parts.push(`en az ${shareText(o.required.landShare)} arsa payı`);
-  const base = o.rule === 'attendees' ? `katılan ${o.presentVotes} oy` : `bütün kat maliklerinin ${o.allVotes} oyu${o.totalLandShare ? `, toplam arsa payı ${shareText(o.totalLandShare)}` : ''}`;
+  const base =
+    o.rule === 'attendees'
+      ? `katılan ${o.presentVotes} oy`
+      : o.required.persons !== null
+        ? `bütün kat malikleri ${o.persons?.total ?? '?'} kişi${o.totalLandShare ? `, toplam arsa payı ${shareText(o.totalLandShare)}` : ''}`
+        : `bütün kat maliklerinin ${o.allVotes} oyu`;
   return `${parts.join(' ve ')} (${base})`;
 }
 
@@ -60,6 +70,7 @@ function decisionTable(o: DecisionOutcome): Pick<ReportSection, 'columns' | 'row
     columns: [
       { header: 'Oy', width: 1.6 },
       { header: 'Oy sayısı (KMK m.31)', width: 1.2, align: 'right' },
+      { header: 'Kat maliki (kişi)', width: 1, align: 'right' },
       { header: 'Bağımsız bölüm', width: 1, align: 'right' },
       { header: 'Arsa payı', width: 1.6, align: 'right' },
     ],
@@ -68,13 +79,52 @@ function decisionTable(o: DecisionOutcome): Pick<ReportSection, 'columns' | 'row
       choiceRow('Ret', o, 'no'),
       choiceRow('Çekimser', o, 'abstain'),
       choiceRow('Katılıp oy kullanmayan', o, 'notVoted'),
-      ...(o.units ? [{ cells: ['Katılmayan bölüm', '', String(o.units.absent), ''] }] : []),
-      { bold: true, rule: true, cells: [`Sonuç: ${decisionWord(o.decision)}`, '', '', ''] },
+      ...(o.units ? [{ cells: ['Katılmayan', '', o.persons ? String(o.persons.absent) : '', String(o.units.absent), ''] }] : []),
+      { bold: true, rule: true, cells: [`Sonuç: ${decisionWord(o.decision)}`, '', '', '', ''] },
     ],
   };
 }
 
-const latestOf = (records: readonly AssemblyDecision[]) => [...records].sort((x, y) => x.seq - y.seq).at(-1);
+/** Y1'den kalan sayim (karar kaydi yok): yalnizca oy sayilari ve katilanlarin oy coklugu. */
+function legacyTable(t: AgendaTally): Pick<ReportSection, 'columns' | 'rows'> {
+  return {
+    columns: [
+      { header: 'Oy', width: 1.6 },
+      { header: 'Oy sayısı (KMK m.31)', width: 1.2, align: 'right' },
+    ],
+    rows: [
+      { cells: ['Kabul', String(t.yes)] },
+      { cells: ['Ret', String(t.no)] },
+      { cells: ['Çekimser', String(t.abstain)] },
+      { cells: ['Katılan oy', String(t.presentVotes)] },
+      { bold: true, rule: true, cells: [`Sonuç: ${decisionWord(t.decision)}`, ''] },
+    ],
+  };
+}
+
+const legacyText = (t: AgendaTally) => `kabul ${t.yes}, ret ${t.no}, çekimser ${t.abstain} oy; ${decisionWord(t.decision).toLocaleLowerCase('tr')}`;
+
+/** Tutanaktaki yeter sayi: kayitli anlik goruntu; eski kayitta eksik alan icin (katilim donmus) canli deger. */
+function quorumRows(a: Pick<Assembly, 'secondMeeting'>, rec: QuorumRecord | undefined, q: Quorum): ReportRow[] {
+  const present = rec?.presentLandShare !== undefined ? rec.presentLandShare : q.presentLandShare;
+  const total = rec?.totalLandShare !== undefined ? rec.totalLandShare : q.totalLandShare;
+  const computable = rec ? rec.landShareComputable : q.landShareComputable;
+  const ownersMajority = rec ? rec.ownersMajority : q.ownersMajority;
+  const landMajority = rec ? rec.landShareMajority : q.landShareMajority;
+  const met = rec ? rec.met : q.met;
+  return [
+    { cells: ['Kat maliki (kişi)', String(rec?.presentOwners ?? q.presentOwners), String(rec?.totalOwners ?? q.totalOwners), ownersMajority ? 'yarıdan fazla' : 'yarıdan fazla değil'] },
+    { cells: ['Oy (bağımsız bölüm; KMK m.31 sınırlı)', String(rec?.presentVotes ?? q.presentVotes), String(rec?.totalVotes ?? q.totalVotes), `${rec?.proxyUnits ?? q.proxyUnits} bölüm vekaleten`] },
+    {
+      cells: ['Arsa payı', present ? shareText(present) : '—', total ? shareText(total) : 'hesaplanamıyor', computable ? (landMajority ? 'yarıdan fazla' : 'yarıdan fazla değil') : 'arsa payı eksik'],
+    },
+    {
+      bold: true,
+      rule: true,
+      cells: [a.secondMeeting ? 'Sonuç: ikinci toplantı, yeter sayı aranmaz' : `Sonuç: yeter sayı ${met ? 'sağlandı' : 'sağlanmadı'}${rec?.noAttendance ? ' (kimse gelmedi)' : ''}`, '', '', ''],
+    },
+  ];
+}
 
 export function minutesReport(input: {
   apartmentName: string;
@@ -99,7 +149,7 @@ export function minutesReport(input: {
       cells: [
         'Çağrı',
         firstCall
-          ? `${formatDateTime(firstCall.calledAt)} e-posta bilgilendirmesi (toplantıdan ${firstCall.daysBefore} gün önce${firstCall.lateNotice ? '; KMK m.29 15 gün süresinden sonra' : ''})${calls.length > 1 ? `, ${calls.length - 1} kez yeniden gönderildi` : ''}`
+          ? `${formatDateTime(firstCall.calledAt)} e-posta bilgilendirmesi (toplantıdan ${firstCall.daysBefore} gün önce${firstCall.lateNotice ? '; KMK m.29/2 15 gün süresinden sonra' : ''})${calls.length > 1 ? `, ${calls.length - 1} kez yeniden gönderildi` : ''}`
           : 'Sistemden çağrı gönderilmedi (yasal çağrı ayrıca yapılır)',
       ],
     },
@@ -110,41 +160,37 @@ export function minutesReport(input: {
   ];
 
   const met = rec ? rec.met : q.met;
-  const quorumRows: ReportRow[] = [
-    { cells: ['Kat maliki (kişi)', String(rec?.presentOwners ?? q.presentOwners), String(rec?.totalOwners ?? q.totalOwners), q.ownersMajority ? 'yarıdan fazla' : 'yarıdan fazla değil'] },
-    { cells: ['Oy (bağımsız bölüm; KMK m.31 sınırlı)', String(rec?.presentVotes ?? q.presentVotes), String(rec?.totalVotes ?? q.totalVotes), `${q.proxyUnits} bölüm vekaleten`] },
-    {
-      cells: [
-        'Arsa payı',
-        q.presentLandShare ? shareText(q.presentLandShare) : '—',
-        q.totalLandShare ? shareText(q.totalLandShare) : 'hesaplanamıyor',
-        q.landShareComputable ? (q.landShareMajority ? 'yarıdan fazla' : 'yarıdan fazla değil') : 'arsa payı eksik',
-      ],
-    },
-    {
-      bold: true,
-      rule: true,
-      cells: [a.secondMeeting ? 'Sonuç: ikinci toplantı, yeter sayı aranmaz' : `Sonuç: yeter sayı ${met ? 'sağlandı' : 'sağlanmadı'}${rec?.noAttendance ? ' (kimse gelmedi)' : ''}`, '', '', ''],
-    },
-  ];
-
   const byItem = new Map<string, AssemblyDecision[]>();
   for (const d of input.decisions) byItem.set(d.itemId, [...(byItem.get(d.itemId) ?? []), d]);
 
   const itemSections: ReportSection[] = a.agenda.map((item, i) => {
     const records = [...(byItem.get(item.itemId) ?? [])].sort((x, y) => x.seq - y.seq);
-    const latest = latestOf(records);
+    const latest = records.at(-1);
     const k = itemKind(item);
-    const paragraphs = [
-      `Karar türü: ${kindLabel(k)} (${legalBasis(k)}) · Gerekli çoğunluk: ${MAJORITY_LABELS[itemRule(item)]}`,
+    const title = pdfSafe(`${i + 1}. ${item.title}`);
+    const head = [
+      item.decisionKind ? `Karar türü: ${kindLabel(k)} (${legalBasis(k)}) · Gerekli çoğunluk: ${MAJORITY_LABELS[itemRule(item)]}` : 'Karar türü kaydı yok (Y1 sayımı) · Gerekli çoğunluk: katılanların oy çokluğu',
       ...(item.description ? [pdfSafe(item.description)] : []),
       ...(m?.notes[item.itemId] ? [pdfSafe(`Görüşme: ${m.notes[item.itemId]}`)] : []),
-      ...(latest ? [`Gerekli: ${requiredText(latest.outcome)}`, ...latest.outcome.reasons.map((r) => `Gerekçe: ${r}`), ...latest.outcome.warnings] : [met || a.secondMeeting ? 'Bu madde için karar kaydı yok.' : 'Yeter sayı sağlanamadığından karar alınmadı.']),
-      ...records.slice(0, -1).map((old) => `Düzeltilen kayıt (${formatDateTime(old.recordedAt)}): kabul ${old.outcome.votes.yes}, ret ${old.outcome.votes.no}, çekimser ${old.outcome.votes.abstain} oy; ${decisionWord(old.outcome.decision).toLocaleLowerCase('tr')}.`),
-      ...(latest?.supersedes ? [pdfSafe(`Düzeltme gerekçesi (${formatDateTime(latest.recordedAt)}): ${latest.correctionReason ?? ''}`)] : []),
     ];
-    const title = pdfSafe(`${i + 1}. ${item.title}`);
-    return latest ? { title, paragraphs, ...decisionTable(latest.outcome) } : { title, paragraphs, columns: [], rows: [] };
+    if (!latest && item.tally) {
+      return { title, paragraphs: [...head, `Y1 sayımı (${formatDateTime(item.tally.recordedAt)}); değişmez karar kaydı yok.`], ...legacyTable(item.tally) };
+    }
+    if (!latest) {
+      return { title, paragraphs: [...head, met || a.secondMeeting ? 'Bu madde için karar kaydı yok.' : 'Yeter sayı sağlanamadığından karar alınmadı.'], columns: [], rows: [] };
+    }
+    const paragraphs = [
+      ...head,
+      `Gerekli: ${requiredText(latest.outcome)}`,
+      ...latest.outcome.reasons.map((r) => `Gerekçe: ${r}`),
+      ...latest.outcome.warnings,
+      ...(records[0]?.legacyTally ? [`Düzeltilen Y1 sayımı (${formatDateTime(records[0].legacyTally.recordedAt)}): ${legacyText(records[0].legacyTally)}.`] : []),
+      ...records
+        .slice(0, -1)
+        .map((old) => `Düzeltilen kayıt (${formatDateTime(old.recordedAt)}): kabul ${old.outcome.votes.yes}, ret ${old.outcome.votes.no}, çekimser ${old.outcome.votes.abstain} oy; ${decisionWord(old.outcome.decision).toLocaleLowerCase('tr')}.`),
+      ...(latest.correctionReason ? [pdfSafe(`Düzeltme gerekçesi (${formatDateTime(latest.recordedAt)}): ${latest.correctionReason}`)] : []),
+    ];
+    return { title, paragraphs, ...decisionTable(latest.outcome) };
   });
 
   const signRows: ReportRow[] = [
@@ -160,14 +206,14 @@ export function minutesReport(input: {
     sections: [
       { title: 'Toplantı bilgileri', columns: [{ header: 'Bilgi', width: 1.3 }, { header: 'Değer', width: 5 }], rows: info },
       {
-        title: 'Toplantı yeter sayısı (KMK m.30)',
+        title: `Toplantı yeter sayısı (KMK m.30)${rec ? ` · tutanağa geçiş ${formatDateTime(rec.recordedAt)}` : ''}`,
         columns: [
           { header: 'Ölçüt', width: 2.2 },
           { header: 'Katılan', width: 1, align: 'right' },
           { header: 'Toplam', width: 1, align: 'right' },
           { header: 'Durum', width: 1.8 },
         ],
-        rows: quorumRows,
+        rows: quorumRows(a, rec, q),
       },
       ...itemSections,
       ...(m?.generalNotes ? [{ title: 'Diğer görüşmeler ve notlar', paragraphs: [pdfSafe(m.generalNotes)], columns: [], rows: [] }] : []),
@@ -185,39 +231,73 @@ export function minutesReport(input: {
     ],
     notes: [
       'Kararlar noterce onaylı karar defterine yazılır ve toplantıda bulunan kat maliklerince imzalanır; aleyhte oy verenler gerekçelerini yazar (KMK m.32). Bu tutanak karar defterinin yerine geçmez.',
-      'Nitelikli çoğunlukta payda bütün kat maliklerinin oyu ve toplam arsa payıdır; oyda KMK m.31 kişi başı üçte bir sınırı uygulanır. Hesap yorumları avukat onayı bekler.',
+      '"Sayı ... çoğunluğu" ve "yazılı rıza" aranan kararlarda kat maliki kişi sayısı, "oyu" aranan kararlarda KMK m.31 oyu (kişi başı üçte bir sınırı) sayılır; payda bütün kat malikleridir. Hesap yorumları avukat onayı bekler.',
       ...(preview ? ['Taslak: tutanak kesinleştirilmeden önceki hal; sakinlere gösterilmez.'] : []),
     ],
   };
 }
 
-/** Karar defteri: apartmanin tum karar kayitlari (duzeltmeler dahil), toplanti tarihi sirasiyla. */
+/** Karar defteri satiri: degismez karar kaydi veya Y1'den kalan sayim. */
+type BookRow = {
+  assemblyId: string;
+  itemId: string;
+  seq: number;
+  meetingAt: string;
+  meetingKind: Assembly['kind'];
+  secondMeeting: boolean;
+  itemTitle: string;
+  rule: MajorityRule | null;
+  votes: { yes: number; no: number; abstain: number };
+  decision: DecisionOutcome['decision'];
+  recordedAt: string;
+  correction?: string;
+  legacy: boolean;
+};
+
+/** Karar defteri: apartmanin tum karar kayitlari (duzeltmeler ve Y1 sayimlari dahil), toplanti tarihi sirasiyla. */
 export function decisionBookReport(input: { apartmentName: string; assemblies: readonly Omit<Assembly, 'PK' | 'SK'>[]; decisions: readonly AssemblyDecision[] }): ReportContent {
   const meeting = new Map(input.assemblies.map((a) => [a.assemblyId, a]));
   const order = (itemId: string) => Number(itemId.replace(/\D/g, '')) || 0;
-  const records = input.decisions
+  const withRecord = new Set(input.decisions.map((d) => `${d.assemblyId}|${d.itemId}`));
+  const rowsData: BookRow[] = [
+    ...input.decisions.flatMap((d): BookRow[] => {
+      const base = { assemblyId: d.assemblyId, itemId: d.itemId, meetingAt: d.meetingAt, meetingKind: d.meetingKind, secondMeeting: d.secondMeeting, itemTitle: d.itemTitle };
+      const own: BookRow = { ...base, seq: d.seq, rule: d.outcome.rule, votes: d.outcome.votes, decision: d.outcome.decision, recordedAt: d.recordedAt, legacy: false, ...(d.correctionReason ? { correction: d.correctionReason } : {}) };
+      const t = d.legacyTally;
+      return t ? [{ ...base, seq: 0, rule: null, votes: t, decision: t.decision, recordedAt: t.recordedAt, legacy: true }, own] : [own];
+    }),
+    // Y1 sayimi, karar kaydi yok (ne duzeltildi ne yeniden kaydedildi).
+    ...input.assemblies.flatMap((a) =>
+      a.agenda
+        .filter((i) => i.tally && !withRecord.has(`${a.assemblyId}|${i.itemId}`))
+        .map((i): BookRow => {
+          const t = i.tally as AgendaTally;
+          return { assemblyId: a.assemblyId, itemId: i.itemId, seq: 0, meetingAt: a.scheduledAt, meetingKind: a.kind, secondMeeting: a.secondMeeting, itemTitle: i.title, rule: null, votes: t, decision: t.decision, recordedAt: t.recordedAt, legacy: true };
+        }),
+    ),
+  ];
+  const records = rowsData
     .filter((d) => meeting.get(d.assemblyId)?.status !== 'cancelled')
     .sort((x, y) => x.meetingAt.localeCompare(y.meetingAt) || x.assemblyId.localeCompare(y.assemblyId) || order(x.itemId) - order(y.itemId) || x.seq - y.seq);
   const numberOf = new Map<string, number>();
   const latestSeq = new Map<string, number>();
-  for (const d of records) latestSeq.set(`${d.assemblyId}|${d.itemId}`, Math.max(latestSeq.get(`${d.assemblyId}|${d.itemId}`) ?? 0, d.seq));
+  for (const d of records) latestSeq.set(`${d.assemblyId}|${d.itemId}`, Math.max(latestSeq.get(`${d.assemblyId}|${d.itemId}`) ?? -1, d.seq));
   let n = 0;
   const rows: ReportRow[] = records.map((d) => {
     const key = `${d.assemblyId}|${d.itemId}`;
     if (!numberOf.has(key)) numberOf.set(key, ++n);
     const a = meeting.get(d.assemblyId);
     const superseded = d.seq < (latestSeq.get(key) ?? d.seq);
-    const o = d.outcome;
     return {
       ...(superseded ? { muted: true } : {}),
       cells: [
         String(numberOf.get(key)),
         `${formatDate(a?.rollDate ?? istanbulDate(d.meetingAt))} · ${MEETING_KIND_LABELS[d.meetingKind]}${d.secondMeeting ? ' (2.)' : ''}${a && a.status !== 'held' ? ' · taslak' : ''}`,
         pdfSafe(d.itemTitle),
-        MAJORITY_LABELS[o.rule],
-        `${o.votes.yes} / ${o.votes.no} / ${o.votes.abstain}`,
-        decisionWord(o.decision),
-        pdfSafe(`${formatDateTime(d.recordedAt)}${d.supersedes ? ` · düzeltme: ${d.correctionReason ?? ''}` : ''}${superseded ? ' · düzeltildi' : ''}`),
+        d.rule ? MAJORITY_LABELS[d.rule] : 'Y1 sayımı (karar türü yok)',
+        `${d.votes.yes} / ${d.votes.no} / ${d.votes.abstain}`,
+        decisionWord(d.decision),
+        pdfSafe(`${formatDateTime(d.recordedAt)}${d.correction ? ` · düzeltme: ${d.correction}` : ''}${superseded ? ' · düzeltildi' : ''}`),
       ],
     };
   });
@@ -241,7 +321,7 @@ export function decisionBookReport(input: { apartmentName: string; assemblies: r
       },
     ],
     notes: [
-      'Oylar KMK m.31 kişi sınırı uygulanmış oy sayısıdır. Düzeltilen kayıt silinmez, soluk gösterilir; geçerli olan aynı numaralı son kayıttır.',
+      'Oylar KMK m.31 kişi sınırı uygulanmış oy sayısıdır. Düzeltilen kayıt silinmez, soluk gösterilir; geçerli olan aynı numaralı son kayıttır. "Y1 sayımı": karar türü kaydı olmayan eski sayım.',
       'Bu döküm bilgi amaçlıdır; kararlar noterce onaylı karar defterine yazılır ve toplantıda bulunan kat maliklerince imzalanır (KMK m.32).',
     ],
   };
