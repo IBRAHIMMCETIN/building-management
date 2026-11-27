@@ -6,8 +6,9 @@ import type { Tender, TenderComment, TenderIdempotency } from '../../src/modules
 type Doc = Record<string, unknown> & { PK: string; SK: string };
 
 /** Bellek ici ihale deposu; kosullar gercek depoyla ayni (surum, idempotency, yorumda durum kontrolu). */
-export function createFakeTenderRepo() {
-  const store = new Map<string, Doc>();
+/** `store`: baska bir sahte depoyla (ornegin Finans `docs`) paylasilan tablo (ayni atomik yazim benzetimi). */
+export function createFakeTenderRepo(shared?: Map<string, Doc>) {
+  const store = shared ?? new Map<string, Doc>();
   const audits: AuditDraft[] = [];
   const writes: TenderWrite[] = [];
   const outbox: DomainEvent[] = [];

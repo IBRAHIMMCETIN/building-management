@@ -75,6 +75,20 @@ export type TenderQuote = {
   updatedBy: string;
 };
 
+/**
+ * Kategoriden onerilen Finans gider hesabi (hazir hesaplar; yonetici gider penceresinde degistirebilir).
+ */
+export const TENDER_EXPENSE_ACCOUNT: Record<TenderCategory, string> = {
+  mantolama: 'exp-repair',
+  asansor: 'exp-elevator',
+  cati: 'exp-repair',
+  boya: 'exp-repair',
+  tesisat: 'exp-repair',
+  elektrik: 'exp-repair',
+  peyzaj: 'exp-garden',
+  other: 'exp-repair',
+};
+
 /** Karar: secilen teklif ve gerekce; karar aninda teklifin ozeti saklanir (Finans'a aktarim icin). */
 export type TenderDecision = {
   quoteId: string;
@@ -90,6 +104,21 @@ export type TenderDecision = {
 };
 
 export type TenderTicketLink = { ticketId: string; number: string; title: string };
+
+/**
+ * Karardan Finans'a aktarim: mevcut Finans gider servisiyle (`recordExpense`) kaydedilen gider. Gider,
+ * defter islemi, ihale guncellemesi ve denetim kaydi TEK atomik yazimdir; ihale basina bir gider.
+ */
+export type TenderExpenseLink = {
+  expenseId: string;
+  transactionId: string;
+  amountKurus: number;
+  date: IsoDate;
+  /** Ayni istegin tekrari (yanit kayboldu) ayni sonucu doner. */
+  idempotencyKey: string;
+  linkedAt: IsoDateTime;
+  linkedBy: string;
+};
 
 export type Tender = TableKeys &
   AuditFields & {
@@ -117,6 +146,8 @@ export type Tender = TableKeys &
     cancelledBy?: string;
     cancelReason?: string;
     cancelledFrom?: TenderStatus;
+    /** Karardan kaydedilen Finans gideri (yalnizca `decided`). */
+    expense?: TenderExpenseLink;
   };
 
 export type TenderComment = TableKeys & {

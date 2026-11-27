@@ -394,7 +394,7 @@ export function createApp(config: AppConfig) {
   app.route('/api/reservations', reservationRoutes({ authenticate, service: reservationService }));
   const tenderService =
     config.tenderService ??
-    createTenderService({ documents: { promote: documentsService.promoteTenderQuote, sign: documentsService.signTenderDocument } });
+    createTenderService({ documents: { promote: documentsService.promoteTenderQuote, sign: documentsService.signTenderDocument }, finance: financeService });
   app.route('/api/tenders', tenderRoutes({ authenticate, service: tenderService }));
 
 

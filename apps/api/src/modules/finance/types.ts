@@ -310,8 +310,11 @@ export type Expense = TableKeys & {
   GSI1SK?: string;
 };
 
-/** O1-4: masrafin bagli oldugu is (ariza talebi veya bakim gorevi). */
-export type ExpenseWorkLink = { type: 'ticket' | 'maintenance'; id: string; label: string };
+/**
+ * O1-4: masrafin bagli oldugu is (ariza talebi veya bakim gorevi). Ihale devami: karara baglanmis
+ * ihaleden kaydedilen gider (`tender`; kilit / ozet yok, bag ihale kaydindaki `expense` alanindadir).
+ */
+export type ExpenseWorkLink = { type: 'ticket' | 'maintenance' | 'tender'; id: string; label: string };
 
 export type IdempotencyRecord = {
   transactionId: string;

@@ -16,6 +16,7 @@ import { type DomainEvent, buildEvent } from '../../events/publisher.js';
 import type { IsoDate } from '../core/types.js';
 import { type Obj, ValidationError, asObject, assertId, isIsoDate, reqEnum, reqInt, reqString } from '../core/validation.js';
 import type { SignedDownload } from '../documents/service.js';
+import type { FinanceService, WorkLinkWrite } from '../finance/service.js';
 import { type PortalRepository, portalRepository } from '../portal/repository.js';
 import { istanbulDate } from '../reservations/time.js';
 import { type TicketRepository, ticketRepository } from '../tickets/repository.js';
@@ -37,6 +38,7 @@ import {
   MAX_VAT_RATE,
   MAX_WARRANTY_MONTHS,
   TENDER_CATEGORIES,
+  TENDER_EXPENSE_ACCOUNT,
   TENDER_STATUSES,
   type QuoteDocument,
   type Tender,
@@ -61,6 +63,11 @@ export type TenderServiceDeps = {
   documents: TenderDocuments | undefined;
   tickets: Pick<TicketRepository, 'get'>;
   memberships: Pick<PortalRepository, 'listMemberships'>;
+  /**
+   * Karardan gider kaydi: MEVCUT Finans gider servisi (`recordExpense`; ayni dogrulama, bakiye ve
+   * defter kurallari). Verilmezse "Gider kaydı oluştur" 503.
+   */
+  finance: Pick<FinanceService, 'recordExpense'> | undefined;
   now: () => Date;
   newId: () => string;
 };
@@ -85,6 +92,7 @@ export function createTenderService(overrides: Partial<TenderServiceDeps> = {}) 
     documents: undefined,
     tickets: ticketRepository,
     memberships: portalRepository,
+    finance: undefined,
     now: () => new Date(),
     newId: () => randomUUID(),
     ...overrides,
@@ -281,11 +289,33 @@ export function createTenderService(overrides: Partial<TenderServiceDeps> = {}) 
     };
   }
 
+  /** Gider penceresinin on dolumu: secilen teklifin KDV dahil toplami, firma ve ihale referansi. */
+  function expenseDraftOf(t: Tender, decision: NonNullable<Tender['decision']>) {
+    const ref = decision.reference ? ` · Karar ${decision.reference}` : '';
+    return {
+      amountKurus: decision.totalKurus,
+      supplier: decision.supplierName.slice(0, 120),
+      description: `İhale ${t.tenderId}: ${t.title}${ref}`.slice(0, 200),
+      expenseAccountId: TENDER_EXPENSE_ACCOUNT[t.category] ?? 'exp-repair',
+      date: today(),
+    };
+  }
+
+  function expenseView(t: Tender, audience: Audience) {
+    if (audience === 'resident') return {};
+    const e = t.expense;
+    return {
+      ...(e ? { expense: { expenseId: e.expenseId, transactionId: e.transactionId, amountKurus: e.amountKurus, date: e.date, linkedAt: e.linkedAt, linkedBy: e.linkedBy } } : {}),
+      ...(audience === 'manager' && !e && t.status === 'decided' && t.decision ? { expenseDraft: expenseDraftOf(t, t.decision) } : {}),
+    };
+  }
+
   async function detailView(ctx: TenderContext, t: Tender, audience: Audience) {
     const comments = isShared(t) ? await repo.listComments(ctx.apartmentId, t.tenderId) : [];
     comments.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
     return {
       ...summaryView(t, audience),
+      ...expenseView(t, audience),
       description: t.description,
       ...(t.shortfallReason ? { shortfallReason: t.shortfallReason } : {}),
       ...(t.cancelReason ? { cancelReason: t.cancelReason, cancelledFrom: t.cancelledFrom } : {}),
@@ -724,6 +754,69 @@ export function createTenderService(overrides: Partial<TenderServiceDeps> = {}) 
   }
 
   // -------------------------------------------------------------------------
+  // Karardan Finans'a aktarim (gider kaydi)
+  // -------------------------------------------------------------------------
+
+  /**
+   * "Gider kaydı oluştur": karara baglanmis ihale icin MEVCUT Finans gider servisiyle gider. Govde Finans
+   * gider govdesidir (`expenseAccountId`, `creditAccountId`, `amount`, `date`, `description`, `supplier`,
+   * `invoiceNumber`, `invoiceUpload`); verilmeyen tutar / aciklama / firma / gider kalemi karardan
+   * (KDV dahil toplam, ihale referansi). Odeme kaynagi ihalede olmadigi icin arayuz Finans gider
+   * penceresini on doldurulmus acar; sessiz kayit yoktur.
+   *
+   * Gider + defter islemi + ihaledeki bag (`expense`, surum kosullu) + denetim kaydi TEK atomik yazim
+   * (`recordExpense` is baglantisi). Ihale basina tek gider: ayni anahtarla tekrar ayni sonucu doner,
+   * farkli anahtarla ikinci gider 409. Es zamanli iki istekte surum kosulu yalnizca birini yazar.
+   */
+  async function createExpense(ctx: TenderContext, tenderId: string, body: unknown) {
+    managerOf(ctx);
+    const o = asObject(body);
+    const key = assertId(o.idempotencyKey, 'idempotencyKey');
+    const t = await load(ctx, tenderId);
+    if (t.expense) {
+      if (t.expense.idempotencyKey === key) return { tender: await detailView(ctx, t, 'manager'), expenseId: t.expense.expenseId, transactionId: t.expense.transactionId, replayed: true };
+      throw new TenderError('conflict', 'Bu ihale için gider kaydı zaten oluşturuldu', { expenseId: t.expense.expenseId });
+    }
+    if (t.status !== 'decided' || !t.decision) throw new TenderError('invalid_state', 'Yalnızca karara bağlanmış ihale için gider kaydı oluşturulabilir');
+    if (!deps.finance) throw new TenderError('unavailable', 'Finans modülü bu ortamda yapılandırılmamış');
+    const draft = expenseDraftOf(t, t.decision);
+    const has = (k: string) => o[k] !== undefined && o[k] !== null && o[k] !== '';
+    const r = await deps.finance.recordExpense(
+      ctx,
+      {
+        ...o,
+        expenseAccountId: has('expenseAccountId') ? o.expenseAccountId : draft.expenseAccountId,
+        amount: has('amount') ? o.amount : draft.amountKurus,
+        description: has('description') ? o.description : draft.description,
+        supplier: has('supplier') ? o.supplier : draft.supplier,
+      },
+      {
+        fp: { tender: tenderId },
+        expenseLink: { type: 'tender', id: tenderId, label: `İhale: ${t.title}`.slice(0, 200) },
+        async build({ transaction, expense }): Promise<WorkLinkWrite> {
+          if (!expense) throw new Error('gider kaydi yok');
+          // Her denemede guncel ihale: bu arada baska gider baglandiysa ikinci gider yazilmaz.
+          const cur = await load(ctx, tenderId);
+          if (cur.status !== 'decided' || !cur.decision) throw new TenderError('invalid_state', 'Yalnızca karara bağlanmış ihale için gider kaydı oluşturulabilir');
+          if (cur.expense) throw new TenderError('conflict', 'Bu ihale için gider kaydı zaten oluşturuldu', { expenseId: cur.expense.expenseId });
+          const next: Tender = {
+            ...cur,
+            expense: { expenseId: expense.expenseId, transactionId: transaction.transactionId, amountKurus: expense.amount, date: expense.date, idempotencyKey: key, linkedAt: transaction.createdAt, linkedBy: ctx.userId },
+            updatedAt: transaction.createdAt,
+            updatedBy: ctx.userId,
+            version: cur.version + 1,
+          };
+          return {
+            replaceRecords: [{ item: next, expectedVersion: cur.version, label: `tender:${tenderId}` }],
+            auditDetails: { tender: { tenderId, quoteId: cur.decision.quoteId, decisionTotalKurus: cur.decision.totalKurus, amountDiffers: expense.amount !== cur.decision.totalKurus } },
+          };
+        },
+      },
+    );
+    return { tender: await detailView(ctx, await load(ctx, tenderId), 'manager'), expenseId: r.expense.expenseId, transactionId: r.transaction.transactionId, replayed: r.replayed };
+  }
+
+  // -------------------------------------------------------------------------
   // Soru / yorum (yayindaki ihalede: sakin sorar, yonetim yanitlar)
   // -------------------------------------------------------------------------
 
@@ -796,6 +889,7 @@ export function createTenderService(overrides: Partial<TenderServiceDeps> = {}) 
     addQuote,
     updateQuote,
     withdrawQuote,
+    createExpense,
     quoteDocument,
     comment,
     portalList,
