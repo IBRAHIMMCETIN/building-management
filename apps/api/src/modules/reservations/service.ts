@@ -30,6 +30,7 @@ import {
   type BookingStatus,
   BOOKING_STATUSES,
   type Facility,
+  type FeeQueueEntry,
   HOLDING_STATUSES,
   MAX_ACTIVE_PER_UNIT,
   MAX_ADVANCE_DAYS,
@@ -616,13 +617,22 @@ export function createReservationService(overrides: Partial<ReservationServiceDe
   // Sakin: rezervasyon
   // -------------------------------------------------------------------------
 
-  /** Daire basina sinira sayilanlar: aktorun gorme hakki olan (bkz. `entitled`) bitmemis rezervasyonlar. */
-  async function activeBookings(apartmentId: string, actor: Actor, unitId: string, facilityId: string, now: Date): Promise<Booking[]> {
+  /**
+   * Daire basina sinira sayilanlar: dairenin GUNCEL uyelerinin bitmemis (bekleyen / onayli)
+   * rezervasyonlari; aktorun gorme hakkindan bagimsizdir (sonradan eklenen hane uyesi de siniri
+   * asamaz). Daireden ayrilmis kisinin rezervasyonu yeni sakinin sinirina sayilmaz.
+   */
+  async function activeBookings(apartmentId: string, unitId: string, facilityId: string, now: Date): Promise<Booking[]> {
     const ids = await repo.listUnitBookingIds(apartmentId, unitId, new Date(now.getTime() - MAX_BOOKING_MINUTES * MINUTE).toISOString());
     const nowIso = now.toISOString();
-    return (ids.length ? await repo.getBookings(apartmentId, ids) : []).filter(
-      (b) => b.facilityId === facilityId && HOLDING_STATUSES.includes(b.status) && b.end > nowIso && entitled(actor, b),
-    );
+    const open = (ids.length ? await repo.getBookings(apartmentId, ids) : []).filter((b) => b.facilityId === facilityId && HOLDING_STATUSES.includes(b.status) && b.end > nowIso);
+    const day = today();
+    const current = new Map<string, boolean>();
+    for (const userId of new Set(open.map((b) => b.createdBy))) {
+      const ms = await deps.memberships.listMemberships(apartmentId, userId);
+      current.set(userId, ms.some((m) => m.apartmentId === apartmentId && m.unitId === unitId && activeOn(m, day)));
+    }
+    return open.filter((b) => current.get(b.createdBy));
   }
 
   /**
@@ -691,7 +701,7 @@ export function createReservationService(overrides: Partial<ReservationServiceDe
 
     for (let attempt = 1; ; attempt++) {
       const guard = await repo.getGuard(ctx.apartmentId, facilityId, unitId);
-      const active = await activeBookings(ctx.apartmentId, actor, unitId, facilityId, now);
+      const active = await activeBookings(ctx.apartmentId, unitId, facilityId, now);
       if (active.length >= facility.maxActivePerUnit) {
         throw new ReservationError('unprocessable', `Bu alan için daire başına en fazla ${facility.maxActivePerUnit} aktif rezervasyon yapılabilir`);
       }
@@ -963,7 +973,7 @@ export function createReservationService(overrides: Partial<ReservationServiceDe
 
     if (!HOLDING_STATUSES.includes(booking.status)) {
       // Yarida kalan ucret iadesi: yalnizca yonetim yeniden dener.
-      if (booking.fee.status === 'reversal_pending' && actor.kind === 'manager') return result(await reverseFee(ctx, booking));
+      if (booking.fee.status === 'reversal_pending' && actor.kind === 'manager') return result(await reverseFee(ctx, booking, { retry: true }));
       throw new ReservationError('invalid_state', 'Rezervasyon zaten iptal edilmiş veya reddedilmiş');
     }
     let reason: string | undefined;
@@ -992,10 +1002,6 @@ export function createReservationService(overrides: Partial<ReservationServiceDe
       at: ts,
       booking: { item: next, expectedVersion: version },
       release: booking.slots.map((s) => lockOf(ctx.apartmentId, booking, s, ts)),
-      // Iade tamamlanana kadar yonetimin iade kuyrugunda gorunur (okuma guncel ucret durumuna gore suzer).
-      ...(charged
-        ? { indexes: [{ ...reservationKeys.feeQueue(ctx.apartmentId, bookingId), entityType: 'RESERVATION_INDEX' as const, apartmentId: ctx.apartmentId, bookingId, facilityId: booking.facilityId, unitId: booking.unitId, start: booking.start }] }
-        : {}),
       audit: {
         apartmentId: ctx.apartmentId,
         action: 'reservation.cancel',
@@ -1004,7 +1010,7 @@ export function createReservationService(overrides: Partial<ReservationServiceDe
         details: { facilityId: booking.facilityId, unitId: booking.unitId, date: booking.date, from: booking.status, by: next.cancelKind, ...(charged ? { feeTransactionId: booking.fee.transactionId } : {}) },
       },
     });
-    return result(charged ? await reverseFee(ctx, next) : { booking: next });
+    return result(charged ? await reverseFee(ctx, next, { retry: false }) : { booking: next });
   }
 
   const REVERSAL_WARNING = 'Rezervasyon iptal edildi; ücret iadesi (ters kayıt) yapılamadı ve yönetimin iade kuyruğuna alındı.';
@@ -1012,9 +1018,10 @@ export function createReservationService(overrides: Partial<ReservationServiceDe
   /**
    * Tahakkuk edilmis ucretin Finans ters kaydi (idempotent: `REV_<islem>`; zaten ters kaydedildiyse
    * yalnizca rezervasyon isaretlenir). Iptal zaten yazilmistir: hicbir hata disari firlatilmaz; hata
-   * metni rezervasyona (`fee.error`) yazilir ve `warning` doner.
+   * metni rezervasyona (`fee.error`) yazilir, iade kuyruguna ACIK kayit eklenir ve `warning` doner.
+   * Kuyruktan yeniden deneme (`retry`) basarili olursa kuyruk kaydi `resolved` yapilir.
    */
-  async function reverseFee(ctx: ReservationContext, booking: Booking): Promise<{ booking: Booking; warning?: string }> {
+  async function reverseFee(ctx: ReservationContext, booking: Booking, opts: { retry: boolean }): Promise<{ booking: Booking; warning?: string }> {
     const txId = booking.fee.transactionId;
     let fee: Booking['fee'];
     try {
@@ -1031,17 +1038,30 @@ export function createReservationService(overrides: Partial<ReservationServiceDe
       fee = { ...booking.fee, status: 'reversal_pending', error: `Ücret iadesi (ters kayıt) yapılamadı: ${message ?? 'beklenmeyen hata'}`.slice(0, 300) };
     }
     const next: Booking = { ...booking, fee, ...touch(ctx, booking, stamp()) };
-    const warning = fee.status === 'reversal_pending' ? REVERSAL_WARNING : undefined;
+    const failed = fee.status === 'reversal_pending';
+    const warning = failed ? REVERSAL_WARNING : undefined;
     try {
-      await repo.write(ctx.apartmentId, { at: next.updatedAt, booking: { item: next, expectedVersion: booking.version } });
+      await repo.write(ctx.apartmentId, {
+        at: next.updatedAt,
+        booking: { item: next, expectedVersion: booking.version },
+        ...(failed ? { feeQueue: queueEntry(ctx, booking.bookingId, 'open', fee.error) } : opts.retry ? { feeQueue: queueEntry(ctx, booking.bookingId, 'resolved', 'Ters kayıt yapıldı') } : {}),
+      });
       return { booking: next, ...(warning ? { warning } : {}) };
     } catch (err) {
-      // Es zamanli guncelleme veya gecici hata: ters kayit idempotent; kayit iade kuyrugunda kalir.
+      // Es zamanli guncelleme veya gecici hata: ters kayit idempotent. Kayitli durum hala
+      // `reversal_pending` oldugundan kuyruga (en iyi caba) acik kayit yazilir; yeniden deneme isaretler.
       if (!(err instanceof ReservationConflictError)) console.error(err);
       const fresh = await repo.getBooking(ctx.apartmentId, booking.bookingId).catch(() => undefined);
-      const shown = fresh ?? next;
+      const shown = fresh ?? booking;
+      if (shown.fee.status === 'reversal_pending') {
+        await repo.write(ctx.apartmentId, { at: stamp(), feeQueue: queueEntry(ctx, booking.bookingId, 'open', fee.error ?? 'İade durumu kaydedilemedi') }).catch((e: unknown) => console.error(e));
+      }
       return { booking: shown, ...(shown.fee.status === 'reversal_pending' ? { warning: REVERSAL_WARNING } : {}) };
     }
+  }
+
+  function queueEntry(ctx: ReservationContext, bookingId: string, status: FeeQueueEntry['status'], note?: string): FeeQueueEntry {
+    return { ...reservationKeys.feeQueue(ctx.apartmentId, bookingId), entityType: 'RESERVATION_FEE_QUEUE', apartmentId: ctx.apartmentId, bookingId, status, at: stamp(), ...(note ? { note: note.slice(0, 300) } : {}) };
   }
 
   /**
@@ -1062,6 +1082,7 @@ export function createReservationService(overrides: Partial<ReservationServiceDe
     await write(ctx.apartmentId, {
       at: ts,
       booking: { item: next, expectedVersion: version },
+      feeQueue: queueEntry(ctx, bookingId, 'resolved', `Elle çözüldü: ${reason}`),
       audit: {
         apartmentId: ctx.apartmentId,
         action: 'reservation.fee_manual_resolve',

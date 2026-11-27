@@ -8,6 +8,7 @@ import {
   type Booking,
   type BookingIndex,
   type Facility,
+  type FeeQueueEntry,
   type ReservationIdempotency,
   type SlotLock,
   reservationKeys,
@@ -51,6 +52,8 @@ export type ReservationWrite = {
   guard?: { facilityId: string; unitId: string; expected: number };
   /** Indeksler yalnizca eklenir. */
   indexes?: BookingIndex[];
+  /** Iade kuyrugu kaydi (acik / cozuldu; kosulsuz Put, silme yok). */
+  feeQueue?: FeeQueueEntry;
   idempotency?: ReservationIdempotency;
   outbox?: DomainEvent[];
   audit?: AuditDraft;
@@ -69,7 +72,7 @@ export type ReservationRepository = {
   listHeldSlots(apartmentId: string, facilityId: string, from: string, to: string): Promise<SlotLock[]>;
   getGuard(apartmentId: string, facilityId: string, unitId: string): Promise<number>;
   getIdempotency(apartmentId: string, key: string): Promise<ReservationIdempotency | undefined>;
-  /** Iade kuyrugundaki (ters kaydi yapilamamis) rezervasyon kimlikleri. */
+  /** Iade kuyrugundaki ACIK (ters kaydi yapilamamis, cozulmemis) rezervasyon kimlikleri. */
   listFeeQueue(apartmentId: string): Promise<string[]>;
   write(apartmentId: string, w: ReservationWrite): Promise<void>;
 };
@@ -151,12 +154,17 @@ export function createReservationRepository(): ReservationRepository {
     },
     getIdempotency: (apt, key) => getTenantItem<ReservationIdempotency>(reservationKeys.idempotency(apt, key)),
     async listFeeQueue(apt) {
-      const items = await queryTenantAll<BookingIndex>(apt, reservationKeys.feeQueuePrefix, { ConsistentRead: true });
-      return items.map((i) => i.bookingId);
+      const items = await queryTenantAll<FeeQueueEntry>(apt, reservationKeys.feeQueuePrefix, {
+        ConsistentRead: true,
+        FilterExpression: '#qs = :open',
+        filterNames: { '#qs': 'status' },
+        filterValues: { ':open': 'open' },
+      });
+      return items.filter((i) => i.status === 'open').map((i) => i.bookingId);
     },
     async write(apt, w) {
       const pk = tenantPk(apt);
-      for (const doc of [w.facility?.item, w.booking?.item, ...(w.hold ?? []), ...(w.release ?? []), ...(w.indexes ?? []), w.idempotency]) {
+      for (const doc of [w.facility?.item, w.booking?.item, ...(w.hold ?? []), ...(w.release ?? []), ...(w.indexes ?? []), w.feeQueue, w.idempotency]) {
         if (doc && doc.PK !== pk) throw new Error('Kiraci uyusmazligi');
       }
       const { client, tableName } = getDynamo();
@@ -229,6 +237,7 @@ export function createReservationRepository(): ReservationRepository {
         });
       }
       for (const i of w.indexes ?? []) add('version', { Put: { TableName: tableName, Item: i } });
+      if (w.feeQueue) add('version', { Put: { TableName: tableName, Item: w.feeQueue } });
       for (const o of toOutboxItems(w.outbox ?? [], w.at, apt)) {
         add('version', { Put: { TableName: tableName, Item: o, ConditionExpression: 'attribute_not_exists(PK)' } });
       }
