@@ -8,6 +8,7 @@ import { SupportBanner } from '@/components/support/SupportBanner';
 import { Button, Dialog } from '@/components/ui';
 import { useActiveApartmentName } from '@/hooks/useActiveContextLabel';
 import { useAuth } from '@/hooks/useAuth';
+import { usePortfolioAccess } from '@/hooks/usePortfolio';
 import { ROLE_LABELS } from '@/types/roles';
 import { navItemsFor, panelTitleFor } from './adminNav';
 import { cn } from '@/lib/cn';
@@ -17,7 +18,8 @@ import { PageSuspense } from '@/router/lazyPage';
 /** Masaustu yan menu ve mobil cekmece ayni listeyi kullanir. */
 function AdminNav({ onNavigate }: { onNavigate?: () => void }) {
   const { user } = useAuth();
-  const items = navItemsFor(user?.role);
+  const { showInNav } = usePortfolioAccess();
+  const items = navItemsFor(user?.role, showInNav);
   return (
     <nav aria-label="Yönetim menüsü" className="flex flex-col gap-1">
       {items.map(({ to, label, icon: Icon, end }) => (

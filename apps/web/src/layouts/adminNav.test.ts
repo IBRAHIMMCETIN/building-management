@@ -22,7 +22,7 @@ describe('yonetim menusu: platform ve apartman ayrimi', () => {
   });
 
   it('apartman rolleri platform ogelerini gormez; denetim/guvenlik yalnizca yetkili rollere', () => {
-    expect(navItemsFor('apartment_manager').map((n) => n.to)).toEqual(APARTMENT_NAV.filter((n) => n.to !== '/admin/my-tasks').map((n) => n.to));
+    expect(navItemsFor('apartment_manager').map((n) => n.to)).toEqual(APARTMENT_NAV.filter((n) => n.to !== '/admin/my-tasks' && !n.portfolioOnly).map((n) => n.to));
     // O1-5: Ariza & Bakim yonetim, gorevli, guvenlik ve denetciye; Islerim yalnizca gorevliye.
     expect(navItemsFor('building_staff').map((n) => n.to)).toEqual(expect.arrayContaining(['/admin/tickets', '/admin/my-tasks']));
     expect(navItemsFor('security_guard').map((n) => n.to)).toContain('/admin/tickets');

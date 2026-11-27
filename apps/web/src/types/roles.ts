@@ -66,6 +66,11 @@ export const GATE_ROLES = ['apartment_manager', 'management_company', 'security_
 export const GATE_MANAGE_ROLES = ['apartment_manager', 'management_company'] as const satisfies readonly Role[];
 /** Ariza & bakim v2 ekipman sicili (/admin/equipment): yonetim yazar; denetci ve bina gorevlisi okur. */
 export const EQUIPMENT_ROLES = ['apartment_manager', 'management_company', 'building_staff', 'observer'] as const satisfies readonly Role[];
+/**
+ * Yonetim firmasi portfoyu (/admin/portfolio): kullanicinin yonettigi / denetledigi tum apartmanlar.
+ * Aktif rol bunlardan biri olmali; listelenen apartmanlari API kullanicinin guncel yetkilerinden cikarir.
+ */
+export const PORTFOLIO_ROLES = ['apartment_manager', 'management_company', 'observer'] as const satisfies readonly Role[];
 /** Gorevli "Islerim" (/admin/my-tasks). */
 export const MY_TASKS_ROLES = ['building_staff'] as const satisfies readonly Role[];
 
