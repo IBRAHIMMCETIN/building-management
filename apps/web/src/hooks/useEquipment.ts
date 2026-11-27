@@ -1,6 +1,7 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMemo } from 'react';
 import { type Equipment, type EquipmentInput, type EquipmentListQuery, equipmentApi } from '@/lib/api/equipment';
-import type { EquipmentDocumentKind } from '@/lib/equipment/model';
+import { type EquipmentDocumentKind, equipmentDisplayName } from '@/lib/equipment/model';
 import { EQUIPMENT_ROLES, type Role } from '@/types/roles';
 import { useAuth } from './useAuth';
 import { unitKeys } from './useUnits';
@@ -51,18 +52,43 @@ export function useEquipmentHistory(id: string | null) {
   return useQuery({ queryKey: equipmentKeys.history(apt, id ?? ''), queryFn: ({ signal }) => equipmentApi.history(id ?? '', signal), enabled: enabled && !!id });
 }
 
+/** Secim listesinde sunucudan gelen en fazla kayit; fazlasi icin arama kutusu gosterilir. */
+export const EQUIPMENT_PICKER_LIMIT = 50;
+
 /**
- * Talep / bakim formlarindaki ekipman secimi: hizmetteki ekipman (calisiyor + devre disi).
- * Rolu ekipman sicilini okuyamayan (guvenlik) icin sorgu calismaz ve liste bos kalir.
+ * Talep / bakim formlarindaki ekipman secimi: hizmetteki ekipman (calisiyor + devre disi), sunucu
+ * tarafinda aranir (`q`). `total` sonuc sayisindan buyukse arayuz arama kutusunu gosterir; liste
+ * sessizce kesilmez. Rolu ekipman sicilini okuyamayan (guvenlik) icin sorgu calismaz.
  */
-export function useEquipmentOptions() {
+export function useEquipmentSearch(term: string) {
   const { apt, enabled } = useApt();
+  const q = term.trim();
   return useQuery({
-    queryKey: equipmentKeys.options(apt),
-    queryFn: ({ signal }) => equipmentApi.list({ limit: 200 }, signal).then((r) => r.items),
+    queryKey: [...equipmentKeys.options(apt), q],
+    queryFn: ({ signal }) => equipmentApi.list({ ...(q ? { q } : {}), limit: EQUIPMENT_PICKER_LIMIT }, signal),
     enabled,
     staleTime: 60_000,
+    placeholderData: keepPreviousData,
   });
+}
+
+/**
+ * Bagli ekipman adlari (durumdan bagimsiz, `ids=`): hizmetten cikmis ekipman "(hizmet dışı)"
+ * ekiyle. Bulunamayan / yetkisiz kimlik icin `undefined` (arayuz "Ekipman kaydı" yazar).
+ */
+export function useEquipmentNames(ids: readonly (string | null | undefined)[]) {
+  const { apt, enabled } = useApt();
+  const unique = [...new Set(ids.filter((x): x is string => !!x))].sort().slice(0, 100);
+  const names = useQuery({
+    queryKey: [...equipmentKeys.all(apt), 'names', unique],
+    queryFn: ({ signal }) => equipmentApi.list({ ids: unique.join(','), status: 'all', limit: 100 }, signal).then((r) => r.items),
+    enabled: enabled && unique.length > 0,
+    staleTime: 60_000,
+  });
+  return useMemo(() => {
+    const map = new Map((names.data ?? []).map((e) => [e.equipmentId, equipmentDisplayName(e)]));
+    return (id: string) => map.get(id);
+  }, [names.data]);
 }
 
 /** Ekipman, talep ve bakim ekranlari birlikte tazelenir (gecmis ve baglantilar). */

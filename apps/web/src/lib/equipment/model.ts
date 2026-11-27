@@ -71,6 +71,11 @@ export const EXPIRY_KIND_LABELS: Record<ExpiryKind, string> = {
   inspection: 'Periyodik kontrol',
 };
 
+/** Bagli ekipmanin gosterilen adi: hizmetten cikmissa "(hizmet dışı)" ekiyle. */
+export function equipmentDisplayName(e: { name: string; status: EquipmentStatus }): string {
+  return e.status === 'retired' ? `${e.name} (hizmet dışı)` : e.name;
+}
+
 /** "12 gün kaldı", "bugün", "5 gün geçti" (API `daysLeft`). */
 export function daysLeftText(daysLeft: number): string {
   if (daysLeft === 0) return 'bugün';

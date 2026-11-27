@@ -141,23 +141,35 @@ function EquipmentDetail({ equipment: e, onEdit, blockName }: { equipment: Equip
       )}
 
       <DocumentsSection equipment={e} />
-      <HistorySection equipmentId={e.equipmentId} />
+      <HistorySection equipmentId={e.equipmentId} retired={e.status === 'retired'} />
 
       {statusTo && <StatusDialog equipment={e} to={statusTo} onClose={() => setStatusTo(null)} />}
     </div>
   );
 }
 
-const STATUS_ACTION: Record<EquipmentStatus, string> = { active: 'Çalışıyor olarak işaretle', out_of_service: 'Devre dışı bırak', retired: 'Hizmetten çıkar' };
+/** Hizmetten cikan / cikacak ekipmana bagli aktif bakim sablonlari (yeni gorevler artik baglanmaz). */
+function LinkedTemplatesAlert({ templates }: { templates: { templateId: string; name: string }[] }) {
+  return (
+    <Alert>
+      {templates.length} aktif bakım şablonu bu ekipmana bağlı: {templates.map((t) => t.name).join(', ')}. Yeni görevler artık ekipmana bağlanmaz; şablonları Arıza & Bakım → Bakım şablonları’ndan başka ekipmana taşıyın veya arşivleyin.
+    </Alert>
+  );
+}
+
+const STATUS_ACTION: Record<EquipmentStatus, string> ={ active: 'Çalışıyor olarak işaretle', out_of_service: 'Devre dışı bırak', retired: 'Hizmetten çıkar' };
 
 function StatusDialog({ equipment, to, onClose }: { equipment: Equipment; to: EquipmentStatus; onClose: () => void }) {
   const status = useEquipmentStatus();
+  const history = useEquipmentHistory(equipment.equipmentId);
   const [note, setNote] = useState('');
   const required = to === 'retired';
+  const templates = history.data?.templates ?? [];
   return (
     <Dialog open onClose={onClose} title={`${equipment.name}: ${STATUS_ACTION[to]}`}>
       <div className="flex flex-col gap-4">
         {to === 'retired' && <p className="text-small text-muted">Kayıt silinmez; geçmişi ve belgeleri korunur. Yeni arıza veya bakım bu ekipmana bağlanamaz.</p>}
+        {to === 'retired' && templates.length > 0 && <LinkedTemplatesAlert templates={templates} />}
         <FormField label={required ? 'Gerekçe' : 'Not (isteğe bağlı)'}>
           <Textarea rows={3} value={note} onChange={(ev) => setNote(ev.target.value)} maxLength={500} />
         </FormField>
@@ -302,7 +314,7 @@ function DocumentForm({ equipment, onDone }: { equipment: Equipment; onDone: () 
   );
 }
 
-function HistorySection({ equipmentId }: { equipmentId: string }) {
+function HistorySection({ equipmentId, retired }: { equipmentId: string; retired: boolean }) {
   const { canReadCosts } = useEquipmentPermissions();
   const history = useEquipmentHistory(equipmentId);
   return (
@@ -314,8 +326,9 @@ function HistorySection({ equipmentId }: { equipmentId: string }) {
         <Alert tone="danger">{errorMessage(history.error)}</Alert>
       ) : (
         <>
+          {retired && history.data.templates.length > 0 && <LinkedTemplatesAlert templates={history.data.templates} />}
           <p className="text-small text-muted">
-            {history.data.counts.tickets} arıza ({history.data.counts.openTickets} açık) · {history.data.counts.maintenance} bakım görevi ({history.data.counts.maintenanceDone} tamamlandı)
+            Son {history.data.years ?? 5} yıl: {history.data.counts.tickets} arıza ({history.data.counts.openTickets} açık) · {history.data.counts.maintenance} bakım görevi ({history.data.counts.maintenanceDone} tamamlandı)
             {history.data.templates.length ? ` · şablon: ${history.data.templates.map((t) => t.name).join(', ')}` : ''}
           </p>
           {canReadCosts && history.data.costs && <CostTable costs={history.data.costs} />}

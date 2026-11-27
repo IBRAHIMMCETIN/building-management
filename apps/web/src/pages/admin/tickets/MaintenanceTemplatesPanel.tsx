@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { Alert, Badge, Button, Card, Dialog, FilterChips, FormField, Input, Select, Skeleton, Textarea } from '@/components/ui';
 import { useFinanceAccounts } from '@/hooks/useFinance';
 import { useArchiveMaintenanceTemplate, useCreateMaintenanceTemplate, useMaintenancePresets, useMaintenanceTemplates, useUpdateMaintenanceTemplate } from '@/hooks/useMaintenance';
+import { useEquipmentNames } from '@/hooks/useEquipment';
 import { useTicketPermissions } from '@/hooks/useTickets';
 import { errorMessage } from '@/lib/api/errors';
 import type { MaintenancePreset, MaintenanceTemplate, TemplateInput } from '@/lib/api/maintenance';
@@ -10,6 +11,7 @@ import { formatDate } from '@/lib/dates';
 import { MAX_KURUS, formatTRY, kurusToInput, parseTRYToKurus } from '@/lib/money';
 import { SCHEDULE_UNITS, type ScheduleUnit, istanbulToday, scheduleText } from '@/lib/maintenance/schedule';
 import { CATEGORY_LABELS, TICKET_CATEGORIES, type TicketCategory } from '@/lib/tickets/model';
+import { EquipmentSelect } from './EquipmentSelect';
 import { useTicketLabels } from './shared';
 
 const UNIT_LABELS: Record<ScheduleUnit, string> = { week: 'hafta', month: 'ay', year: 'yıl' };
@@ -22,6 +24,7 @@ export function MaintenanceTemplatesPanel({ onOpenTask: _onOpenTask }: { onOpenT
   const templates = useMaintenanceTemplates(status);
   const archive = useArchiveMaintenanceTemplate();
   const [editing, setEditing] = useState<MaintenanceTemplate | 'new' | null>(null);
+  const equipmentName = useEquipmentNames((templates.data ?? []).map((t) => t.equipmentId));
 
   return (
     <div className="flex flex-col gap-4">
@@ -51,7 +54,7 @@ export function MaintenanceTemplatesPanel({ onOpenTask: _onOpenTask }: { onOpenT
                   <p className="text-xs text-muted">
                     {CATEGORY_LABELS[t.category]}
                     {t.asset ? ` · ${t.asset}` : ''}
-                    {t.equipmentId && labels.equipmentName(t.equipmentId) !== t.asset ? ` · ekipman: ${labels.equipmentName(t.equipmentId) ?? 'Ekipman kaydı'}` : ''}
+                    {t.equipmentId && equipmentName(t.equipmentId) !== t.asset ? ` · ekipman: ${equipmentName(t.equipmentId) ?? 'Ekipman kaydı'}` : ''}
                   </p>
                 </div>
                 <Badge tone="accent">
@@ -135,8 +138,6 @@ function TemplateDialog({ template, onClose }: { template: MaintenanceTemplate |
   const [leadDays, setLeadDays] = useState(String(template?.leadDays ?? 7));
   const [legalNote, setLegalNote] = useState(template?.legalNote ?? '');
   const mutation = template ? update : create;
-  // Bagli ekipman hizmetten cikmis olabilir (secim listesinde yok): mevcut baglanti yine gosterilir.
-  const linkedMissing = !!template?.equipmentId && !labels.equipment.some((x) => x.equipmentId === template.equipmentId);
 
   const applyPreset = (id: string) => {
     setPreset(id);
@@ -205,21 +206,9 @@ function TemplateDialog({ template, onClose }: { template: MaintenanceTemplate |
         <FormField label="Ekipman / yer (isteğe bağlı)" hint="Örn. B Blok asansörü">
           <Input value={asset} onChange={(e) => setAsset(e.target.value)} maxLength={80} />
         </FormField>
-        {(labels.equipment.length > 0 || !!template?.equipmentId) && (
-          <div className="sm:col-span-2">
-            <FormField label="Ekipman kaydı (isteğe bağlı)" hint="Görevler ve görevden açılan arızalar ekipmanın geçmişinde görünür.">
-              <Select value={equipmentId} onChange={(e) => setEquipmentId(e.target.value)}>
-                <option value="">Bağlı değil</option>
-                {linkedMissing && <option value={template?.equipmentId}>{labels.equipmentName(template?.equipmentId ?? '') ?? 'Ekipman kaydı'}</option>}
-                {labels.equipment.map((x) => (
-                  <option key={x.equipmentId} value={x.equipmentId}>
-                    {x.name}
-                  </option>
-                ))}
-              </Select>
-            </FormField>
-          </div>
-        )}
+        <div className="sm:col-span-2">
+          <EquipmentSelect label="Ekipman kaydı (isteğe bağlı)" hint="Görevler ve görevden açılan arızalar ekipmanın geçmişinde görünür." value={equipmentId} onChange={(id) => setEquipmentId(id)} />
+        </div>
         <FormField label="Kategori" hint="Görevden açılan arızanın kategorisi.">
           <Select value={category} onChange={(e) => setCategory(e.target.value as TicketCategory)}>
             {TICKET_CATEGORIES.map((c) => (

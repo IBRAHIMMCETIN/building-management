@@ -5,7 +5,7 @@ import { PhotoPicker, uploadPhotos } from '@/components/tickets/PhotoPicker';
 import { PriorityBadge, SlaBadge, TicketStatusBadge } from '@/components/tickets/TicketBadges';
 import { TicketTimeline } from '@/components/tickets/TicketTimeline';
 import { Alert, Button, Dialog, FormField, Input, Select, Skeleton, Textarea } from '@/components/ui';
-import { useEquipmentPermissions } from '@/hooks/useEquipment';
+import { useEquipmentNames, useEquipmentPermissions } from '@/hooks/useEquipment';
 import { useAssignTicket, useCommentTicket, useEstimateTicket, useTicket, useTicketPermissions, useTransitionTicket, useUpdateTicket } from '@/hooks/useTickets';
 import { errorMessage } from '@/lib/api/errors';
 import { type Ticket, ticketsApi } from '@/lib/api/tickets';
@@ -22,6 +22,7 @@ import {
   locationText,
   noteRequired,
 } from '@/lib/tickets/model';
+import { EquipmentSelect } from './EquipmentSelect';
 import { EstimateCard } from './EstimateCard';
 import { WorkCostCard } from './WorkCostCard';
 import { type TicketLabels, useTicketLabels } from './shared';
@@ -47,6 +48,11 @@ function TicketDetail({ ticket, events }: { ticket: Ticket; events: Parameters<t
   const p = useTicketPermissions();
   const { canRead: canReadEquipment } = useEquipmentPermissions();
   const labels = useTicketLabels();
+  // Bagli ekipman ve zaman cizelgesindeki eski / yeni baglantilar (durumdan bagimsiz adlar).
+  const equipmentName = useEquipmentNames([
+    ticket.equipmentId,
+    ...events.flatMap((e) => (e.changes?.equipmentId ? e.changes.equipmentId.filter((v): v is string => typeof v === 'string') : [])),
+  ]);
   const estimate = useEstimateTicket(ticket.ticketId);
   const [action, setAction] = useState<TransitionAction | null>(null);
   const [editing, setEditing] = useState(false);
@@ -78,10 +84,10 @@ function TicketDetail({ ticket, events }: { ticket: Ticket; events: Parameters<t
             <dd>
               {canReadEquipment ? (
                 <Link to={`/admin/equipment?equipment=${encodeURIComponent(ticket.equipmentId)}`} className="text-accent underline-offset-2 hover:underline">
-                  {labels.equipmentName(ticket.equipmentId) ?? 'Ekipman kaydı'}
+                  {equipmentName(ticket.equipmentId) ?? 'Ekipman kaydı'}
                 </Link>
               ) : (
-                (labels.equipmentName(ticket.equipmentId) ?? 'Ekipman kaydı')
+                (equipmentName(ticket.equipmentId) ?? 'Ekipman kaydı')
               )}
             </dd>
           </>
@@ -121,7 +127,7 @@ function TicketDetail({ ticket, events }: { ticket: Ticket; events: Parameters<t
 
       <section className="flex flex-col gap-3">
         <h3 className="text-small font-semibold">Zaman çizelgesi</h3>
-        <TicketTimeline events={events} loadPhoto={loadPhoto} nameOf={labels.nameOf} equipmentName={labels.equipmentName} />
+        <TicketTimeline events={events} loadPhoto={loadPhoto} nameOf={labels.nameOf} equipmentName={equipmentName} />
       </section>
 
       {p.canCreate && ticket.status !== 'cancelled' && <CommentBox ticket={ticket} canInternal={p.canInternal} />}
@@ -289,7 +295,6 @@ function CommentBox({ ticket, canInternal }: { ticket: Ticket; canInternal: bool
 
 function EditDialog({ ticket, onClose }: { ticket: Ticket; onClose: () => void }) {
   const update = useUpdateTicket(ticket.ticketId);
-  const labels = useTicketLabels();
   const [title, setTitle] = useState(ticket.title);
   const [category, setCategory] = useState<TicketCategory>(ticket.category);
   const [priority, setPriority] = useState<TicketPriority>(ticket.priority);
@@ -305,8 +310,6 @@ function EditDialog({ ticket, onClose }: { ticket: Ticket; onClose: () => void }
       },
       { onSuccess: onClose },
     );
-  // Bagli ekipman hizmetten cikmis olabilir (secim listesinde yok): mevcut baglanti yine gosterilir.
-  const linkedMissing = !!ticket.equipmentId && !labels.equipment.some((e) => e.equipmentId === ticket.equipmentId);
   return (
     <Dialog open onClose={onClose} title={`${ticket.number}: bilgileri düzelt`}>
       <div className="flex flex-col gap-4">
@@ -331,19 +334,7 @@ function EditDialog({ ticket, onClose }: { ticket: Ticket; onClose: () => void }
             ))}
           </Select>
         </FormField>
-        {(labels.equipment.length > 0 || !!ticket.equipmentId) && (
-          <FormField label="Ekipman (isteğe bağlı)" hint="Arıza ekipmanın geçmişinde ve masraf toplamında görünür.">
-            <Select value={equipmentId} onChange={(e) => setEquipmentId(e.target.value)}>
-              <option value="">Bağlı değil</option>
-              {linkedMissing && <option value={ticket.equipmentId}>{labels.equipmentName(ticket.equipmentId ?? '') ?? 'Ekipman kaydı'}</option>}
-              {labels.equipment.map((e) => (
-                <option key={e.equipmentId} value={e.equipmentId}>
-                  {e.name}
-                </option>
-              ))}
-            </Select>
-          </FormField>
-        )}
+        <EquipmentSelect label="Ekipman (isteğe bağlı)" hint="Arıza ekipmanın geçmişinde ve masraf toplamında görünür." value={equipmentId} onChange={(id) => setEquipmentId(id)} />
         {update.isError && <Alert tone="danger">{errorMessage(update.error)}</Alert>}
         <div className="flex justify-end gap-2">
           <Button variant="ghost" onClick={onClose}>

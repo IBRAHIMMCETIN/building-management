@@ -1,5 +1,5 @@
 import { zodResolver } from '@hookform/resolvers/zod';
-import { useEffect } from 'react';
+import { type ChangeEvent, useEffect } from 'react';
 import { useForm } from 'react-hook-form';
 import { Alert, Button, Dialog, FormField, Input, Select, Textarea } from '@/components/ui';
 import { useSaveEquipment } from '@/hooks/useEquipment';
@@ -39,6 +39,14 @@ export function EquipmentDialog({ open, onClose, equipment, blocks, onSaved }: P
 
   const conflict = save.error instanceof ApiError && save.error.status === 409;
   const close = () => !save.isPending && onClose();
+  const currentSupplier = equipment?.serviceCompany?.supplierAccountId;
+  const supplierField = form.register('supplierAccountId');
+  /** Cari degisince firma adi yeni carinin adiyla yenilenir (elle degistirilebilir); cari kaldirilinca ad kalir. */
+  const changeSupplier = async (ev: ChangeEvent<HTMLSelectElement>) => {
+    await supplierField.onChange(ev);
+    const picked = (suppliers.data ?? []).find((a) => a.accountId === ev.target.value);
+    if (picked) form.setValue('serviceName', picked.name, { shouldDirty: true });
+  };
 
   return (
     <Dialog open={open} onClose={close} title={equipment ? 'Ekipmanı düzenle' : 'Yeni ekipman'} variant="wide">
@@ -94,8 +102,12 @@ export function EquipmentDialog({ open, onClose, equipment, blocks, onSaved }: P
           <legend className="text-small font-medium">Servis firması</legend>
           <div className="grid gap-4 sm:grid-cols-2">
             <FormField label="Tedarikçi carisi (isteğe bağlı)" error={errors.supplierAccountId?.message} hint="Finans’taki tedarikçi hesabına bağlar.">
-              <Select {...form.register('supplierAccountId')}>
+              <Select {...supplierField} onChange={(ev) => void changeSupplier(ev)}>
                 <option value="">—</option>
+                {/* Bagli cari Finans'ta pasife alinmis olabilir: secili kalir, kayit engellenmez. */}
+                {currentSupplier && !(suppliers.data ?? []).some((a) => a.accountId === currentSupplier) && (
+                  <option value={currentSupplier}>{`${equipment?.serviceCompany?.name ?? 'Tedarikçi carisi'} (pasif)`}</option>
+                )}
                 {(suppliers.data ?? []).map((a) => (
                   <option key={a.accountId} value={a.accountId}>
                     {a.name}

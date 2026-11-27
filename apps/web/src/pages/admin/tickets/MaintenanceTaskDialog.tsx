@@ -6,6 +6,7 @@ import { PhotoPicker, uploadPhotos } from '@/components/tickets/PhotoPicker';
 import { TaskStatusBadge } from '@/components/tickets/TicketBadges';
 import { Alert, Button, Dialog, FormField, Input, Select, Skeleton, Textarea } from '@/components/ui';
 import { useIdempotencyKey } from '@/hooks/useIdempotencyKey';
+import { useEquipmentNames } from '@/hooks/useEquipment';
 import { useMaintenanceTask, useTaskActions } from '@/hooks/useMaintenance';
 import { useTicketPermissions } from '@/hooks/useTickets';
 import { errorMessage } from '@/lib/api/errors';
@@ -48,6 +49,7 @@ export function TaskBody({ task, onOpenTicket }: { task: MaintenanceTask; onOpen
   const p = useTicketPermissions();
   const labels = useTicketLabels();
   const act = useTaskActions(task.taskId);
+  const equipmentName = useEquipmentNames([task.equipmentId]);
   const [mode, setMode] = useState<'complete' | 'skip' | 'ticket' | null>(null);
   const [suggest, setSuggest] = useState(false);
   const has = (a: string) => task.actions.includes(a);
@@ -69,7 +71,7 @@ export function TaskBody({ task, onOpenTicket }: { task: MaintenanceTask; onOpen
             <dt className="text-muted">Ekipman</dt>
             <dd>
               <Link to={`/admin/equipment?equipment=${encodeURIComponent(task.equipmentId)}`} className="text-accent underline-offset-2 hover:underline">
-                {labels.equipmentName(task.equipmentId) ?? 'Ekipman kaydı'}
+                {equipmentName(task.equipmentId) ?? 'Ekipman kaydı'}
               </Link>
             </dd>
           </>

@@ -6,8 +6,10 @@ import { useCreateTicket, useTicketPermissions } from '@/hooks/useTickets';
 import { useBlocks } from '@/hooks/useUnits';
 import { errorMessage } from '@/lib/api/errors';
 import { ticketsApi } from '@/lib/api/tickets';
+import type { Equipment } from '@/lib/api/equipment';
 import { EQUIPMENT_TICKET_CATEGORY } from '@/lib/equipment/model';
 import { CATEGORY_LABELS, PRIORITY_LABELS, TICKET_CATEGORIES, TICKET_PRIORITIES, type TicketCategory, type TicketPriority } from '@/lib/tickets/model';
+import { EquipmentSelect } from './EquipmentSelect';
 import { useTicketLabels } from './shared';
 
 /** Yonetim / gorevli / guvenlik talep acma: daire ici (yonetim, gorevli) veya ortak alan. */
@@ -43,9 +45,8 @@ export function NewTicketDialog({ open, onClose, onCreated }: { open: boolean; o
   };
 
   /** v2: ekipman secilince bos alan, blok ve "Diger" kategori ekipmandan onerilir. */
-  const chooseEquipment = (id: string) => {
+  const chooseEquipment = (id: string, e?: Equipment) => {
     setEquipmentId(id);
-    const e = labels.equipment.find((x) => x.equipmentId === id);
     if (!e) return;
     if (kind === 'common' && !area.trim()) setArea((e.location ? `${e.name} · ${e.location}` : e.name).slice(0, 80));
     if (kind === 'common' && !blockId && e.blockId) setBlockId(e.blockId);
@@ -124,18 +125,9 @@ export function NewTicketDialog({ open, onClose, onCreated }: { open: boolean; o
             </FormField>
           </>
         )}
-        {canUnit && labels.equipment.length > 0 && (
+        {canUnit && (
           <div className="sm:col-span-2">
-            <FormField label="Ekipman (isteğe bağlı)" hint="Arıza ekipmanın geçmişinde ve masraf toplamında görünür.">
-              <Select value={equipmentId} onChange={(e) => chooseEquipment(e.target.value)}>
-                <option value="">Bağlı değil</option>
-                {labels.equipment.map((e) => (
-                  <option key={e.equipmentId} value={e.equipmentId}>
-                    {e.name}
-                  </option>
-                ))}
-              </Select>
-            </FormField>
+            <EquipmentSelect label="Ekipman (isteğe bağlı)" hint="Arıza ekipmanın geçmişinde ve masraf toplamında görünür." value={equipmentId} onChange={chooseEquipment} />
           </div>
         )}
         <FormField label="Kategori">

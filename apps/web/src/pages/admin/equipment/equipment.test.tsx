@@ -6,7 +6,7 @@ vi.mock('@/lib/api/client', () => ({ apiClient: {} }));
 import { type Equipment, type EquipmentHistory, equipmentSchema, historySchema } from '@/lib/api/equipment';
 import { ticketSchema } from '@/lib/api/tickets';
 import { taskSchema } from '@/lib/api/maintenance';
-import { daysLeftText, equipmentLocationText } from '@/lib/equipment/model';
+import { daysLeftText, equipmentDisplayName, equipmentLocationText } from '@/lib/equipment/model';
 import { navItemsFor } from '@/layouts/adminNav';
 import { equipmentDefaults, equipmentFormSchema, toEquipmentInput } from './schemas';
 
@@ -81,6 +81,8 @@ describe('model ve semalar', () => {
     expect(daysLeftText(-5)).toBe('5 gün geçti');
     expect(equipmentLocationText({ blockId: 'b1', location: 'bodrum' }, () => 'A Blok')).toBe('A Blok · bodrum');
     expect(equipmentLocationText({}, () => undefined)).toBe('Site geneli');
+    expect(equipmentDisplayName({ name: 'Jeneratör', status: 'retired' })).toBe('Jeneratör (hizmet dışı)');
+    expect(equipmentDisplayName({ name: 'Jeneratör', status: 'out_of_service' })).toBe('Jeneratör');
   });
 
   it('talep ve gorev: ekipman baglantisi ve tahmini tutar ayristirilir; sakin gorunumunde alanlar yok', () => {
@@ -118,11 +120,25 @@ vi.mock('@/hooks/useEquipment', () => ({
   useEquipmentStatus: () => status,
   useAddEquipmentDocument: () => mutation(),
   useArchiveEquipmentDocument: () => mutation(),
+  useSaveEquipment: () => save,
+  useEquipmentSearch: (term: string) => ({ data: search(term) }),
+  useEquipmentNames: () => (id: string) => (id === 'e-old' ? 'Eski jeneratör (hizmet dışı)' : undefined),
 }));
+vi.mock('@/hooks/useFinance', () => ({ useFinanceAccounts: () => ({ data: [{ accountId: 'sup-new', name: 'Kuzey Servis', type: 'payable', status: 'active' }] }) }));
 vi.mock('react-router', () => ({ Link: ({ children, to }: { children: unknown; to: string }) => <a href={to}>{children as never}</a> }));
+const save = { ...mutation(), mutateAsync: vi.fn().mockResolvedValue({ equipment: { equipmentId: 'e1' } }) };
+let searchTerms: string[] = [];
+const search = (term: string) => {
+  searchTerms.push(term);
+  const all = Array.from({ length: 60 }, (_, i) => equipment({ equipmentId: `e${i}`, name: `Ekipman ${i}` }));
+  const hits = term ? all.filter((e) => e.name.endsWith(term)) : all.slice(0, 2);
+  return { items: hits, total: term ? hits.length : all.length, expiringCount: 0 };
+};
 
 const { EquipmentDetailPanel } = await import('./EquipmentDetailPanel');
+const { EquipmentDialog } = await import('./EquipmentDialog');
 const { EstimateCard } = await import('../tickets/EstimateCard');
+const { EquipmentSelect } = await import('../tickets/EquipmentSelect');
 
 let container: HTMLDivElement;
 afterEach(() => {
@@ -205,5 +221,50 @@ describe('tahmini tutar karti', () => {
     expect(container.textContent).toContain('₺500,00');
     expect(container.textContent).toContain('Ali');
     expect(byText('Düzenle')).toBeUndefined();
+  });
+
+  it('sifir tutar gecerli bir tahmindir', async () => {
+    const m = mutation();
+    await render(<EstimateCard canEdit version={2} mutation={m} nameOf={() => undefined} />);
+    await act(async () => byText('Tutar gir')?.click());
+    await type(container.querySelector('input'), '0');
+    const saveButton = byText('Kaydet') as HTMLButtonElement;
+    expect(saveButton.disabled).toBe(false);
+    await act(async () => saveButton.click());
+    expect(m.mutate).toHaveBeenCalledWith({ version: 2, amount: 0 }, expect.anything());
+  });
+});
+
+describe('ekipman secimi ve tedarikci', () => {
+  it('sunucu aramasi: liste kesilince arama kutusu ve sayi; bagli hizmet disi ekipman secili gorunur', async () => {
+    searchTerms = [];
+    const onChange = vi.fn();
+    await render(<EquipmentSelect label="Ekipman" value="e-old" onChange={onChange} />);
+    expect(container.textContent).toContain('60 kayıttan 2 tanesi gösteriliyor');
+    const options = [...container.querySelectorAll('option')].map((o) => o.textContent);
+    expect(options).toEqual(['Bağlı değil', 'Eski jeneratör (hizmet dışı)', 'Ekipman 0', 'Ekipman 1']);
+    await type(container.querySelector('input[aria-label="Ekipman ara"]'), '42');
+    expect(searchTerms.at(-1)).toBe('42');
+    expect([...container.querySelectorAll('option')].map((o) => o.textContent)).toContain('Ekipman 42');
+    const select = container.querySelector('select') as HTMLSelectElement;
+    await act(async () => {
+      select.value = 'e42';
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    expect(onChange).toHaveBeenCalledWith('e42', expect.objectContaining({ name: 'Ekipman 42' }));
+  });
+
+  it('pasif tedarikci carisi secili kalir; cari degisince firma adi yenilenir', async () => {
+    const e = equipment({ serviceCompany: { supplierAccountId: 'sup-old', name: 'Yıldız Asansör' } });
+    await render(<EquipmentDialog open onClose={vi.fn()} equipment={e} blocks={[]} />);
+    const supplier = [...container.querySelectorAll('select')].find((s) => [...s.options].some((o) => o.value === 'sup-new')) as HTMLSelectElement;
+    expect(supplier.value).toBe('sup-old');
+    expect([...supplier.options].map((o) => o.textContent)).toContain('Yıldız Asansör (pasif)');
+    await act(async () => {
+      supplier.value = 'sup-new';
+      supplier.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    const name = [...container.querySelectorAll('input')].find((i) => i.value === 'Kuzey Servis');
+    expect(name).toBeDefined();
   });
 });

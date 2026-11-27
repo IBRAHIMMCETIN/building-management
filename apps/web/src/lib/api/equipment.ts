@@ -91,6 +91,7 @@ export type HistoryItem = z.infer<typeof historyItemSchema>;
 
 export const historySchema = z.object({
   equipmentId: z.string(),
+  years: z.number().int().optional(),
   name: z.string(),
   items: z.array(historyItemSchema),
   counts: z.object({ tickets: z.number().int(), openTickets: z.number().int(), maintenance: z.number().int(), maintenanceDone: z.number().int() }),
@@ -134,6 +135,8 @@ export type EquipmentListQuery = {
   blockId?: string;
   warrantyWithin?: string;
   expiring?: 'true';
+  /** Virgulle en fazla 100 kimlik (ad cozumleme; durumdan bagimsiz `status: 'all'` ile). */
+  ids?: string;
   cursor?: string;
   limit?: number;
 };
@@ -149,7 +152,7 @@ export const equipmentApi = {
   history: (id: string, signal?: AbortSignal) => apiClient.get(`${E}/${enc(id)}/history`, { signal, schema: historySchema }),
   create: (input: EquipmentInput) => apiClient.post(E, input, { schema: one }),
   update: (id: string, input: EquipmentInput & { version: number }) => apiClient.put(`${E}/${enc(id)}`, input, { schema: one }),
-  setStatus: (id: string, input: { version: number; status: Equipment['status']; note?: string }) => apiClient.post(`${E}/${enc(id)}/status`, input, { schema: one }),
+  setStatus: (id: string, input: { version: number; status: Equipment['status']; note?: string }) => apiClient.post(`${E}/${enc(id)}/status`, input, { schema: one.extend({ linkedTemplates: z.array(z.object({ templateId: z.string(), name: z.string() })).default([]), warning: z.string().optional() }) }),
   document: (id: string, documentId: string) => apiClient.get(`${E}/${enc(id)}/documents/${enc(documentId)}`, { schema: signedDownloadSchema }),
   archiveDocument: (id: string, documentId: string, version: number) =>
     apiClient.post(`${E}/${enc(id)}/documents/${enc(documentId)}/archive`, { version }, { schema: one }),

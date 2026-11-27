@@ -17,7 +17,8 @@ export function EstimateCard({ estimate, canEdit, version, mutation, nameOf }: {
   const [amount, setAmount] = useState(estimate ? kurusToInput(estimate.amount) : '');
   const [note, setNote] = useState(estimate?.note ?? '');
   if (!estimate && !canEdit) return null;
-  const kurus = amount.trim() ? parseTRYToKurus(amount) : null;
+  // Sifir gecerli bir tahmindir ("ucretsiz yapilabilir").
+  const kurus = amount.trim() ? parseTRYToKurus(amount, { allowZero: true }) : null;
   const valid = kurus !== null && kurus <= MAX_KURUS;
   const save = (input: EstimateInput) => mutation.mutate(input, { onSuccess: () => setEditing(false) });
 
