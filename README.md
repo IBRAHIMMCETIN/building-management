@@ -2,7 +2,7 @@
 
 Türkiye'deki apartman, site ve profesyonel yönetim firmaları için çok kiracılı (multi-tenant), sunucusuz bir site ve aidat yönetim platformu. Kat Mülkiyeti Kanunu'na uygun alt cari (malik / kiracı) ayrımı, dağıtım anahtarlarıyla toplu tahakkuk ve değişmez (append-only) finansal defter üzerine kuruludur.
 
-> **Durum (26.11.2026):** Aktif geliştirme; tüm işler `main` dalında. `dev` yığını AWS `eu-north-1`'de, web Cloudflare Pages'te (https://building-management-apx.pages.dev) çalışıyor. Tamamlananlar: backend çekirdeği, yönetici / sakin / görevli ekranları, kıstelyevm, belge deposu, toplu aktarım, online ödeme (iyzico + PayTR, P1–P5; **canlıya alınmadı**), taşınmada cari kapama, transactional outbox + bildirim hattı, güvenlik G1–G2 (SHA-256 zincirli denetim günlüğü, zorunlu MFA) ve arayüzü, banka ekstresi B1–B3.5, Finans 2.1–2.4 (hisseli mülkiyet, mahsup / yapılandırma, sayaç-endeks dağıtımı, dönem kapanışı / bütçe / raporlar), Faz 1 ekip-rol yönetimi, O1 arıza / bakım, büyük siteler için arka plan toplu işleri (`bulkjobs`, 5.000 bölüme kadar) ve prod yapılandırma şablonu (`infra/prod.tfvars`, korkuluklar). **Alan adı `yonetimsistemim.com` henüz satın alınmadı**; buna bağlı SES e-posta, G3 (Cloudflare WAF) ve canlı ödeme aktivasyonu planlanan / bekleyen adımlardır. `prod` yığını henüz dağıtılmadı ([infra/PROD_DEPLOY.md](infra/PROD_DEPLOY.md), [Canlıya Geçiş Kontrol Listesi](#canlıya-geçiş-kontrol-listesi)). Ayrıntılar için [Yol Haritası](#yol-haritası).
+> **Durum (26.11.2026):** Aktif geliştirme; tüm işler `main` dalında. `dev` yığını AWS `eu-north-1`'de, web Cloudflare Pages'te (https://building-management-apx.pages.dev) çalışıyor. Tamamlananlar: backend çekirdeği, yönetici / sakin / görevli ekranları, kıstelyevm, belge deposu, toplu aktarım, online ödeme (iyzico + PayTR, P1–P5; **canlıya alınmadı**), taşınmada cari kapama, transactional outbox + bildirim hattı, güvenlik G1–G2 (SHA-256 zincirli denetim günlüğü, zorunlu MFA) ve arayüzü, banka ekstresi B1–B3.5, Finans 2.1–2.4 (hisseli mülkiyet, mahsup / yapılandırma, sayaç-endeks dağıtımı, dönem kapanışı / bütçe / raporlar), Faz 1 ekip-rol yönetimi, O1 arıza / bakım, Y1 anket / oylama (dal `feature/y1-anket-oylama`), büyük siteler için arka plan toplu işleri (`bulkjobs`, 5.000 bölüme kadar) ve prod yapılandırma şablonu (`infra/prod.tfvars`, korkuluklar). **Alan adı `yonetimsistemim.com` henüz satın alınmadı**; buna bağlı SES e-posta, G3 (Cloudflare WAF) ve canlı ödeme aktivasyonu planlanan / bekleyen adımlardır. `prod` yığını henüz dağıtılmadı ([infra/PROD_DEPLOY.md](infra/PROD_DEPLOY.md), [Canlıya Geçiş Kontrol Listesi](#canlıya-geçiş-kontrol-listesi)). Ayrıntılar için [Yol Haritası](#yol-haritası).
 
 ---
 
@@ -224,7 +224,7 @@ terraform -chdir=infra test
 
 Terraform testleri `command = plan` ile çalışır. Plan aşamasında bilinmesi gereken hesaplanmış değerler (ör. SQS ARN'i) `override_resource { override_during = plan }` ile sabitlenir.
 
-Kapsam (26.11.2026): API 67, web 67 test dosyası; Terraform 36 plan senaryosu (prod korkulukları ve alan adı bağlama dahil). Yüksek hacim testi `apps/api/test/bulk-jobs-scale.test.ts`: 1.200 bağımsız bölümlü sitede toplu aidat ve sayaç onayı parça parça (continuation) tamamlanır; worker kesintisi, yinelenen / eşzamanlı mesaj ve yeniden denemede çift kayıt oluşmaz, kuruş mutabakatı ve mizan korunur.
+Kapsam (27.11.2026): API 73, web 70 test dosyası; Terraform 36 plan senaryosu (prod korkulukları ve alan adı bağlama dahil). Yüksek hacim testi `apps/api/test/bulk-jobs-scale.test.ts`: 1.200 bağımsız bölümlü sitede toplu aidat ve sayaç onayı parça parça (continuation) tamamlanır; worker kesintisi, yinelenen / eşzamanlı mesaj ve yeniden denemede çift kayıt oluşmaz, kuruş mutabakatı ve mizan korunur.
 
 ---
 
@@ -349,6 +349,8 @@ Tüm uçlar `/api` altındadır. `GET /api/health` dışındakiler JWT ile korun
 | `residents` | `/api/residents` | Apartmanın kişileri (ad / e-posta, denetçiye maskeli) ve `POST /invite`: e-postayla Cognito kullanıcısı bul/oluştur + üyelik ata |
 | `apartment-roles` | `/api/apartment-roles` | Apartman bazlı personel ve yönetici rolleri. Faz 1 (Ekip): `POST /invite` `{ email, fullName, role, startDate?, endDate? }` (Cognito kullanıcısını bulur/oluşturur; pasif kaydı yeniden etkinleştirir), `POST /:userId/:role/end` `{ version, reason, endDate? }` (gerekçe denetime yazılır), `POST /:userId/:role/resend-invite`. **Son yönetici koruması:** güncel `apartment_manager`/`management_company` kalmayacaksa bitirme, pasife alma ve bitişi öne çekme 409. Denetçi e-postaları maskeli görür. Web: `/admin/team`, `Hesabım` (`/admin/account`, `/app/account`) |
 | `announcements` | `/api/announcements` | Duyuru oluşturma, onay, arşiv |
+| `polls` | `/api/polls` | Y1 anket / oylama (yazma: `apartment_manager`, `management_company`; okuma: + `observer`): `GET /?status=draft\|scheduled\|open\|closed\|cancelled\|all`, `POST /` `{ title, description?, options[2-10], audience?: owners\|residents, weighting?: per_unit\|land_share, secret? = true, resultsVisibleBeforeClose? = false, opensAt?, closesAt }` (taslak), `GET\|PATCH /:id` (yalnızca taslak), `POST /:id/publish` `{ version }`, `POST /:id/close` `{ version, reason }` (erken kapatma), `POST /:id/cancel` `{ version }` (taslak), `GET /:id/results` (seçenek başına bölüm sayısı + arsa payı toplamı, katılım, kullanılan oyların salt çoğunluğu), `GET /:id/participation` (bölüm bazında katılım; gizli oylamada seçim yok). Denetim: `poll.publish`, `poll.close`, `poll.cancel`; yayında `POLL_PUBLISHED` outbox olayı |
+| `portal/polls` | `/api/portal/polls` | Sakin: `GET /?unitId=` (dairemin görebildiği oylamalar, oy hakkı, kendi oyum), `GET /:id?unitId=` (sonuç: bittiyse veya açık oylamada ara sonuç açıksa), `POST /:id/vote?unitId=` `{ optionId }` (bölümün tek oyu; sonraki oy öncekinin yerine geçer) |
 | `tickets` | `/api/tickets` | Faz 3 O1 arıza / talep (yönetim, görevli, güvenlik, denetçi): `GET /` (filtreler: `status`, `assignee=me\|none\|<id>`, `category`, `priority`, `unitId`, `blockId`, `overdue`, `q`, `from`/`to`, `cursor`), `GET /board` (durum sütunları + SLA özeti), `GET /assignees`, `POST /` `{ idempotencyKey, title, description, category, priority?, location, photos? }`, `GET\|PATCH /:id`, `POST /:id/assign\|status\|comments`, `POST /photos/upload-url`, `GET /:id/photos/:photoId`, `GET /similar`. Masraf (O1-4; yönetim yazar, denetçi okur): `GET\|POST /:id/costs` (`mode: expense` yeni gider / `mode: link` var olan gider), `POST /:id/costs/:expenseId/unlink` `{ reason }`, `POST /:id/charges` `{ idempotencyKey, confirm: true, liableParty, amount, dueDate }` (daire içi talepte daireye yansıtma), `GET /costs/expense-options` |
 | `portal/tickets` | `/api/portal/tickets` | Sakin: açtığım + dairemin talepleri (yalnızca herkese açık olaylar), `POST /` (öncelik seçilmez), `GET /similar`, `POST /:id/comments`, `POST /:id/confirm` `{ version, rating?, note? }`, `/reopen` `{ version, note }`, `/cancel` `{ version }`, fotoğraf yükleme / görüntüleme |
 | `maintenance` | `/api/maintenance` | Periyodik bakım: `GET /presets`, `GET\|POST /templates`, `GET\|PUT /templates/:id`, `POST /templates/:id/archive`, `GET /tasks`, `GET /calendar?month=`, `GET /tasks/:id`, `POST /tasks/:id/assign\|start\|complete\|skip\|ticket`, fotoğraflar; masraf uçları `/tasks/:id/costs` (talep ile aynı sözleşme). Görevler `maintenance_tasks` işiyle (04:10) idempotent üretilir; `ticket_maintenance` (07:30) çözülen talebi `autoCloseDays` sonra kapatır ve günlük operasyon özetini (`OPERATIONS_DIGEST`) yayınlar |
@@ -379,7 +381,7 @@ Yedi rol: `platform_admin`, `management_company`, `apartment_manager`, `resident
 | Yönetim paneli ekranı | `apartment_manager` | `management_company` | `observer` | `building_staff` | `security_guard` | `platform_admin` |
 | --- | :-: | :-: | :-: | :-: | :-: | :-: |
 | Genel Bakış (`/admin`) | ✓ | ✓ | ✓ (salt okur) | ✓ (bekleyen işler) | ✓ | — (platform paneli) |
-| Daireler, Finans, Duyurular, Toplu Aktarım, Ayarlar (`OFFICE_ROLES`) | ✓ | ✓ | ✓ (salt okur) | — | — | — |
+| Daireler, Finans, Duyurular, Oylamalar (`/admin/polls`), Toplu Aktarım, Ayarlar (`OFFICE_ROLES`) | ✓ | ✓ | ✓ (salt okur) | — | — | — |
 | Sayaç Dağıtımı (`/admin/meters`) | ✓ | ✓ | ✓ (salt okur) | — | — | — |
 | Sayaç Okuma (`/admin/meter-readings`) | ✓ | ✓ | — | ✓ | — | — |
 | Arıza & Bakım (`/admin/tickets`) | ✓ | ✓ | ✓ (salt okur) | ✓ | ✓ (kendi talepleri) | — |
@@ -466,7 +468,7 @@ API Gateway sınırı istemci başına değil, rota başınadır: arka ucu ve ma
 - **Atomiklik ve idempotency:** Çoklu kayıtlar `TransactWriteItems` ile yazılır; tekrar gelen istekler parmak izi + `attribute_not_exists` koşullu yazımla etkisiz kalır.
 - **Defter denetimi:** Her gece `ledger_audit` hesap bakiyelerini `LE#` toplamlarıyla, işlem dengesini, kapama kilidini, makbuz sayacını ve tamamlanmış online ödemelerin defter kaydını karşılaştırır. Finans 2.4 ile kapalı her ayın snapshot'ını defterden yeniden hesaplar (`fiscal_period_drift`), kapanıştan sonra kapalı aya yazılmış işlemi (`fiscal_closed_write`), kilit/dönem tutarsızlığını ve 30 dakikadan uzun süren yarım kapanışı (`fiscal_lock_mismatch`) raporlar. O1-4 ile arıza talebi ve bakım görevlerinin masraf özetini aktif masraf kilitleri (`EXPLINK#`) ve defterle karşılaştırır (`ticket_cost_mismatch`, `explink_orphan`). Sapma otomatik düzeltilmez; yalnızca platform alarmı üretir (düzeltme ters kayıtla).
 - **Online tahsilat komisyonu (sakine yansıtılmaz):** Sakin borcunun tamamını öder, ek ücret ödemez (5464 s. Kanun m.17). Komisyonu apartman öder: ödeme anında her kalemin alt üye işyeri payı = tutar − platform ücreti (varsayılan %0,75, aşağı yuvarlanır) − POS tahmini (sözleşme oranı yukarı yuvarlanır; sabit ücret işlem başına bir kez, ilk kalemde). Tahsilatla aynı `TransactWriteItems` içinde "Online Tahsilat Komisyon Gideri" (`exp-online-collection-fee`, referans `ONLINE-FEE:<niyet>`) yazılır; böylece `online-collection` bakiyesi apartmana aktarılacak tutara eşittir. Sağlayıcının gerçek komisyonu ve tahminle farkı niyetin `settlement` kaydına yazılır, apartman defterini değiştirmez. Payı komisyonu karşılamayan çok küçük tutar online ödenemez (400).
-- **Transactional outbox:** Defter ve belge yazımından doğan olaylar (`DUE_GENERATED`, `PAYMENT_RECEIVED`, `LATE_FEE_POSTED`, `ANNOUNCEMENT_PUBLISHED`) doğrudan yayınlanmaz; aynı `TransactWriteItems` içinde `OUTBOX#<eventId>` kaydı olarak yazılır (`events/outbox.ts`). Yazım yoksa olay da yoktur; toplu tahakkukta her kalemin olayı kendi kaydıyla birlikte yazılır.
+- **Transactional outbox:** Defter ve belge yazımından doğan olaylar (`DUE_GENERATED`, `PAYMENT_RECEIVED`, `LATE_FEE_POSTED`, `ANNOUNCEMENT_PUBLISHED`, `POLL_PUBLISHED`) doğrudan yayınlanmaz; aynı `TransactWriteItems` içinde `OUTBOX#<eventId>` kaydı olarak yazılır (`events/outbox.ts`). Yazım yoksa olay da yoktur; toplu tahakkukta her kalemin olayı kendi kaydıyla birlikte yazılır.
 
 ---
 
@@ -725,6 +727,17 @@ API Gateway sınırı istemci başına değil, rota başınadır: arka ucu ve ma
 - [x] Web sayfa bazlı code-splitting (`React.lazy` + `Suspense`, yeni sürümde eksik parça için tek seferlik yenileme), vendor parçaları, `qrcode` dinamik yükleme
 - [x] Gider tarih dizini (GSI1 `EXPDATE#<apartmentId>`): `listRecentExpenses` ile sayaç fatura seçicisi ve talep masrafı seçicisi tüm giderleri okumaz; eski kayıtlar için `backfill:expense-index`
 
+**Y1 — Anket / oylama (dal `feature/y1-anket-oylama`)**
+
+- [x] `polls` modülü: taslak → yayın → (erken) kapatma, taslak iptali; yayındaki oylamanın sorusu, seçenekleri ve kuralları değişmez, silme yok (`status`). Erken kapatma gerekçe ister; yayın / kapatma / iptal denetim zincirine yazılır (`poll.*`)
+- [x] Oy hakkı ve ağırlık mülkiyet modülünün oy listesinden (`buildVotingRoll`) oy listesi tarihinde (`rollDate` = açılış günü, Europe/Istanbul; yayında sabitlenir): kat malikleri oylamasında listedeki tüm paydaşlar, sakin oylamasında ayrıca o gün geçerli tüm üyelikler (kiracı dahil). Tarihten sonra malik olan kişi oylamayı görür ama oy veremez
+- [x] Bölüm başına tek oy: `POLLVOTE#<pollId>#<unitId>`; ilk oy `attribute_not_exists`, sonraki oy (hisseli mülkiyette başka paydaş dahil) sürüm koşullu üstüne yazım ve oylama bitene kadar öncekinin yerine geçer. Her oy aynı `TransactWriteItems` içinde oylamanın açık olduğunu `ConditionCheck` ile doğrular; erken kapatmayla yarışan oy 409
+- [x] Sonuç: seçenek başına bölüm sayısı ve arsa payı toplamı (BigInt, bölüm paydalarının EKOK'u ortak payda), katılım (bölüm / arsa payı) ve seçilen ağırlığa göre **kullanılan oyların salt çoğunluğu** (yarıdan fazlası; eşitlikte kazanan yok). Arsa payı ağırlıklı oylama, arsa payı eksik bölüm varsa yayınlanamaz (422)
+- [x] Gizli oylama (varsayılan): sürerken seçenek dağılımı kimseye gösterilmez (canlı sayım + bölüm bazında katılım bireysel oyu ele verirdi), bölüm bazında seçim hiçbir evrede gösterilmez, oylar denetim zincirine yazılmaz. Açık oylamada yönetici bölüm bazında seçimi görür; ara sonuç yalnızca açık oylamada oy verenlere açılabilir
+- [x] `POLL_PUBLISHED` outbox olayı → bildirim worker'ı (kat malikleri oylamasında malikler, sakin oylamasında tüm üyeler) ve "Yeni oylama" e-postası; SNS bildirim aboneliği filtresine eklendi (**`infra` apply gerekir**)
+- [x] Web: yönetici `/admin/polls` (durum filtresi, taslak penceresi, onaylı yayın / iptal / gerekçeli erken kapatma, sonuç ve bölüm bazında katılım), sakin `/app/oylamalar` ve `/app/oylamalar/:pollId` (oy verme / değiştirme, "son oy geçerli" açıklaması, kendi oyum, sonuçlar); iki düzende menü Duyurular'ın yanında
+- [x] Testler: `apps/api/test/polls.test.ts` (roller, tenant izolasyonu, tek oy / paydaş değiştirmesi, arsa payı matematiği, salt çoğunluk, gizlilik, kapalı oylama, tarih penceresi, oy listesi tarihi, DynamoDB koşulları); web `pages/admin/polls/schemas.test.ts`, `pages/resident/polls/residentPolls.test.tsx`
+
 ### Veri düzeltme betikleri
 
 - `npm run backfill:expense-index -w @bm/api -- --verify` (P1-b): tüm gider kayıtlarının dizin anahtarlarını beklenen değerle karşılaştırır, hiçbir şey yazmaz; dizinsiz / uyuşmayan kayıt varsa çıkış kodu 2. Tarih aralıklı gider sorgusu (`GET /api/finance/expenses`) yalnızca dizindeki kayıtları görür.
@@ -756,7 +769,7 @@ API Gateway sınırı istemci başına değil, rota başınadır: arka ucu ve ma
 **Platform ve operasyon**
 
 - [ ] Eski soneksiz `building-management` (prod) yığını hakkında karar ve ilk `prod` sürümü
-- [ ] Ziyaretçi QR, anket/oylama, rezervasyon, ihale
+- [ ] Ziyaretçi QR, rezervasyon, ihale
 - [ ] Arıza & bakım v2: ekipman sicili (seri no, garanti, servis firması), görevlinin tahmini tutar notu
 - [ ] Yönetim firması portföyü, abonelik/lisans
 - [ ] Cloudflare Pages Terraform modülü
@@ -776,7 +789,7 @@ API Gateway sınırı istemci başına değil, rota başınadır: arka ucu ve ma
 
 **Ürün modülleri (onaylı sıra: O1 sonrası)**
 
-- [ ] Y1 — Genel kurul / anket / oylama (oy ağırlığı hazırlığı `GET /api/ownership/voting-roll` mevcut)
+- [x] Y1 — Anket / oylama (bkz. [Tamamlanan](#tamamlanan))
 - [ ] Güvenlik görevlisi ekranları: plaka sorgu, misafir / kurye QR geçiş (rol var, ekran yok)
 - [ ] Rezervasyon (ortak alan), ihale
 - [ ] Yönetim firması portföyü (çoklu apartman paneli), abonelik / lisans
