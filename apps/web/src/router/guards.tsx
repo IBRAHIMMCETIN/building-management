@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { Navigate, Outlet, useLocation } from 'react-router';
 import { useAuth } from '@/hooks/useAuth';
 import { MFA_SETUP_PATH } from '@/lib/auth/mfa';
@@ -45,8 +46,12 @@ export function RedirectIfAuthenticated() {
   return <Navigate to={from ?? homePathForRole(user.role)} replace />;
 }
 
-export function RootRedirect() {
+/**
+ * Kok adres: oturumu olmayan ziyaretciye tanitim sayfasi (`landing`; verilmezse eskisi gibi /login),
+ * oturumu olana rolunun acilis sayfasi (degismedi).
+ */
+export function RootRedirect({ landing }: { landing?: ReactNode }) {
   const { user } = useAuth();
-  if (!user) return <Navigate to="/login" replace />;
+  if (!user) return landing ?? <Navigate to="/login" replace />;
   return <Navigate to={user.role ? homePathForRole(user.role) : '/select-context'} replace />;
 }

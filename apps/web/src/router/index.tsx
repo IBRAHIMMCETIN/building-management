@@ -1,4 +1,6 @@
+import { type ReactNode, Suspense } from 'react';
 import { createBrowserRouter } from 'react-router';
+import { FullPageSpinner } from '@/components/ui';
 import { AdminLayout } from '@/layouts/AdminLayout';
 import { AuthLayout } from '@/layouts/AuthLayout';
 import { ResidentLayout } from '@/layouts/ResidentLayout';
@@ -58,12 +60,38 @@ const NewTicketWizard = lazyPage(() => import('@/pages/resident/tickets/NewTicke
 const MyReservationsPage = lazyPage(() => import('@/pages/resident/reservations/MyReservationsPage'), 'MyReservationsPage');
 const MyTendersPage = lazyPage(() => import('@/pages/resident/tenders/MyTendersPage'), 'MyTendersPage');
 const MyTenderDetailPage = lazyPage(() => import('@/pages/resident/tenders/MyTenderDetailPage'), 'MyTenderDetailPage');
+// Herkese acik tanitim sayfasi ve hukuki metinler (uygulama kodundan ayri parcalar).
+const LandingPage = lazyPage(() => import('@/pages/public/landing/LandingPage'), 'LandingPage');
+const KvkkPage = lazyPage(() => import('@/pages/public/legal/LegalPage'), 'KvkkPage');
+const PrivacyPage = lazyPage(() => import('@/pages/public/legal/LegalPage'), 'PrivacyPage');
+const TermsPage = lazyPage(() => import('@/pages/public/legal/LegalPage'), 'TermsPage');
+const DemoRequestsPage = lazyPage(() => import('@/pages/platform/demo-requests/DemoRequestsPage'), 'DemoRequestsPage');
+
+/** Tam sayfa (yerlesimsiz) herkese acik ekranlar: parca inerken ortada yukleniyor. */
+function PublicSuspense({ children }: { children: ReactNode }) {
+  return <Suspense fallback={<FullPageSpinner />}>{children}</Suspense>;
+}
 
 export const router = createBrowserRouter([
   {
     errorElement: <RouteErrorPage />,
     children: [
-      { index: true, element: <RootRedirect /> },
+      {
+        index: true,
+        element: (
+          <RootRedirect
+            landing={
+              <PublicSuspense>
+                <LandingPage />
+              </PublicSuspense>
+            }
+          />
+        ),
+      },
+      // Hukuki metinler (taslak): oturum gerektirmez.
+      { path: 'kvkk', element: <PublicSuspense><KvkkPage /></PublicSuspense> },
+      { path: 'gizlilik', element: <PublicSuspense><PrivacyPage /></PublicSuspense> },
+      { path: 'kullanim-kosullari', element: <PublicSuspense><TermsPage /></PublicSuspense> },
       {
         element: <RedirectIfAuthenticated />,
         children: [
@@ -178,6 +206,7 @@ export const router = createBrowserRouter([
                   { path: 'payments/transfers', element: <PlatformPayoutsPage /> },
                   { path: 'payments/invoices', element: <PlatformInvoicesPage /> },
                   { path: 'users', element: <PlatformUsersPage /> },
+                  { path: 'demo-requests', element: <DemoRequestsPage /> },
                 ],
               },
             ],

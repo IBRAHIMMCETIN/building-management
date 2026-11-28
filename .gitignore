@@ -1,6 +1,7 @@
 # Node / build
 node_modules/
 dist/
+dist-prerender/
 release/
 release.tar.gz
 

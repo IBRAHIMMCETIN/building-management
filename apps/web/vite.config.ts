@@ -3,13 +3,18 @@ import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import { defineConfig } from 'vite';
 
-export default defineConfig({
+export default defineConfig(({ isSsrBuild }) => ({
   plugins: [react(), tailwindcss()],
   resolve: {
     // Proje kokune gore: '@/lib/api' -> '<apps/web>/src/lib/api'
     alias: { '@': '/src' },
   },
+  // Tanitim sayfasi on-render derlemesi (`vite build --ssr src/prerender.tsx`, bkz. scripts/prerender.mjs):
+  // calisma alani paketi (TS kaynak) pakete gomulur; diger bagimliliklar Node'dan yuklenir.
+  ssr: { noExternal: ['@bm/shared'] },
   build: {
+    // On-render derlemesi yalnizca gecici bir JS modulu uretir; public/ kopyalanmaz.
+    copyPublicDir: !isSsrBuild,
     rolldownOptions: {
       output: {
         // Sayfalar router'da React.lazy ile ayri parcalardir. Uzun omurlu kutuphaneler (sik
@@ -43,4 +48,4 @@ export default defineConfig({
       VITE_COGNITO_TOKEN_USE: 'id',
     },
   },
-});
+}));

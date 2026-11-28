@@ -3,14 +3,52 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>YÖNESİST</title>
-    <meta name="description" content="YÖNESİST: bina ve toplu konut yönetim sistemi. Aidat, tahsilat, gider, arıza/talep ve duyurular tek yerde." />
+    <title>YÖNESİST | Site, apartman ve toplu konut yönetim sistemi</title>
+    <meta name="description" content="Aidat ve tahsilat, banka ekstresi eşleştirme, arıza ve bakım, güvenlik kapısı, anket ve genel kurul: apartman, site ve toplu konut yönetimi tek yerde." />
+    <link rel="canonical" href="https://building-management-apx.pages.dev/" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="YÖNESİST" />
+    <meta property="og:locale" content="tr_TR" />
+    <meta property="og:url" content="https://building-management-apx.pages.dev/" />
+    <meta property="og:title" content="YÖNESİST | Site, apartman ve toplu konut yönetim sistemi" />
+    <meta property="og:description" content="Aidat ve tahsilat, arıza ve bakım, güvenlik kapısı, anket ve genel kurul işleri tek yerde. Yönetici, sakin, görevli ve güvenlik aynı kayıtlarla çalışır." />
+    <meta property="og:image" content="https://building-management-apx.pages.dev/brand/icon-512.png" />
+    <meta property="og:image:alt" content="YÖNESİST logosu" />
+    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:title" content="YÖNESİST | Site, apartman ve toplu konut yönetim sistemi" />
+    <meta name="twitter:description" content="Aidat ve tahsilat, arıza ve bakım, güvenlik kapısı, anket ve genel kurul işleri tek yerde." />
+    <meta name="twitter:image" content="https://building-management-apx.pages.dev/brand/icon-512.png" />
     <meta name="theme-color" content="#122a4e" media="(prefers-color-scheme: light)" />
     <meta name="theme-color" content="#09090b" media="(prefers-color-scheme: dark)" />
     <link rel="icon" href="/favicon.ico" sizes="any" />
     <link rel="icon" type="image/png" sizes="32x32" href="/brand/favicon-32.png" />
     <link rel="apple-touch-icon" href="/brand/apple-touch-icon.png" />
     <link rel="manifest" href="/manifest.webmanifest" />
+    <!--
+      Tanitim sayfasi derlemede #root'a on-render edilir (scripts/prerender.mjs). Uygulama rotalarinda
+      ve oturum izi olan tarayicida bu icerik boyanmadan gizlenir; karar src/lib/landingBoot.ts ile ayni.
+    -->
+    <style>
+      html[data-app-shell] #root[data-prerender] {
+        display: none;
+      }
+    </style>
+    <script id="boot-mode">
+      (function () {
+        var d = document.documentElement;
+        if (location.pathname !== '/') return d.setAttribute('data-app-shell', '');
+        try {
+          var s = window.localStorage;
+          if (s.getItem('bm.mock-session')) return d.setAttribute('data-app-shell', '');
+          for (var i = 0; i < s.length; i++) {
+            var k = s.key(i) || '';
+            if (k.indexOf('CognitoIdentityServiceProvider.') === 0 && /\.LastAuthUser$/.test(k)) return d.setAttribute('data-app-shell', '');
+          }
+        } catch (e) {
+          // Depo kapaliysa (gizli pencere vb.) tanitim sayfasi gosterilir; giris yine /login'den.
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

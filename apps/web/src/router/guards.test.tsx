@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { AuthContext, type AuthContextValue } from '@/context/AuthContext';
 import type { Role } from '@/types/roles';
 import { APARTMENT_ADMIN_ROLES, OFFICE_ROLES, PLATFORM_ROLES } from '@/types/roles';
-import { RequireRole } from './guards';
+import { RequireRole, RootRedirect } from './guards';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -100,5 +100,46 @@ describe('yonetim paneli yonlendirmesi', () => {
     expect(await landOn('/admin/finance', 'apartment_manager', 'apt-1', true)).toBe('/mfa-setup');
     expect(await landOn('/admin/payments', 'platform_admin', undefined, true)).toBe('/mfa-setup');
     expect(await landOn('/admin', undefined, undefined, true)).toBe('/select-context');
+  });
+});
+
+describe('kok adres (/)', () => {
+  async function landOnRoot(user: { role?: Role } | null) {
+    const auth = {
+      user: user ? { sub: 'u1', exp: 0, ...(user.role ? { role: user.role, apartmentId: 'apt-1' } : {}) } : null,
+      mfaSetupRequired: false,
+    } as unknown as AuthContextValue;
+    const router = createMemoryRouter(
+      [
+        { index: true, element: <RootRedirect landing={<p data-testid="where">tanıtım</p>} /> },
+        { path: '*', element: <Where /> },
+      ],
+      { initialEntries: ['/'] },
+    );
+    const host = document.createElement('div');
+    document.body.append(host);
+    const root = createRoot(host);
+    await act(async () => {
+      root.render(
+        <AuthContext value={auth}>
+          <RouterProvider router={router} />
+        </AuthContext>,
+      );
+    });
+    const where = host.querySelector('[data-testid="where"]')?.textContent;
+    await act(async () => root.unmount());
+    host.remove();
+    return where;
+  }
+
+  it('oturumu olmayan ziyaretci tanitim sayfasini gorur (giris ekranina yonlenmez)', async () => {
+    expect(await landOnRoot(null)).toBe('tanıtım');
+  });
+
+  it('giris yapmis kullanici bugunku gibi rolunun acilis sayfasina, rolsuz oturum baglam secimine gider', async () => {
+    expect(await landOnRoot({ role: 'resident' })).toBe('/app');
+    expect(await landOnRoot({ role: 'apartment_manager' })).toBe('/admin');
+    expect(await landOnRoot({ role: 'platform_admin' })).toBe('/admin/apartments');
+    expect(await landOnRoot({})).toBe('/select-context');
   });
 });
