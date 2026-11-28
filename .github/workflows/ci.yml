@@ -32,8 +32,9 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
       - run: npm ci
-      - run: npm run typecheck
-      - run: npm test
+      # Mobil (apps/mobile) ayri iste (mobile); her calisma alani tek yerde denetlenir.
+      - run: npm run typecheck --workspace @bm/api --workspace @bm/web --workspace @bm/shared
+      - run: npm test --workspace @bm/api --workspace @bm/web --workspace @bm/shared
       # Web derlemesi production modunda: VITE_AUTH_MODE=mock yasak oldugu icin sahte
       # Cognito degerleriyle derlenir (yalnizca derlenebilirlik kontrolu; yayinlanmaz).
       - name: Web build
@@ -44,11 +45,20 @@ jobs:
           VITE_COGNITO_USER_POOL_ID: eu-north-1_ci
           VITE_COGNITO_USER_POOL_CLIENT: ci-client
 
-  # Mobil uygulama (apps/mobile, Expo) ve ortak paket (packages/shared). EAS derlemesi YOK
-  # (Expo hesabi / imza gerekmez); Metro paketlemesi web hedefiyle denetlenir.
+  # Mobil uygulama (apps/mobile, Expo). EAS derlemesi YOK (Expo hesabi / imza gerekmez); Metro
+  # paketlemesi Android (yalnizca native modullerle: Amplify RN, SecureStore) ve web hedefiyle
+  # denetlenir (Android SDK gerekmez; JS paketi + Hermes bytecode).
   mobile:
-    name: Mobil (typecheck, test, Metro paketi)
+    name: Mobil (typecheck, test, Metro paketleri)
     runs-on: ubuntu-latest
+    env:
+      CI: "1"
+      # Sahte Cognito degerleriyle production paketi (yalnizca derlenebilirlik; yayinlanmaz).
+      EXPO_PUBLIC_AUTH_MODE: cognito
+      EXPO_PUBLIC_API_URL: https://api.example.invalid
+      EXPO_PUBLIC_COGNITO_REGION: eu-north-1
+      EXPO_PUBLIC_COGNITO_USER_POOL_ID: eu-north-1_ci
+      EXPO_PUBLIC_COGNITO_USER_POOL_CLIENT: ci-client
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -56,16 +66,11 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
       - run: npm ci
-      - run: npm run typecheck --workspace @bm/shared --workspace @bm/mobile
-      - run: npm test --workspace @bm/shared --workspace @bm/mobile
-      # Sahte Cognito degerleriyle production paketi (yalnizca derlenebilirlik; yayinlanmaz).
-      - name: Metro paketi (web hedefi)
-        run: npx expo export --platform web
+      - run: npm run typecheck --workspace @bm/mobile
+      - run: npm test --workspace @bm/mobile
+      - name: Metro paketi (Android)
+        run: npx expo export --platform android --output-dir dist/android
         working-directory: apps/mobile
-        env:
-          CI: "1"
-          EXPO_PUBLIC_AUTH_MODE: cognito
-          EXPO_PUBLIC_API_URL: https://api.example.invalid
-          EXPO_PUBLIC_COGNITO_REGION: eu-north-1
-          EXPO_PUBLIC_COGNITO_USER_POOL_ID: eu-north-1_ci
-          EXPO_PUBLIC_COGNITO_USER_POOL_CLIENT: ci-client
+      - name: Metro paketi (web)
+        run: npx expo export --platform web --output-dir dist/web
+        working-directory: apps/mobile
