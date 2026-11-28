@@ -34,7 +34,9 @@ export function NewPassDialog({ open, onClose, units, limits, onCreated }: { ope
     setNote('');
     setError(null);
   };
+  // Kapatilip yeniden acilan form yeni bir istektir: anahtar yenilenir (ayni acilistaki tekrar ayni anahtar).
   const close = () => {
+    renew();
     reset();
     onClose();
   };
