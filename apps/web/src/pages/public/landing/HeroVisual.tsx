@@ -1,4 +1,4 @@
-import { CircleCheck } from 'lucide-react';
+import { Check, CircleCheck } from 'lucide-react';
 import { Card } from '@/components/ui';
 import { cn } from '@/lib/cn';
 import { PhoneFrame, RESIDENT_TABS, ReferenceMark, ResidentPortalScreen, SAMPLE_REFERENCE, SampleBadge } from './PhoneVisual';
@@ -6,7 +6,8 @@ import { PhoneFrame, RESIDENT_TABS, ReferenceMark, ResidentPortalScreen, SAMPLE_
 /*
  * Kahraman alanindaki urun gorseli: bir havalenin yolu. Sakin telefonda IBAN'i ve kendi referans
  * kodunu (R4T7KD) kopyalar; yonetim panelinde banka ekstresindeki ayni kodlu satir "A Blok 12"
- * dairesine eslesmis gorunur. Altta 4 blok, 216 bagimsiz bolum: pencereler dairelerdir, renk bu ayin
+ * dairesine ONERILIR (urunde oldugu gibi: kod eslesmesi yalnizca oneridir, odeme yonetici satir satir
+ * veya toplu onaylayinca islenir). Altta 4 blok, 216 bagimsiz bolum: pencereler dairelerdir, renk bu ayin
  * aidat durumudur (isim yok: borclu isimleri hicbir yerde gosterilmez). Uygulamanin kendi kart, rozet
  * ve renk token'lariyla cizilir; veriler ornektir ve sabittir (on-render HTML'i ile ilk render ayni).
  */
@@ -21,7 +22,7 @@ const BLOCKS = [
   { name: 'C', seed: 7 },
   { name: 'D', seed: 2 },
 ] as const;
-/** Ekstrede eslesen ornek odemenin dairesi: A Blok 12. */
+/** Ekstrede onerilen ornek odemenin dairesi: A Blok 12 (onay bekledigi icin henuz "Bekliyor"). */
 const MATCHED = { block: 'A', index: 11 } as const;
 
 function unitState(seed: number, index: number): UnitState {
@@ -32,7 +33,7 @@ function unitState(seed: number, index: number): UnitState {
 
 const blocks = BLOCKS.map((b) => ({
   ...b,
-  units: Array.from({ length: FLOORS * UNITS_PER_FLOOR }, (_, i) => (b.name === MATCHED.block && i === MATCHED.index ? 'paid' : unitState(b.seed, i))),
+  units: Array.from({ length: FLOORS * UNITS_PER_FLOOR }, (_, i) => (b.name === MATCHED.block && i === MATCHED.index ? 'pending' : unitState(b.seed, i))),
 }));
 const allUnits = blocks.flatMap((b) => b.units);
 const charged = allUnits.filter((u) => u !== 'empty').length;
@@ -50,12 +51,13 @@ const LEGEND: readonly { state: UnitState; label: string }[] = [
   { state: 'empty', label: 'Boş' },
 ];
 
-type StatementLine = { date: string; text: string; amount: string; match?: string };
+/** Ekstre satiri: referans koduyla oneri (onay bekler), onaylanip islenmis, kodsuz (elle eslenecek). */
+type StatementLine = { id: string; text: string; amount: string; state: 'suggested' | 'posted' | 'manual'; unit?: string };
 
 const STATEMENT: readonly StatementLine[] = [
-  { date: '12.11', text: 'KASIM AİDAT', amount: '₺1.500,50', match: 'A Blok 12' },
-  { date: '12.11', text: 'EFT M2Q9XC AİDAT', amount: '₺1.500,50', match: 'C Blok 4' },
-  { date: '13.11', text: 'HAVALE KASIM AYI', amount: '₺1.350,00' },
+  { id: 'oneri', text: 'AİDAT', amount: '₺1.500,50', state: 'suggested', unit: 'A Blok 12' },
+  { id: 'islendi', text: 'EFT M2Q9XC AİDAT', amount: '₺1.500,50', state: 'posted', unit: 'C Blok 4' },
+  { id: 'kodsuz', text: 'HAVALE AİDAT ÖDEMESİ', amount: '₺1.350,00', state: 'manual' },
 ];
 
 function ManagerPanel() {
@@ -72,29 +74,43 @@ function ManagerPanel() {
       <div className="flex flex-col gap-3">
         <div className="flex items-baseline justify-between gap-3">
           <p className="text-small font-semibold text-text">Banka ekstresi</p>
-          <p className="text-xs text-muted">2 ödeme eşleşti, 1 ödeme sizi bekliyor</p>
+          <p className="text-xs text-muted">Bugün yüklendi: 1 öneri onayınızı bekliyor</p>
         </div>
         <ul className="flex flex-col divide-y divide-border rounded-lg border border-border bg-surface">
-          {STATEMENT.map((line, i) => (
-            <li key={line.text} className="flex items-start justify-between gap-3 px-3 py-2.5">
+          {STATEMENT.map((line) => (
+            <li key={line.id} className={cn('flex items-start justify-between gap-3 px-3 py-2.5', line.state === 'suggested' && 'bg-accent/5')}>
               <div className="flex min-w-0 flex-col gap-1">
                 <p className="truncate font-mono text-xs text-text-secondary">
-                  {line.date} {i === 0 ? <>EFT <ReferenceMark /> </> : null}
+                  {line.state === 'suggested' ? (
+                    <>
+                      EFT <ReferenceMark />{' '}
+                    </>
+                  ) : null}
                   {line.text}
                 </p>
-                {line.match ? (
+                {line.state === 'suggested' && <p className="text-xs font-medium text-text">Öneri: {line.unit}</p>}
+                {line.state === 'posted' && (
                   <p className="flex items-center gap-1 text-xs font-medium text-success">
                     <CircleCheck className="size-3.5 shrink-0" />
-                    {line.match} ile eşleşti
+                    Onaylandı, {line.unit} hesabına işlendi
                   </p>
-                ) : (
+                )}
+                {line.state === 'manual' && (
                   <p className="flex items-center gap-1.5 text-xs font-medium text-text-secondary">
                     <span className="size-2 shrink-0 rounded-full bg-brand-orange" />
                     Kod yok, elle eşleyin
                   </p>
                 )}
               </div>
-              <p className="shrink-0 text-small font-semibold text-text tabular-nums">{line.amount}</p>
+              <div className="flex shrink-0 flex-col items-end gap-1.5">
+                <p className="text-small font-semibold text-text tabular-nums">{line.amount}</p>
+                {line.state === 'suggested' && (
+                  <span className="inline-flex items-center gap-1 rounded-md bg-primary px-2.5 py-1 text-xs font-medium text-on-primary">
+                    <Check className="size-3.5" />
+                    Onayla
+                  </span>
+                )}
+              </div>
             </li>
           ))}
         </ul>
@@ -102,7 +118,7 @@ function ManagerPanel() {
 
       <div className="flex flex-col gap-3">
         <div className="flex items-baseline justify-between gap-3">
-          <p className="text-small font-semibold text-text">Kasım aidatı</p>
+          <p className="text-small font-semibold text-text">Bu ayın aidatı</p>
           <p className="text-xs text-muted">
             {blocks.length} blok, {allUnits.length} bağımsız bölüm
           </p>
@@ -162,8 +178,8 @@ export function HeroVisual({ className }: { className?: string }) {
         </div>
       </div>
       <figcaption className="text-xs text-muted">
-        Örnek veri: sakin {SAMPLE_REFERENCE} referans koduyla havale yapar; banka ekstresi yüklenince ödeme A Blok 12’ye eşleşir ve dairesi
-        “Ödendi” olur.
+        Örnek veri: sakin {SAMPLE_REFERENCE} referans koduyla havale yapar; banka ekstresi yüklenince ödeme A Blok 12’ye önerilir, yönetici
+        onaylayınca işlenir ve daire “Ödendi” olur.
       </figcaption>
     </figure>
   );

@@ -5,7 +5,7 @@ import { act } from 'react';
 import { createRoot, hydrateRoot } from 'react-dom/client';
 import { renderToString } from 'react-dom/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { FAQS, HERO, NAV_LINKS, PILOT, SECTION_IDS, STEPS, TRUST } from './content';
+import { AUDIENCES, FAQS, HERO, MOBILE, NAV_LINKS, PILOT, SECTION_IDS, STEPS, TRUST } from './content';
 import { DemoRequestForm, SEND_FAILED_MESSAGE, TOO_MANY_REQUESTS_MESSAGE } from './DemoRequestForm';
 import { LandingPage } from './LandingPage';
 
@@ -95,7 +95,7 @@ describe('tanitim sayfasi', () => {
     const nav = container.querySelector('nav[aria-label="Sayfa bölümleri"]')!;
     const hrefs = [...nav.querySelectorAll('a')].map((a) => a.getAttribute('href'));
     expect(hrefs).toEqual(NAV_LINKS.map((l) => l.href));
-    expect([...nav.querySelectorAll('a')].map((a) => a.textContent)).toEqual(['Nasıl çalışır', 'Kimler için', 'Özellikler', 'Mobil', 'Güven ve uyum', 'SSS']);
+    expect([...nav.querySelectorAll('a')].map((a) => a.textContent)).toEqual(NAV_LINKS.map((l) => l.label));
     for (const href of hrefs) expect(container.querySelector(href!), href!).toBeTruthy();
     const links = [...container.querySelectorAll('a')];
     expect(links.filter((a) => a.textContent?.includes('Giriş yap')).every((a) => a.getAttribute('href') === '/login')).toBe(true);
@@ -130,31 +130,55 @@ describe('tanitim sayfasi', () => {
     expect(figure.querySelectorAll('mark')).toHaveLength(2);
     expect(new Set([...figure.querySelectorAll('mark')].map((m) => m.textContent))).toEqual(new Set(['R4T7KD']));
     expect(figure.textContent).toContain('216 bağımsız bölüm');
+    // Ekstre: referans kodu yalnizca oneri uretir; odeme yonetici onaylayinca islenir (urundeki gibi).
+    const suggested = [...figure.querySelectorAll('li')].find((li) => li.querySelector('mark'))!;
+    expect(suggested.textContent).toMatch(/Öneri: A Blok 12/);
+    expect(suggested.textContent).toContain('Onayla');
+  });
+
+  it('gorseller: aria-hidden alt agaclarda odaklanabilir oge yok; her gorselin gorunur aciklamasi var', async () => {
+    await render(<LandingPage />);
+    const hidden = container.querySelectorAll('main [aria-hidden="true"]');
+    expect(hidden.length).toBeGreaterThan(0);
+    for (const h of hidden) {
+      // Klavyeyle ulasilabilen her sey (formdaki bal kupu bilerek tabindex=-1).
+      const focusable = ['a[href]', 'button', 'input', 'select', 'textarea', 'summary', '[tabindex]', '[contenteditable]'].map((x) => `${x}:not([tabindex="-1"])`).join(', ');
+      expect(h.querySelectorAll(focusable)).toHaveLength(0);
+    }
+    for (const figure of container.querySelectorAll('main figure')) {
+      expect(figure.querySelector('figcaption')!.textContent!.trim().length).toBeGreaterThan(0);
+    }
   });
 
   it('Nasil calisir: dort numarali adim; Kimler icin hedef kitleye konusur', async () => {
     await render(<LandingPage />);
     const steps = container.querySelectorAll(`#${SECTION_IDS.how} ol > li`);
-    expect(steps).toHaveLength(4);
-    expect([...steps].map((li) => li.querySelector('h3')!.textContent)).toEqual(STEPS.map((s) => s.title));
-    expect(STEPS.map((s) => s.title)).toEqual(['Site kurulumu ve veri aktarımı', 'Aidat ve tahsilat', 'Sakin ekranı ve mobil', 'Raporlar']);
+    expect(STEPS).toHaveLength(4);
+    expect(steps).toHaveLength(STEPS.length);
+    // Her adim: gorunur sira numarasi, baslik (h3) ve aciklama.
+    [...steps].forEach((li, i) => {
+      expect(li.querySelector('span')!.textContent).toBe(String(i + 1));
+      expect(li.querySelector('h3')!.textContent).toBe(STEPS[i]!.title);
+      expect(li.querySelector('p')!.textContent).toBe(STEPS[i]!.text);
+    });
     const audiences = container.querySelector(`#${SECTION_IDS.audiences}`)!;
-    expect([...audiences.querySelectorAll('h3')].map((h) => h.textContent)).toEqual([
-      '200+ daireli, çok bloklu siteler',
-      'Yarı profesyonel yöneticiler',
-      'Teknolojiyle arası iyi olmayan sakinler',
-    ]);
-    expect(audiences.textContent).toContain('Büyük yazı, sade ekran');
+    expect(audiences.querySelectorAll('h3')).toHaveLength(AUDIENCES.length);
+    AUDIENCES.forEach((a, i) => {
+      const column = audiences.querySelectorAll('h3')[i]!.parentElement!;
+      expect(column.querySelector('h3')!.textContent).toBe(a.title);
+      expect(column.querySelectorAll('li')).toHaveLength(a.points.length);
+    });
   });
 
   it('mobil: yakinda magazalarda; sakin, guvenlik ve gorevli ekranlari ornek veri etiketli', async () => {
     await render(<LandingPage />);
     const mobile = container.querySelector(`#${SECTION_IDS.mobile}`)!;
-    expect(mobile.textContent).toContain('Yakında App Store ve Google Play’de');
+    expect(mobile.textContent).toContain(MOBILE.status);
+    expect(MOBILE.status).toMatch(/^Yakında/);
     // Magaza adlari baglanti degil (uygulama henuz yayinda degil).
     expect(mobile.querySelectorAll('a')).toHaveLength(0);
     const figures = mobile.querySelectorAll('figure');
-    expect([...figures].map((f) => f.querySelector('figcaption h3')!.textContent)).toEqual(['Sakin', 'Güvenlik', 'Bina görevlisi']);
+    expect([...figures].map((f) => f.querySelector('figcaption h3')!.textContent)).toEqual(MOBILE.roles.map((r) => r.title));
     for (const f of figures) {
       expect(f.querySelector('[aria-hidden="true"]')!.textContent).toContain('Örnek veri');
     }
@@ -184,6 +208,9 @@ describe('tanitim sayfasi', () => {
     expect(text).not.toMatch(/whatsapp/i);
     expect(text).toContain('henüz kullanıma açılmadı');
     expect(text).not.toMatch(/müşterimiz|referanslarımız|memnun/i);
+    // Ekstre eslestirmesi oneridir, onayla islenir: "otomatik eslesir" gibi abartma yok.
+    expect(text).not.toMatch(/otomatik eşleş|ile eşleşti|kendiliğinden eşleş/i);
+    expect(text).toContain('toplu onayla işlenir');
   });
 
   it('mobil menu: dugme aria-expanded ile acilir, baglantiya tiklayinca ve Escape ile kapanir', async () => {
@@ -213,14 +240,16 @@ describe('tanitim sayfasi', () => {
     expect(document.activeElement).toBe(name);
   });
 
-  it('SSS: yerel details/summary, 5-8 soru; pilot ucreti ve yasli sakin sorusu var', async () => {
+  it('SSS: yerel details/summary, 5-8 soru; her soru ve cevap dolu', async () => {
     await render(<LandingPage />);
     const details = container.querySelectorAll<HTMLDetailsElement>(`#${SECTION_IDS.faq} details`);
     expect(details.length).toBeGreaterThanOrEqual(5);
     expect(details.length).toBeLessThanOrEqual(8);
     expect(details).toHaveLength(FAQS.length);
-    const questions = [...details].map((d) => d.querySelector('summary')!.textContent);
-    expect(questions).toEqual(expect.arrayContaining(['Pilot dönemde ücret ödeyecek miyiz?', 'Yaşlı ya da teknolojiyle arası iyi olmayan sakinler kullanabilir mi?']));
+    [...details].forEach((d, i) => {
+      expect(d.querySelector('summary')!.textContent).toBe(FAQS[i]!.question);
+      expect(d.querySelector('p')!.textContent).toBe(FAQS[i]!.answer);
+    });
     // Kapali baslar; ok isareti hareketi azaltilmis harekette kapali (motion-safe).
     expect([...details].every((d) => !d.open)).toBe(true);
     expect(details[0]!.querySelector('summary svg')!.getAttribute('class')).toContain('motion-safe:transition-transform');

@@ -48,7 +48,7 @@ export const NAV_LINKS: readonly { href: string; label: string }[] = [
 export const HERO = {
   offer: 'Pilot dönemde ücretsiz deneme',
   title: 'Çok bloklu siteler için aidat, tahsilat ve arıza takibi',
-  lead: 'Sakin, borcunu ve kendi ödeme referans kodunu telefonda büyük yazıyla görür; havale veya EFT ile öder. Siz banka ekstresini yüklersiniz, referans kodlu ödemeler ilgili daireye otomatik eşleşir.',
+  lead: 'Sakin, borcunu ve kendi ödeme referans kodunu telefonda büyük yazıyla görür; havale veya EFT ile öder. Siz banka ekstresini yüklersiniz; referans kodlu ödemeler ilgili daireye önerilir, tek tıkla veya toplu onayla işlenir.',
   points: [
     '200’den fazla bağımsız bölümlü, çok bloklu siteler için',
     'Kat Mülkiyeti Kanunu’na uygun malik ve kiracı ayrımı',
@@ -66,7 +66,7 @@ export const STEPS: readonly Step[] = [
   },
   {
     title: 'Aidat ve tahsilat',
-    text: 'Aylık aidat tek seferde tahakkuk eder. Sakin, sitenin IBAN’ına kendi referans koduyla havale yapar; ekstreyi yüklediğinizde ödemeler daireye eşleşir, kalanları elle eşlersiniz.',
+    text: 'Aylık aidat tek seferde tahakkuk eder. Sakin, sitenin IBAN’ına kendi referans koduyla havale yapar; ekstreyi yüklediğinizde referans kodlu ödemeler ilgili daireye önerilir, tek tıkla veya toplu onayla işlenir; kodsuz ödemeleri elle eşlersiniz.',
   },
   {
     title: 'Sakin ekranı ve mobil',
@@ -96,7 +96,7 @@ export const AUDIENCES: readonly Audience[] = [
     icon: Briefcase,
     points: [
       'Aidat, gider ve tahsilat sade ekranlarda; muhasebe defteri arka planda tutulur.',
-      'Kullanmadığınız modüller sitenizde gizlenir; ekranda yalnızca işinize yarayanlar kalır.',
+      'Kullanmadığınız modüller talebiniz üzerine sitenizde gizlenir; ekranda yalnızca işinize yarayanlar kalır.',
       'Genel kurul çağrısı, hazirun cetveli ve KMK yeter sayı hesapları sistemde hazır.',
     ],
   },
@@ -126,7 +126,7 @@ export const MODULE_GROUPS: readonly ModuleGroup[] = [
       },
       {
         title: 'Banka ekstresi ve muhasebe defteri',
-        text: 'CSV veya Excel ekstre yüklenir, ödemeler referans koduyla eşleşir. Gider, tedarikçi borcu, bütçe ve aylık dönem kapanışı aynı defterde.',
+        text: 'CSV veya Excel ekstre yüklenir; referans kodlu ödemeler daireye önerilir, onayınızla işlenir. Gider, tedarikçi borcu, bütçe ve aylık dönem kapanışı aynı defterde.',
       },
       {
         title: 'Raporlar',
@@ -204,7 +204,8 @@ export const MODULE_GROUPS: readonly ModuleGroup[] = [
   },
 ];
 
-export type MobileRole = { title: string; text: string };
+export type MobileRoleId = 'resident' | 'guard' | 'staff';
+export type MobileRole = { id: MobileRoleId; title: string; text: string };
 
 export const MOBILE = {
   status: 'Yakında App Store ve Google Play’de',
@@ -212,9 +213,9 @@ export const MOBILE = {
   lead: 'iOS ve Android uygulaması mağaza yayınına hazırlanıyor. O zamana kadar sakin ekranı telefonun tarayıcısında çalışır ve ana ekrana eklenebilir; yönetim paneli web’de kalır.',
   stores: ['App Store', 'Google Play'],
   roles: [
-    { title: 'Sakin', text: 'Borç ve makbuzlar, arıza bildirimi, ziyaretçi ve kurye onayı, rezervasyon, oylamalar.' },
-    { title: 'Güvenlik', text: 'Kamera ile QR okutma, kısa kod, kurye masası, plaka sorgusu ve kapı kayıtları.' },
-    { title: 'Bina görevlisi', text: 'Günün işleri, önce-sonra fotoğraflı talep ve bakım tamamlama, sayaç okuma.' },
+    { id: 'resident', title: 'Sakin', text: 'Borç ve makbuzlar, arıza bildirimi, ziyaretçi ve kurye onayı, rezervasyon, oylamalar.' },
+    { id: 'guard', title: 'Güvenlik', text: 'Kamera ile QR okutma, kısa kod, kurye masası, plaka sorgusu ve kapı kayıtları.' },
+    { id: 'staff', title: 'Bina görevlisi', text: 'Günün işleri, önce-sonra fotoğraflı talep ve bakım tamamlama, sayaç okuma.' },
   ] satisfies readonly MobileRole[],
 } as const;
 
@@ -247,12 +248,12 @@ export const TRUST = {
     },
     {
       title: 'İki adımlı doğrulama',
-      text: 'Yönetici, yönetim firması ve denetçi hesaplarında doğrulayıcı uygulamasıyla iki adımlı giriş zorunludur.',
+      text: 'Yönetici, yönetim firması ve denetçi hesaplarında doğrulayıcı uygulamasıyla iki adımlı giriş; bu hesaplar için zorunlu tutulabilir.',
       icon: ShieldCheck,
     },
     {
       title: 'Veriler Avrupa’da',
-      text: 'Amazon Web Services’in Stockholm (eu-north-1) bölgesinde, şifreli bağlantıyla saklanır. Her site yalnızca kendi verisini görür.',
+      text: 'Amazon Web Services’in Stockholm (eu-north-1) bölgesinde şifreli olarak saklanır; bağlantılar da şifrelidir. Her site yalnızca kendi verisini görür.',
       icon: Earth,
     },
   ] satisfies readonly TrustItem[],
@@ -280,7 +281,7 @@ export const FAQS: readonly Faq[] = [
   {
     question: 'Sakinler aidatı nasıl öder? Online ödeme var mı?',
     answer:
-      'Bugün havale veya EFT ile: sakin, sitenin IBAN’ını ve kendi referans kodunu ekrandan kopyalar. Banka ekstresini yüklediğinizde ödemeler referans koduyla eşleştirilir. Kartla online ödeme altyapısı hazırdır ancak henüz kullanıma açılmadı.',
+      'Bugün havale veya EFT ile: sakin, sitenin IBAN’ını ve kendi referans kodunu ekrandan kopyalar. Banka ekstresini yüklediğinizde referans kodlu ödemeler ilgili daireye önerilir; tek tıkla veya toplu onayla işlenir. Kartla online ödeme altyapısı hazırdır ancak henüz kullanıma açılmadı.',
   },
   {
     question: 'Yaşlı ya da teknolojiyle arası iyi olmayan sakinler kullanabilir mi?',
@@ -300,7 +301,7 @@ export const FAQS: readonly Faq[] = [
   {
     question: 'Verilerimiz nerede saklanıyor, kimler görebilir?',
     answer:
-      'Amazon Web Services’in Avrupa’daki Stockholm (eu-north-1) bölgesinde. Bağlantılar şifrelidir, her site yalnızca kendi verisine erişir ve borç bilgisini yalnızca dairenin kendi sakinleri ile yetkili yönetim görür. Platform ekibi bir siteye yalnızca gerekçeli, en fazla 60 dakikalık, salt okunur ve kayıt altındaki destek oturumuyla bakabilir.',
+      'Amazon Web Services’in Avrupa’daki Stockholm (eu-north-1) bölgesinde. Veriler şifreli olarak saklanır, bağlantılar şifrelidir, her site yalnızca kendi verisine erişir ve borç bilgisini yalnızca dairenin kendi sakinleri ile yetkili yönetim görür. Platform ekibi bir siteye yalnızca gerekçeli, en fazla 60 dakikalık, salt okunur ve kayıt altındaki destek oturumuyla bakabilir.',
   },
   {
     question: 'Mobil uygulama var mı?',
@@ -310,7 +311,7 @@ export const FAQS: readonly Faq[] = [
   {
     question: 'Kullanmadığımız özellikleri kapatabilir miyiz?',
     answer:
-      'Evet. Özellikler site bazında açılıp kapatılır; sade kurulumda yalnızca ihtiyacınız olan ekranlar görünür. Kapatılan bir özellik silinmez, istendiğinde yeniden açılır.',
+      'Evet. Özellikler talebiniz üzerine site bazında açılıp kapatılır; sade kurulumda yalnızca ihtiyacınız olan ekranlar görünür. Kapatılan bir özellik silinmez, istendiğinde yeniden açılır.',
   },
 ];
 

@@ -24,7 +24,7 @@ function Section({ id, className, children }: { id: string; className?: string; 
 function SectionHeading({ id, title, lead, className }: { id: string; title: string; lead?: string; className?: string }) {
   return (
     <div className={cn('flex max-w-2xl flex-col gap-3', className)}>
-      <h2 id={`${id}-baslik`} className="text-title font-bold tracking-tight text-text">
+      <h2 id={`${id}-baslik`} className="text-title font-bold tracking-tight text-balance text-text">
         {title}
       </h2>
       {lead && <p className="text-body text-text-secondary">{lead}</p>}
@@ -124,7 +124,7 @@ function Features() {
       <SectionHeading
         id={id}
         title="Yönetimin her işi için bir modül"
-        lead="Kullanmadığınız modülü sitenizde kapatırsınız; yeniden açtığınızda kayıtlarınız yerinde durur."
+        lead="Kullanmadığınız modüller talebiniz üzerine sitenizde kapatılır; yeniden açıldığında kayıtlarınız yerinde durur."
       />
       {/* Sutunlar, gruplar bolunmeden dengelenir (gruplarin madde sayisi farkli). */}
       <div className="mt-12 gap-10 md:columns-2 lg:columns-3">
