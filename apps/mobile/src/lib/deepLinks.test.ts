@@ -5,14 +5,14 @@ describe('bildirim baglantilari (push data.url)', () => {
     expect(deepLinkTarget('/borclar', 'resident')).toBe('/resident/dues');
     expect(deepLinkTarget('/duyurular', 'resident')).toBe('/resident/announcements');
     expect(deepLinkTarget('/duyurular/an-1', 'resident')).toEqual({ pathname: '/resident/announcements/[id]', params: { id: 'an-1' } });
+    expect(deepLinkTarget('/talepler/tk%201', 'resident')).toEqual({ pathname: '/resident/tickets/[id]', params: { id: 'tk 1' } });
+    expect(deepLinkTarget('/talepler', 'resident')).toBe('/resident/tickets');
+    expect(deepLinkTarget('/kapi', 'resident')).toBe('/resident/gate');
+    expect(deepLinkTarget('/rezervasyonlar', 'resident')).toEqual({ pathname: '/resident/reservations', params: { tab: 'mine' } });
   });
 
   it('sakin: yer tutucular ayni kaydi web\'de acacak sekilde id tasir', () => {
-    expect(deepLinkTarget('/talepler/tk%201', 'resident')).toEqual({ pathname: '/resident/tickets', params: { id: 'tk 1' } });
-    expect(deepLinkTarget('/talepler', 'resident')).toBe('/resident/tickets');
     expect(deepLinkTarget('/oylamalar/p-1', 'resident')).toEqual({ pathname: '/resident/web/[feature]', params: { feature: 'oylamalar', id: 'p-1' } });
-    expect(deepLinkTarget('/kapi', 'resident')).toEqual({ pathname: '/resident/web/[feature]', params: { feature: 'ziyaretci' } });
-    expect(deepLinkTarget('/rezervasyonlar', 'resident')).toEqual({ pathname: '/resident/web/[feature]', params: { feature: 'rezervasyon' } });
     expect(deepLinkTarget('/genel-kurul/as-1', 'resident')).toEqual({ pathname: '/resident/web/[feature]', params: { feature: 'genel-kurul', id: 'as-1' } });
     expect(deepLinkTarget('/ihaleler/t-1?x=1', 'resident')).toEqual({ pathname: '/resident/web/[feature]', params: { feature: 'ihale', id: 't-1' } });
   });

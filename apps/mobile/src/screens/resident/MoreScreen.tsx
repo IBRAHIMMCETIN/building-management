@@ -21,7 +21,7 @@ export function MoreScreen() {
             icon={item.icon}
             title={item.label}
             subtitle={item.description}
-            onPress={() => router.push({ pathname: '/resident/web/[feature]', params: { feature: item.key } })}
+            onPress={() => (item.route ? router.push(item.route) : router.push({ pathname: '/resident/web/[feature]', params: { feature: item.key } }))}
           />
         ))}
       </View>

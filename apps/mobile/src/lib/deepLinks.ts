@@ -15,8 +15,6 @@ export type DeepLinkTarget = string | { pathname: string; params: Record<string,
 /** Sakin icin henuz yer tutucu olan ozellikler: bildirim yolu -> "Diğer" anahtari (lib/nav.ts). */
 const RESIDENT_WEB_FEATURES: Record<string, string> = {
   oylamalar: 'oylamalar',
-  kapi: 'ziyaretci',
-  rezervasyonlar: 'rezervasyon',
   'genel-kurul': 'genel-kurul',
   ihaleler: 'ihale',
 };
@@ -58,7 +56,11 @@ export function deepLinkTarget(path: string, area: RoleArea | null): DeepLinkTar
     case 'duyurular':
       return id ? { pathname: '/resident/announcements/[id]', params: { id } } : '/resident/announcements';
     case 'talepler':
-      return id ? { pathname: '/resident/tickets', params: { id } } : '/resident/tickets';
+      return id ? { pathname: '/resident/tickets/[id]', params: { id } } : '/resident/tickets';
+    case 'kapi':
+      return '/resident/gate';
+    case 'rezervasyonlar':
+      return { pathname: '/resident/reservations', params: { tab: 'mine' } };
     default: {
       const feature = RESIDENT_WEB_FEATURES[root];
       return feature ? { pathname: '/resident/web/[feature]', params: withId({ feature }) } : null;
