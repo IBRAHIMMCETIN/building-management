@@ -2,14 +2,14 @@ import { NetworkError, errorMessage } from '@bm/shared/api/errors';
 import NetInfo from '@react-native-community/netinfo';
 import { onlineManager } from '@tanstack/react-query';
 import { act, fireEvent, screen, waitFor } from '@testing-library/react-native';
-import { Text } from 'react-native';
+import { AccessibilityInfo, Text } from 'react-native';
 import { OFFLINE_BANNER_TEXT } from '@/components/OfflineBanner';
 import { Screen } from '@/components/ui';
 import { createApiClient } from '@/lib/api/createApiClient';
 import { OFFLINE_MESSAGE, OfflineError } from '@/lib/api/offline';
 import { AccountScreen } from '@/screens/account/AccountScreen';
 import { renderApp } from '@/test/renderApp';
-import { connectOnlineManager, isOnlineState } from './useNetwork';
+import { connectOnlineManager, isOnlineState, useOfflineAnnouncement } from './useNetwork';
 
 jest.mock('expo-router', () => ({ useRouter: () => ({ push: jest.fn() }) }));
 
@@ -49,6 +49,20 @@ describe('cevrimdisi farkindaligi', () => {
     await expect(api.delete('/api/me/devices/d1')).rejects.toBeInstanceOf(OfflineError);
     await api.get('/api/portal/my-summary');
     expect(calls).toEqual(['GET https://api.test/api/portal/my-summary']);
+  });
+
+  it('iOS: cevrimdisina gecis VoiceOver\'a bir kez duyurulur', async () => {
+    const announce = jest.spyOn(AccessibilityInfo, 'announceForAccessibility').mockImplementation(() => undefined);
+    function Announcer() {
+      useOfflineAnnouncement(OFFLINE_BANNER_TEXT);
+      return null;
+    }
+    await renderApp(<Announcer />);
+    expect(announce).not.toHaveBeenCalled();
+    await act(() => onlineManager.setOnline(false));
+    expect(announce).toHaveBeenCalledTimes(1);
+    expect(announce).toHaveBeenCalledWith(OFFLINE_BANNER_TEXT);
+    announce.mockRestore();
   });
 
   it('cevrimdisi notu ekranin ustunde; baglanti gelince kalkar', async () => {

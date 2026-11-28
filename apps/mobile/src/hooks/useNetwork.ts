@@ -1,7 +1,7 @@
 import NetInfo, { type NetInfoState } from '@react-native-community/netinfo';
 import { onlineManager } from '@tanstack/react-query';
 import { useEffect, useSyncExternalStore } from 'react';
-import { Platform } from 'react-native';
+import { AccessibilityInfo, Platform } from 'react-native';
 
 /**
  * Cevrimdisi = cihazin agi yok (ucak modu, Wi-Fi ve hucresel kapali). Internete ulasilabilirlik yoklamasi
@@ -29,4 +29,15 @@ export function useIsOnline(): boolean {
     () => onlineManager.isOnline(),
     () => true,
   );
+}
+
+/**
+ * Cevrimdisina gecis ekran okuyucuya bir kez okunur (kok yerlesimde). Android'de not kendi canli bolgesiyle
+ * okunur; iOS'ta `accessibilityLiveRegion` yok, VoiceOver'a duyuru gerekir. Her ekrandaki not tekrar okumaz.
+ */
+export function useOfflineAnnouncement(message: string): void {
+  const online = useIsOnline();
+  useEffect(() => {
+    if (!online && Platform.OS === 'ios') AccessibilityInfo.announceForAccessibility(message);
+  }, [online, message]);
 }

@@ -1,5 +1,6 @@
 import { ApiError, NetworkError } from '@bm/shared/api/errors';
 import type { AuthSession } from '@bm/shared/auth/session';
+import { onlineManager } from '@tanstack/react-query';
 import type { ApiClient } from '@/lib/api/createApiClient';
 import { createMockAuthAdapter } from '@/lib/auth/mockAdapter';
 import { createServices } from '@/services';
@@ -297,5 +298,26 @@ describe('oturum kancalari (createServices)', () => {
     const removal = api.calls.find((c) => c.method === 'DELETE' && c.path === '/api/me/devices/dev-9');
     expect(api.authOf(removal)).toBe(`Bearer ${idToken}`);
     expect(services.session.getSession()).toBeNull();
+  });
+
+  it('cevrimdisi cikis (OfflineError): DELETE gonderilmez, bekleyen silme kaydedilir ve cihazin push kaydi iptal edilir', async () => {
+    const api = mockApi({ 'POST /api/me/devices': { status: 201, body: { device: { deviceId: 'dev-9' } } } });
+    const notifications = fakeNotifications(GRANTED);
+    const pushStorage = memoryStorage();
+    const services = createServices(TEST_ENV, { adapter: createMockAuthAdapter({ storage: memoryStorage(), delayMs: 0 }), fetchImpl: api.fetchImpl, notifications, pushStorage });
+    await services.session.ready;
+    await services.session.signIn({ email: 'resident@dev.local', password: 'Mock123456' });
+    await flush(10);
+    const sub = services.session.getSession()?.claims.sub;
+    onlineManager.setOnline(false);
+    try {
+      await services.session.signOut();
+      expect(api.calls.some((c) => c.method === 'DELETE')).toBe(false);
+      expect(notifications.state.unregistered).toBe(1);
+      expect(await stored(pushStorage, 'bm.push.revoke')).toEqual({ userId: sub, deviceId: 'dev-9' });
+      expect(services.session.getSession()).toBeNull();
+    } finally {
+      onlineManager.setOnline(true);
+    }
   });
 });

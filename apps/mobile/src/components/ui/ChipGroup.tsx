@@ -1,7 +1,12 @@
-import { Pressable, StyleSheet, View } from 'react-native';
+import { useRef } from 'react';
+import { Platform, Pressable, StyleSheet, View } from 'react-native';
 import { MIN_TOUCH, radii, space, withAlpha } from '@/theme/tokens';
 import { useTheme } from '@/theme/useTheme';
 import { AppText } from './AppText';
+
+/** RN klavye olayi (`nativeEvent.key`) ve react-native-web DOM olayi (`key`). */
+type Focusable = { focus?: () => void };
+type KeyEventLike = { key?: string; nativeEvent?: { key?: string }; preventDefault?: () => void };
 
 /**
  * `tone`: secili renginin anlami (kontrol listesinde Uygun = basari, Sorunlu = tehlike); varsayilan turkuaz.
@@ -30,29 +35,53 @@ type Props<T extends string> = {
 /**
  * Tek secimli secenekler (web: components/ui FilterChips ve kapi islem grubu); uygulamadaki tum hap /
  * bolum secimleri bu parcayla. Secili oge kenarlik + acik turkuaz (veya secenek tonu) zemin + metinle belli
- * olur; ekran okuyucuya radyo grubu ve "secili" durumu verilir. Satira sigmayanlar alt satira gecer. Sayi
- * rozeti uyari tonunda.
+ * olur; ekran okuyucuya radyo grubu ve "secili" (`checked`) durumu verilir. Klavyede (web) Space secer, oklar
+ * gezinir. Satira sigmayanlar alt satira gecer. Sayi rozeti uyari tonunda.
  */
 export function ChipGroup<T extends string>({ label, value, options, onChange, size = 'default', columns, disabled = false }: Props<T>) {
   const { colors } = useTheme();
+  const refs = useRef<(Focusable | null)[]>([]);
   const large = size === 'large';
   const compact = size === 'compact';
   const basis = large && columns ? `${Math.floor(100 / columns) - 3}%` : undefined;
+  const selectedIndex = options.findIndex((o) => o.value === value);
+  const tabStop = selectedIndex >= 0 ? selectedIndex : 0;
+
+  /** Klavye (web, harici klavye): Space / Enter secer; oklar onceki / sonraki secenegi secip odaga alir. */
+  const onKeyDown = (index: number) => (event: KeyEventLike) => {
+    if (disabled) return;
+    const key = event.nativeEvent?.key ?? event.key;
+    const step = key === 'ArrowRight' || key === 'ArrowDown' ? 1 : key === 'ArrowLeft' || key === 'ArrowUp' ? -1 : 0;
+    const target = step ? (index + step + options.length) % options.length : key === ' ' || key === 'Enter' ? index : -1;
+    const option = options[target];
+    if (!option) return;
+    event.preventDefault?.();
+    onChange(option.value);
+    if (step) refs.current[target]?.focus?.();
+  };
+
   return (
     <View accessibilityRole="radiogroup" accessibilityLabel={label} style={styles.row}>
-      {options.map((o) => {
+      {options.map((o, index) => {
         const selected = o.value === value;
         const tint = o.tone === 'success' ? colors.success : o.tone === 'danger' ? colors.danger : colors.accent;
         const a11y = o.accessibilityLabel ?? (o.count !== undefined ? `${o.label}, ${o.count}` : o.label);
         return (
           <Pressable
             key={o.value}
+            ref={(node) => {
+              refs.current[index] = node as Focusable | null;
+            }}
+            // Radyo dugmesinin durumu `checked` (web: aria-checked); `selected` (aria-selected) radyoda yok.
             accessibilityRole="radio"
             accessibilityLabel={a11y}
-            accessibilityState={{ checked: selected, selected, disabled }}
+            accessibilityState={{ checked: selected, disabled }}
             disabled={disabled}
             hitSlop={compact ? { top: 4, bottom: 4 } : undefined}
             onPress={() => onChange(o.value)}
+            onKeyDown={onKeyDown(index)}
+            // Web: gruba tek sekme duragi (secili oge), oklarla gezilir.
+            {...(Platform.OS === 'web' ? { tabIndex: index === tabStop ? (0 as const) : (-1 as const) } : {})}
             style={({ pressed }) => [
               large ? styles.large : compact ? styles.compact : styles.chip,
               basis ? { flexBasis: basis as `${number}%`, flexGrow: 1 } : null,

@@ -7,6 +7,7 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { AppLockGate } from '@/components/AppLockGate';
 import { BrandMark } from '@/components/Brand';
 import { NoticeBanner } from '@/components/NoticeBanner';
+import { OFFLINE_BANNER_TEXT } from '@/components/OfflineBanner';
 import { PushPermissionPrompt } from '@/components/PushPermissionPrompt';
 import { AppText, Card, Screen } from '@/components/ui';
 import { env, envResult } from '@/config/env';
@@ -14,7 +15,7 @@ import { AuthProvider, useAuth } from '@/context/AuthProvider';
 import { SiteFeaturesProvider } from '@/context/SiteFeaturesProvider';
 import { useReactQueryAppState } from '@/hooks/useAppForeground';
 import { useAppLock } from '@/hooks/useAppLock';
-import { useReactQueryNetwork } from '@/hooks/useNetwork';
+import { useOfflineAnnouncement, useReactQueryNetwork } from '@/hooks/useNetwork';
 import { createQueryClient } from '@/lib/api/queryClient';
 import { areaForRole } from '@/lib/auth/flow';
 import { applyOrientationPolicy } from '@/lib/orientation';
@@ -65,6 +66,8 @@ function RootStack() {
   const { user, isAuthenticated, needsContext } = useAuth();
   const { colors } = useTheme();
   const locked = useAppLock().status !== 'unlocked';
+  // iOS VoiceOver: cevrimdisina gecis bir kez duyurulur (ekranlardaki not Android'de kendisi okunur).
+  useOfflineAnnouncement(OFFLINE_BANNER_TEXT);
   const area = user?.role ? areaForRole(user.role) : null;
 
   return (

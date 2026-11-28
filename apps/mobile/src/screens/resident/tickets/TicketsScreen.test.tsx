@@ -37,7 +37,7 @@ describe('Talepler', () => {
     expect(await screen.findByText('Açık talebiniz yok')).toBeTruthy();
     await fireEvent.press(screen.getByRole('radio', { name: 'Kapanan' }));
     expect(await screen.findByText('Kapanmış talep yok')).toBeTruthy();
-    expect(screen.getByRole('radio', { name: 'Kapanan', selected: true })).toBeTruthy();
+    expect(screen.getByRole('radio', { name: 'Kapanan', checked: true })).toBeTruthy();
     expect(calls.some((c) => c.path === '/api/portal/tickets' && c.query.status === 'closed,cancelled')).toBe(true);
   });
 
