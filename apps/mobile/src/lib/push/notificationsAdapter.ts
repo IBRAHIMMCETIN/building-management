@@ -79,6 +79,8 @@ export const notificationsAdapter: NotificationsAdapter = {
   },
   lastTap: async () => {
     const r = await Notifications.getLastNotificationResponseAsync();
+    // Islenen yanit temizlenir: sonraki acilista ayni bildirim yeniden acilmaz.
+    if (r) void Notifications.clearLastNotificationResponseAsync().catch(() => undefined);
     return r ? toTap(r) : null;
   },
   onReceived: (listener) => {
