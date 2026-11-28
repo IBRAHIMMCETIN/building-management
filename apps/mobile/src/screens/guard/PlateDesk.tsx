@@ -46,6 +46,7 @@ export function PlateDesk({ onManualEntry }: { onManualEntry: (plate: string) =>
           label="Plaka (tamamı veya son 3+ karakter)"
           value={text}
           onChangeText={(t) => setText(t.toUpperCase())}
+          code
           placeholder="34 ABC 123"
           autoCapitalize="characters"
           autoComplete="off"
@@ -70,7 +71,12 @@ export function PlateDesk({ onManualEntry }: { onManualEntry: (plate: string) =>
             <Skeleton height={96} />
           </View>
         ) : lookup.isError ? (
-          wait ? null : <Alert tone="danger">{errorMessage(lookup.error)}</Alert>
+          wait ? null : (
+            <Card>
+              <Alert tone="danger">{errorMessage(lookup.error)}</Alert>
+              <Button variant="secondary" label="Tekrar dene" onPress={() => void lookup.refetch()} />
+            </Card>
+          )
         ) : lookup.data.items.length === 0 ? (
           <Card style={{ borderWidth: 2, borderColor: withAlpha(colors.warning, 0.5) }} accessibilityLiveRegion="polite">
             <AppText variant="heading" weight="bold" tone="warning" accessibilityRole="header">

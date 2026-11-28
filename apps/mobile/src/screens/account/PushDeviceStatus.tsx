@@ -54,7 +54,7 @@ export function PushDeviceStatus() {
       <AppText variant="small" tone="muted">
         Bu telefona bildirim gönderilebilmesi için izin gerekiyor.
       </AppText>
-      <Button variant="secondary" icon={BellRing} label="Bildirim izni ver" loading={snap.busy} onPress={() => void push.accept()} />
+      <Button variant="secondary" icon={BellRing} label="Bildirimlere izin ver" loading={snap.busy} onPress={() => void push.accept()} />
       {snap.error && <Alert tone="danger">{snap.error}</Alert>}
     </View>
   );

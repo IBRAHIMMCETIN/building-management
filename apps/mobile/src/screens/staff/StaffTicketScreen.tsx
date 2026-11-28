@@ -2,10 +2,10 @@ import { errorMessage } from '@bm/shared/api/errors';
 import type { Ticket } from '@bm/shared/api/tickets';
 import type { TicketEvent } from '@bm/shared/api/work';
 import { formatDateTime } from '@bm/shared/dates';
-import { ACTION_LABELS, CATEGORY_LABELS, EVENT_LABELS, STATUS_LABELS, TRANSITIONS, type TransitionAction, locationText, noteRequired } from '@bm/shared/tickets/model';
+import { ACTION_LABELS, CATEGORY_LABELS, EVENT_LABELS, STATUS_LABELS, TRANSITIONS, type TransitionAction, noteRequired } from '@bm/shared/tickets/model';
 import { useState } from 'react';
 import { StyleSheet, View } from 'react-native';
-import { Send, UserCheck } from '@/components/icons';
+import { Clock, ListChecks, Send, UserCheck, Wrench } from '@/components/icons';
 import { Alert, AppText, Button, Card, CardTitle, ChipGroup, LoadingBlock, Screen, TextField } from '@/components/ui';
 import { useAssigneeNames, useSiteLabels, useStaffTicket, useTicketActions } from '@/hooks/useWork';
 import { workEndpoints } from '@/lib/api/workEndpoints';
@@ -13,7 +13,7 @@ import type { LocalPhoto } from '@/lib/photos';
 import { useServices } from '@/services';
 import { radii, space } from '@/theme/tokens';
 import { useTheme } from '@/theme/useTheme';
-import { EstimateCard, InfoRow, PhotoLinks, PhotoPicker, PriorityBadge, SlaBadge, TicketStatusBadge } from './WorkUi';
+import { EstimateCard, InfoRow, PhotoLinks, PhotoPicker, PriorityBadge, SlaBadge, TicketStatusBadge, TitleIcon, whereText } from './WorkUi';
 
 const isTransition = (a: string): a is TransitionAction => (TRANSITIONS as readonly string[]).includes(a);
 /** Fotograf eklenebilen gecisler (web TransitionDialog). */
@@ -84,7 +84,7 @@ function TicketDetail({ ticket, events, onRefresh }: { ticket: Ticket; events: T
           </AppText>
         )}
         <View style={styles.gap2}>
-          <InfoRow label="Konum" value={locationText(ticket.location, labels.unitLabel)} />
+          <InfoRow label="Konum" value={whereText(ticket.location, labels.unitLabel)} />
           <InfoRow label="Açılış" value={formatDateTime(ticket.createdAt)} />
           <InfoRow label="SLA hedefi" value={`${formatDateTime(ticket.dueAt)}${ticket.slaMet !== undefined ? (ticket.slaMet ? ' (süresinde çözüldü)' : ' (gecikmeli çözüldü)') : ''}`} />
           <InfoRow label="Görevli" value={assignee} />
@@ -102,7 +102,7 @@ function TicketDetail({ ticket, events, onRefresh }: { ticket: Ticket; events: T
 
       {transitions.length > 0 && !action && (
         <Card>
-          <CardTitle>Durum işlemleri</CardTitle>
+          <CardTitle icon={<TitleIcon icon={ListChecks} />}>Durum işlemleri</CardTitle>
           <View style={styles.row} accessibilityLabel="Durum işlemleri">
             {transitions.map((a) => (
               <Button key={a} variant={a === 'resolve' || a === 'start' ? 'primary' : a === 'cancel' ? 'danger' : 'secondary'} label={ACTION_LABELS[a]} onPress={() => setAction(a)} />
@@ -115,7 +115,7 @@ function TicketDetail({ ticket, events, onRefresh }: { ticket: Ticket; events: T
       <EstimateCard estimate={ticket.estimate} canEdit={ticket.canEstimate} version={ticket.version} mutation={act.estimate} nameOf={nameOf} />
 
       <Card>
-        <CardTitle>Zaman çizelgesi</CardTitle>
+        <CardTitle icon={<TitleIcon icon={Clock} />}>Zaman çizelgesi</CardTitle>
         {events.length === 0 ? (
           <AppText variant="small" tone="muted">
             Henüz kayıt yok.
@@ -138,15 +138,17 @@ function TransitionForm({ ticket, action, onClose }: { ticket: Ticket; action: T
   const act = useTicketActions(ticket.ticketId);
   const [note, setNote] = useState('');
   const [photos, setPhotos] = useState<LocalPhoto[]>([]);
+  const [noteError, setNoteError] = useState<string>();
   const [error, setError] = useState<string>();
   const required = noteRequired(action, false);
   const busy = act.transition.isPending;
 
   const submit = () => {
     if (required && note.trim().length < 3) {
-      setError('Bu işlem için açıklama gerekli (en az 3 karakter).');
+      setNoteError('Bu işlem için açıklama gerekli (en az 3 karakter).');
       return;
     }
+    setNoteError(undefined);
     setError(undefined);
     act.transition.mutate(
       { version: ticket.version, action, ...(note.trim() ? { note: note.trim() } : {}), ...(photos.length ? { photos } : {}) },
@@ -156,8 +158,8 @@ function TransitionForm({ ticket, action, onClose }: { ticket: Ticket; action: T
 
   return (
     <Card>
-      <CardTitle>{`${ticket.number}: ${ACTION_LABELS[action]}`}</CardTitle>
-      <TextField label={required ? 'Açıklama' : 'Açıklama (isteğe bağlı)'} value={note} onChangeText={setNote} maxLength={2000} multiline editable={!busy} />
+      <CardTitle icon={<TitleIcon icon={Wrench} />}>{`${ticket.number}: ${ACTION_LABELS[action]}`}</CardTitle>
+      <TextField label={required ? 'Açıklama' : 'Açıklama (isteğe bağlı)'} value={note} onChangeText={setNote} maxLength={2000} multiline editable={!busy} error={noteError} />
       {action === 'resolve' && (
         <AppText variant="small" tone="muted">
           Sakine “çözüldü, onaylayın” bildirimiyle iletilir.
@@ -195,7 +197,7 @@ function CommentBox({ ticket }: { ticket: Ticket }) {
 
   return (
     <Card>
-      <CardTitle>{visibility === 'internal' ? 'İç not ekle' : 'Yorum yaz'}</CardTitle>
+      <CardTitle icon={<TitleIcon icon={Send} />}>{visibility === 'internal' ? 'İç not ekle' : 'Yorum yaz'}</CardTitle>
       <ChipGroup
         label="Görünürlük"
         value={visibility}

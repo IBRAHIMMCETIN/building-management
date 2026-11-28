@@ -1,8 +1,8 @@
 import { type BarcodeScanningResult, CameraView, useCameraPermissions } from 'expo-camera';
 import { useEffect, useRef, useState } from 'react';
 import { AppState, Linking, StyleSheet, View } from 'react-native';
-import { CameraOff, Flashlight, FlashlightOff, Settings } from '@/components/icons';
-import { AppText, Button, Spinner } from '@/components/ui';
+import { Flashlight, FlashlightOff, Settings } from '@/components/icons';
+import { Alert, AppText, Button, Spinner } from '@/components/ui';
 import { radii, space, withAlpha } from '@/theme/tokens';
 import { useTheme } from '@/theme/useTheme';
 
@@ -35,17 +35,9 @@ export function QrScanner({ onResult, onClose }: Props) {
     const blocked = !permission.canAskAgain;
     return (
       <View style={styles.gap}>
-        <View style={[styles.notice, { backgroundColor: withAlpha(colors.warning, 0.1), borderColor: withAlpha(colors.warning, 0.3) }]} accessibilityRole="alert">
-          <CameraOff size={20} color={colors.warning} aria-hidden />
-          <View style={styles.flex}>
-            <AppText variant="small" weight="semibold" tone="warning">
-              {blocked ? 'Kamera izni kapalı' : 'Kamera izni gerekli'}
-            </AppText>
-            <AppText variant="small" tone="secondary">
-              {blocked ? `${CAMERA_REASON} İzni telefonun Ayarlar > YÖNESİST > Kamera bölümünden açabilirsiniz.` : CAMERA_REASON}
-            </AppText>
-          </View>
-        </View>
+        <Alert tone="warning">
+          {blocked ? `Kamera izni kapalı. ${CAMERA_REASON} İzni telefonun Ayarlar > YÖNESİST > Kamera bölümünden açabilirsiniz.` : `Kamera izni gerekli. ${CAMERA_REASON}`}
+        </Alert>
         {blocked ? (
           <Button size="large" block variant="secondary" icon={Settings} label="Ayarları aç" onPress={() => void Linking.openSettings()} />
         ) : (
@@ -110,7 +102,6 @@ const styles = StyleSheet.create({
   gap: { gap: space(3) },
   row: { flexDirection: 'row', gap: space(2) },
   flex: { flex: 1 },
-  notice: { flexDirection: 'row', gap: space(2), borderRadius: radii.md, borderWidth: StyleSheet.hairlineWidth * 2, padding: space(3) },
   frame: { width: '100%', aspectRatio: 1, maxHeight: 420, alignSelf: 'center', overflow: 'hidden', borderRadius: radii.xl, borderWidth: StyleSheet.hairlineWidth * 2 },
   target: { position: 'absolute', top: space(8), bottom: space(8), left: space(8), right: space(8), borderRadius: radii.lg, borderWidth: space(1), borderColor: ON_CAMERA_FRAME },
   caption: { position: 'absolute', left: 0, right: 0, bottom: 0, paddingVertical: space(2), alignItems: 'center' },

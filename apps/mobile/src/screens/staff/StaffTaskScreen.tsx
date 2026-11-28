@@ -5,7 +5,7 @@ import { CATEGORY_LABELS, PRIORITY_LABELS, TICKET_PRIORITIES, type TicketPriorit
 import { useRouter } from 'expo-router';
 import { useState } from 'react';
 import { StyleSheet, View } from 'react-native';
-import { CircleCheck, CircleX, Play, UserCheck, Wrench } from '@/components/icons';
+import { CircleCheck, CircleX, ClipboardList, ImageIcon, ListChecks, Play, UserCheck, Wrench } from '@/components/icons';
 import { Alert, AppText, Button, Card, CardTitle, ChipGroup, LoadingBlock, Screen, TextField } from '@/components/ui';
 import { useAssigneeNames, useStaffTask, useTaskActions } from '@/hooks/useWork';
 import { workEndpoints } from '@/lib/api/workEndpoints';
@@ -14,7 +14,7 @@ import type { LocalPhoto } from '@/lib/photos';
 import { useServices } from '@/services';
 import { radii, space } from '@/theme/tokens';
 import { useTheme } from '@/theme/useTheme';
-import { EstimateCard, InfoRow, PhotoLinks, PhotoPicker, TaskStatusBadge } from './WorkUi';
+import { EstimateCard, InfoRow, PhotoLinks, PhotoPicker, TaskStatusBadge, TitleIcon } from './WorkUi';
 
 type Mode = 'complete' | 'skip' | 'ticket' | null;
 
@@ -42,21 +42,31 @@ export function StaffTaskScreen({ id }: { id: string }) {
       </Screen>
     );
   }
-  return <TaskBody key={`${task.data.taskId}-${task.data.version}`} task={task.data} />;
+  return <TaskBody key={`${task.data.taskId}-${task.data.version}`} task={task.data} onRefresh={() => task.refetch()} />;
 }
 
-function TaskBody({ task }: { task: MaintenanceTask }) {
+function TaskBody({ task, onRefresh }: { task: MaintenanceTask; onRefresh: () => Promise<unknown> }) {
   const { api } = useServices();
   const router = useRouter();
   const act = useTaskActions(task.taskId);
   const nameOf = useAssigneeNames();
   const [mode, setMode] = useState<Mode>(null);
   const [suggest, setSuggest] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const has = (a: string) => task.actions.includes(a);
   const err = act.claim.error ?? act.start.error;
 
+  const refresh = async () => {
+    setRefreshing(true);
+    try {
+      await onRefresh();
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
   return (
-    <Screen>
+    <Screen refreshing={refreshing} onRefresh={() => void refresh()}>
       <Card>
         <AppText variant="caption" tone="muted">{`Bakım · ${CATEGORY_LABELS[task.category]}${task.asset ? ` · ${task.asset}` : ''}`}</AppText>
         <AppText variant="heading" weight="semibold" accessibilityRole="header">
@@ -107,7 +117,7 @@ function TaskBody({ task }: { task: MaintenanceTask }) {
           <Checklist task={task} />
           {(has('assign') || has('start') || has('complete') || has('ticket') || has('skip')) && (
             <Card>
-              <CardTitle>İşlemler</CardTitle>
+              <CardTitle icon={<TitleIcon icon={ListChecks} />}>İşlemler</CardTitle>
               <View style={styles.row}>
                 {has('assign') && <Button variant="secondary" icon={UserCheck} label="Üstlen" loading={act.claim.isPending} onPress={() => act.claim.mutate(task.version)} />}
                 {has('start') && <Button variant="secondary" icon={Play} label="Başla" loading={act.start.isPending} onPress={() => act.start.mutate(task.version)} />}
@@ -123,13 +133,13 @@ function TaskBody({ task }: { task: MaintenanceTask }) {
 
       {!!task.photoKeys?.length && (
         <Card>
-          <CardTitle>Fotoğraflar</CardTitle>
+          <CardTitle icon={<TitleIcon icon={ImageIcon} />}>Fotoğraflar</CardTitle>
           <PhotoLinks keys={task.photoKeys} load={(photoId) => workEndpoints.taskPhoto(api, task.taskId, photoId)} />
         </Card>
       )}
       {task.ticketIds.length > 0 && (
         <Card>
-          <CardTitle>Açılan arızalar</CardTitle>
+          <CardTitle icon={<TitleIcon icon={Wrench} />}>Açılan arızalar</CardTitle>
           <View style={styles.row}>
             {task.ticketIds.map((tid, i) => (
               <Button key={tid} variant="ghost" icon={Wrench} label={`Talep ${i + 1}`} onPress={() => router.push({ pathname: '/staff/ticket/[id]', params: { id: tid } })} />
@@ -148,7 +158,7 @@ function Checklist({ task }: { task: MaintenanceTask }) {
   const result = (id: string) => task.checklistResults?.find((r) => r.id === id);
   return (
     <Card>
-      <CardTitle>Kontrol listesi</CardTitle>
+      <CardTitle icon={<TitleIcon icon={ClipboardList} />}>Kontrol listesi</CardTitle>
       <View style={styles.gap2}>
         {task.checklist.map((c) => {
           const r = result(c.id);
@@ -209,7 +219,7 @@ function CompleteForm({ task, onDone, onCancel }: { task: MaintenanceTask; onDon
 
   return (
     <Card>
-      <CardTitle>Görevi tamamla</CardTitle>
+      <CardTitle icon={<TitleIcon icon={CircleCheck} />}>Görevi tamamla</CardTitle>
       {task.checklist.map((c) => {
         const r = results.find((x) => x.id === c.id) as ChecklistAnswer;
         return (
@@ -224,13 +234,11 @@ function CompleteForm({ task, onDone, onCancel }: { task: MaintenanceTask; onDon
             </AppText>
             <ChipGroup
               label={c.text}
-              size="large"
-              columns={2}
               value={r.ok === null ? '' : r.ok ? 'ok' : 'fail'}
               onChange={(v) => set(c.id, { ok: v === 'ok' })}
               options={[
-                { value: 'ok', label: 'Uygun' },
-                { value: 'fail', label: 'Sorunlu' },
+                { value: 'ok', label: 'Uygun', tone: 'success' },
+                { value: 'fail', label: 'Sorunlu', tone: 'danger' },
               ]}
             />
             {r.ok === false && <TextField label={`${c.text} açıklaması`} placeholder="Sorunu kısaca yazın" value={r.note} onChangeText={(t) => set(c.id, { note: t })} maxLength={500} />}
@@ -253,8 +261,11 @@ function SkipForm({ task, onDone }: { task: MaintenanceTask; onDone: () => void 
   const [reason, setReason] = useState('');
   return (
     <Card>
-      <CardTitle>Görevi atla</CardTitle>
+      <CardTitle icon={<TitleIcon icon={CircleX} />}>Görevi atla</CardTitle>
       <TextField label="Atlama gerekçesi" placeholder="Örn. firma gelemedi, bir sonraki bakımda yapılacak." value={reason} onChangeText={setReason} maxLength={500} multiline />
+      <AppText variant="small" tone="muted">
+        En az 3 karakter; gerekçe görev geçmişinde kalır.
+      </AppText>
       {act.skip.isError && <Alert tone="danger">{errorMessage(act.skip.error)}</Alert>}
       <View style={styles.row}>
         <Button variant="danger" label="Atla" loading={act.skip.isPending} disabled={reason.trim().length < 3} onPress={() => act.skip.mutate({ version: task.version, reason: reason.trim() }, { onSuccess: onDone })} />
@@ -272,7 +283,7 @@ function OpenTicketForm({ task, onDone, onCancel }: { task: MaintenanceTask; onD
   const failed = (task.checklistResults ?? []).filter((r) => !r.ok).length;
   return (
     <Card>
-      <CardTitle>Görevden arıza aç</CardTitle>
+      <CardTitle icon={<TitleIcon icon={Wrench} />}>Görevden arıza aç</CardTitle>
       <AppText variant="small" tone="muted">
         {failed ? `${failed} sorunlu madde açıklamaya eklenecek.` : 'Talep bakım görevine bağlanır.'}
       </AppText>

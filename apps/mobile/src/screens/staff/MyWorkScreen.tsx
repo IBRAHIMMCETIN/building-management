@@ -3,7 +3,7 @@ import type { Ticket } from '@bm/shared/api/tickets';
 import { type MaintenanceTask, type WorkItem, groupMyWork } from '@bm/shared/api/work';
 import { formatDate } from '@bm/shared/dates';
 import { istanbulDay } from '@bm/shared/gate/plate';
-import { CATEGORY_LABELS, locationText } from '@bm/shared/tickets/model';
+import { CATEGORY_LABELS } from '@bm/shared/tickets/model';
 import { useQueryClient } from '@tanstack/react-query';
 import { useRouter } from 'expo-router';
 import { useMemo, useState } from 'react';
@@ -14,7 +14,7 @@ import { useAuth } from '@/context/AuthProvider';
 import { useSiteLabels, useStaffTasks, useStaffTickets, useTaskActions, useTicketActions, workKeys } from '@/hooks/useWork';
 import { radii, space, withAlpha } from '@/theme/tokens';
 import { useTheme } from '@/theme/useTheme';
-import { PriorityBadge, SlaBadge, TaskStatusBadge } from './WorkUi';
+import { PriorityBadge, SlaBadge, TaskStatusBadge, whereText } from './WorkUi';
 
 type Tab = 'today' | 'week' | 'pool';
 
@@ -79,7 +79,7 @@ export function MyWorkScreen() {
       )}
       {pending ? (
         <LoadingBlock label="İşler yükleniyor" lines={4} />
-      ) : items.length === 0 ? (
+      ) : error && items.length === 0 ? null : items.length === 0 ? (
         <EmptyState
           icon={ClipboardList}
           title={tab === 'pool' ? 'Havuzda üstlenilecek iş yok' : 'Bu listede iş yok'}
@@ -119,7 +119,7 @@ function TicketRow({ ticket, onOpen }: { ticket: Ticket; onOpen: () => void }) {
   const { colors } = useTheme();
   const act = useTicketActions(ticket.ticketId);
   const labels = useSiteLabels();
-  const where = locationText(ticket.location, labels.unitLabel);
+  const where = whereText(ticket.location, labels.unitLabel);
   const canStart = ticket.actions.includes('start');
   return (
     <RowFrame
@@ -151,11 +151,7 @@ function TicketRow({ ticket, onOpen }: { ticket: Ticket; onOpen: () => void }) {
           {ticket.priority !== 'normal' && <PriorityBadge priority={ticket.priority} />}
           <SlaBadge ticket={ticket} />
         </View>
-        {act.transition.error && (
-          <AppText variant="small" tone="danger">
-            {errorMessage(act.transition.error)}
-          </AppText>
-        )}
+        {act.transition.error && <Alert tone="danger">{errorMessage(act.transition.error)}</Alert>}
       </View>
     </RowFrame>
   );
@@ -191,11 +187,7 @@ function TaskRow({ task, onOpen }: { task: MaintenanceTask; onOpen: () => void }
           <TaskStatusBadge status={task.status} overdue={task.overdue} />
           <AppText variant="caption" tone="muted">{`${task.checklist.length} kontrol maddesi`}</AppText>
         </View>
-        {act.start.error && (
-          <AppText variant="small" tone="danger">
-            {errorMessage(act.start.error)}
-          </AppText>
-        )}
+        {act.start.error && <Alert tone="danger">{errorMessage(act.start.error)}</Alert>}
       </View>
     </RowFrame>
   );

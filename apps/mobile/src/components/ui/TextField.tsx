@@ -1,6 +1,6 @@
 import { Eye, EyeOff } from '@/components/icons';
 import { type ComponentRef, type Ref, useState } from 'react';
-import { Pressable, StyleSheet, TextInput, type TextInputProps, View } from 'react-native';
+import { Platform, Pressable, StyleSheet, TextInput, type TextInputProps, View } from 'react-native';
 import { MIN_TOUCH, radii, space, typeScale } from '@/theme/tokens';
 import { useTheme } from '@/theme/useTheme';
 import { AppText } from './AppText';
@@ -8,6 +8,8 @@ import { AppText } from './AppText';
 export type TextFieldProps = Omit<TextInputProps, 'style'> & {
   label: string;
   error?: string;
+  /** Kod / plaka alani (kapi): buyuk, es aralikli, harf aralikli (web `h-14 font-mono text-heading tracking-widest`). */
+  code?: boolean;
   /** Sifre alani: goster/gizle dugmesi (web PasswordInput). */
   password?: boolean;
   /** Odak yonetimi (ornek: kayittan sonra siradaki sayac). */
@@ -18,7 +20,7 @@ export type TextFieldProps = Omit<TextInputProps, 'style'> & {
 export type TextFieldHandle = ComponentRef<typeof TextInput>;
 
 /** Etiketli giris alani (web FormField + Input). Hata metni alanin altinda ve ekran okuyucuda. */
-export function TextField({ label, error, password = false, editable = true, onFocus, onBlur, autoCapitalize, multiline, ref, ...props }: TextFieldProps) {
+export function TextField({ label, error, password = false, code = false, editable = true, onFocus, onBlur, autoCapitalize, multiline, ref, ...props }: TextFieldProps) {
   const { colors } = useTheme();
   const [visible, setVisible] = useState(false);
   const [focused, setFocused] = useState(false);
@@ -51,7 +53,7 @@ export function TextField({ label, error, password = false, editable = true, onF
             setFocused(false);
             onBlur?.(e);
           }}
-          style={[styles.input, typeScale.body, { color: colors.text }, multiline && styles.multiline]}
+          style={[styles.input, typeScale.body, { color: colors.text }, multiline && styles.multiline, code && styles.code]}
         />
         {password && (
           <Pressable
@@ -86,5 +88,6 @@ const styles = StyleSheet.create({
   input: { flex: 1, paddingHorizontal: space(3), paddingVertical: space(2.5) },
   /** Cok satirli not / aciklama: en az uc satir. */
   multiline: { minHeight: space(22) },
+  code: { ...typeScale.heading, minHeight: space(14), letterSpacing: 2, fontFamily: Platform.select({ ios: 'Menlo', default: 'monospace' }) },
   toggle: { width: MIN_TOUCH, height: MIN_TOUCH, alignItems: 'center', justifyContent: 'center' },
 });

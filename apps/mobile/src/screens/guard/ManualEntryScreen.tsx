@@ -49,12 +49,10 @@ export function ManualEntryScreen({ initialPlate }: { initialPlate?: string }) {
 
   return (
     <Screen>
+      {/* Baslik yigin ust cubugunda ("Elle kapı kaydı"); kartta ikinci kez yazilmaz. */}
       <Card>
-        <AppText variant="heading" weight="semibold" accessibilityRole="header">
-          Elle kapı kaydı
-        </AppText>
         <AppText variant="small" tone="muted">
-          QR’si olmayan ziyaretçi, servis aracı veya teslimat için. Kayıt kapı günlüğüne yazılır.
+          QR’si olmayan ziyaretçi, servis aracı veya teslimat için. Kayıt, kapı kayıtlarına yazılır.
         </AppText>
         <View style={styles.gap2}>
           <AppText variant="small" weight="medium">

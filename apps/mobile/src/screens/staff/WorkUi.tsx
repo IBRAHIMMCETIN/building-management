@@ -4,10 +4,10 @@ import { MAX_PHOTOS_PER_EVENT, TASK_STATUS_LABELS, TASK_STATUS_TONES, type TaskS
 import { formatDateTime } from '@bm/shared/dates';
 import { MAX_KURUS, formatTRY, kurusToInput, parseTRYToKurus } from '@bm/shared/money';
 import type { SignedDownload } from '@bm/shared/api/documents';
-import { PRIORITY_LABELS, PRIORITY_TONES, STATUS_LABELS, STATUS_TONES, type TicketPriority, type TicketStatus, photoIdOf, slaText } from '@bm/shared/tickets/model';
+import { type LocationLike, PRIORITY_LABELS, PRIORITY_TONES, STATUS_LABELS, STATUS_TONES, type TicketPriority, type TicketStatus, photoIdOf, slaText } from '@bm/shared/tickets/model';
 import { useState } from 'react';
 import { Image, Linking, Pressable, StyleSheet, View } from 'react-native';
-import { AlarmClock, Calculator, Camera, Clock, ImageIcon, ImagePlus, Pencil, X } from '@/components/icons';
+import { AlarmClock, Calculator, Camera, Clock, ImageIcon, ImagePlus, type LucideIcon, Pencil, Settings, X } from '@/components/icons';
 import { Alert, AppText, Badge, Button, Card, CardTitle, TextField } from '@/components/ui';
 import { openDocument } from '@/lib/openExternal';
 import { type LocalPhoto, pickPhoto } from '@/lib/photos';
@@ -15,6 +15,12 @@ import { MIN_TOUCH, radii, space } from '@/theme/tokens';
 import { useTheme } from '@/theme/useTheme';
 
 /* Gorevli ekranlarinin ortak parcalari (web: components/tickets/TicketBadges.tsx, PhotoPicker.tsx, tickets/EstimateCard.tsx). */
+
+/** Kart basligi ikonu (aile: CardTitle icon 20 / muted / aria-hidden). */
+export function TitleIcon({ icon: Icon }: { icon: LucideIcon }) {
+  const { colors } = useTheme();
+  return <Icon size={20} color={colors.muted} aria-hidden />;
+}
 
 export function TicketStatusBadge({ status }: { status: TicketStatus }) {
   return <Badge tone={STATUS_TONES[status]} label={STATUS_LABELS[status]} />;
@@ -34,6 +40,11 @@ export function SlaBadge({ ticket }: { ticket: { status: TicketStatus; dueAt: st
 export function TaskStatusBadge({ status, overdue }: { status: TaskStatus; overdue?: boolean }) {
   if (overdue) return <Badge tone="danger" label="Gecikti" />;
   return <Badge tone={TASK_STATUS_TONES[status]} label={TASK_STATUS_LABELS[status]} />;
+}
+
+/** Talep konumu: "A Blok · Daire 7" (etiket yuklenmemisse "Daire içi") veya "Ortak alan · Lobi". */
+export function whereText(l: LocationLike, unitLabel: (unitId: string) => string | undefined): string {
+  return l.kind === 'unit' ? (unitLabel(l.unitId) ?? 'Daire içi') : `Ortak alan · ${l.area}`;
 }
 
 /** Bilgi satiri (etiket: deger), ekran okuyucuda tek oge. */
@@ -79,7 +90,7 @@ export function PhotoPicker({ label = 'Fotoğraflar (isteğe bağlı)', photos, 
                 accessibilityRole="button"
                 accessibilityLabel={`Fotoğraf ${i + 1} kaldır`}
                 disabled={disabled}
-                hitSlop={8}
+                hitSlop={10}
                 onPress={() => onChange(photos.filter((_, j) => j !== i))}
                 style={[styles.remove, { backgroundColor: colors.surface, borderColor: colors.borderStrong }]}
               >
@@ -103,7 +114,7 @@ export function PhotoPicker({ label = 'Fotoğraflar (isteğe bağlı)', photos, 
               ? 'Fotoğraf çekmek için kamera izni gerekiyor. İzni telefonun Ayarlar > YÖNESİST bölümünden açabilirsiniz.'
               : 'Galeriden seçmek için fotoğraflara erişim izni gerekiyor. İzni telefonun Ayarlar > YÖNESİST bölümünden açabilirsiniz.'}
           </Alert>
-          {!denied.canAskAgain && <Button variant="ghost" label="Ayarları aç" onPress={() => void Linking.openSettings()} />}
+          {!denied.canAskAgain && <Button variant="secondary" icon={Settings} label="Ayarları aç" onPress={() => void Linking.openSettings()} />}
         </View>
       )}
     </View>

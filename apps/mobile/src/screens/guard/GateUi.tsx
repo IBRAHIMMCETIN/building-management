@@ -1,10 +1,11 @@
+import { errorMessage } from '@bm/shared/api/errors';
 import type { Courier, GateLogEntry } from '@bm/shared/api/gate';
 import { formatDateTime } from '@bm/shared/dates';
 import { COURIER_TEXT, DIRECTION_TEXT, LOG_KIND_TEXT, type PassVerdict, VERDICT_TEXT, courierState } from '@bm/shared/gate/plate';
 import { useEffect, useState } from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
 import { Check, LogIn, LogOut } from '@/components/icons';
-import { Alert, AppText, Badge, Skeleton, TextField } from '@/components/ui';
+import { Alert, AppText, Badge, Button, Skeleton, TextField } from '@/components/ui';
 import { useGateUnits } from '@/hooks/useGate';
 import { MIN_TOUCH, radii, space } from '@/theme/tokens';
 import { useTheme } from '@/theme/useTheme';
@@ -105,7 +106,10 @@ export function GateUnitSelect({
 
   return (
     <View style={styles.gap2}>
-      <TextField label={label} placeholder="Blok veya daire no ile ara" value={q} onChangeText={setQ} autoCapitalize="characters" returnKeyType="search" />
+      <AppText variant="small" weight="medium">
+        {label}
+      </AppText>
+      <TextField label="Bağımsız bölüm ara" placeholder="Blok veya daire no ile ara" value={q} onChangeText={setQ} autoCapitalize="characters" returnKeyType="search" />
       {value && (
         <AppText variant="small" tone="accent" weight="medium" accessibilityLiveRegion="polite">
           {`Seçili: ${value.label}`}
@@ -117,9 +121,10 @@ export function GateUnitSelect({
           <Skeleton height={MIN_TOUCH} />
         </View>
       ) : units.isError ? (
-        <AppText variant="small" tone="danger">
-          Bölümler yüklenemedi.
-        </AppText>
+        <View style={styles.gap2}>
+          <Alert tone="danger">{errorMessage(units.error)}</Alert>
+          <Button variant="secondary" label="Tekrar dene" onPress={() => void units.refetch()} />
+        </View>
       ) : items.length === 0 ? (
         <AppText variant="small" tone="muted">
           Aramaya uyan bölüm yok.

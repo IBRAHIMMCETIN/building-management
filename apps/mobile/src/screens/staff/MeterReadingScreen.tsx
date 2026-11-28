@@ -12,6 +12,9 @@ import { PhotoPicker } from './WorkUi';
 
 type Show = 'missing' | 'all';
 
+/** Bir seferde cizilen sayac karti (giris alanli kartlar; liste sanallastirilmaz). */
+export const READING_PAGE = 20;
+
 /**
  * Sayac okuma (web: pages/admin/meters/ReadingEntryPage.tsx): acik donem, okunmayanlar / tumu, daire
  * veya seri no arama, blok secimi; her sayac tek tek kaydedilir (son endeks, tuketim, fotograf kaniti,
@@ -27,6 +30,9 @@ export function MeterReadingScreen() {
   const [show, setShow] = useState<Show>('missing');
   const [focusNext, setFocusNext] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  // Buyuk sitelerde yuzlerce sayac: kartlar 20'ser cizilir (Borçlarım ile ayni), filtre degisince basa doner.
+  const [limit, setLimit] = useState(READING_PAGE);
+  useEffect(() => setLimit(READING_PAGE), [periodId, blockId, search, show]);
 
   // Secili donem listede yoksa en guncel acik doneme gecilir.
   useEffect(() => {
@@ -103,7 +109,7 @@ export function MeterReadingScreen() {
               {blocks.length > 1 && (
                 <ChipGroup label="Blok" value={blockId} onChange={setBlockId} options={[{ value: '', label: 'Tüm bloklar' }, ...blocks.map((b) => ({ value: b, label: labels.blockName(b) ?? b }))]} />
               )}
-              <TextField label="Daire veya seri no" placeholder="Daire / seri no" value={search} onChangeText={setSearch} returnKeyType="search" />
+              <TextField label="Daire no veya seri no" placeholder="Daire / seri no" value={search} onChangeText={setSearch} returnKeyType="search" />
               <ChipGroup
                 label="Gösterilecek sayaçlar"
                 value={show}
@@ -126,17 +132,24 @@ export function MeterReadingScreen() {
           {sheet.data && !noMeters && visible.length === 0 && <Alert tone="success">{show === 'missing' ? 'Bu filtrede okunmamış sayaç kalmadı.' : 'Filtreye uyan sayaç yok.'}</Alert>}
 
           <View style={styles.gap3}>
-            {visible.map((r, i) => (
+            {visible.slice(0, limit).map((r, i) => (
               <ReadingCard
                 key={r.meterId}
                 periodId={periodId}
                 row={r}
-                unitLabel={labels.unitLabel(r.unitId) ?? (r.unitNumber ? `Daire ${r.unitNumber}` : r.unitId)}
+                unitLabel={labels.unitLabel(r.unitId) ?? (r.unitNumber ? `Daire ${r.unitNumber}` : 'Daire')}
                 autoFocus={focusNext === r.meterId}
-                onSaved={() => setFocusNext(visible[i + 1]?.meterId ?? null)}
+                onSaved={() => {
+                  const next = visible[i + 1];
+                  if (next && i + 1 >= limit) setLimit((l) => l + READING_PAGE);
+                  setFocusNext(next?.meterId ?? null);
+                }}
               />
             ))}
           </View>
+          {visible.length > limit && (
+            <Button variant="secondary" block label={`Daha fazla göster (${visible.length - limit} kaldı)`} onPress={() => setLimit((l) => l + READING_PAGE)} />
+          )}
         </>
       )}
     </Screen>
@@ -242,7 +255,7 @@ function ReadingCard({ periodId, row, unitLabel, autoFocus, onSaved }: { periodI
       {saved && <Alert tone="success">{saved}</Alert>}
       <PhotoPicker label="Sayaç fotoğrafı (isteğe bağlı)" photos={photos} onChange={setPhotos} disabled={save.isPending} max={1} />
       <TextField label="Not (isteğe bağlı)" placeholder="Sayaca ulaşılamadı vb." value={note} onChangeText={setNote} maxLength={200} />
-      <Button size="large" block icon={Check} label="Kaydet" loading={save.isPending} disabled={!value.trim()} accessibilityLabel={`${unitLabel} ${row.label} endeksini kaydet`} onPress={submit} />
+      <Button block icon={Check} label="Kaydet" loading={save.isPending} disabled={!value.trim()} accessibilityLabel={`${unitLabel} ${row.label} endeksini kaydet`} onPress={submit} />
     </Card>
   );
 }

@@ -3,7 +3,8 @@ import { MIN_TOUCH, radii, space, withAlpha } from '@/theme/tokens';
 import { useTheme } from '@/theme/useTheme';
 import { AppText } from './AppText';
 
-export type ChipOption<T extends string> = { value: T; label: string; count?: number };
+/** `tone`: secili renginin anlami (kontrol listesinde Uygun = basari, Sorunlu = tehlike); varsayilan turkuaz. */
+export type ChipOption<T extends string> = { value: T; label: string; count?: number; tone?: 'success' | 'danger' };
 
 type Props<T extends string> = {
   /** Grubun ekran okuyucu adi (web FilterChips `label`). */
@@ -29,6 +30,7 @@ export function ChipGroup<T extends string>({ label, value, options, onChange, s
     <View accessibilityRole="radiogroup" accessibilityLabel={label} style={styles.row}>
       {options.map((o) => {
         const selected = o.value === value;
+        const tint = o.tone === 'success' ? colors.success : o.tone === 'danger' ? colors.danger : colors.accent;
         const a11y = o.count !== undefined ? `${o.label}, ${o.count}` : o.label;
         return (
           <Pressable
@@ -41,12 +43,12 @@ export function ChipGroup<T extends string>({ label, value, options, onChange, s
               large ? styles.large : styles.chip,
               basis ? { flexBasis: basis as `${number}%`, flexGrow: 1 } : null,
               {
-                borderColor: selected ? withAlpha(colors.accent, 0.4) : colors.borderStrong,
-                backgroundColor: selected ? withAlpha(colors.accent, 0.1) : pressed ? colors.surfaceMuted : colors.surface,
+                borderColor: selected ? withAlpha(tint, 0.4) : colors.borderStrong,
+                backgroundColor: selected ? withAlpha(tint, 0.1) : pressed ? colors.surfaceMuted : colors.surface,
               },
             ]}
           >
-            <AppText variant={large ? 'body' : 'small'} weight="medium" tone={selected ? 'accent' : 'secondary'}>
+            <AppText variant={large ? 'body' : 'small'} weight="medium" tone={selected ? (o.tone ?? 'accent') : 'secondary'} style={large ? styles.largeText : undefined}>
               {o.label}
             </AppText>
             {o.count !== undefined && o.count > 0 && (
@@ -84,5 +86,7 @@ const styles = StyleSheet.create({
     borderRadius: radii.lg,
     borderWidth: StyleSheet.hairlineWidth * 2,
   },
+  /** Dar ekranda iki satira kayan etiket ortali kalir. */
+  largeText: { flexShrink: 1, textAlign: 'center' },
   count: { borderRadius: radii.full, paddingHorizontal: space(2) },
 });

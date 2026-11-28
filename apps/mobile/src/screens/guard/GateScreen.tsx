@@ -29,8 +29,9 @@ export function GateScreen({ active = true, initialTab = 'pass' }: { active?: bo
   const wide = width >= WIDE_MIN;
   const [tab, setTab] = useState<GateTab>(initialTab);
   const [refreshing, setRefreshing] = useState(false);
-  const couriers = useDeskCouriers('open', active && tab !== 'courier');
-  const waiting = couriers.data?.items.filter((c) => c.status === 'waiting' && !c.expired).length;
+  const couriers = useDeskCouriers('open', active);
+  // Web gibi: bekleyen / iceride (acik) kurye sayisi.
+  const waiting = couriers.data?.items.length;
 
   const refresh = async () => {
     setRefreshing(true);

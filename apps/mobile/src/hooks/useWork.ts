@@ -65,7 +65,7 @@ export function useAssigneeNames() {
 
 /**
  * Daire ve blok etiketleri (web: tickets/shared.tsx useTicketLabels, meters/useMeterUnits): talep konumu
- * "A Blok · 7", sayac cizelgesinde blok filtresi. Yuklenmemisse / hatada daire no ya da kimlik kalir.
+ * ve sayac karti "A Blok · Daire 7", sayac cizelgesinde blok filtresi. Yuklenmemisse / hatada undefined.
  */
 export function useSiteLabels() {
   const { api, apt, enabled } = useStaff();
@@ -76,7 +76,7 @@ export function useSiteLabels() {
     const unitLabel = new Map(
       (units.data ?? []).map((u) => {
         const b = blockName.get(u.blockId);
-        return [u.unitId, b ? `${b} · ${u.number}` : u.number];
+        return [u.unitId, b ? `${b} · Daire ${u.number}` : `Daire ${u.number}`];
       }),
     );
     return { unitLabel: (id: string) => unitLabel.get(id), blockName: (id: string) => blockName.get(id) };

@@ -98,6 +98,7 @@ export function PassDesk({ active = true, wide = false }: { active?: boolean; wi
               setCode(t.toUpperCase());
               setInputError(undefined);
             }}
+            code
             placeholder="K7M2-PQ4X"
             autoCapitalize="characters"
             autoComplete="off"

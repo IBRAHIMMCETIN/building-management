@@ -132,7 +132,7 @@ describe('Kapı - misafir QR / kisa kod', () => {
     const open = jest.spyOn(Linking, 'openSettings').mockResolvedValue(undefined);
     await render();
     await fireEvent.press(screen.getByRole('button', { name: 'QR okut' }));
-    expect(screen.getByText('Kamera izni kapalı')).toBeTruthy();
+    expect(screen.getByText(/^Kamera izni kapalı./)).toBeTruthy();
     await fireEvent.press(screen.getByRole('button', { name: 'Ayarları aç' }));
     expect(open).toHaveBeenCalled();
     expect(screen.queryByTestId('camera')).toBeNull();
@@ -142,7 +142,7 @@ describe('Kapı - misafir QR / kisa kod', () => {
     mockPermission = { granted: false, canAskAgain: true };
     await render();
     await fireEvent.press(screen.getByRole('button', { name: 'QR okut' }));
-    expect(screen.getByText('Kamera izni gerekli')).toBeTruthy();
+    expect(screen.getByText(/^Kamera izni gerekli./)).toBeTruthy();
     await fireEvent.press(screen.getByRole('button', { name: 'Kameraya izin ver' }));
     expect(mockRequestPermission).toHaveBeenCalled();
   });
@@ -175,8 +175,8 @@ describe('Kapı - kurye', () => {
       'POST /api/gate/couriers': { status: 201, body: { courier: courier('c-3', { unitId: 'u-7', unitLabel: 'A Blok · Daire 7' }) } },
       'POST /api/gate/couriers/c-2/entry': { courier: courier('c-2', { status: 'approved', enteredAt: '2026-11-28T10:05:00.000Z', canExit: true }) },
     });
-    // Bolum seciminde bekleyen kurye sayisi gorunur.
-    await fireEvent.press(await screen.findByRole('radio', { name: 'Kurye, 1' }));
+    // Bolum seciminde acik (bekleyen + iceride) kurye sayisi gorunur (web gibi).
+    await fireEvent.press(await screen.findByRole('radio', { name: 'Kurye, 2' }));
     expect(await screen.findByText('Onay bekliyor')).toBeTruthy();
     expect(screen.getByText('Onaylandı')).toBeTruthy();
     expect(screen.getByText(/1 kurye sakin onayı bekliyor/)).toBeTruthy();
