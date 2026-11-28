@@ -7,6 +7,9 @@ import { type ApiClient, createApiClient } from '@/lib/api/createApiClient';
 import { endpoints } from '@/lib/api/endpoints';
 import { createAuthAdapter } from '@/lib/auth/adapter';
 import { SessionManager } from '@/lib/auth/sessionManager';
+import { AUTO_DISABLED_MESSAGE, AppLockService, type LockStorage } from '@/lib/lock/appLock';
+import { biometrics as defaultBiometrics } from '@/lib/lock/biometrics';
+import type { BiometricAdapter } from '@/lib/lock/types';
 import { type NoticeStore, createNoticeStore } from '@/lib/notices';
 import { notificationsAdapter } from '@/lib/push/notificationsAdapter';
 import { PushService } from '@/lib/push/pushService';
@@ -33,6 +36,8 @@ export type Services = {
   notifications: NotificationsAdapter;
   /** Uygulama geneli bilgi notu (ust bant). */
   notices: NoticeStore;
+  /** Face ID / parmak izi ile uygulama kilidi (kullanici basina, istege bagli). */
+  lock: AppLockService;
 };
 
 export type ServiceOverrides = {
@@ -41,6 +46,9 @@ export type ServiceOverrides = {
   notifications?: NotificationsAdapter;
   /** Push cihaz kaydinin deposu (varsayilan: guvenli depo). */
   pushStorage?: KeyValueStorage;
+  biometrics?: BiometricAdapter;
+  /** Kilit tercihinin deposu (varsayilan: AsyncStorage tercihleri; gizli degil). */
+  lockStorage?: LockStorage;
 };
 
 /**
@@ -104,8 +112,25 @@ export function createServices(env: AppEnv, overrides: ServiceOverrides = {}): S
     if (restored) void push.onRestored(restored);
   });
 
+  const notices = createNoticeStore();
+  const lock = new AppLockService({
+    biometrics: overrides.biometrics ?? defaultBiometrics,
+    storage: overrides.lockStorage ?? preferences,
+    onAutoDisabled: () => notices.show(AUTO_DISABLED_MESSAGE, 'warning'),
+  });
+  // Kilit: soguk acilista geri yuklenen oturum kilitli baslayabilir; etkilesimli giris kilitsiz; cikis temizler.
+  session.onScopeChange((prev, next) => {
+    if (!next) lock.clear();
+    else if (prev?.claims.sub !== next.claims.sub) void lock.onSignedIn(next.claims.sub);
+  });
+  void session.ready.then(() => {
+    const restored = session.getSession();
+    if (restored) void lock.onRestored(restored.claims.sub);
+    else lock.clear();
+  });
+
   const rawFetch = fetchImpl ?? (((...args: Parameters<typeof fetch>) => fetch(...args)) as typeof fetch);
-  return { env, session, api, fetchContexts, rawFetch, push, notifications, notices: createNoticeStore() };
+  return { env, session, api, fetchContexts, rawFetch, push, notifications, notices, lock };
 }
 
 const ServicesContext = createContext<Services | null>(null);

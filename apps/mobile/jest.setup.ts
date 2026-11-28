@@ -7,3 +7,6 @@ jest.mock('@react-native-async-storage/async-storage', () => require('@react-nat
 
 // Bildirim katmani testte etkisiz (expo-notifications'a gidilmez); push testleri kendi sahtesini verir.
 jest.mock('@/lib/push/notificationsAdapter', () => ({ notificationsAdapter: require('@/test/notifications').inertNotifications }));
+
+// Biyometri testte yok (expo-local-authentication'a gidilmez); kilit testleri `fakeBiometrics()` verir.
+jest.mock('@/lib/lock/biometrics', () => ({ biometrics: require('@/test/biometrics').noBiometrics }));

@@ -8,6 +8,7 @@ import { useAuth } from '@/context/AuthProvider';
 import { useActiveApartmentName, useContexts } from '@/hooks/useContexts';
 import { space } from '@/theme/tokens';
 import { useTheme } from '@/theme/useTheme';
+import { AppLockCard } from './AppLockCard';
 import { NotificationPreferencesCard } from './NotificationPreferencesCard';
 import { PushDeviceStatus } from './PushDeviceStatus';
 
@@ -50,6 +51,8 @@ export function AccountScreen({ showTitle = true }: { showTitle?: boolean }) {
         </AppText>
         {canSwitch && <Button variant="secondary" icon={ArrowLeftRight} label="Apartman / rol değiştir" onPress={() => router.push('/select-context')} />}
       </Card>
+
+      <AppLockCard />
 
       <NotificationPreferencesCard />
       <NotificationPreferencesCard channel="push">

@@ -6,6 +6,7 @@ import type { AppEnv } from '@/config/env';
 import { AuthProvider } from '@/context/AuthProvider';
 import { PortalUnitProvider } from '@/context/PortalUnitProvider';
 import { createMockAuthAdapter } from '@/lib/auth/mockAdapter';
+import type { BiometricAdapter } from '@/lib/lock/types';
 import type { NotificationsAdapter } from '@/lib/push/types';
 import type { KeyValueStorage } from '@/lib/storage/types';
 import { createServices } from '@/services';
@@ -80,13 +81,22 @@ export function mockApi(routes: Routes) {
   return { fetchImpl, calls, authOf: (call: ApiCall | undefined) => (call ? auth.get(call) : undefined) };
 }
 
-type Options = { email?: string | null; routes?: Routes; env?: Partial<AppEnv>; withUnit?: boolean; notifications?: NotificationsAdapter };
+type Options = { email?: string | null; routes?: Routes; env?: Partial<AppEnv>; withUnit?: boolean; notifications?: NotificationsAdapter; biometrics?: BiometricAdapter };
 
-export async function renderApp(ui: ReactElement, { email = 'resident@dev.local', routes = {}, env = {}, withUnit = true, notifications }: Options = {}) {
+export async function renderApp(ui: ReactElement, { email = 'resident@dev.local', routes = {}, env = {}, withUnit = true, notifications, biometrics }: Options = {}) {
   const api = mockApi(routes);
+  const lockData = new Map<string, string>();
   const services = createServices(
     { ...TEST_ENV, ...env },
-    { adapter: createMockAuthAdapter({ storage: memoryStorage(), delayMs: 0 }), fetchImpl: api.fetchImpl, pushStorage: memoryStorage(), ...(notifications ? { notifications } : {}) },
+    {
+      adapter: createMockAuthAdapter({ storage: memoryStorage(), delayMs: 0 }),
+      fetchImpl: api.fetchImpl,
+      pushStorage: memoryStorage(),
+      // Kilit tercihi test basina bellekte (AsyncStorage sahtesi testler arasinda paylasilir).
+      lockStorage: { get: async (k) => lockData.get(k) ?? null, set: async (k, v) => void (v === null ? lockData.delete(k) : lockData.set(k, v)) },
+      ...(notifications ? { notifications } : {}),
+      ...(biometrics ? { biometrics } : {}),
+    },
   );
   await services.session.ready;
   if (email) await services.session.signIn({ email, password: 'Mock123456' });

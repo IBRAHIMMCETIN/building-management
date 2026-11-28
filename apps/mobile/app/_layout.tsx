@@ -4,6 +4,7 @@ import { StatusBar } from 'expo-status-bar';
 import { useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, StyleSheet, View } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
+import { AppLockGate } from '@/components/AppLockGate';
 import { BrandMark } from '@/components/Brand';
 import { NoticeBanner } from '@/components/NoticeBanner';
 import { PushPermissionPrompt } from '@/components/PushPermissionPrompt';
@@ -11,6 +12,7 @@ import { AppText, Card, Screen } from '@/components/ui';
 import { env, envResult } from '@/config/env';
 import { AuthProvider, useAuth } from '@/context/AuthProvider';
 import { useReactQueryAppState } from '@/hooks/useAppForeground';
+import { useAppLock } from '@/hooks/useAppLock';
 import { createQueryClient } from '@/lib/api/queryClient';
 import { areaForRole } from '@/lib/auth/flow';
 import { applyOrientationPolicy } from '@/lib/orientation';
@@ -60,6 +62,7 @@ function ConfigErrorScreen({ error }: { error: string }) {
 function RootStack() {
   const { user, isAuthenticated, needsContext } = useAuth();
   const { colors } = useTheme();
+  const locked = useAppLock().status !== 'unlocked';
   const area = user?.role ? areaForRole(user.role) : null;
 
   return (
@@ -87,8 +90,10 @@ function RootStack() {
           <Stack.Screen name="select-context" options={{ headerShown: !needsContext, title: 'Apartman / rol seçin' }} />
         </Stack.Protected>
       </Stack>
-      <PushPermissionPrompt />
+      {!locked && <PushPermissionPrompt />}
       <NoticeBanner />
+      {/* Face ID / parmak izi kilidi (Hesabım): yiginin ustunde; acikken izin penceresi gosterilmez. */}
+      <AppLockGate />
     </>
   );
 }
