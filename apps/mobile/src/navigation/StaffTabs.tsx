@@ -5,13 +5,13 @@ import { StyleSheet, View } from 'react-native';
 import { DevModeBadge, HeaderBrand } from '@/components/HeaderBrand';
 import { space } from '@/theme/tokens';
 import { useTheme } from '@/theme/useTheme';
-import { tabBarOptions } from './options';
+import { tabBarOptions, tabOptions } from './options';
 
 /**
  * Saha rolleri (guvenlik, bina gorevlisi) icin iki sekme: rolun ana isi (M3'te gelecek ekran) ve
  * Hesabım. Ana is sekmesinin dosyasi `index.tsx`, Hesabım `account.tsx`.
  */
-export function FieldRoleTabs({ mainTitle, mainIcon: MainIcon }: { mainTitle: string; mainIcon: LucideIcon }) {
+export function FieldRoleTabs({ mainTitle, mainIcon }: { mainTitle: string; mainIcon: LucideIcon }) {
   const { colors } = useTheme();
   return (
     <Tabs
@@ -26,8 +26,8 @@ export function FieldRoleTabs({ mainTitle, mainIcon: MainIcon }: { mainTitle: st
         ),
       }}
     >
-      <Tabs.Screen name="index" options={{ title: mainTitle, tabBarIcon: ({ color, size }) => <MainIcon color={color} size={size} aria-hidden /> }} />
-      <Tabs.Screen name="account" options={{ title: 'Hesabım', tabBarIcon: ({ color, size }) => <UserRound color={color} size={size} aria-hidden /> }} />
+      <Tabs.Screen name="index" options={tabOptions(mainTitle, mainIcon)} />
+      <Tabs.Screen name="account" options={tabOptions('Hesabım', UserRound)} />
     </Tabs>
   );
 }

@@ -3,7 +3,7 @@ import { Ellipsis, House, Megaphone, Receipt, Wrench } from '@/components/icons'
 import { StyleSheet, View } from 'react-native';
 import { DevModeBadge, HeaderBrand } from '@/components/HeaderBrand';
 import { UnitPicker } from '@/components/portal/UnitPicker';
-import { tabBarOptions } from '@/navigation/options';
+import { tabBarOptions, tabOptions } from '@/navigation/options';
 import { space } from '@/theme/tokens';
 import { useTheme } from '@/theme/useTheme';
 
@@ -31,11 +31,11 @@ export default function ResidentTabs() {
         headerRight: () => <HeaderRight />,
       }}
     >
-      <Tabs.Screen name="index" options={{ title: 'Ana Sayfa', tabBarIcon: ({ color, size }) => <House color={color} size={size} aria-hidden /> }} />
-      <Tabs.Screen name="dues" options={{ title: 'Borçlarım', tabBarIcon: ({ color, size }) => <Receipt color={color} size={size} aria-hidden /> }} />
-      <Tabs.Screen name="tickets" options={{ title: 'Talepler', tabBarIcon: ({ color, size }) => <Wrench color={color} size={size} aria-hidden /> }} />
-      <Tabs.Screen name="announcements" options={{ title: 'Duyurular', tabBarIcon: ({ color, size }) => <Megaphone color={color} size={size} aria-hidden /> }} />
-      <Tabs.Screen name="more" options={{ title: 'Diğer', tabBarIcon: ({ color, size }) => <Ellipsis color={color} size={size} aria-hidden /> }} />
+      <Tabs.Screen name="index" options={tabOptions('Ana Sayfa', House)} />
+      <Tabs.Screen name="dues" options={tabOptions('Borçlarım', Receipt)} />
+      <Tabs.Screen name="tickets" options={tabOptions('Talepler', Wrench)} />
+      <Tabs.Screen name="announcements" options={tabOptions('Duyurular', Megaphone)} />
+      <Tabs.Screen name="more" options={tabOptions('Diğer', Ellipsis)} />
     </Tabs>
   );
 }

@@ -1,4 +1,6 @@
 import type { BottomTabBarButtonProps } from 'expo-router/js-tabs';
+import type { ColorValue } from 'react-native';
+import type { LucideIcon } from '@/components/icons';
 import type { Palette } from '@/theme/tokens';
 import { typeScale } from '@/theme/tokens';
 import { TabButton } from './TabButton';
@@ -24,5 +26,14 @@ export function tabBarOptions(colors: Palette) {
     tabBarLabelStyle: { fontSize: typeScale.caption.fontSize, fontWeight: '500' as const },
     tabBarButton: (props: BottomTabBarButtonProps) => <TabButton {...props} />,
     sceneStyle: { backgroundColor: colors.bg },
+  };
+}
+
+/** Tek sekme: baslik, ekran okuyucu adi (sekme dugmesinin acik adi) ve ikon. */
+export function tabOptions(title: string, Icon: LucideIcon) {
+  return {
+    title,
+    tabBarAccessibilityLabel: title,
+    tabBarIcon: ({ color, size }: { color: ColorValue; size: number }) => <Icon color={color as string} size={size} aria-hidden />,
   };
 }
