@@ -7,6 +7,7 @@ import { type LedgerAuditor, createDynamoAuditSource, createLedgerAuditor } from
 import { type MetricsEmitter, createEmfEmitterFromEnv } from '../observability/metrics.js';
 import { type CoreRepository, coreRepository } from '../modules/core/repository.js';
 import { type FeatureKey, resolveFeatures } from '../modules/features/catalog.js';
+import { type JobFanout, loadJobFanoutFromEnv } from './jobFanout.js';
 import { type IsoDate, toKurus } from '../modules/core/types.js';
 import { previousPeriod } from '../modules/finance/lateFee.js';
 import { type PlanService, createPlanService } from '../modules/finance/plans.js';
@@ -80,7 +81,11 @@ import { type ReceiptCheckResult, checkPushReceipts, createDynamoReceiptStore } 
  *                  saat kovalarindaki ticket'lari sorgular, `DeviceNotRegistered` cihazlari pasife
  *                  alir (modules/notifications/push-receipts.ts; apartman dongusu yok; tek tur).
  *                  PUSH_CHANNEL=off iken `push_disabled` ile atlanir.
- *   ledger_audit   her gece 03:40: apartman basina SALT OKUNUR defter denetimi; sapma ->
+ *   ledger_audit   her gece 03:40: apartman basina SALT OKUNUR defter denetimi. Adim 2-2: kuyruk
+ *                  (`SCHEDULED_JOBS_QUEUE_URL`) varsa tur mesaji her site icin ayri mesaj uretir
+ *                  (fan-out; site basina ayri Lambda cagrisi, yeniden deneme ve DLQ) ve yalnizca
+ *                  platform zincirini dogrular; site mesaji `LedgerAuditDurationMs` /
+ *                  `LedgerAuditSiteFailed` metriklerini yayinlar. Kuyruk yoksa siteler sirayla. Sapma ->
  *                  log + `LedgerDrift` metrigi + platform alarmi (duzeltme yok). Pasif siteler dahil.
  *                  Faz B3: banka hesabi mutabakati (son ekstre kapanisi <-> defter, bekleyen
  *                  satirlarla aciklanamayan fark) `BankReconDiff` (kurus, mutlak toplam) ve
@@ -197,7 +202,15 @@ export type SchedulerDeps = {
   metrics: MetricsEmitter;
   now: () => Date;
   log: Pick<Console, 'info' | 'error'>;
+  /**
+   * Adim 2-2: site basina mesaj kuyrugu (`ledger_audit` fan-out). null: kuyruk yok (yerel/test),
+   * siteler ayni cagrida sirayla islenir.
+   */
+  fanout: JobFanout | null;
 };
+
+/** Site basina fan-out yapilan isler (tur mesaji apartmentId tasimaz). */
+export const FANOUT_JOBS: readonly Job[] = ['ledger_audit'];
 
 const errorText = (err: unknown) => (err instanceof Error ? `${err.name}: ${err.message}` : 'unknown');
 
@@ -217,7 +230,7 @@ export function createSchedulerWorker(overrides: Partial<SchedulerDeps> = {}) {
     bulkJobs?: SchedulerDeps['bulkJobs'];
     pushReceipts?: SchedulerDeps['pushReceipts'];
   } = {};
-  const lazyOps: { outbox?: SchedulerDeps['outbox']; auditor?: SchedulerDeps['auditor']; auditChain?: SchedulerDeps['auditChain']; metrics?: MetricsEmitter } = {};
+  const lazyOps: { outbox?: SchedulerDeps['outbox']; auditor?: SchedulerDeps['auditor']; auditChain?: SchedulerDeps['auditChain']; metrics?: MetricsEmitter; fanout?: JobFanout | null } = {};
   const now = overrides.now ?? (() => new Date());
   const events = () => (lazy.events ??= overrides.events ?? createEventPublisherFromEnv());
   const finance = () =>
@@ -416,10 +429,37 @@ export function createSchedulerWorker(overrides: Partial<SchedulerDeps> = {}) {
     }
   }
 
+  /** Adim 2-2: site denetiminin suresi ve basarisi metrik olarak (alarm: operations.tf). */
+  async function runAuditTimed(apartmentId: string): Promise<SiteOutcome> {
+    const started = Date.now();
+    let outcome: SiteOutcome;
+    try {
+      outcome = await runAudit(apartmentId);
+    } catch (err) {
+      outcome = { apartmentId, status: 'failed', error: errorText(err) };
+    }
+    const durationMs = Date.now() - started;
+    metrics().emit({ LedgerAuditDurationMs: durationMs }, { msg: 'ledger_audit_duration', apartmentId, status: outcome.status }, 'Milliseconds');
+    metrics().emit({ LedgerAuditSiteFailed: outcome.status === 'failed' ? 1 : 0 }, { msg: 'ledger_audit_site', apartmentId, ...(outcome.status === 'failed' ? { error: outcome.error } : {}) });
+    return outcome;
+  }
+
+  const fanout = (): JobFanout | null => (lazyOps.fanout !== undefined ? lazyOps.fanout : (lazyOps.fanout = overrides.fanout !== undefined ? overrides.fanout : loadJobFanoutFromEnv()));
+
+  /** Tur mesaji: her site icin ayri mesaj; site kimlikleri tek sorguyla (site dizini). */
+  async function runFanout(message: JobMessage, queue: JobFanout): Promise<SiteOutcome[]> {
+    const ids = await core.listSiteIds();
+    const { queued } = await queue.enqueue(ids.map((apartmentId) => ({ job: message.job, scheduledTime: message.scheduledTime, apartmentId })));
+    metrics().emit({ LedgerAuditFanout: queued }, { msg: 'ledger_audit_fanout', job: message.job });
+    const outcomes: SiteOutcome[] = [{ apartmentId: '_fanout', status: 'done', detail: { job: message.job, queued } }];
+    if (message.job === 'ledger_audit') outcomes.push(await runPlatformChain());
+    return outcomes;
+  }
+
   async function runForSite(job: Job, apartmentId: string, day: IsoDate): Promise<SiteOutcome> {
     const site = await core.getSite(apartmentId);
     // Denetim pasif sitelerde de calisir (defter kapanmis olsa da tutarli kalmali).
-    if (job === 'ledger_audit') return site ? runAudit(apartmentId) : { apartmentId, status: 'skipped', reason: 'site_missing' };
+    if (job === 'ledger_audit') return site ? runAuditTimed(apartmentId) : { apartmentId, status: 'skipped', reason: 'site_missing' };
     if (!site || site.status !== 'active') return { apartmentId, status: 'skipped', reason: 'site_inactive' };
     const settings = site.settings;
     const requiredFeature = JOB_FEATURES[job];
@@ -566,6 +606,9 @@ export function createSchedulerWorker(overrides: Partial<SchedulerDeps> = {}) {
     if (message.job === 'payout_returns') return [await runPayoutReturns()];
     if (message.job === 'push_receipts') return [await runPushReceipts()];
     const day = istanbulDate(message.scheduledTime);
+    // Adim 2-2: tur mesaji site basina mesajlara bolunur (kuyruk yoksa asagidaki sirali yol).
+    const queue = !message.apartmentId && FANOUT_JOBS.includes(message.job) ? fanout() : null;
+    if (queue) return runFanout(message, queue);
     const ids = message.apartmentId ? [message.apartmentId] : await core.listSiteIds();
     const outcomes: SiteOutcome[] = [];
     for (const apartmentId of ids) {

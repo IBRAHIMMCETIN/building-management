@@ -408,6 +408,21 @@ run "prod_plan" {
   }
   assert {
     condition = (
+      contains(keys(aws_lambda_function.scheduler_worker.environment[0].variables), "SCHEDULED_JOBS_QUEUE_URL") &&
+      contains(flatten([for s in data.aws_iam_policy_document.scheduler_worker.statement : s.actions if s.sid == "FanoutJobs"]), "sqs:SendMessage")
+    )
+    error_message = "ledger_audit fan-out: scheduler worker kendi kuyruguna site mesaji birakabilmeli (Adim 2-2)"
+  }
+  assert {
+    condition = (
+      aws_cloudwatch_metric_alarm.ledger_audit_site_failed.metric_name == "LedgerAuditSiteFailed" &&
+      aws_cloudwatch_metric_alarm.ledger_audit_slow.metric_name == "LedgerAuditDurationMs" &&
+      aws_cloudwatch_metric_alarm.ledger_audit_slow.threshold == 180000
+    )
+    error_message = "ledger_audit site hata / sure alarmlari tanimli olmali (Adim 2-2)"
+  }
+  assert {
+    condition = (
       aws_scheduler_schedule.jobs["installment_plans"].schedule_expression == "cron(30 9 * * ? *)" &&
       aws_scheduler_schedule.jobs["installment_plans"].schedule_expression_timezone == "Europe/Istanbul" &&
       jsondecode(aws_scheduler_schedule.jobs["installment_plans"].target[0].input).job == "installment_plans"

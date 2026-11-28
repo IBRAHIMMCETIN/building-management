@@ -172,6 +172,13 @@ data "aws_iam_policy_document" "scheduler_worker" {
     resources = [aws_sqs_queue.jobs.arn]
   }
 
+  # Adim 2-2: ledger_audit tur mesaji site basina mesajlari ayni kuyruga birakir (fan-out).
+  statement {
+    sid       = "FanoutJobs"
+    actions   = ["sqs:SendMessage"]
+    resources = [aws_sqs_queue.jobs.arn]
+  }
+
   # push_receipts: Expo makbuz sorgusu icin erisim anahtari (push.tf).
   dynamic "statement" {
     for_each = local.push_enabled ? [1] : []
@@ -237,6 +244,8 @@ resource "aws_lambda_function" "scheduler_worker" {
       OUTBOX_SWEEP_MIN_AGE_SECONDS = tostring(local.outbox_sweep_min_age_seconds)
       # Buyuk sitelerde aylik aidat arka plan isi olarak (bulk_jobs.tf).
       BULK_JOBS_QUEUE_URL = aws_sqs_queue.bulk_jobs.url
+      # Adim 2-2: ledger_audit site basina mesajlarla (fan-out) ayni kuyruga.
+      SCHEDULED_JOBS_QUEUE_URL = aws_sqs_queue.jobs.url
     }, local.payments_env, local.push_env)
   }
 

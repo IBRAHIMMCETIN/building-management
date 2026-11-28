@@ -14,6 +14,10 @@
 #                               farkinin bekleyen (eslesmemis) satirlarla ACIKLANAMAYAN kismi, kurus,
 #                               apartman basina mutlak toplam (birim None)
 #   BankReconAccountsOff        (Faz B3) aciklanamayan farki olan banka hesabi sayisi
+#   LedgerAuditDurationMs       (Adim 2-2) site basina ledger_audit suresi (ms); fan-out sonrasi her site
+#                               ayri Lambda cagrisinda, sinir scheduler worker zaman asimi
+#   LedgerAuditSiteFailed       (Adim 2-2) site denetimi hata verdi (1) / basarili (0)
+#   LedgerAuditFanout           (Adim 2-2) tur mesajinin kuyruga biraktigi site mesaji sayisi
 #   GateDepartureFailed         maintenance_tasks: tasinanin gecis / araclarini pasife alma adimi
 #                               bir aday icin basarisiz (okuma anindaki kontrol guvenlik agidir)
 # ---------------------------------------------------------------------------
@@ -21,6 +25,41 @@
 locals {
   metrics_namespace  = "BuildingManagement"
   metrics_dimensions = { Stack = local.name }
+
+  # Adim 2-2: tek site denetimi worker zaman asiminin %60'ini asarsa uyari (buyuyen site erken gorulur).
+  ledger_audit_duration_alarm_ms = floor(local.scheduler_timeout_seconds * 1000 * 0.6)
+}
+
+# Adim 2-2: site basina gece denetimi hata verdi (SQS yeniden dener; 5 denemeden sonra DLQ alarmi).
+resource "aws_cloudwatch_metric_alarm" "ledger_audit_site_failed" {
+  alarm_name          = "${local.name}-ledger-audit-site-failed"
+  alarm_description   = "Bir sitenin gece defter denetimi (ledger_audit) hata verdi. Ayrinti: scheduler-worker loglarinda msg=ledger_audit_site (apartmentId, error). Mesaj otomatik yeniden denenir."
+  namespace           = local.metrics_namespace
+  metric_name         = "LedgerAuditSiteFailed"
+  dimensions          = local.metrics_dimensions
+  statistic           = "Sum"
+  period              = 3600
+  evaluation_periods  = 1
+  threshold           = 0
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+}
+
+# Adim 2-2: tek sitenin denetimi worker zaman asimina yaklasiyor (site buyudukce okuma sinirlanmali).
+resource "aws_cloudwatch_metric_alarm" "ledger_audit_slow" {
+  alarm_name          = "${local.name}-ledger-audit-slow"
+  alarm_description   = "Bir sitenin gece defter denetimi worker zaman asiminin %60'ini asti. Ayrinti: scheduler-worker loglarinda msg=ledger_audit_duration."
+  namespace           = local.metrics_namespace
+  metric_name         = "LedgerAuditDurationMs"
+  dimensions          = local.metrics_dimensions
+  statistic           = "Maximum"
+  period              = 3600
+  evaluation_periods  = 1
+  threshold           = local.ledger_audit_duration_alarm_ms
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
 }
 
 # Defterde tutarsizlik: otomatik duzeltme YOK (append-only); inceleme + ters kayit gerekir.
