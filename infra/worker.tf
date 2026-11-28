@@ -29,6 +29,8 @@ locals {
     {
       NOTIFICATION_CHANNEL = var.notification_channel
       SES_FROM_ADDRESS     = var.notification_from_address
+      # Bildirim devami: yalnizca bu topic'ten gelen SES geri bildirimleri islenir (ses_feedback.tf).
+      SES_FEEDBACK_TOPIC_ARN = aws_sns_topic.ses_feedback.arn
     },
     var.ses_configuration_set != "" ? { SES_CONFIGURATION_SET = var.ses_configuration_set } : {},
     local.web_app_url != "" ? { WEB_APP_URL = local.web_app_url } : {},
@@ -86,6 +88,13 @@ data "aws_iam_policy_document" "notification_worker" {
       actions   = ["secretsmanager:GetSecretValue"]
       resources = [aws_secretsmanager_secret.expo_access_token[0].arn]
     }
+  }
+
+  # SES geri bildirim asenkron cagrisinin basarisizlik hedefi (ses_feedback.tf): yalnizca SendMessage.
+  statement {
+    sid       = "SesFeedbackDlq"
+    actions   = ["sqs:SendMessage"]
+    resources = [aws_sqs_queue.ses_feedback_dlq.arn]
   }
 
   statement {

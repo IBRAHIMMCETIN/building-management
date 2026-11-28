@@ -1,51 +1,95 @@
-import { Pressable, StyleSheet, View } from 'react-native';
+import { useRef } from 'react';
+import { Platform, Pressable, StyleSheet, View } from 'react-native';
 import { MIN_TOUCH, radii, space, withAlpha } from '@/theme/tokens';
 import { useTheme } from '@/theme/useTheme';
 import { AppText } from './AppText';
 
-/** `tone`: secili renginin anlami (kontrol listesinde Uygun = basari, Sorunlu = tehlike); varsayilan turkuaz. */
-export type ChipOption<T extends string> = { value: T; label: string; count?: number; tone?: 'success' | 'danger' };
+/** RN klavye olayi (`nativeEvent.key`) ve react-native-web DOM olayi (`key`). */
+type Focusable = { focus?: () => void };
+type KeyEventLike = { key?: string; nativeEvent?: { key?: string }; preventDefault?: () => void };
+
+/**
+ * `tone`: secili renginin anlami (kontrol listesinde Uygun = basari, Sorunlu = tehlike); varsayilan turkuaz.
+ * `accessibilityLabel`: ekran okuyucu adi gorunen etiketten farkliysa (ornek: "10:00–11:00, 1 saat").
+ */
+export type ChipOption<T extends string> = { value: T; label: string; count?: number; tone?: 'success' | 'danger'; accessibilityLabel?: string };
 
 type Props<T extends string> = {
-  /** Grubun ekran okuyucu adi (web FilterChips `label`). */
+  /** Grubun ekran okuyucu adi (web FilterChips `label`): "Talep durumu". */
   label: string;
-  value: T;
+  /** Secili deger; `undefined`: henuz secim yok. */
+  value: T | undefined;
   options: readonly ChipOption<T>[];
   onChange: (value: T) => void;
-  /** `large`: kapi islemleri gibi buyuk dokunma alanli bolum secimi (web `min-h-14`, ızgara). */
-  size?: 'default' | 'large';
+  /**
+   * `compact`: kisa secenek listeleri ve gorunum degistirme (Açık / Kapanan, kategori, sure, daire) - gorunen
+   * 36 pt, dokunma alani 44 pt. `default`: 44 pt hap. `large`: kapi islemleri gibi buyuk dokunma alanli bolum
+   * secimi (web `min-h-14`, izgara).
+   */
+  size?: 'compact' | 'default' | 'large';
   /** Izgara sutun sayisi (yalnizca `large`). */
   columns?: number;
+  disabled?: boolean;
 };
 
 /**
- * Tek secimli secenekler (web: components/ui FilterChips ve kapi islem grubu). Secili oge kenarlik +
- * acik turkuaz zemin + metinle belli olur; ekran okuyucuya "secili" durumu verilir. Sayi rozeti uyari tonunda.
+ * Tek secimli secenekler (web: components/ui FilterChips ve kapi islem grubu); uygulamadaki tum hap /
+ * bolum secimleri bu parcayla. Secili oge kenarlik + acik turkuaz (veya secenek tonu) zemin + metinle belli
+ * olur; ekran okuyucuya radyo grubu ve "secili" (`checked`) durumu verilir. Klavyede (web) Space secer, oklar
+ * gezinir. Satira sigmayanlar alt satira gecer. Sayi rozeti uyari tonunda.
  */
-export function ChipGroup<T extends string>({ label, value, options, onChange, size = 'default', columns }: Props<T>) {
+export function ChipGroup<T extends string>({ label, value, options, onChange, size = 'default', columns, disabled = false }: Props<T>) {
   const { colors } = useTheme();
+  const refs = useRef<(Focusable | null)[]>([]);
   const large = size === 'large';
+  const compact = size === 'compact';
   const basis = large && columns ? `${Math.floor(100 / columns) - 3}%` : undefined;
+  const selectedIndex = options.findIndex((o) => o.value === value);
+  const tabStop = selectedIndex >= 0 ? selectedIndex : 0;
+
+  /** Klavye (web, harici klavye): Space / Enter secer; oklar onceki / sonraki secenegi secip odaga alir. */
+  const onKeyDown = (index: number) => (event: KeyEventLike) => {
+    if (disabled) return;
+    const key = event.nativeEvent?.key ?? event.key;
+    const step = key === 'ArrowRight' || key === 'ArrowDown' ? 1 : key === 'ArrowLeft' || key === 'ArrowUp' ? -1 : 0;
+    const target = step ? (index + step + options.length) % options.length : key === ' ' || key === 'Enter' ? index : -1;
+    const option = options[target];
+    if (!option) return;
+    event.preventDefault?.();
+    onChange(option.value);
+    if (step) refs.current[target]?.focus?.();
+  };
+
   return (
     <View accessibilityRole="radiogroup" accessibilityLabel={label} style={styles.row}>
-      {options.map((o) => {
+      {options.map((o, index) => {
         const selected = o.value === value;
         const tint = o.tone === 'success' ? colors.success : o.tone === 'danger' ? colors.danger : colors.accent;
-        const a11y = o.count !== undefined ? `${o.label}, ${o.count}` : o.label;
+        const a11y = o.accessibilityLabel ?? (o.count !== undefined ? `${o.label}, ${o.count}` : o.label);
         return (
           <Pressable
             key={o.value}
+            ref={(node) => {
+              refs.current[index] = node as Focusable | null;
+            }}
+            // Radyo dugmesinin durumu `checked` (web: aria-checked); `selected` (aria-selected) radyoda yok.
             accessibilityRole="radio"
             accessibilityLabel={a11y}
-            accessibilityState={{ checked: selected, selected }}
+            accessibilityState={{ checked: selected, disabled }}
+            disabled={disabled}
+            hitSlop={compact ? { top: 4, bottom: 4 } : undefined}
             onPress={() => onChange(o.value)}
+            onKeyDown={onKeyDown(index)}
+            // Web: gruba tek sekme duragi (secili oge), oklarla gezilir.
+            {...(Platform.OS === 'web' ? { tabIndex: index === tabStop ? (0 as const) : (-1 as const) } : {})}
             style={({ pressed }) => [
-              large ? styles.large : styles.chip,
+              large ? styles.large : compact ? styles.compact : styles.chip,
               basis ? { flexBasis: basis as `${number}%`, flexGrow: 1 } : null,
               {
-                borderColor: selected ? withAlpha(tint, 0.4) : colors.borderStrong,
+                borderColor: selected ? withAlpha(tint, 0.3) : colors.borderStrong,
                 backgroundColor: selected ? withAlpha(tint, 0.1) : pressed ? colors.surfaceMuted : colors.surface,
               },
+              disabled && styles.disabled,
             ]}
           >
             <AppText variant={large ? 'body' : 'small'} weight="medium" tone={selected ? (o.tone ?? 'accent') : 'secondary'} style={large ? styles.largeText : undefined}>
@@ -65,17 +109,20 @@ export function ChipGroup<T extends string>({ label, value, options, onChange, s
   );
 }
 
+const pill = {
+  flexDirection: 'row',
+  alignItems: 'center',
+  gap: space(1.5),
+  paddingHorizontal: space(3),
+  borderRadius: radii.full,
+  borderWidth: StyleSheet.hairlineWidth * 2,
+} as const;
+
 const styles = StyleSheet.create({
   row: { flexDirection: 'row', flexWrap: 'wrap', gap: space(2) },
-  chip: {
-    minHeight: MIN_TOUCH,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: space(1.5),
-    paddingHorizontal: space(3),
-    borderRadius: radii.full,
-    borderWidth: StyleSheet.hairlineWidth * 2,
-  },
+  chip: { ...pill, minHeight: MIN_TOUCH },
+  /** Gorunen 36 pt; dikey `hitSlop` ile dokunma alani 44 pt. */
+  compact: { ...pill, minHeight: MIN_TOUCH - 8, minWidth: MIN_TOUCH, justifyContent: 'center' },
   large: {
     minHeight: space(14),
     flexDirection: 'row',
@@ -89,4 +136,5 @@ const styles = StyleSheet.create({
   /** Dar ekranda iki satira kayan etiket ortali kalir. */
   largeText: { flexShrink: 1, textAlign: 'center' },
   count: { borderRadius: radii.full, paddingHorizontal: space(2) },
+  disabled: { opacity: 0.5 },
 });

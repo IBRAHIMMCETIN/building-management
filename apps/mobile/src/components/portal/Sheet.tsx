@@ -3,6 +3,8 @@ import { KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleShee
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { X } from '@/components/icons';
 import { AppText } from '@/components/ui';
+import { useModalsSuspended } from '@/hooks/useAppLock';
+import { MODAL_ORIENTATIONS } from '@/lib/orientation';
 import { MIN_TOUCH, radii, space } from '@/theme/tokens';
 import { useTheme } from '@/theme/useTheme';
 
@@ -25,8 +27,10 @@ type Props = {
  */
 export function Sheet({ open, title, onClose, children }: Props) {
   const { colors } = useTheme();
+  // Uygulama kilidi / gizlilik ortusu acikken gizli (kilit penceresi her zaman ustte); kilit acilinca geri gelir.
+  const suspended = useModalsSuspended();
   return (
-    <Modal visible={open} transparent animationType="fade" onRequestClose={onClose}>
+    <Modal visible={open && !suspended} transparent animationType="fade" supportedOrientations={MODAL_ORIENTATIONS} onRequestClose={onClose}>
       <View style={styles.fill}>
         <Pressable
           accessible={false}

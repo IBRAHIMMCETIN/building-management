@@ -268,6 +268,8 @@ function spec(n: Notification, ctx: EmailContext): Spec | undefined {
       return ticketSpec(n, ctx);
     case 'operations_digest':
       return digestSpec(n);
+    case 'bulk_job_summary':
+      return bulkJobSpec(n);
     // Guvenlik kapisi (portal 15 sn'de bir yenilemeye devam eder; e-posta ek kanaldir).
     case 'gate_courier_arrived': {
       const company = str(d.company);
@@ -319,9 +321,80 @@ function spec(n: Notification, ctx: EmailContext): Spec | undefined {
     case 'tender_cancelled':
     case 'tender_replied':
       return tenderSpec(n);
+    case 'restructure_requested':
+    case 'restructure_approved':
+    case 'restructure_rejected':
+      return restructureSpec(n, ctx);
     default:
       return undefined;
   }
+}
+
+/** Yapilandirma talebi: yeni talep (yonetim), onay / ret (talebi acan sakin). Sakin adi ve notu yok. */
+function restructureSpec(n: Notification, ctx: EmailContext): Spec {
+  const d = n.data;
+  const unit = ctx.unitLabel(str(d.unitId));
+  const party = d.liableParty === 'owner' ? 'Kat maliki' : 'Sakin (oturan)';
+  if (n.template === 'restructure_requested') {
+    return {
+      subject: `Yeni yapılandırma talebi - ${unit}`,
+      heading: 'Yeni borç yapılandırma talebi',
+      preheader: `${unit}: ${num(d.installments)} taksit, yaklaşık ${formatTL(num(d.total))}`,
+      blocks: [
+        { kind: 'p', text: `${unit} için gecikmiş borcun taksitlendirilmesi talep edildi. Talebi olduğu gibi veya değişiklikle onaylayabilir ya da gerekçe yazarak reddedebilirsiniz.` },
+        {
+          kind: 'rows',
+          rows: [
+            ['Bağımsız bölüm', unit],
+            ['Cari', party],
+            ['İstenen taksit', `${num(d.installments)} taksit`],
+            ['Tahmini toplam', formatTL(num(d.total))],
+            ['Tahmini aylık taksit', formatTL(num(d.installmentAmount))],
+          ],
+        },
+        { kind: 'note', text: 'Tutarlar talep anındaki tahmindir; onayda plan güncel borçtan yeniden hesaplanır. Vade farkı uygulanmaz.' },
+      ],
+      cta: { label: 'Talebi incele', path: '../admin/finance?tab=plans' },
+    };
+  }
+  if (n.template === 'restructure_approved') {
+    const changed = d.changed === 'true';
+    return {
+      subject: 'Yapılandırma talebiniz onaylandı',
+      heading: 'Taksit planınız oluşturuldu',
+      preheader: `${num(d.installments)} taksit${d.firstDueDate ? `, ilk taksit ${formatDate(d.firstDueDate)}` : ''}`,
+      blocks: [
+        {
+          kind: 'p',
+          text: changed
+            ? `${unit} için yapılandırma talebiniz yönetim tarafından değişiklikle onaylandı (istenen ${num(d.requestedInstallments)} taksit).`
+            : `${unit} için yapılandırma talebiniz onaylandı.`,
+        },
+        {
+          kind: 'rows',
+          rows: [
+            ['Taksit sayısı', `${num(d.installments)} taksit`],
+            ...(d.firstDueDate ? [['İlk taksit vadesi', formatDate(d.firstDueDate)] as [string, string]] : []),
+            ...(typeof d.total === 'number' ? [['Plan toplamı', formatTL(d.total)] as [string, string]] : []),
+          ],
+        },
+        { kind: 'note', text: 'Taksitlerinizi vadesinde ödediğiniz sürece yeni gecikme tazminatı yalnızca geciken taksitin anapara payına işler. Planın ayrıntıları Borçlarım ekranındadır.' },
+      ],
+      cta: { label: 'Taksit planımı görüntüle', path: 'dues' },
+    };
+  }
+  const reason = str(d.reason);
+  return {
+    subject: 'Yapılandırma talebiniz reddedildi',
+    heading: 'Yapılandırma talebiniz reddedildi',
+    preheader: unit,
+    blocks: [
+      { kind: 'p', text: `${unit} için yapılandırma talebiniz yönetim tarafından reddedildi.` },
+      ...(reason ? [{ kind: 'p' as const, text: `Gerekçe: ${reason}` }] : []),
+      { kind: 'note', text: 'Sorularınız için yönetimle iletişime geçebilir veya Borçlarım ekranından yeni bir talep oluşturabilirsiniz.' },
+    ],
+    cta: { label: 'Borçlarımı görüntüle', path: 'dues' },
+  };
 }
 
 /** Ihale: sakinlerle paylasim, karar ve yayindan sonra iptal (uyeler); soruya yonetim yaniti (soran sakin). */
@@ -613,6 +686,48 @@ function digestSpec(n: Notification): Spec {
       ...(sla.length > 25 || due.length > 25 || overdue.length > 25 || equipmentCount > 25 ? [{ kind: 'note', text: 'Listenin tamamı yönetim panelinde.' } as Block] : []),
     ],
     cta: { label: 'Arıza ve bakım ekranını aç', path: '../admin/tickets' },
+  };
+}
+
+/** Arka plan toplu isinin turu (e-posta ve push). */
+export const BULK_JOB_KIND_TEXT: Record<string, string> = {
+  dues_bulk: 'Toplu aidat tahakkuku',
+  meter_posting: 'Sayaç dönemi onayı (tahakkuk)',
+  meter_reversal: 'Sayaç dönemi geri alma',
+};
+
+/** Bildirim devami: toplu isin bitis ozeti (isi baslatan yonetici). */
+function bulkJobSpec(n: Notification): Spec {
+  const d = n.data;
+  const kind = BULK_JOB_KIND_TEXT[str(d.kind)] ?? 'Toplu işlem';
+  const label = str(d.label);
+  const title = label ? `${kind}: ${label}` : kind;
+  const fmt = (v: unknown) => num(v).toLocaleString('tr-TR');
+  const status = str(d.status);
+  const head =
+    status === 'failed'
+      ? { subject: `Toplu işlem tamamlanamadı - ${title}`, heading: 'Toplu işlem tamamlanamadı', text: `${title} işlemi tamamlanamadı. Yazılmış kalemler korunur; yönetim panelinden "Tekrar dene" ile kaldığı yerden devam edebilirsiniz.` }
+      : status === 'completed_with_errors'
+        ? { subject: `Toplu işlem hatalarla bitti - ${title}`, heading: 'Toplu işlem hatalarla bitti', text: `${title} işlemi bitti; bazı bölümler yazılamadı. Hatalı bölümleri yönetim panelinde görüp "Tekrar dene" ile yeniden deneyebilirsiniz.` }
+        : { subject: `Toplu işlem tamamlandı - ${title}`, heading: 'Toplu işlem tamamlandı', text: `${title} işlemi başarıyla tamamlandı.` };
+  const rows: [string, string][] = [
+    ['İşlem', kind],
+    ...(label ? [['Dönem / açıklama', label] as [string, string]] : []),
+    ['Toplam bölüm', fmt(d.total)],
+    ['Başarılı', fmt(d.succeeded)],
+    ['Hatalı', fmt(d.failed)],
+    ['Bu işlemle yeni yazılan', fmt(d.written)],
+  ];
+  return {
+    subject: head.subject,
+    heading: head.heading,
+    preheader: `${fmt(d.succeeded)} başarılı, ${fmt(d.failed)} hatalı`,
+    blocks: [
+      { kind: 'p', text: head.text },
+      { kind: 'rows', rows },
+      ...(status === 'failed' && str(d.errorMessage) ? [{ kind: 'note', text: `Hata: ${str(d.errorMessage)}` } as Block] : []),
+    ],
+    cta: { label: 'İşlemi görüntüle', path: `../${str(d.adminPath) || 'admin'}` },
   };
 }
 

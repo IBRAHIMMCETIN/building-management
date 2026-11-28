@@ -4,13 +4,18 @@ import { StatusBar } from 'expo-status-bar';
 import { useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, StyleSheet, View } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
+import { AppLockGate } from '@/components/AppLockGate';
 import { BrandMark } from '@/components/Brand';
 import { NoticeBanner } from '@/components/NoticeBanner';
+import { OFFLINE_BANNER_TEXT } from '@/components/OfflineBanner';
 import { PushPermissionPrompt } from '@/components/PushPermissionPrompt';
 import { AppText, Card, Screen } from '@/components/ui';
 import { env, envResult } from '@/config/env';
 import { AuthProvider, useAuth } from '@/context/AuthProvider';
+import { SiteFeaturesProvider } from '@/context/SiteFeaturesProvider';
 import { useReactQueryAppState } from '@/hooks/useAppForeground';
+import { useAppLock } from '@/hooks/useAppLock';
+import { useOfflineAnnouncement, useReactQueryNetwork } from '@/hooks/useNetwork';
 import { createQueryClient } from '@/lib/api/queryClient';
 import { areaForRole } from '@/lib/auth/flow';
 import { applyOrientationPolicy } from '@/lib/orientation';
@@ -60,10 +65,14 @@ function ConfigErrorScreen({ error }: { error: string }) {
 function RootStack() {
   const { user, isAuthenticated, needsContext } = useAuth();
   const { colors } = useTheme();
+  const locked = useAppLock().status !== 'unlocked';
+  // iOS VoiceOver: cevrimdisina gecis bir kez duyurulur (ekranlardaki not Android'de kendisi okunur).
+  useOfflineAnnouncement(OFFLINE_BANNER_TEXT);
   const area = user?.role ? areaForRole(user.role) : null;
 
   return (
-    <>
+    // Adim 1: aktif apartmanin site ozellikleri (kapali ozelligin Diğer ogesi, ekrani ve kartlari gizlenir).
+    <SiteFeaturesProvider>
       {/* Bildirime dokunma / on planda gelen bildirim; giristen sonra izin aciklamasi; genel bilgi notu. */}
       <NotificationObserver />
       <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.bg }, ...headerOptions(colors) }}>
@@ -87,9 +96,11 @@ function RootStack() {
           <Stack.Screen name="select-context" options={{ headerShown: !needsContext, title: 'Apartman / rol seçin' }} />
         </Stack.Protected>
       </Stack>
-      <PushPermissionPrompt />
+      {!locked && <PushPermissionPrompt />}
       <NoticeBanner />
-    </>
+      {/* Face ID / parmak izi kilidi (Hesabım): yiginin ustunde; acikken izin penceresi gosterilmez. */}
+      <AppLockGate />
+    </SiteFeaturesProvider>
   );
 }
 
@@ -97,6 +108,8 @@ function App() {
   const [services] = useState(() => createServices(env));
   const [queryClient] = useState(createQueryClient);
   useReactQueryAppState();
+  // Cevrimdisi farkindaligi: NetInfo -> onlineManager (sorgular bekler, yazimlar acik mesajla reddedilir).
+  useReactQueryNetwork();
   // Acilista: Android bildirim kanallari + on plan gosterim kurali (izin istemez) ve ekran yonu.
   useEffect(() => {
     void services.notifications.configure(services.push.shouldShow);

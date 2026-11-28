@@ -579,6 +579,7 @@ export function createReportService(overrides: Partial<ReportServiceDeps> & Pick
                   { bold: true, cells: ['Dönem sonucu (gelir − gider)', r.result < 0 ? `−${formatTRY(-r.result)}` : tl(r.result)] },
                   { cells: ['Yıl sonu sakin alacakları', tl(r.receivables.closing)] },
                   { cells: ['Yıl sonu sakin avansları', tl(r.receivables.advancesClosing)] },
+                  ...(r.supplierAdvances.closing !== 0 || r.supplierAdvances.opening !== 0 ? [{ cells: ['Yıl sonu tedarikçilere verilen avans', tl(r.supplierAdvances.closing)] }] : []),
                   { cells: ['Yıl sonu tedarikçi borçları', tl(r.payables.closing)] },
                   ...(r.budget ? [{ muted: true, cells: ['Bütçelenen gelir / gider', `${tl(r.budget.income)} / ${tl(r.budget.expense)}`] }] : []),
                 ],

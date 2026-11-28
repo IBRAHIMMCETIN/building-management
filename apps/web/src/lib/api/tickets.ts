@@ -1,4 +1,5 @@
 import { type EstimateInput, photoUploadSchema, similarSchema, ticketDetailSchema, ticketEventSchema, ticketListSchema, ticketSchema } from '@bm/shared/api/tickets';
+import { assigneesSchema } from '@bm/shared/api/work';
 import { z } from 'zod';
 import { TICKET_STATUSES, type TicketCategory, type TicketPriority, type TransitionAction } from '@/lib/tickets/model';
 import { apiClient } from './client';
@@ -39,7 +40,8 @@ export const boardSchema = z.object({
 });
 export type TicketBoard = z.infer<typeof boardSchema>;
 
-export const assigneesSchema = z.object({ items: z.array(z.object({ userId: z.string(), name: z.string() })) });
+/** Atanabilir gorevliler (web + mobil ortak: packages/shared/src/api/work.ts). */
+export { assigneesSchema };
 
 // --- O1-4 masraflar -------------------------------------------------------
 

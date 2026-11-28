@@ -44,7 +44,8 @@ describe('pencere yardimcilari', () => {
   });
 });
 
-describe('dogrulama deneme siniri (servis)', () => {
+// Yuzlerce ardisik servis cagrisi: yuklu makinede 5 sn varsayilanini asabiliyor (CI'da kararsiz).
+describe('dogrulama deneme siniri (servis)', { timeout: 30_000 }, () => {
   it('basarisiz kisa kod agir sayilir: 10 hatali kod sonra gecerli kod da 429; kilitlenme bir kez denetlenir', async () => {
     const w = gateWorld();
     const p = await w.pass();

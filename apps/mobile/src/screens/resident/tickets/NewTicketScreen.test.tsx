@@ -44,11 +44,11 @@ describe('Yeni talep', () => {
 
     // Daire icinde kisitli kategori listesi (asansor yok, "Guvenlik / diyafon").
     expect(screen.getByLabelText('Adım 2 / 3: Kategori')).toBeTruthy();
-    expect(screen.queryByRole('button', { name: 'Asansör' })).toBeNull();
-    expect(screen.getByRole('button', { name: 'Güvenlik / diyafon' })).toBeTruthy();
+    expect(screen.queryByRole('radio', { name: 'Asansör' })).toBeNull();
+    expect(screen.getByRole('radio', { name: 'Güvenlik / diyafon' })).toBeTruthy();
     await fireEvent.press(screen.getByRole('button', { name: 'Devam' }));
     expect(screen.getByText('Bir kategori seçin.')).toBeTruthy();
-    await fireEvent.press(screen.getByRole('button', { name: 'Su / tesisat' }));
+    await fireEvent.press(screen.getByRole('radio', { name: 'Su / tesisat' }));
     await fireEvent.press(screen.getByRole('button', { name: 'Devam' }));
 
     // Bos form: alan hatalari, istek yok.
@@ -82,7 +82,7 @@ describe('Yeni talep', () => {
     expect(screen.getByText('Alanı yazın (en az 2 karakter).')).toBeTruthy();
     await fireEvent.changeText(screen.getByLabelText('Alan'), 'A Blok asansörü');
     await fireEvent.press(screen.getByRole('button', { name: 'Devam' }));
-    await fireEvent.press(screen.getByRole('button', { name: 'Asansör' }));
+    await fireEvent.press(screen.getByRole('radio', { name: 'Asansör' }));
     expect(await screen.findByText('Ortak alanda bu kategoride açık talep var')).toBeTruthy();
     expect(screen.getByText('T-0039')).toBeTruthy();
     expect(calls.find((c) => c.path === '/api/portal/tickets/similar')?.query).toEqual({ category: 'elevator' });
@@ -92,7 +92,7 @@ describe('Yeni talep', () => {
   async function toStep3() {
     await fireEvent.press(await screen.findByRole('button', { name: /^Daire içi/ }));
     await fireEvent.press(screen.getByRole('button', { name: 'Devam' }));
-    await fireEvent.press(screen.getByRole('button', { name: 'Elektrik' }));
+    await fireEvent.press(screen.getByRole('radio', { name: 'Elektrik' }));
     await fireEvent.press(screen.getByRole('button', { name: 'Devam' }));
     await fireEvent.changeText(screen.getByLabelText('Başlık'), 'Priz çalışmıyor');
     await fireEvent.changeText(screen.getByLabelText('Açıklama'), 'Mutfaktaki priz.');
@@ -182,7 +182,7 @@ describe('Yeni talep', () => {
     });
     await fireEvent.press(await screen.findByRole('button', { name: /^Daire içi/ }));
     await fireEvent.press(screen.getByRole('button', { name: 'Devam' }));
-    await fireEvent.press(screen.getByRole('button', { name: 'Elektrik' }));
+    await fireEvent.press(screen.getByRole('radio', { name: 'Elektrik' }));
     await fireEvent.press(screen.getByRole('button', { name: 'Devam' }));
     await fireEvent.changeText(screen.getByLabelText('Başlık'), 'Priz çalışmıyor');
     await fireEvent.changeText(screen.getByLabelText('Açıklama'), 'Mutfaktaki priz.');

@@ -19,11 +19,10 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import { Platform, StyleSheet, View } from 'react-native';
 import { Car, DoorOpen, LogIn, LogOut, Package, Plus, QrCode as QrIcon } from '@/components/icons';
-import { FilterChips } from '@/components/portal/FilterChips';
 import { PortalQueryState } from '@/components/portal/PortalQueryState';
 import { RefetchErrorBanner } from '@/components/portal/RefetchErrorBanner';
 import { Sheet } from '@/components/portal/Sheet';
-import { Alert, AppText, Badge, Button, Card, CardTitle, EmptyState, LoadingBlock, Screen, TextField } from '@/components/ui';
+import { Alert, AppText, Badge, Button, Card, CardTitle, ChipGroup, EmptyState, LoadingBlock, Screen, TextField } from '@/components/ui';
 import { useAuth } from '@/context/AuthProvider';
 import { gateKeys, useGateLog, useMyCouriers, useMyGate, useMyGateActions, useMyPasses, useMyVehicles, usePassIssuing } from '@/hooks/useGate';
 import { radii, space, withAlpha } from '@/theme/tokens';
@@ -84,7 +83,8 @@ export function GateScreen() {
       ) : (
         <>
           <WaitingCouriers />
-          <FilterChips
+          <ChipGroup
+            size="compact"
             label="Ziyaretçi bölümü"
             value={tab}
             onChange={setTab}
@@ -116,7 +116,10 @@ function usePassed(iso: string): boolean {
   const [passed, setPassed] = useState(() => Date.now() >= at);
   useEffect(() => {
     if (passed) return;
-    const t = setTimeout(() => setPassed(true), Math.max(0, at - Date.now()) + 50);
+    const wait = Math.max(0, at - Date.now()) + 50;
+    // setTimeout 2^31-1 ms'den (~24,8 gun) uzun beklemede hemen calisir: o kadar uzak son saat bu ekranda beklenmez.
+    if (wait > 2_147_483_647) return;
+    const t = setTimeout(() => setPassed(true), wait);
     return () => clearTimeout(t);
   }, [at, passed]);
   return passed;
@@ -380,7 +383,7 @@ function UnitChips({ units, value, onChange }: { units: GateUnit[]; value: strin
       <AppText variant="small" weight="medium">
         Daire
       </AppText>
-      <FilterChips label="Daire" value={value} onChange={onChange} options={units.map((u) => ({ value: u.unitId, label: u.label }))} />
+      <ChipGroup size="compact" label="Daire" value={value} onChange={onChange} options={units.map((u) => ({ value: u.unitId, label: u.label }))} />
     </View>
   );
 }

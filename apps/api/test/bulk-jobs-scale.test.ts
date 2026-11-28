@@ -223,8 +223,33 @@ describe('1.200 bolum: sayac donemi onayi arka plan isi', () => {
       const r = await call('PUT', `/api/meter-readings/periods/${period.periodId}`, { items });
       if (r.status !== 200) throw new Error(JSON.stringify(r.json));
     }
-    const calc = await call('POST', `/api/metering/periods/${period.periodId}/calculate`);
-    expect(calc.json).toMatchObject({ ok: true, totals: { unitCount: UNITS, chargeCount: UNITS } });
+    // Performans: 1.000+ bolumde onizleme de arka plan isi (202); cift tiklama ayni isi doner.
+    const started = await call('POST', `/api/metering/periods/${period.periodId}/calculate`);
+    expect(started.status).toBe(202);
+    expect(started.json).toMatchObject({ mode: 'job', created: true, job: { kind: 'meter_calculation', status: 'pending', total: UNITS, params: { periodId: period.periodId } } });
+    const calcJobId = started.json.job.jobId as string;
+    expect((await call('POST', `/api/metering/periods/${period.periodId}/calculate`)).json).toMatchObject({ created: false, job: { jobId: calcJobId } });
+    // Is bitmeden sonuc yok; sayfa yenilense de donemin isi bulunur.
+    expect((await call('GET', `/api/metering/periods/${period.periodId}/calculation/${calcJobId}`)).status).toBe(409);
+    expect((await call('GET', `/api/metering/periods/${period.periodId}/job`)).json.job).toMatchObject({ jobId: calcJobId, kind: 'meter_calculation' });
+    await drain(service, q.messages);
+    expect((await call('GET', `/api/jobs/${calcJobId}`)).json).toMatchObject({ status: 'completed', percent: 100, result: { ok: true, unitCount: UNITS, chargeCount: UNITS } });
+    const calc = await call('GET', `/api/metering/periods/${period.periodId}/calculation/${calcJobId}`);
+    expect(calc.status).toBe(200);
+    expect(calc.json).toMatchObject({ ok: true, period: { status: 'calculated' }, totals: { unitCount: UNITS, chargeCount: UNITS } });
+    expect(calc.json.period.calc.hash).toBe(calc.json.calcHash);
+    expect(calc.json.lines).toHaveLength(UNITS);
+    // Biten is donemin guncel hesabini urettigi icin /job ile geri yuklenir (onizleme kaybolmaz).
+    expect((await call('GET', `/api/metering/periods/${period.periodId}/job`)).json.job).toMatchObject({ jobId: calcJobId, status: 'completed' });
+    // Ayni girdiyle senkron yol: ayni cetvel, toplamlar ve calcHash (cikti JSON'u birebir).
+    const sync = await w.posting.calculate({ apartmentId: APT, userId: manager.userId, role: 'apartment_manager' }, period.periodId);
+    if (!sync.ok) throw new Error('senkron hesap yapilamadi');
+    expect(calc.json.calcHash).toBe(sync.calcHash);
+    expect(calc.json.lines).toEqual(JSON.parse(JSON.stringify(sync.lines)));
+    expect({ ...calc.json.totals, calculatedAt: undefined }).toEqual({ ...JSON.parse(JSON.stringify(sync.totals)), calculatedAt: undefined });
+    expect(calc.json.warnings).toEqual(sync.warnings);
+    // Onizleme isi bitis bildirimi uretmez (yalnizca defter yazan isler).
+    expect(jobs.outbox).toHaveLength(0);
 
     // Eski hash: hemen 409 (is acilmaz).
     expect((await call('POST', `/api/metering/periods/${period.periodId}/approve`, { calcHash: '0'.repeat(32) })).status).toBe(409);
@@ -255,6 +280,8 @@ describe('1.200 bolum: sayac donemi onayi arka plan isi', () => {
     const summaries = w.ow.fake.events('DUES_BATCH_SUMMARY').filter((e) => e.payload.batchId === `mdp-${period.periodId}`);
     expect(summaries).toHaveLength(Math.ceil(UNITS / BATCH_SUMMARY_CHUNK));
     expect(w.meterRepo.audits.filter((a) => a.action === 'meters.period_posted')).toHaveLength(1);
+    // Bildirim devami: onay isi bitince baslatana tek ozet olayi.
+    expect(jobs.outbox.map((e) => [e.type, (e.payload as { kind: string; status: string }).kind, (e.payload as { status: string }).status])).toEqual([['BULK_JOB_FINISHED', 'meter_posting', 'completed']]);
 
     // Bitmis donemin onayini tekrar: yeni kayit yok.
     await service.handle({ type: 'bulk_job', apartmentId: APT, jobId, seq: 99 });

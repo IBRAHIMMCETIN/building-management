@@ -41,7 +41,7 @@ describe('sakin M2a ekranlari (gercek yonlendirme)', () => {
     await act(() => router.push('/rezervasyonlar'));
     await expectPath(result, '/resident/reservations');
     expect(result.getSearchParams()).toMatchObject({ tab: 'mine' });
-    expect(await screen.findByRole('button', { name: 'Rezervasyonlarım', selected: true }, { timeout: 5000 })).toBeTruthy();
+    expect(await screen.findByRole('radio', { name: 'Rezervasyonlarım', checked: true }, { timeout: 5000 })).toBeTruthy();
 
     await act(() => router.replace('/resident/more'));
     await fireEvent.press(await screen.findByRole('button', { name: /^Ziyaretçi,/ }, { timeout: 5000 }));

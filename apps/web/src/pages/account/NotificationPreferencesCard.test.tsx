@@ -8,20 +8,32 @@ import { NotificationPreferencesCard } from './NotificationPreferencesCard';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-type State = { data?: NotificationPreferences; loadError?: Error; saving: boolean; saveError?: Error; mutate: ReturnType<typeof vi.fn> };
+type State = {
+  data?: NotificationPreferences;
+  loadError?: Error;
+  saving: boolean;
+  saveError?: Error;
+  mutate: ReturnType<typeof vi.fn>;
+  /** `GET /api/me/devices`; undefined: yukleniyor / hata. */
+  devices?: { deviceId: string; platform: string; lastSeenAt: string }[];
+};
 const state: State = { saving: false, mutate: vi.fn() };
 
 vi.mock('@/hooks/useTeam', () => ({
   useNotificationPreferences: () => ({ data: state.data, isPending: !state.data && !state.loadError, isError: !!state.loadError, error: state.loadError ?? null }),
   useSaveNotificationPreferences: () => ({ mutate: state.mutate, isPending: state.saving, isError: !!state.saveError, isSuccess: false, error: state.saveError ?? null }),
+  useMyDevices: () => ({ data: state.devices ? { devices: state.devices } : undefined }),
 }));
 
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => {
   act(() => root?.unmount());
   document.body.innerHTML = '';
-  Object.assign(state, { data: undefined, loadError: undefined, saving: false, saveError: undefined, mutate: vi.fn() });
+  Object.assign(state, { data: undefined, loadError: undefined, saving: false, saveError: undefined, mutate: vi.fn(), devices: undefined });
 });
+
+const PHONE = { deviceId: 'd1', platform: 'ios', lastSeenAt: '2026-11-28T08:00:00.000Z' };
+const HINT = 'Mobil bildirimler, YÖNESİST mobil uygulamasında giriş yapıp bildirimlere izin verdiğinizde açılır';
 
 function render(over: Partial<State>) {
   Object.assign(state, over);
@@ -84,6 +96,67 @@ describe('bildirim tercihleri karti', () => {
     const { el } = render({ loadError: new Error('beklenmeyen') });
     expect(el.textContent).toContain('Beklenmeyen bir hata oluştu.');
     expect(el.querySelectorAll('input[type="checkbox"]')).toHaveLength(0);
+  });
+});
+
+describe('mobil bildirim bolumu', () => {
+  it('kayitli telefon yoksa yalnizca kisa not; push anahtari yok', () => {
+    const { el, box } = render({ data: { email: { enabled: true } }, devices: [] });
+    expect(el.textContent).toContain(HINT);
+    expect(box('push.enabled')).toBeNull();
+    expect(el.querySelectorAll('input[type="checkbox"]')).toHaveLength(1 + NOTIFICATION_CATEGORIES.length);
+  });
+
+  it('cihaz listesi yuklenmeden (veya hata) ne bolum ne not', () => {
+    const { el, box } = render({ data: { email: { enabled: true } } });
+    expect(box('push.enabled')).toBeNull();
+    expect(el.textContent).not.toContain(HINT);
+  });
+
+  it('telefon varsa e-postanin altinda ana anahtar + ayni kategoriler; push tercihi okunur', () => {
+    const { el, box, labelOf, descriptionOf } = render({ data: { email: { enabled: true }, push: { enabled: true, finance: false } }, devices: [PHONE] });
+    expect(el.textContent).not.toContain(HINT);
+    expect(el.querySelectorAll('input[type="checkbox"]')).toHaveLength(2 * (1 + NOTIFICATION_CATEGORIES.length));
+    expect(labelOf(box('push.enabled'))).toBe('Mobil bildirimler');
+    expect(descriptionOf(box('push.enabled'))).toContain('E-posta tercihinden bağımsızdır');
+    expect(box('push.finance')?.checked).toBe(false);
+    expect(box('push.gate')?.checked).toBe(true);
+    // E-posta tarafi push tercihinden etkilenmez.
+    expect(box('finance')?.checked).toBe(true);
+    // Ayni konu iki kanalda: push kutusunun ekran okuyucu adi kanali soyler, aciklama yine bagli.
+    expect(box('push.gate')?.getAttribute('aria-label')).toBe('Ziyaretçi ve kurye, mobil bildirim');
+    expect(descriptionOf(box('push.gate'))).toContain('Kapıdaki kurye için onay isteği');
+    expect(el.querySelector('[role="group"][aria-label="Mobil bildirim konuları"]')).not.toBeNull();
+    // Sira: e-posta bolumu once.
+    const names = [...el.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')].map((i) => i.name);
+    expect(names.indexOf('push.enabled')).toBe(1 + NOTIFICATION_CATEGORIES.length);
+  });
+
+  it('push tercihi kayitli degilse acik sayilir', () => {
+    const { box } = render({ data: { email: { enabled: false } }, devices: [PHONE] });
+    expect(box('push.enabled')?.checked).toBe(true);
+    expect(box('push.tickets')?.checked).toBe(true);
+  });
+
+  it('degisiklikte yalnizca degisen push alani gonderilir', () => {
+    const { box } = render({ data: { email: { enabled: true }, push: { enabled: true } }, devices: [PHONE] });
+    act(() => box('push.gate')?.click());
+    expect(state.mutate).toHaveBeenCalledWith({ push: { gate: false } });
+    act(() => box('push.enabled')?.click());
+    expect(state.mutate).toHaveBeenLastCalledWith({ push: { enabled: false } });
+  });
+
+  it('push ana anahtari kapaliyken konular devre disi ve not gosterilir; e-posta acik kalir', () => {
+    const { el, box } = render({ data: { email: { enabled: true }, push: { enabled: false, polls: true } }, devices: [PHONE] });
+    expect(box('push.polls')?.disabled).toBe(true);
+    expect(box('push.polls')?.checked).toBe(false);
+    expect(box('polls')?.disabled).toBe(false);
+    expect(el.textContent).toContain('Mobil bildirimler kapalıyken bu konularda telefona bildirim gönderilmez.');
+  });
+
+  it('kaydedilirken push anahtarlari da devre disi', () => {
+    const { el } = render({ data: { email: { enabled: true }, push: { enabled: true } }, devices: [PHONE], saving: true });
+    expect([...el.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')].every((i) => i.disabled)).toBe(true);
   });
 });
 

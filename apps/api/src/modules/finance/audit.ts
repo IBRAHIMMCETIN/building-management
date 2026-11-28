@@ -9,6 +9,7 @@ import type { CariClosure } from './closures.js';
 import { cancelledIn, linesOfAccount, readSubledger } from './subledger.js';
 import { financeKeys } from './repository.js';
 import type { Account, LedgerEntry, Payment, Transaction } from './types.js';
+import type { SupplierAdvance, SupplierAdvanceOffset } from './supplierAdvances.js';
 import { type CostSummary, EXPLINK_PREFIX, type ExpenseLinkRecord } from '../workcosts/types.js';
 
 /**
@@ -40,6 +41,9 @@ import { type CostSummary, EXPLINK_PREFIX, type ExpenseLinkRecord } from '../wor
  *  - ticket_cost_mismatch     (O1-4) talep / bakim gorevi masraf ozeti, aktif EXPLINK kilitleri ve defterle
  *                             uyusmuyor (masraf listesi, toplam, yansitma islemleri)
  *  - explink_orphan           (O1-4) aktif EXPLINK kilidinin isi yok / isi onu listelemiyor / islemi defterde yok
+ *  - supplier_advance_mismatch (Finans 2.2 sonrasi) avans kaydindaki `applied` canli mahsuplarin toplami degil;
+ *                             avans / mahsup kaydinin durumu islemiyle (iptal) uyusmuyor; avans hesabinin
+ *                             defter bakiyesi acik avanslarin toplamina esit degil
  *
  * Bulgu OLMAYAN rapor alanlari:
  *  - bankRecon  (Faz B3) banka hesabi basina son ekstre kapanis bakiyesi <-> defter bakiyesi;
@@ -81,6 +85,8 @@ export const AUDIT_CODES = [
   'ticket_cost_mismatch',
   /** O1-4: aktif masraf kilidinin isi yok ya da isi onu listelemiyor; islemi defterde yok. */
   'explink_orphan',
+  /** Finans 2.2 sonrasi: tedarikci avansi kaydi / mahsuplari / avans hesabi defterle tutarsiz. */
+  'supplier_advance_mismatch',
 ] as const;
 export type AuditCode = (typeof AUDIT_CODES)[number];
 
@@ -126,6 +132,9 @@ export type AuditSnapshot = {
   /** O1-4: masrafi olan isler ve masraf kilitleri (eski kaynaklarda yok). */
   workTargets?: WorkTargetSnapshot[];
   expenseLinks?: ExpenseLinkRecord[];
+  /** Finans 2.2 sonrasi: tedarikci avanslari ve mahsuplari (eski kaynaklarda yok). */
+  supplierAdvances?: SupplierAdvance[];
+  supplierAdvanceOffsets?: SupplierAdvanceOffset[];
 };
 
 /** O1-4: talep / bakim gorevinin masraf ozeti (denetim icin). */
@@ -649,6 +658,47 @@ export type AuditSource = {
   getVersion?(apartmentId: string, sk: string): Promise<number | undefined>;
 };
 
+/**
+ * Finans 2.2 sonrasi: tedarikci avanslari. Avans / mahsup kaydi bagli islemiyle ayni atomik yazimdadir
+ * ve islemlerden ONCE okunur (es zamanli yazim kararsizlik olarak ayiklanir, bkz. `run`).
+ *  - `applied` = canli (`completed`) mahsuplarin toplami (iptal edilmemis avansta)
+ *  - avans `reversed` <=> avans islemi iptal; mahsup `completed` <=> mahsup islemi canli
+ *  - avans hesabinin defter bakiyesi = o hesaptaki acik avanslarin (tutar - mahsup) toplami
+ */
+export function checkSupplierAdvances(s: Pick<AuditSnapshot, 'transactions' | 'entries' | 'supplierAdvances' | 'supplierAdvanceOffsets'>): AuditFinding[] {
+  const advances = s.supplierAdvances ?? [];
+  if (advances.length === 0) return [];
+  const offsets = s.supplierAdvanceOffsets ?? [];
+  const txIds = new Set(s.transactions.map((t) => t.transactionId));
+  const cancelled = new Set(s.transactions.filter((t) => t.kind === 'reversal' && t.reversalOf).map((t) => t.reversalOf as string));
+  const live = (id: string) => txIds.has(id) && !cancelled.has(id);
+  const out: AuditFinding[] = [];
+  const open = new Map<string, number>();
+  for (const a of advances) {
+    const mine = offsets.filter((o) => o.advanceId === a.advanceId);
+    const applied = mine.filter((o) => o.status === 'completed').reduce((sum, o) => sum + o.amount, 0);
+    if (a.status !== 'reversed' && a.applied !== applied) {
+      out.push({ code: 'supplier_advance_mismatch', accountId: a.advanceAccountId, transactionId: a.transactionId, expected: applied, actual: a.applied, detail: `applied:${a.advanceId}` });
+    }
+    if ((a.status === 'reversed') !== !live(a.transactionId)) {
+      out.push({ code: 'supplier_advance_mismatch', accountId: a.advanceAccountId, transactionId: a.transactionId, detail: `advance_state:${a.advanceId}:${a.status}` });
+    }
+    for (const o of mine) {
+      if ((o.status === 'completed') !== live(o.transactionId)) {
+        out.push({ code: 'supplier_advance_mismatch', accountId: a.advanceAccountId, transactionId: o.transactionId, detail: `offset_state:${o.offsetId}:${o.status}` });
+      }
+    }
+    if (a.status !== 'reversed') open.set(a.advanceAccountId, (open.get(a.advanceAccountId) ?? 0) + a.amount - a.applied);
+    else open.set(a.advanceAccountId, open.get(a.advanceAccountId) ?? 0);
+  }
+  const totals = entryTotals(s.entries);
+  for (const [accountId, expected] of open) {
+    const actual = totals.get(accountId) ?? 0;
+    if (actual !== expected) out.push({ code: 'supplier_advance_mismatch', accountId, expected, actual, detail: 'advance_balance' });
+  }
+  return out;
+}
+
 export function createDynamoAuditSource(): AuditSource {
   const all = <T>(apartmentId: string, prefix: string) => queryTenantAll<T>(apartmentId, prefix, { ConsistentRead: true });
   return {
@@ -675,6 +725,9 @@ export function createDynamoAuditSource(): AuditSource {
         ...tasks.map((t) => ({ ref: `maintenance:${t.taskId}`, SK: t.SK, version: t.version, costSummary: t.costSummary })),
       ];
       const expenseLinks = (await all<ExpenseLinkRecord>(apartmentId, EXPLINK_PREFIX)).filter((l) => l.entityType === 'EXPENSE_LINK');
+      // Finans 2.2 sonrasi: avans ve mahsup kayitlari bagli islemlerle ayni atomik yazimda: islemlerden ONCE.
+      const supplierAdvances = (await all<SupplierAdvance>(apartmentId, 'SUPADV#')).filter((a) => a.entityType === 'SUPPLIER_ADVANCE');
+      const supplierAdvanceOffsets = (await all<SupplierAdvanceOffset>(apartmentId, 'SUPADVOFS#')).filter((o) => o.entityType === 'SUPPLIER_ADVANCE_OFFSET');
       const transactions = await all<Transaction>(apartmentId, 'TX#');
       const entries = await all<LedgerEntry>(apartmentId, 'LE#');
       const accounts = await all<Account>(apartmentId, 'ACCT#');
@@ -698,6 +751,8 @@ export function createDynamoAuditSource(): AuditSource {
         fiscalPeriods,
         workTargets,
         expenseLinks,
+        supplierAdvances,
+        supplierAdvanceOffsets,
       };
     },
     getVersion: async (apartmentId, sk) => (await getTenantItem<{ version?: number }>({ PK: `APT#${apartmentId}`, SK: sk }))?.version,
@@ -815,6 +870,21 @@ export function createLedgerAuditor(source: AuditSource, opts: { now?: () => Dat
         const now = await source.getBankLine(apartmentId, snap.SK);
         if (!now || now.version !== snap.version) {
           unstable.push(`bank:${f.lineId}`);
+          continue;
+        }
+      }
+      findings.push(f);
+    }
+
+    // Finans 2.2 sonrasi: tedarikci avanslari. Ilgili avans kaydi okuma sirasinda degistiyse (es zamanli
+    // mahsup / geri alma) bulgu raporlanmaz, kararsiz sayilir.
+    for (const f of checkSupplierAdvances(s)) {
+      const related = (s.supplierAdvances ?? []).filter((a) => a.advanceAccountId === f.accountId);
+      if (source.getVersion && related.length) {
+        let moved = false;
+        for (const a of related) if ((await source.getVersion(apartmentId, a.SK)) !== a.version) moved = true;
+        if (moved) {
+          unstable.push(`supadv:${f.accountId}`);
           continue;
         }
       }

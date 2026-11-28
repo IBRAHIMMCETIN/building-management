@@ -2,7 +2,8 @@ import { z } from 'zod';
 import { apiClient } from './client';
 
 /**
- * Arka plan toplu isleri (buyuk toplu aidat tahakkuku, buyuk sayac donemi onayi).
+ * Arka plan toplu isleri (buyuk toplu aidat tahakkuku, buyuk sayac donemi onayi / geri alma ve
+ * 1.000+ bolumlu donemin dagitim onizlemesi).
  *   GET  /api/jobs/:jobId         durum + ilerleme
  *   POST /api/jobs/:jobId/retry   basarisiz / hatali biten isi yeniden baslatir
  * Baslatan uclar 202 ve `{ mode: 'job', job }` doner.
@@ -13,7 +14,7 @@ export const TERMINAL_JOB_STATUSES: readonly BulkJobStatus[] = ['completed', 'co
 
 export const bulkJobSchema = z.object({
   jobId: z.string(),
-  kind: z.enum(['dues_bulk', 'meter_posting', 'meter_reversal']),
+  kind: z.enum(['dues_bulk', 'meter_posting', 'meter_reversal', 'meter_calculation']),
   status: z.enum(BULK_JOB_STATUSES),
   phase: z.enum(['prepare', 'post', 'finalize']).optional(),
   total: z.number().int(),
@@ -34,6 +35,12 @@ export const bulkJobSchema = z.object({
       reversed: z.number().int().optional(),
       written: z.number().int().optional(),
       replayed: z.boolean().optional(),
+      /** Sayac onizlemesi (1.000+ bolum): hesap yapildi mi, calcHash, bolum / tahakkuk / engel sayisi. */
+      ok: z.boolean().optional(),
+      calcHash: z.string().optional(),
+      unitCount: z.number().int().optional(),
+      chargeCount: z.number().int().optional(),
+      blockerCount: z.number().int().optional(),
     })
     .optional(),
   error: z.object({ code: z.string(), message: z.string() }).passthrough().optional(),
@@ -62,6 +69,7 @@ export const bulkJobsApi = {
 /** "İşleniyor: 420 / 1.250 bölüm (%34)" */
 export function progressText(job: Pick<BulkJob, 'processed' | 'total' | 'percent' | 'kind' | 'phase' | 'status'>): string {
   if (job.status === 'pending') return 'Sıraya alındı, birazdan başlayacak…';
+  if (job.kind === 'meter_calculation' && job.status === 'running') return `Dağıtım hesaplanıyor (${job.total.toLocaleString('tr-TR')} bölüm)…`;
   if (job.kind === 'meter_posting' && job.phase === 'prepare') return 'Dağıtım yeniden hesaplanıyor ve doğrulanıyor…';
   if (job.kind === 'meter_posting' && job.phase === 'finalize' && job.status === 'running') return 'Tahakkuk yazıldı; özet ve sayaç imleçleri güncelleniyor…';
   if (job.kind === 'meter_reversal' && job.phase === 'prepare') return 'Geri alma engelleri kontrol ediliyor…';

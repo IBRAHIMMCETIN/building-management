@@ -205,12 +205,40 @@ run "prod_plan" {
       "RESERVATION_APPROVED", "RESERVATION_REJECTED", "RESERVATION_CANCELLED",
       "ASSEMBLY_CALLED", "ASSEMBLY_CANCELLED", "ASSEMBLY_RESCHEDULED",
       "TENDER_PUBLISHED", "TENDER_DECIDED", "TENDER_CANCELLED", "TENDER_REPLIED",
+      "BULK_JOB_FINISHED",
+      "RESTRUCTURE_REQUESTED", "RESTRUCTURE_APPROVED", "RESTRUCTURE_REJECTED",
     ]
     error_message = "Bildirim kuyrugu worker'in isledigi tum olay turlerine abone olmali (ariza/talep, gunluk operasyon ozeti ve oylama yayini dahil)"
   }
   assert {
     condition     = aws_sns_topic_subscription.notification.raw_message_delivery
     error_message = "Raw delivery acik olmali (govde = olay JSON)"
+  }
+  # Kapi devami: bildirim olmayan olaylar zamanlanmis gorev kuyruguna (raw, filtreli).
+  assert {
+    condition     = jsondecode(aws_sns_topic_subscription.jobs_events.filter_policy).eventType == ["MEMBERSHIP_ENDED"]
+    error_message = "Zamanlanmis gorev kuyrugu yalnizca MEMBERSHIP_ENDED olayina abone olmali"
+  }
+  assert {
+    condition     = aws_sns_topic_subscription.jobs_events.raw_message_delivery && aws_sns_topic_subscription.jobs_events.protocol == "sqs"
+    error_message = "Olay aboneligi SQS'e raw delivery ile olmali"
+  }
+  # Bildirim devami: SES geri bildirimleri bildirim worker'ina (Lambda aboneligi).
+  assert {
+    condition     = aws_sns_topic_subscription.ses_feedback.protocol == "lambda" && aws_lambda_permission.ses_feedback.principal == "sns.amazonaws.com"
+    error_message = "SES geri bildirim topic'i bildirim worker'ina Lambda aboneligiyle baglanmali"
+  }
+  assert {
+    condition     = aws_sns_topic.ses_feedback.name == "building-management-ses-feedback"
+    error_message = "SES geri bildirim topic'i yigin adiyla olmali (dagitim politikasi <proje>* kapsami)"
+  }
+  assert {
+    condition     = aws_lambda_function_event_invoke_config.notification_worker.maximum_retry_attempts == 2 && aws_sqs_queue.ses_feedback_dlq.name == "building-management-ses-feedback-dlq"
+    error_message = "SES geri bildirim asenkron cagrisi basarisizlikta DLQ'ya dusmeli"
+  }
+  assert {
+    condition     = contains(keys(aws_lambda_function.notification_worker.environment[0].variables), "SES_FEEDBACK_TOPIC_ARN")
+    error_message = "Bildirim worker'i SES geri bildirim topic'ini dogrulamak icin SES_FEEDBACK_TOPIC_ARN almali"
   }
   assert {
     condition     = aws_sqs_queue.notification.sqs_managed_sse_enabled && aws_sqs_queue.notification_dlq.sqs_managed_sse_enabled
@@ -357,6 +385,21 @@ run "prod_plan" {
       aws_cloudwatch_metric_alarm.push_rejected[0].alarm_actions == toset(["arn:aws:sns:eu-central-1:123456789012:building-management-alerts"])
     )
     error_message = "Kalici push hatasi ve uzun Expo kesintisi alarm uretmeli"
+  }
+  assert {
+    condition = (
+      aws_cloudwatch_log_metric_filter.push_receipt_errors[0].log_group_name == aws_cloudwatch_log_group.scheduler_worker.name &&
+      aws_cloudwatch_log_metric_filter.push_receipt_errors[0].pattern == "\"push_receipt_errors\"" &&
+      one(aws_cloudwatch_log_metric_filter.push_receipt_errors[0].metric_transformation).name == "PushReceiptErrors" &&
+      one(aws_cloudwatch_log_metric_filter.push_receipt_errors[0].metric_transformation).namespace == aws_cloudwatch_metric_alarm.push_receipt_errors[0].namespace &&
+      aws_cloudwatch_metric_alarm.push_receipt_errors[0].metric_name == "PushReceiptErrors" &&
+      aws_cloudwatch_metric_alarm.push_receipt_errors[0].threshold == 1 &&
+      aws_cloudwatch_metric_alarm.push_receipt_errors[0].comparison_operator == "GreaterThanOrEqualToThreshold" &&
+      aws_cloudwatch_metric_alarm.push_receipt_errors[0].period == 3600 &&
+      aws_cloudwatch_metric_alarm.push_receipt_errors[0].treat_missing_data == "notBreaching" &&
+      aws_cloudwatch_metric_alarm.push_receipt_errors[0].alarm_actions == toset(["arn:aws:sns:eu-central-1:123456789012:building-management-alerts"])
+    )
+    error_message = "Scheduler loglarindaki push_receipt_errors satiri metrige donusmeli ve ilk bulguda alarm uretmeli"
   }
   assert {
     condition = (
@@ -1521,6 +1564,8 @@ run "push_disabled" {
       length([for st in data.aws_iam_policy_document.notification_worker.statement : st if contains(["PushDeviceUpdate", "ReadExpoAccessToken"], st.sid)]) == 0 &&
       length(aws_secretsmanager_secret.expo_access_token) == 0 &&
       length(aws_cloudwatch_metric_alarm.push_rejected) == 0 &&
+      length(aws_cloudwatch_metric_alarm.push_receipt_errors) == 0 &&
+      length(aws_cloudwatch_log_metric_filter.push_receipt_errors) == 0 &&
       !contains(keys(aws_lambda_function.notification_worker.environment[0].variables), "EXPO_ACCESS_TOKEN_SECRET_ARN")
     )
     error_message = "Push kapaliyken UpdateItem / secret yetkisi, secret ve alarm olmamali"

@@ -48,6 +48,12 @@ export type UnitMembership = TableKeys &
      * eder; kapama geri alininca kaldirilir ve uyelik yeniden aktif olur.
      */
     endedByClosureId?: string;
+    /**
+     * Oturan malikin sakin carisi kapatildi (kiraya verdi): uyelik surer, `residesInUnit = false`.
+     * Kapama geri alinabildigi icin kapi taramasi (gate/departures.ts) bu isarette de geri alma
+     * payini uygular; kapama geri alininca kaldirilir.
+     */
+    residencyEndedByClosureId?: string;
   };
 
 export const ANNOUNCEMENT_STATUSES = ['draft', 'published', 'archived'] as const;

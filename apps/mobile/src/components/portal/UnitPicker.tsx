@@ -4,7 +4,9 @@ import { Modal, Pressable, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { AppText, Button, ListRow } from '@/components/ui';
 import { usePortalUnit } from '@/context/PortalUnitProvider';
+import { useModalsSuspended } from '@/hooks/useAppLock';
 import { useActiveResidentContext } from '@/hooks/useContexts';
+import { MODAL_ORIENTATIONS } from '@/lib/orientation';
 import { MIN_TOUCH, radii, space } from '@/theme/tokens';
 import { useTheme } from '@/theme/useTheme';
 
@@ -31,6 +33,8 @@ export function UnitPicker() {
   const { unitId, selectUnit } = usePortalUnit();
   const { colors } = useTheme();
   const [open, setOpen] = useState(false);
+  // Uygulama kilidi / gizlilik ortusu acikken gizli (bkz. Sheet).
+  const suspended = useModalsSuspended();
 
   if (options.length < 2) return null;
   const current = options.find((o) => o.unitId === unitId);
@@ -52,7 +56,7 @@ export function UnitPicker() {
         <ChevronDown size={16} color={colors.muted} aria-hidden />
       </Pressable>
 
-      <Modal visible={open} transparent animationType="fade" onRequestClose={() => setOpen(false)}>
+      <Modal visible={open && !suspended} transparent animationType="fade" supportedOrientations={MODAL_ORIENTATIONS} onRequestClose={() => setOpen(false)}>
         {/* Karartma pencerenin kardesi ve ekran okuyucudan gizli (ebeveyn Pressable tum pencereyi tek oge yapardi); bkz. Sheet. */}
         <View style={styles.scrim}>
           <Pressable

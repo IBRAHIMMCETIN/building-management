@@ -14,7 +14,8 @@ const courier = (over: Record<string, unknown> = {}) => ({
   status: 'waiting',
   expired: false,
   createdAt: '2026-11-28T09:00:00.000Z',
-  respondBy: '2026-11-28T10:00:00.000Z',
+  // Gercek saatle karsilastirilir (son saat gecince dugmeler kapanir): uzak gelecekte, ayni saat (13:00 Istanbul).
+  respondBy: '2099-11-28T10:00:00.000Z',
   canRespond: true,
   canEnter: false,
   canExit: false,
@@ -161,7 +162,7 @@ describe('Ziyaretçi', () => {
     await fireEvent.press(screen.getByRole('button', { name: 'Evet, yeni QR oluştur' }));
     await waitFor(() => expect(calls.some((c) => c.path.endsWith('/rotate'))).toBe(true));
     // Istek surerken Araçlarım'a gecilir: misafir listesi ekrandan kalkar.
-    await fireEvent.press(screen.getByRole('button', { name: 'Araçlarım' }));
+    await fireEvent.press(screen.getByRole('radio', { name: 'Araçlarım' }));
     expect(screen.queryByText('Misafir p1')).toBeNull();
     await act(async () => release({ pass: pass('p1', { version: 6, token: 'tok_yyyyyyyyyyyyyyyyyyyyyy', shortCode: 'BBBB3333' }) }));
     expect(await screen.findByText('BBBB-3333')).toBeTruthy();
@@ -217,7 +218,7 @@ describe('Ziyaretçi', () => {
         'PATCH /api/portal/gate/vehicles/v1': { vehicle: { ...vehicle, status: 'inactive', version: 2 } },
       }),
     });
-    await fireEvent.press(await screen.findByRole('button', { name: 'Araçlarım' }));
+    await fireEvent.press(await screen.findByRole('radio', { name: 'Araçlarım' }));
     await fireEvent.changeText(screen.getByLabelText('Plaka'), '99 Q 1');
     await fireEvent.press(screen.getByRole('button', { name: 'Aracı kaydet' }));
     expect(await screen.findByText('Plaka Türkiye plaka biçiminde olmalıdır (örnek: 34 ABC 123)')).toBeTruthy();
@@ -236,7 +237,7 @@ describe('Ziyaretçi', () => {
           query.cursor ? { items: [logEntry('l2')], from: '2026-11-21', to: '2026-11-28' } : { items: [logEntry('l1')], from: '2026-11-21', to: '2026-11-28', nextCursor: 'c-2' },
       }),
     });
-    await fireEvent.press(await screen.findByRole('button', { name: 'Kapı kayıtları' }));
+    await fireEvent.press(await screen.findByRole('radio', { name: 'Kapı kayıtları' }));
     expect(await screen.findByText('Ziyaretçi l1')).toBeTruthy();
     await fireEvent.press(screen.getByRole('button', { name: 'Daha fazla yükle' }));
     expect(await screen.findByText('Ziyaretçi l2')).toBeTruthy();
@@ -247,7 +248,7 @@ describe('Ziyaretçi', () => {
   it('dairede oturmayan sakin: aciklama; sunucu hatasi tekrar denenebilir', async () => {
     await renderApp(<GateScreen />, { routes: base({ 'GET /api/portal/gate': overview([]) }) });
     expect(await screen.findByText(/yalnızca dairede oturan sakinler içindir/)).toBeTruthy();
-    expect(screen.queryByRole('button', { name: 'Misafirler' })).toBeNull();
+    expect(screen.queryByRole('radio', { name: 'Misafirler' })).toBeNull();
   });
 
   it('genel bilgi alinamazsa hata ve tekrar dene', async () => {

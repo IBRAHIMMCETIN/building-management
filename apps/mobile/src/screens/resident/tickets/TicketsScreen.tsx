@@ -5,11 +5,10 @@ import { useRouter } from 'expo-router';
 import { useState } from 'react';
 import { Platform, Pressable, StyleSheet, View } from 'react-native';
 import { ChevronRight, Plus, Wrench } from '@/components/icons';
-import { FilterChips } from '@/components/portal/FilterChips';
 import { PortalQueryState } from '@/components/portal/PortalQueryState';
 import { RefetchErrorBanner } from '@/components/portal/RefetchErrorBanner';
 import { TicketStatusBadge } from '@/components/tickets/TicketBadges';
-import { AppText, Badge, Button, EmptyState, LoadingBlock, Screen } from '@/components/ui';
+import { AppText, Badge, Button, ChipGroup, EmptyState, LoadingBlock, Screen } from '@/components/ui';
 import { useMyTickets } from '@/hooks/useTickets';
 import { radii, space, withAlpha } from '@/theme/tokens';
 import { useTheme } from '@/theme/useTheme';
@@ -40,7 +39,8 @@ export function TicketsScreen() {
   return (
     <Screen title="Arıza / Talep" refreshing={refreshing} onRefresh={() => void refresh()}>
       <Button icon={Plus} label="Yeni talep" onPress={() => router.push('/resident/tickets/new')} />
-      <FilterChips
+      <ChipGroup
+        size="compact"
         label="Talep durumu"
         value={tab}
         onChange={setTab}

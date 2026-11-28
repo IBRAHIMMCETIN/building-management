@@ -8,10 +8,9 @@ import { useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
 import { CalendarCheck, CalendarDays, ChevronRight, CircleCheck } from '@/components/icons';
-import { FilterChips } from '@/components/portal/FilterChips';
 import { PortalQueryState } from '@/components/portal/PortalQueryState';
 import { RefetchErrorBanner } from '@/components/portal/RefetchErrorBanner';
-import { Alert, AppText, Badge, Button, Card, EmptyState, LoadingBlock, Screen } from '@/components/ui';
+import { Alert, AppText, Badge, Button, Card, ChipGroup, EmptyState, LoadingBlock, Screen } from '@/components/ui';
 import { useAuth } from '@/context/AuthProvider';
 import { reservationKeys, useCancelMyBooking, useMyBookings, usePortalFacilities } from '@/hooks/useReservations';
 import { radii, space } from '@/theme/tokens';
@@ -48,7 +47,8 @@ export function ReservationsScreen({ tab: requested, doneId, warning }: { tab?: 
 
   return (
     <Screen refreshing={refreshing} onRefresh={() => void refresh()}>
-      <FilterChips
+      <ChipGroup
+        size="compact"
         label="Rezervasyon görünümü"
         value={tab}
         onChange={(t) => {
