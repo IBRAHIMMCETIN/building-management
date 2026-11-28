@@ -3,20 +3,18 @@ import { rateLimitSeconds } from '@bm/shared/api/gate';
 import { PLATE_MIN_QUERY, normalizePlate } from '@bm/shared/gate/plate';
 import { useEffect, useState } from 'react';
 import { Platform, StyleSheet, View } from 'react-native';
-import { Car, UserPlus } from '@/components/icons';
+import { Car, Search, UserPlus } from '@/components/icons';
 import { Alert, AppText, Badge, Button, Card, Skeleton, TextField } from '@/components/ui';
 import { usePlateLookup } from '@/hooks/useGate';
 import { radii, space, withAlpha } from '@/theme/tokens';
 import { useTheme } from '@/theme/useTheme';
 import { RateLimitNotice, useCountdown } from './GateUi';
 
-/** Yazmayi biraktiktan sonra sorgu (her tus vurusunda istek yok; plaka sorgusu da deneme sinirinda). */
-export const PLATE_DEBOUNCE_MS = 400;
-
 /**
- * Plaka sorgusu (web: pages/admin/gate/PlateDesk.tsx): tam plaka veya son en az 3 karakter. Sonucta
- * yalnizca bagimsiz bolum, kayit durumu ve arac notu; kisi adi / telefon / borc yok. Kayitli degilse
- * ziyaretci olarak elle giris kaydina gecilir.
+ * Plaka sorgusu (web: pages/admin/gate/PlateDesk.tsx): tam plaka veya son en az 3 karakter, yalnizca
+ * "Sorgula" / klavyede ara ile (plaka sorgusu 15 dk'da 120 deneme sinirinda; yazarken istek yok).
+ * Sonucta yalnizca bagimsiz bolum, kayit durumu ve arac notu; kisi adi / telefon / borc yok. Kayitli
+ * degilse ziyaretci olarak elle giris kaydina gecilir.
  */
 export function PlateDesk({ onManualEntry }: { onManualEntry: (plate: string) => void }) {
   const { colors } = useTheme();
@@ -26,12 +24,10 @@ export function PlateDesk({ onManualEntry }: { onManualEntry: (plate: string) =>
   const remaining = useCountdown(lock?.until ?? null);
   const locked = remaining > 0;
   const q = normalizePlate(text);
-
-  useEffect(() => {
-    if (locked) return;
-    const t = setTimeout(() => setQuery(q.length >= PLATE_MIN_QUERY ? q : undefined), PLATE_DEBOUNCE_MS);
-    return () => clearTimeout(t);
-  }, [q, locked]);
+  const canSearch = q.length >= PLATE_MIN_QUERY && !locked;
+  const submit = () => {
+    if (canSearch) setQuery(q);
+  };
 
   const lookup = usePlateLookup(locked ? undefined : query);
   const wait = lookup.isError ? rateLimitSeconds(lookup.error) : null;
@@ -53,15 +49,14 @@ export function PlateDesk({ onManualEntry }: { onManualEntry: (plate: string) =>
           autoCorrect={false}
           maxLength={14}
           returnKeyType="search"
-          onSubmitEditing={() => {
-            if (q.length >= PLATE_MIN_QUERY && !locked) setQuery(q);
-          }}
+          onSubmitEditing={submit}
         />
         {q.length > 0 && q.length < PLATE_MIN_QUERY && (
           <AppText variant="small" tone="muted">
             {`Sorgu için en az ${PLATE_MIN_QUERY} karakter yazın.`}
           </AppText>
         )}
+        <Button size="large" block icon={Search} label="Sorgula" disabled={!canSearch} loading={!!query && lookup.isFetching} onPress={submit} />
         {lock && <RateLimitNotice message={lock.message} seconds={remaining} />}
       </Card>
 

@@ -42,7 +42,8 @@ export function StaffTaskScreen({ id }: { id: string }) {
       </Screen>
     );
   }
-  return <TaskBody key={`${task.data.taskId}-${task.data.version}`} task={task.data} onRefresh={() => task.refetch()} />;
+  // Kimlige gore anahtar: tamamlama sonrasi ariza onerisi ve form taslaklari yenilemede kaybolmaz.
+  return <TaskBody key={task.data.taskId} task={task.data} onRefresh={() => task.refetch()} />;
 }
 
 function TaskBody({ task, onRefresh }: { task: MaintenanceTask; onRefresh: () => Promise<unknown> }) {

@@ -43,7 +43,8 @@ export function StaffTicketScreen({ id }: { id: string }) {
       </Screen>
     );
   }
-  return <TicketDetail key={`${detail.data.ticket.ticketId}-${detail.data.ticket.version}`} ticket={detail.data.ticket} events={detail.data.events} onRefresh={() => detail.refetch()} />;
+  // Kimlige gore anahtar: surum degisince (yenileme, 409) form taslaklari ve bilgi notlari korunur.
+  return <TicketDetail key={detail.data.ticket.ticketId} ticket={detail.data.ticket} events={detail.data.events} onRefresh={() => detail.refetch()} />;
 }
 
 function TicketDetail({ ticket, events, onRefresh }: { ticket: Ticket; events: TicketEvent[]; onRefresh: () => Promise<unknown> }) {

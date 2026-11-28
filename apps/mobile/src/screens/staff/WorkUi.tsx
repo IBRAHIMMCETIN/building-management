@@ -169,6 +169,12 @@ export function EstimateCard({ estimate, canEdit, version, mutation, nameOf }: {
   const kurus = amount.trim() ? parseTRYToKurus(amount, { allowZero: true }) : null;
   const valid = kurus !== null && kurus <= MAX_KURUS;
   const save = (input: EstimateInput) => mutation.mutate(input, { onSuccess: () => setEditing(false) });
+  // Duzenleme her acilista guncel nottan baslar (ekran surum degisince yeniden kurulmaz).
+  const startEdit = () => {
+    setAmount(estimate ? kurusToInput(estimate.amount) : '');
+    setNote(estimate?.note ?? '');
+    setEditing(true);
+  };
 
   return (
     <Card>
@@ -208,7 +214,7 @@ export function EstimateCard({ estimate, canEdit, version, mutation, nameOf }: {
               Henüz tahmini tutar girilmedi.
             </AppText>
           )}
-          {canEdit && <Button variant="secondary" icon={Pencil} label={estimate ? 'Düzenle' : 'Tutar gir'} onPress={() => setEditing(true)} />}
+          {canEdit && <Button variant="secondary" icon={Pencil} label={estimate ? 'Düzenle' : 'Tutar gir'} onPress={startEdit} />}
         </>
       )}
     </Card>

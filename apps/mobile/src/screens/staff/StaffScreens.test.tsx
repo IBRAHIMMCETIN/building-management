@@ -179,6 +179,46 @@ describe('Bakim gorevi', () => {
   });
 });
 
+describe('surum degisince ekran durumu korunur', () => {
+  it('bakim: tamamlama sonrasi yenilenen gorevde ariza onerisi kalir', async () => {
+    let done = false;
+    await render(<StaffTaskScreen id="t-1" />, {
+      'GET /api/maintenance/tasks/t-1': () => ({ task: done ? task('t-1', { status: 'done', actions: ['ticket'], version: 5 }) : task('t-1', { status: 'in_progress', actions: ['complete'] }) }),
+      'POST /api/maintenance/tasks/t-1/complete': () => {
+        done = true;
+        return { task: task('t-1', { status: 'done', actions: ['ticket'], version: 5 }), failedItems: 1, suggestTicket: true };
+      },
+    });
+    await fireEvent.press(await screen.findByRole('button', { name: 'Tamamla' }));
+    await fireEvent.press(screen.getAllByRole('radio', { name: 'Sorunlu' })[0] as never);
+    await fireEvent.changeText(screen.getByLabelText('Basınç normal açıklaması'), 'Basınç 1 bar');
+    await fireEvent.press(screen.getByRole('button', { name: 'Tamamla' }));
+    // Yenileme (surum 5) geldikten sonra da oneri gorunur.
+    expect(await screen.findByText('Tamamlandı')).toBeTruthy();
+    expect(screen.getByText('Başarısız madde var. Sorunu takip etmek için arıza talebi açın.')).toBeTruthy();
+  });
+
+  it('talep: 409 sonrasi yenilenen talepte aciklama, fotograf ve hata korunur', async () => {
+    let version = 1;
+    await render(<StaffTicketScreen id="1" />, {
+      'GET /api/tickets/1': () => ({ ticket: ticket('1', { status: 'in_progress', actions: ['hold', 'resolve'], version }), events: [] }),
+      'POST /api/tickets/1/status': () => {
+        version = 2;
+        return { status: 409, body: { error: 'conflict', message: 'Talep bu arada değişti; ekranı yenileyin.' } };
+      },
+    });
+    await fireEvent.press(await screen.findByRole('button', { name: 'Çözüldü' }));
+    await fireEvent.changeText(screen.getByLabelText('Açıklama'), 'Conta değişti');
+    await fireEvent.press(screen.getByRole('button', { name: 'Çözüldü' }));
+    expect(await screen.findByText('Talep bu arada değişti; ekranı yenileyin.')).toBeTruthy();
+    // Yeniden yuklenen surum 2 geldikten sonra form ve taslak yerinde.
+    await waitFor(() => expect(screen.getByLabelText('Açıklama').props.value).toBe('Conta değişti'));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.getByLabelText('Açıklama').props.value).toBe('Conta değişti');
+    expect(screen.getByText('Talep bu arada değişti; ekranı yenileyin.')).toBeTruthy();
+  });
+});
+
 describe('Sayac okuma', () => {
   it('endeks gecersizse Turkce hata; gecerli endeks tuketimle kaydedilir', async () => {
     const row = { meterId: 'm1', unitId: 'u-7', unitNumber: '7', label: 'Salon', kind: 'heat_allocator', scale: 0, inScope: true, status: 'missing', startIndex: 1500, flags: [] };

@@ -48,7 +48,7 @@
       [
         "expo-camera",
         {
-          "cameraPermission": "Kapıda misafir geçiş QR kodunu okutmak için kamera kullanılır.",
+          "cameraPermission": "Kapıda misafir geçiş QR kodunu okutmak ve arıza, bakım ve sayaç okumasına fotoğraf eklemek için kamera kullanılır.",
           "microphonePermission": false,
           "recordAudioAndroid": false,
           "barcodeScannerEnabled": true
@@ -57,7 +57,7 @@
       [
         "expo-image-picker",
         {
-          "cameraPermission": "Arıza, bakım ve sayaç okumasına fotoğraf eklemek için kamera kullanılır.",
+          "cameraPermission": "Kapıda misafir geçiş QR kodunu okutmak ve arıza, bakım ve sayaç okumasına fotoğraf eklemek için kamera kullanılır.",
           "photosPermission": "Arıza, bakım ve sayaç okumasına galeriden fotoğraf eklemek için kullanılır.",
           "microphonePermission": false
         }

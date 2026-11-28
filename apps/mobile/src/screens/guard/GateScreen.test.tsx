@@ -1,5 +1,6 @@
 import { act, fireEvent, screen, waitFor } from '@testing-library/react-native';
-import { Linking } from 'react-native';
+import { useState } from 'react';
+import { Linking, Pressable } from 'react-native';
 import { type Routes, renderApp } from '@/test/renderApp';
 import { GateScreen } from './GateScreen';
 
@@ -148,14 +149,56 @@ describe('Kapı - misafir QR / kisa kod', () => {
   });
 });
 
+describe('Kapı - giris siniri ve kamera yasam dongusu', () => {
+  it('giris kaydinda 429: geri sayim, giris dugmesi sure dolana kadar kapali', async () => {
+    const { calls } = await render({
+      'POST /api/gate/passes/verify': { pass: pass() },
+      'POST /api/gate/passes/p-1/entry': { status: 429, body: { error: 'rate_limited', message: 'Çok fazla istek. 1 dakika sonra tekrar deneyin.', retryAfterSeconds: 60 } },
+    });
+    await fireEvent.changeText(screen.getByLabelText('veya kısa kodu yazın'), 'K7M2-PQ4X');
+    await fireEvent.press(screen.getByRole('button', { name: 'Sorgula' }));
+    await fireEvent.press(await screen.findByRole('button', { name: 'Giriş kaydet' }));
+    expect(await screen.findByText(/Çok fazla istek.*Kalan süre: (1:00|0:59)\./)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Giriş kaydet' }).props.accessibilityState).toMatchObject({ disabled: true });
+    await fireEvent.press(screen.getByRole('button', { name: 'Giriş kaydet' }));
+    expect(calls.filter((c) => c.path === '/api/gate/passes/p-1/entry')).toHaveLength(1);
+  });
+
+  it('sekme gizlenince kamera kapanir, geri gelince yeniden acilir', async () => {
+    // Sekme odagi (app/guard/(tabs)/index.tsx -> useIsFocused) testte bir dugmeyle degistirilir.
+    function FocusHarness() {
+      const [active, setActive] = useState(true);
+      return (
+        <>
+          <Pressable accessibilityRole="button" accessibilityLabel="odak" onPress={() => setActive((a) => !a)} />
+          <GateScreen active={active} />
+        </>
+      );
+    }
+    await renderApp(<FocusHarness />, { email: GUARD, withUnit: false, routes: base });
+    await fireEvent.press(screen.getByRole('button', { name: 'QR okut' }));
+    expect(screen.getByTestId('camera')).toBeTruthy();
+    await fireEvent.press(screen.getByRole('button', { name: 'odak' }));
+    expect(screen.queryByTestId('camera')).toBeNull();
+    await fireEvent.press(screen.getByRole('button', { name: 'odak' }));
+    expect(screen.getByTestId('camera')).toBeTruthy();
+  });
+});
+
 describe('Kapı - plaka', () => {
-  it('yazmayi birakinca en az 3 karakterle sorgu; kayitsiz plakada elle kayda gecis', async () => {
+  it('yalnizca "Sorgula" ile (yazarken istek yok, en az 3 karakter); kayitsiz plakada elle kayda gecis', async () => {
     const { calls } = await render({ 'GET /api/gate/plates': { query: '34XYZ9', queryDisplay: '34 XYZ 9', items: [] } });
     await fireEvent.press(screen.getByRole('radio', { name: 'Plaka sorgu' }));
-    await fireEvent.changeText(screen.getByLabelText('Plaka (tamamı veya son 3+ karakter)'), '34');
+    const field = screen.getByLabelText('Plaka (tamamı veya son 3+ karakter)');
+    await fireEvent.changeText(field, '34');
     expect(screen.getByText('Sorgu için en az 3 karakter yazın.')).toBeTruthy();
-    await fireEvent.changeText(screen.getByLabelText('Plaka (tamamı veya son 3+ karakter)'), '34 xyz 9');
-    expect(await screen.findByText('Kayıtlı değil', {}, { timeout: 3000 })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Sorgula' }).props.accessibilityState).toMatchObject({ disabled: true });
+    await fireEvent.changeText(field, '34 xyz 9');
+    // Deneme sinirini (120 / 15 dk) yazarken harcamaz.
+    await new Promise((r) => setTimeout(r, 900));
+    expect(calls.some((c) => c.path === '/api/gate/plates')).toBe(false);
+    await fireEvent.press(screen.getByRole('button', { name: 'Sorgula' }));
+    expect(await screen.findByText('Kayıtlı değil')).toBeTruthy();
     const plates = calls.filter((c) => c.path === '/api/gate/plates');
     expect(plates).toHaveLength(1);
     expect(plates[0]?.query).toEqual({ q: '34XYZ9' });

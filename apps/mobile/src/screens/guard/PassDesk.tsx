@@ -2,7 +2,7 @@ import { errorMessage } from '@bm/shared/api/errors';
 import { type DeskPass, rateLimitSeconds } from '@bm/shared/api/gate';
 import { formatDateTime } from '@bm/shared/dates';
 import { UNKNOWN_CODE_MESSAGE, parseScan, validityText } from '@bm/shared/gate/plate';
-import { useState } from 'react';
+import { type ReactNode, useState } from 'react';
 import { Platform, StyleSheet, View } from 'react-native';
 import { CircleCheck, CircleX, LogIn, LogOut, QrCode } from '@/components/icons';
 import { Alert, AppText, Button, Card, TextField } from '@/components/ui';
@@ -61,6 +61,11 @@ export function PassDesk({ active = true, wide = false }: { active?: boolean; wi
           setDone(direction === 'entry' ? `${r.pass.guestName} için giriş kaydedildi.` : `${r.pass.guestName} için çıkış kaydedildi.`);
           renewKey();
         },
+        // Deneme siniri giris / cikista da: sure dolana kadar dugmeler kapali (ayni anahtar korunur).
+        onError: (err) => {
+          const wait = rateLimitSeconds(err);
+          if (wait) setLock({ until: Date.now() + wait * 1000, message: errorMessage(err) });
+        },
       },
     );
   };
@@ -76,7 +81,22 @@ export function PassDesk({ active = true, wide = false }: { active?: boolean; wi
     a.passExit.reset();
   };
 
-  if (pass) return <PassCard pass={pass} done={done} onMove={move} onReset={reset} entering={a.passEntry.isPending} exiting={a.passExit.isPending} moveError={a.passEntry.error ?? a.passExit.error} wide={wide} />;
+  if (pass) {
+    const moveError = a.passEntry.error ?? a.passExit.error;
+    return (
+      <PassCard
+        pass={pass}
+        done={done}
+        onMove={move}
+        onReset={reset}
+        entering={a.passEntry.isPending}
+        exiting={a.passExit.isPending}
+        moveError={moveError && !rateLimitSeconds(moveError) ? moveError : null}
+        wide={wide}
+        lock={locked && lock ? <RateLimitNotice message={lock.message} seconds={remaining} /> : null}
+      />
+    );
+  }
 
   const verifyError = a.verify.error && !rateLimitSeconds(a.verify.error) ? errorMessage(a.verify.error) : null;
 
@@ -141,6 +161,7 @@ function PassCard({
   exiting,
   moveError,
   wide,
+  lock,
 }: {
   pass: DeskPass;
   done?: string;
@@ -150,6 +171,8 @@ function PassCard({
   exiting: boolean;
   moveError: unknown;
   wide: boolean;
+  /** Deneme siniri notu (varsa giris / cikis kapali). */
+  lock: ReactNode;
 }) {
   const { colors } = useTheme();
   const valid = pass.verdict === 'valid';
@@ -204,15 +227,16 @@ function PassCard({
       </View>
       {done && <Alert tone="success">{done}</Alert>}
       {!!moveError && <Alert tone="danger">{errorMessage(moveError)}</Alert>}
+      {lock}
       <View style={[styles.gap2, wide && styles.actionsWide]}>
         {pass.canEnter && (
           <View style={wide ? styles.flex : undefined}>
-            <Button size="large" block icon={LogIn} label="Giriş kaydet" loading={entering} onPress={() => onMove('entry')} />
+            <Button size="large" block icon={LogIn} label="Giriş kaydet" loading={entering} disabled={!!lock} onPress={() => onMove('entry')} />
           </View>
         )}
         {pass.canExit && (
           <View style={wide ? styles.flex : undefined}>
-            <Button size="large" block variant={pass.canEnter ? 'secondary' : 'primary'} icon={LogOut} label="Çıkış kaydet" loading={exiting} onPress={() => onMove('exit')} />
+            <Button size="large" block variant={pass.canEnter ? 'secondary' : 'primary'} icon={LogOut} label="Çıkış kaydet" loading={exiting} disabled={!!lock} onPress={() => onMove('exit')} />
           </View>
         )}
       </View>
