@@ -1,7 +1,14 @@
-import { ScanLine } from '@/components/icons';
-import { FieldRoleTabs } from '@/navigation/StaffTabs';
+import { Stack } from 'expo-router';
+import { headerOptions } from '@/navigation/options';
+import { useTheme } from '@/theme/useTheme';
 
-/** Guvenlik gorevlisi: Kapı (M3) ve Hesabım. */
+/** Guvenlik gorevlisi: sekmeler (Kapı, Hesabım) + ustune acilan elle kapi kaydi. */
 export default function GuardLayout() {
-  return <FieldRoleTabs mainTitle="Kapı" mainIcon={ScanLine} />;
+  const { colors } = useTheme();
+  return (
+    <Stack screenOptions={{ ...headerOptions(colors), contentStyle: { backgroundColor: colors.bg } }}>
+      <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+      <Stack.Screen name="manual-entry" options={{ title: 'Elle kapı kaydı' }} />
+    </Stack>
+  );
 }

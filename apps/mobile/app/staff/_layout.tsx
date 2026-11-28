@@ -1,7 +1,13 @@
-import { ClipboardList } from '@/components/icons';
-import { FieldRoleTabs } from '@/navigation/StaffTabs';
+import { Stack } from 'expo-router';
+import { headerOptions } from '@/navigation/options';
+import { useTheme } from '@/theme/useTheme';
 
-/** Bina gorevlisi: İşlerim (M3) ve Hesabım. */
+/** Bina gorevlisi: sekmeler (İşlerim, Hesabım). */
 export default function StaffLayout() {
-  return <FieldRoleTabs mainTitle="İşlerim" mainIcon={ClipboardList} />;
+  const { colors } = useTheme();
+  return (
+    <Stack screenOptions={{ ...headerOptions(colors), contentStyle: { backgroundColor: colors.bg } }}>
+      <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+    </Stack>
+  );
 }
