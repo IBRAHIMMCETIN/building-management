@@ -20,6 +20,8 @@ export const vehicleSchema = z.object({
   plateDisplay: z.string(),
   note: z.string().optional(),
   status: z.enum(['active', 'inactive']),
+  /** Sistemin koydugu pasif nedeni (`taşınma`: sahibi tasindi, kayit otomatik pasife alindi). */
+  inactiveReason: z.string().optional(),
   /** Sahibi bolumden tasindi: gorevliye pasif gorunur. */
   ownerLeft: z.boolean().optional(),
   createdAt: z.string(),

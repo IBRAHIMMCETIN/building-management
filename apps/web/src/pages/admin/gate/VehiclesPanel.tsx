@@ -105,6 +105,7 @@ export function VehiclesPanel() {
       ) : (
         <VehicleList
           items={items}
+          showReason
           pendingId={pendingId}
           onToggle={(v) => {
             setPendingId(v.vehicleId);
