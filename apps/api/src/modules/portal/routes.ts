@@ -5,6 +5,7 @@ import type { OffsetService } from '../finance/offsets.js';
 import type { PlanService } from '../finance/plans.js';
 import { PORTAL_ROLES, type PortalContext, type PortalService } from './service.js';
 import { type SiteFeatureReader, requireFeature } from '../features/guard.js';
+import type { ExpenseBreakdown } from './expenseBreakdown.js';
 
 export type PortalRoutesDeps = {
   authenticate: Authenticator;
@@ -17,6 +18,8 @@ export type PortalRoutesDeps = {
   plans?: Pick<PlanService, 'portalPlans'>;
   /** Adim 1: site ozellik anahtarlari (verilmezse kontrol yok). */
   features?: SiteFeatureReader;
+  /** Adim 3: aylik gider dagilimi (sitenin toplam giderleri; kisi / tedarikci adi yok). */
+  expenseBreakdown?: (ctx: PortalContext, month?: string) => Promise<ExpenseBreakdown>;
 };
 
 /**
@@ -33,7 +36,7 @@ export type PortalRoutesDeps = {
  *    eslestirilir; eslesmezse 403. Tek dairesi olan sakin parametre gondermez.
  *  - Kisisel finansal veri: yanitlar onbelleklenmez (`Cache-Control: no-store`).
  */
-export function portalRoutes({ authenticate, service, paymentReference, offsets, plans, features }: PortalRoutesDeps) {
+export function portalRoutes({ authenticate, service, paymentReference, offsets, plans, features, expenseBreakdown }: PortalRoutesDeps) {
   const r = new Hono<Env>();
   r.onError(handleError);
 
@@ -76,6 +79,12 @@ export function portalRoutes({ authenticate, service, paymentReference, offsets,
   // Havale/EFT: apartmanin tahsilat IBAN'i ve sakinin alt cari referans kodu (yoksa olusturulur).
   if (paymentReference) {
     r.get('/my-payment-reference', async (c) => c.json(await paymentReference(ctx(c), unitId(c))));
+  }
+
+  // Adim 3: `resident.expenseChart` kapaliysa 403 feature_disabled. Yanit site geneli toplamdir
+  // (sade kategori adlari, ikon anahtari, kurus ve yuzde); kisi, tedarikci veya hesap adi donmez.
+  if (expenseBreakdown) {
+    r.get('/expense-breakdown', requireFeature(features, 'resident.expenseChart'), async (c) => c.json(await expenseBreakdown(ctx(c), c.req.query('month'))));
   }
 
   if (plans) {

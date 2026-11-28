@@ -76,6 +76,7 @@ import {
 import { type PaymentsService, createPaymentsService } from './modules/payments/service.js';
 import { portalRepository } from './modules/portal/repository.js';
 import { portalRoutes } from './modules/portal/routes.js';
+import { type ExpenseBreakdown, loadExpenseBreakdown } from './modules/portal/expenseBreakdown.js';
 import { residentRoutes } from './modules/residents/routes.js';
 import { type ResidentsService, createResidentsService } from './modules/residents/service.js';
 import { type PortalService, createPortalService } from './modules/portal/service.js';
@@ -203,6 +204,8 @@ export type AppConfig = {
    * okunur (30 sn konteyner onbellegi, okuma hatasinda fail closed).
    */
   siteFeatures?: SiteFeatureReader;
+  /** Adim 3: sakin gider dagilimi (testlerde sahte kaynakla). */
+  expenseBreakdown?: (ctx: { apartmentId: string }, month?: string) => Promise<ExpenseBreakdown>;
   /** Adim 1: platform / yonetici ozellik uclari (testlerde sahte depoyla). */
   featureService?: FeatureService;
 };
@@ -473,6 +476,8 @@ export function createApp(config: AppConfig) {
       ...(offsetService ? { offsets: offsetService } : {}),
       ...(planService ? { plans: planService } : {}),
       features: siteFeatures,
+      // Adim 3: aylik gider dagilimi (hesap-ay ozetinden; ozet hazir degilse yalnizca o ayin islemleri).
+      expenseBreakdown: config.expenseBreakdown ?? ((ctx, month) => loadExpenseBreakdown(financeRepository, ctx.apartmentId, month)),
     }),
   );
 

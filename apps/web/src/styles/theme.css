@@ -42,6 +42,14 @@
   /* Grafik serileri (kategorik; durum renklerinden ayri). Dogrulandi: CVD ΔE >= 26. */
   --color-series-1: #257de0;
   --color-series-2: #f47230;
+  /* Adim 3: sakin gider halka grafigi (8 sabit kategori; 7 renk + notr "Diger"). Dogrulandi
+     (validate_palette, acik): komsu CVD ΔE 11.8, normal 20.5; 4 renk 3:1 alti -> gorunur etiket listesi. */
+  --color-series-3: #00b894;
+  --color-series-4: #f2a600;
+  --color-series-5: #ee7fac;
+  --color-series-6: #008a17;
+  --color-series-7: #6a4ce2;
+  --color-series-other: #8a8a8a;
 
   --font-sans: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -90,6 +98,13 @@
       --color-scrim: rgb(0 0 0 / 0.65);
       --color-series-1: #338ced;
       --color-series-2: #e76624;
+      /* koyu: komsu CVD ΔE 10.1, normal 21.1, hepsi >= 3:1 */
+      --color-series-3: #00a888;
+      --color-series-4: #d28e05;
+      --color-series-5: #e24d8b;
+      --color-series-6: #0aac23;
+      --color-series-7: #9887ef;
+      --color-series-other: #8a8a8a;
     }
   }
 }
