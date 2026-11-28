@@ -13,6 +13,7 @@ Türkiye'deki apartman, site ve profesyonel yönetim firmaları için çok kirac
 - [Gereksinimler](#gereksinimler)
 - [Yerel Geliştirme](#yerel-geliştirme)
 - [Mobil uygulama (apps/mobile)](#mobil-uygulama-appsmobile)
+- [Tanıtım sayfası (web `/`)](#tanıtım-sayfası-web-)
 - [Ortam Değişkenleri](#ortam-değişkenleri)
 - [Test](#test)
 - [Altyapı (Terraform)](#altyapı-terraform)
@@ -268,6 +269,28 @@ Diğer listesinden (`src/lib/nav.ts` → `route`) ve bildirim bağlantılarında
 
 ---
 
+## Tanıtım sayfası (web `/`)
+
+Oturumu olmayan ziyaretçi `/` adresinde herkese açık tanıtım sayfasını görür; giriş yapmış kullanıcı eskisi gibi rolünün açılış sayfasına yönlenir (`router/guards.tsx` → `RootRedirect`). `/login` ve diğer rotalar değişmedi.
+
+- **Bölümler** (`apps/web/src/pages/public/landing/`; metinler `content.ts`): üst çubuk (logo, Özellikler / Kimler için / Mobil / SSS / İletişim bağlantıları, "Giriş yap", "Demo talep et", dar ekranda menü), kahraman alanı (uygulamanın kendi kart / rozet / renk token'larıyla çizilmiş temsilî Genel Bakış: blok blok aidat durumu, arıza talebi, kurye; "Örnek veri" etiketli), modüller, kimler için, mobil uygulama ("yakında App Store ve Google Play'de"), güven ve uyum, SSS (`details` / `summary`), fiyatlandırma (liste fiyatı yok, teklif), demo talep formu (`#iletisim`), alt bilgi. Yalnızca bugün çalışan özellikler yazılır; kartla online ödeme ve mağaza yayını "henüz / yakında" diye geçer. Müşteri logosu, yorum ve istatistik yoktur.
+- **Hukuki metinler (TASLAK, hukuki inceleme gerekir):** `/kvkk`, `/gizlilik`, `/kullanim-kosullari`. Metinlerin tek kaynağı `packages/shared/src/legal/documents.ts` (her metinde `version` + `updatedAt`; köşeli parantezli şirket bilgileri yer tutucudur). Sayfa bileşenleri metin içermez; Adım 8'deki sürümlü "okudum" kaydı aynı sürümü kullanacak. Demo formunun KVKK onayı gönderilen `kvkkVersion` ile kayda geçer.
+- **Hız:** sayfa uygulama paketinden ayrı parçadır. Derleme sonunda statik HTML'e ön-render edilir (`npm run build -w @bm/web` = `vite build` + `vite build --ssr src/prerender.tsx` + `scripts/prerender.mjs`, çıktı `dist/index.html` içindeki `#root`, `data-prerender="landing"`). Tarayıcıda yalnızca tanıtım ağacı hidrate edilir (`pages/public/landing/island.tsx`); router, Amplify ve panel kodu indirilmez. Cloudflare Pages her adrese aynı `index.html`'i döndürdüğü için `index.html`'deki satır içi betik, `/` dışındaki adreslerde ve tarayıcıda oturum izi (Amplify `CognitoIdentityServiceProvider.*.LastAuthUser` veya yerel `bm.mock-session`) varsa `<html data-app-shell>` koyar; CSS ön-render içeriği boyanmadan gizler ve `main.tsx` uygulamayı açar (`src/lib/landingBoot.ts`). `_redirects` gerekmez.
+- **PWA:** `manifest.webmanifest` → `start_url: /login` (`id: "/"` ile mevcut kurulumların kimliği korunur): ana ekrana eklenen uygulama tanıtım sayfasını değil girişi açar; oturum açıksa giriş ekranı kullanıcıyı paneline yönlendirir. Service worker önbellek sürümü `yonesist-v2`; çevrimdışı gezinme yine önbellekteki `index.html`'e düşer ve uygulama rotalarında ön-render içerik gizlenir.
+- **SEO:** `index.html` başlık / açıklama / canonical / Open Graph / Twitter etiketleri, `public/robots.txt` (uygulama ekranları ve `/gecis/` taranmaz), `public/sitemap.xml` (`/` ve üç hukuki sayfa). Adres şimdilik `https://building-management-apx.pages.dev`; alan adı alınınca bu üç dosyada güncellenir.
+- **Demo talepleri:** form kimliksiz `POST /api/public/demo-requests`'e gider (aşağıda). Platform yöneticisi talepleri **Demo Talepleri** menüsünde (`/admin/demo-requests`) görür. E-posta (SES) canlı olmadığı ve outbox olayları apartman kapsamlı olduğu (platform yöneticisine giden bir alıcı mekanizması yok) için talep sahibine veya platform ekibine otomatik bildirim gitmez.
+
+### Herkese açık demo talep ucu
+
+| Uç | Yetki | Açıklama |
+| --- | --- | --- |
+| `POST /api/public/demo-requests` | Kimliksiz (API Gateway'de JWT'siz ayrı rota, `infra/public_site.tf`) | Gövde `{ fullName, email, phone?, organization, unitRange: 1-20\|21-50\|51-200\|201-500\|500+, message?, kvkkConsent: true, kvkkVersion, website? }`. Katı zod şeması (bilinmeyen alan, kontrol karakteri, sınır dışı uzunluk → `400 validation_error` + `fields`), 16 KB gövde sınırı (`413`). `website` bal küpüdür: doluysa kayıt yazılmaz, aynı `201 { received: true }` döner. Deneme sınırı: IP başına 1 saatte 5, platform genelinde günde 200 (sabit pencere, DynamoDB `DEMOTHR#…` sayaçları, TTL ile düşer) → `429 rate_limited` + `Retry-After` ve gövdede `retryAfterSeconds` (CORS'ta başlık okunamaz). IP yalnızca API Gateway `requestContext.http.sourceIp`'den alınır (Lambda'da `X-Forwarded-For` yok sayılır; IPv6'da /64 tek istemci); ham IP saklanmaz (sayaç anahtarı tuzlu SHA-256 özeti, kayıtta /24 maskeli IP). Uç hiçbir veri okumaz ve kayıt kimliği döndürmez |
+| `GET /api/platform/demo-requests?limit=&cursor=` | Yalnızca `platform_admin` (destek oturumu hariç) | En yeni önce, varsayılan 25, en fazla 100; `cursor` yalnızca bu listenin ürettiği biçimde kabul edilir. Yanıtta iç anahtarlar, User-Agent ve TTL yok |
+
+Kayıt: `PK = DEMOREQ#<id>`, `SK = DEMOREQ`, GSI1 `DEMO_REQUEST` / `<createdAt>#<id>`, `ttl` = 730 gün (KVKK saklama süresi; DynamoDB TTL siler, uygulamada silme yazımı yok). **Denetim hafif:** kimliksiz yazım hash zincirli denetim günlüğüne yazılmaz (aktör yok; bir bot platform zincirini büyütemesin); kişisel veri içermeyen log satırı ve EMF metrikleri `DemoRequestReceived`, `DemoRequestRejected` (`reason: validation\|honeypot\|rate_limited`). CORS mevcut `cors_allow_origins` ayarını kullanır. Cloudflare WAF (Adım 11) devreye girdiğinde `sourceIp` Cloudflare çıkış adresi olur: istemci IP'si o zaman `CF-Connecting-IP`'den okunmalıdır.
+
+---
+
 ## Ortam Değişkenleri
 
 ### API
@@ -443,7 +466,7 @@ Kullanıcılara Cognito geçici şifre e-postası gider; ilk girişte şifre de�
 
 ## API Modülleri
 
-Tüm uçlar `/api` altındadır. `GET /api/health` dışındakiler JWT ile korunur.
+Tüm uçlar `/api` altındadır. `GET /api/health`, ödeme callback / webhook rotaları ve tanıtım sayfasının `POST /api/public/demo-requests` ucu ([Tanıtım sayfası](#herkese-açık-demo-talep-ucu)) dışındakiler JWT ile korunur.
 
 | Modül | Önek | Kapsam |
 | --- | --- | --- |
@@ -482,6 +505,7 @@ Tüm uçlar `/api` altındadır. `GET /api/health` dışındakiler JWT ile korun
 | `features` | `/api/site-features`, `/api/admin/site-features` | Adım 1 site bazlı özellik anahtarları (`site.settings.features`: `profile: legacy\|simple` + anahtar bazlı override; kayıt yoksa `legacy` = Adım 1 öncesi davranış, yeni siteler `simple`). `GET /api/site-features` (tüm apartman rolleri; etkin durum + katalog), `GET\|POST /api/site-features/requests` `{ feature, note? }` ("Açtırmak istiyorum"; yazma: `apartment_manager`, `management_company`). Platform (`platform_admin`, destek oturumu hariç): `GET /api/admin/site-features/requests`, `POST /requests/:siteId/:feature/dismiss` `{ reason }`, `GET\|PATCH /api/admin/site-features/:siteId` `{ version, reason, profile?, features?: { anahtar: true\|false\|null } }`. Her değişiklik ve talep denetim zincirine aynı atomik yazımda girer (fail closed). Kapalı özelliğe ait uçlar `403 { error: 'feature_disabled', feature }`: `/api/finance/plans*` (`admin.debtRestructure`), `/api/ownership` billing + transfers (`admin.sharedOwnership`), `/api/portal/my-plans` (`resident.restructure`), `/api/portal/offset-*` (`resident.advanceOffset`), sakin bağlamında `/api/me/notification-preferences` ve `/api/me/mfa/totp/*`, `/api/portal/payments` quote + başlatma (`payments.online`). Zamanlanmış `installment_plans` kapalı sitede `skipped: feature_disabled`. Guard okuması 30 sn konteyner önbellekli |
 | `support` | `/api/support/sessions` | Yalnızca `platform_admin`: gerekçeli (≥20 karakter) ve süreli (≤60 dk) destek oturumu aç/listele/bitir. Oturum `X-Support-Session: <apartmentId>.<sessionId>` başlığıyla o apartmanda **salt okunur** (`observer`) erişim verir; her istek işlenmeden önce denetime yazılır |
 | `portfolio` | `/api/portfolio` | Yönetim firması portföyü (aktif rol `apartment_manager`, `management_company` veya `observer`; destek oturumu ve `platform_admin` **403**; zorunlu MFA merkezi ara katmandan): `GET /?limit=&cursor=` (varsayılan 12, en fazla 24 apartman) → `{ asOf, period, total, limit, items[], totals, nextCursor? }`. Apartmanlar token'daki tek `apartmentId`'den değil, kullanıcının **bugünkü** yetki kayıtlarından her istekte çıkarılır (GSI1 `USER#<sub>` + taban `APT#`/`ROLE#<user>#<role>` kaydının tutarlı BatchGet ile yeniden doğrulanması; apartman başına en yetkili rol). Kart başına yalnızca toplamlar (kişisel veri yok): daire sayısı, bu ay tahakkuk / tahsilat oranı (Genel Bakış `thisMonth` ile aynı hesap), vadesi geçmiş alacak ve gecikmedeki bölüm, kasa / banka, açık talep (önceliğe göre) ve SLA aşımı, geciken / 7 gün içindeki bakım, 30 gün içinde dolan ekipman son tarihleri, yaklaşan genel kurul, açık oylama, açık ihale (denetçi yalnızca paylaşılanları). Mevcut servislerin özetleri kullanılır (okumalar Query / GetItem / BatchGet; hazır hesap oluşturulmaz, tek yazım bayat `FSUM#` alt cari özetinin en iyi çaba geri yazılmasıdır); 4 apartman eşzamanlı (yuva, alttaki okuma bitene kadar dolu), apartman başına 5 sn; istek son tarihi Lambda'nın kalan süresi − 2,5 sn (API Lambda zaman aşımı 15 sn; Lambda dışında 10 sn). Okunamayan / süresi dolan bölüm yalnızca o kartta `failed` olur (`status: partial \| error`, hata ayrıntısı istemciye dönmez); son tarihe kadar başlamamış apartman okunmadan `error` döner. Yetki BatchGet'inde işlenemeyen anahtar üstel bekleme + jitter sonrası kalırsa **503** (sessizce düşürülmez). `Cache-Control: private, no-cache` + ETag (304) |
+| `demo-requests` | `/api/public/demo-requests`, `/api/platform/demo-requests` | Tanıtım sayfası demo formu: kimliksiz `POST` (katı şema, bal küpü, IP başına ve platform geneli sınır, `DEMOREQ#` 2 yıl TTL) ve yalnızca `platform_admin` için sayfalı liste; bkz. [Herkese açık demo talep ucu](#herkese-açık-demo-talep-ucu) |
 
 ---
 
@@ -547,6 +571,7 @@ Mobil uygulama (`apps/mobile`) aynı rolleri ve aynı API yetkilerini kullanır:
 | `POST /api/residents/invite`, `POST /api/finance/dues`, `POST /api/imports`, `POST /api/bank/statements/upload-url`, `POST /api/bank/statements`, `POST /api/bank/statements/{statementId}/commit`, `POST /api/bank/statements/{statementId}/auto-match`, `GET /api/bank/reconciliation/report` | 2/sn, 5 | `bulk_write_route_rate_limit`, `bulk_write_route_burst_limit` |
 | `POST /api/gate/passes/verify`, `GET /api/gate/plates` (platform geneli kova: arka uç kapasitesine göre yüksek; istemci başına sınır uygulamadaki kullanıcı / apartman sayacıdır, ileride Cloudflare ile IP başına) | 100/sn, 200 | `gate_route_rate_limit`, `gate_route_burst_limit` |
 | Ödeme callback/webhook (kimliksiz) | 5/sn, 10 | `payments_callback_rate_limit` |
+| `POST /api/public/demo-requests` (tanıtım sayfası formu, kimliksiz; istemci başına sınır uygulamada: IP başına saatte 5) | 1/sn, 5 | `public_form_route_rate_limit`, `public_form_route_burst_limit` |
 | Diğer tüm uçlar | 50/sn, 100 | `api_throttle_rate_limit`, `api_throttle_burst_limit` |
 
 API Gateway sınırı istemci başına değil, rota başınadır: arka ucu ve maliyeti (Cognito, SES, toplu yazım) korur. Giriş (SRP) doğrudan Cognito'ya gider, API Gateway'den geçmez. LITE katmanında Cognito tehdit koruması yoktur; kaba kuvvet aşağıdaki alarmla izlenir.
@@ -620,8 +645,8 @@ API Gateway sınırı istemci başına değil, rota başınadır: arka ucu ve ma
 
 **Bölüm 3 — Sona bırakılanlar (sırayla)**
 
-- [ ] Adım 11 — Alan adı: SES (sandbox çıkışı, geri dönüş/şikâyet), Cloudflare WAF ve özel adresler, API doğrudan adresinin kapatılması, tanıtım sayfası ve kurumsal e-posta
-- [ ] Adım 12 — Avukat: aydınlatma metni, kullanım koşulları, veri işleme sözleşmesi, yurt dışı aktarım + Kurum bildirimi, VERBİS değerlendirmesi, kesin metinlerin taslakların yerine konması
+- [ ] Adım 11 — Alan adı: SES (sandbox çıkışı, geri dönüş/şikâyet), Cloudflare WAF ve özel adresler, API doğrudan adresinin kapatılması, tanıtım sayfası ve kurumsal e-posta. *Tanıtım sayfası öne alındı* (`feature/ana-sayfa`, bkz. [Tanıtım sayfası](#tanıtım-sayfası-web-)): `/`'de herkese açık sayfa + ön-render, demo talep formu ve platform listesi, taslak hukuki sayfalar. Alan adıyla kalanlar: `index.html` canonical / OG, `robots.txt` ve `sitemap.xml` adresinin güncellenmesi, demo talebinde platform ekibine e-posta bildirimi (SES), Cloudflare arkasında istemci IP'sinin `CF-Connecting-IP`'den okunması, demo talebi durum akışı (arandı / kapandı), sahibin tanıtım metinlerini gözden geçirmesi
+- [ ] Adım 12 — Avukat: aydınlatma metni, kullanım koşulları, veri işleme sözleşmesi, yurt dışı aktarım + Kurum bildirimi, VERBİS değerlendirmesi, kesin metinlerin taslakların yerine konması (taslaklar tek kaynakta: `packages/shared/src/legal/documents.ts`; metin değişince `version` yükseltilir)
 - [ ] Adım 13 — Şirket kuruluşu: şirket, muhasebeci ve e-fatura
 - [ ] Adım 14 — Meta işletme doğrulaması: başvuru, görünen ad onayı, mesaj limitinin artması, günlük kotanın gevşetilmesi
 - [ ] Adım 15 — Ücretli kullanıma geçiş: pilotun ücretliye geçmesi, yeni sitelere satış
