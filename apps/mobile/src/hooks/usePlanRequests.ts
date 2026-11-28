@@ -20,8 +20,13 @@ export function usePlanRequestOptions() {
 }
 
 export function useMyPlanRequests() {
-  const { api, apt, userId, enabled } = useScope();
-  return useQuery({ queryKey: planRequestKeys.mine(apt, userId), queryFn: ({ signal }) => planRequestsApi.mine(api, signal).then((r) => r.items), enabled, retry });
+  const { api, apt, userId, unitId, enabled } = useScope();
+  return useQuery({
+    queryKey: [...planRequestKeys.mine(apt, userId), unitId ?? 'auto'] as const,
+    queryFn: ({ signal }) => planRequestsApi.mine(api, unitId, signal).then((r) => r.items),
+    enabled,
+    retry,
+  });
 }
 
 export function useCreatePlanRequest() {

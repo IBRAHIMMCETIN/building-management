@@ -274,6 +274,10 @@ export const planRequestDetailSchema = z.object({
   asIs: z
     .object({ accountId: z.string(), chargeIds: z.array(z.string()), installments: z.number().int(), firstDueDate: z.string(), includeLateFees: z.boolean() })
     .optional(),
+  /** Talepten sonra borc degisti mi (odeme, yeni gecikme): "olduğu gibi" onay `changed` sayilir. */
+  drift: z.object({ changed: z.boolean(), overdueThen: kurus, overdueNow: kurus, asIsOverdue: kurus, newItems: z.number().int() }).optional(),
+  /** Yonetim sinirlarina gore en fazla taksit (oldugu gibi kalemlerle). */
+  limits: z.object({ maxInstallments: z.number().int(), minInstallmentAmount: kurus }).optional(),
 });
 export type PlanRequestDetail = z.infer<typeof planRequestDetailSchema>;
 
@@ -329,15 +333,16 @@ export const restructureApi = {
   // ----- Sakin: yapilandirma talebi -----
   planRequestOptions: (unitId: string | undefined, signal?: AbortSignal) =>
     apiClient.get('/api/portal/plan-requests/options', { signal, query: unitQuery(unitId), schema: planRequestOptionsSchema }),
-  myPlanRequests: (signal?: AbortSignal) => apiClient.get('/api/portal/plan-requests', { signal, schema: myPlanRequestsSchema }),
+  myPlanRequests: (unitId: string | undefined, signal?: AbortSignal) =>
+    apiClient.get('/api/portal/plan-requests', { signal, query: unitQuery(unitId), schema: myPlanRequestsSchema }),
   createPlanRequest: (input: CreatePlanRequestInput) => apiClient.post('/api/portal/plan-requests', input, { schema: planRequestWriteSchema }),
   withdrawPlanRequest: (requestId: string) => apiClient.post(`/api/portal/plan-requests/${enc(requestId)}/withdraw`, {}, { schema: planRequestWithdrawSchema }),
 
   // ----- Yonetici: yapilandirma talepleri -----
-  listPlanRequests: (status: PlanRequestStatus | undefined, signal?: AbortSignal) =>
+  listPlanRequests: (query: { status?: PlanRequestStatus; limit?: number }, signal?: AbortSignal) =>
     apiClient.get('/api/finance/plan-requests', {
       signal,
-      query: status ? { status } : undefined,
+      query,
       schema: z.object({ items: z.array(planRequestSchema), pendingCount: z.number().int() }),
     }),
   planRequest: (requestId: string, signal?: AbortSignal) => apiClient.get(`/api/finance/plan-requests/${enc(requestId)}`, { signal, schema: planRequestDetailSchema }),

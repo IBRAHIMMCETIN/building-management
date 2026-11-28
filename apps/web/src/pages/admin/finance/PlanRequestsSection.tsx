@@ -47,7 +47,11 @@ function ApprovePanel({ r, editing, onDone }: { r: PlanRequest; editing: boolean
     setIncludeLateFees(asIs.includeLateFees);
   }, [asIs]);
 
-  const installmentsError = !Number.isInteger(installments) || installments < 1 || installments > MAX_INSTALLMENTS ? `1-${MAX_INSTALLMENTS} arası olmalı` : undefined;
+  // Yonetim sinirlari (API de uygular): en fazla taksit ve en dusuk taksit tutari.
+  const maxAllowed = Math.min(MAX_INSTALLMENTS, detail.data?.limits?.maxInstallments ?? MAX_INSTALLMENTS);
+  const installmentsError =
+    !Number.isInteger(installments) || installments < 1 ? 'En az 1 taksit olmalı' : installments > maxAllowed ? `Talep sınırlarına göre en fazla ${maxAllowed} taksit` : undefined;
+  const drift = detail.data?.drift;
   const preview: PlanInput | null =
     asIs && asIs.chargeIds.length > 0 && !installmentsError && /^\d{4}-\d{2}-\d{2}$/.test(firstDueDate)
       ? { accountId: asIs.accountId, chargeIds: asIs.chargeIds, installments, firstDueDate, includeLateFees, rule: DEFAULT_RULE }
@@ -61,10 +65,15 @@ function ApprovePanel({ r, editing, onDone }: { r: PlanRequest; editing: boolean
 
   return (
     <div className="flex flex-col gap-2 rounded-lg border border-border p-3">
-      {noItems && <Alert tone="info">Carinin vadesi geçmiş açık kalemi kalmamış (borç ödenmiş olabilir). Talebi reddedebilirsiniz.</Alert>}
+      {noItems && <Alert tone="info">Talepteki gecikmiş kalemler kapanmış (borç ödenmiş olabilir). Talebi reddedebilirsiniz.</Alert>}
+      {drift?.changed && !noItems && (
+        <Alert tone="info">
+          {`Borç talepten sonra değişti (talepte gecikmiş ${formatTRY(drift.overdueThen)}, şimdi talepteki kalemlerde ${formatTRY(drift.asIsOverdue)}${drift.newItems > 0 ? `; ${drift.newItems} yeni geciken kalem plana alınmaz` : ''}). Onay "değiştirerek" kaydedilir.`}
+        </Alert>
+      )}
       {editing ? (
         <div className="grid gap-3 sm:grid-cols-2">
-          <FormField label="Taksit sayısı" error={installmentsError} hint={`İstenen: ${r.installments}`}>
+          <FormField label="Taksit sayısı" error={installmentsError} hint={`İstenen: ${r.installments} · en fazla ${maxAllowed}`}>
             <Input type="number" min={1} max={MAX_INSTALLMENTS} value={installments} onChange={(e) => setInstallments(Number(e.target.value))} />
           </FormField>
           <FormField label="İlk taksit vadesi">
@@ -256,12 +265,15 @@ function PlanRequestSettingsForm({ onDone }: { onDone: () => void }) {
  * (olduğu gibi / degistirerek onay, gerekceli ret) ve talep sinirlari. KVKK: yalnizca yonetim.
  */
 export function PlanRequestsSection({ canWrite, nameOf }: { canWrite: boolean; nameOf: NameOf }) {
-  const requests = usePlanRequests();
+  // Bekleyenler cari basliklarindan (tum talepler taranmaz); son kararlar sinirli liste.
+  const requests = usePlanRequests('pending');
+  const latest = usePlanRequests(undefined, 10);
+  const settings = usePlanRequestSettings();
   const [settingsOpen, setSettingsOpen] = useState(false);
   if (!canWrite) return null;
-  const items = requests.data?.items ?? [];
-  const pending = items.filter((r) => r.status === 'pending');
-  const recent = items.filter((r) => r.status !== 'pending').slice(0, 5);
+  const pending = requests.data?.items ?? [];
+  const recent = (latest.data?.items ?? []).filter((r) => r.status !== 'pending').slice(0, 5);
+  const closed = settings.data && !settings.data.settings.enabled;
 
   return (
     <Card className="p-0">
@@ -273,6 +285,9 @@ export function PlanRequestsSection({ canWrite, nameOf }: { canWrite: boolean; n
         </Button>
       </div>
       {settingsOpen && <PlanRequestSettingsForm onDone={() => setSettingsOpen(false)} />}
+      {closed && !settingsOpen && (
+        <p className="border-b border-border px-3 py-2 text-small text-muted">Sakinler şu anda taksit talebi gönderemez. Açmak için “Talep sınırları”nı kullanın.</p>
+      )}
       {requests.isPending && (
         <div role="status" aria-label="Talepler yükleniyor" className="p-3">
           <Skeleton className="h-12 w-full" />

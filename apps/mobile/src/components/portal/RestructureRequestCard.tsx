@@ -48,8 +48,9 @@ export function RestructureRequestCard() {
   const [note, setNote] = useState('');
   const [sent, setSent] = useState(false);
 
-  const o = options.data;
-  const eligible = (o?.accounts ?? []).filter((a) => a.eligible);
+  // Yonetim talep almiyorsa (varsayilan) veya ozellik kapaliysa secenekler 403: form yok, gecmis talepler gorunur.
+  const o = options.isError ? undefined : options.data;
+  const eligible = o?.settings.enabled ? o.accounts.filter((a) => a.eligible) : [];
   const account = eligible.find((a) => a.accountId === accountId) ?? eligible[0];
   const choices = account ? installmentChoices(account, o?.minInstallments) : [];
   useEffect(() => {
@@ -59,8 +60,10 @@ export function RestructureRequestCard() {
   }, [account?.accountId, account?.maxInstallments]);
 
   const list = requests.data ?? [];
-  const notices = (o?.accounts ?? []).filter((a) => !a.eligible && a.reason && a.reason !== 'no_overdue' && !(a.reason === 'pending_request' && a.pendingRequest === 'mine'));
-  if (!o || options.isError || (eligible.length === 0 && list.length === 0 && notices.length === 0)) return null;
+  const notices = (o?.accounts ?? []).filter(
+    (a) => !a.eligible && a.reason && a.reason !== 'no_overdue' && a.reason !== 'disabled' && !(a.reason === 'pending_request' && a.pendingRequest === 'mine'),
+  );
+  if (eligible.length === 0 && list.length === 0 && notices.length === 0) return null;
   const valid = !!account && choices.includes(installments);
 
   const submit = async () => {
@@ -79,7 +82,7 @@ export function RestructureRequestCard() {
   return (
     <Card>
       <CardTitle icon={<CalendarClock size={20} color={colors.muted} aria-hidden />}>Taksit talebi</CardTitle>
-      {account && (
+      {account && o && (
         <>
           <AppText variant="small" tone="muted">
             Gecikmiş borcunuzu taksitle ödemek istiyorsanız talep gönderin. Yönetim olduğu gibi veya değiştirerek onaylar; vade farkı uygulanmaz.

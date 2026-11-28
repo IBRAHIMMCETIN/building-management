@@ -208,7 +208,7 @@ const portalPlanRequestKeys = {
 
 export function usePlanRequestOptions() {
   const { apt, userId, unitId, enabled } = usePortalScope();
-  const on = useFeature('resident.restructure');
+  const on = usePlanRequestFlags();
   return useQuery({
     queryKey: portalPlanRequestKeys.options(apt, userId, unitId),
     queryFn: ({ signal }) => restructureApi.planRequestOptions(unitId, signal),
@@ -217,12 +217,19 @@ export function usePlanRequestOptions() {
   });
 }
 
+/** API iki anahtari da ister (sakin karti + yonetim kuyrugu); biri kapaliysa istenmez. */
+function usePlanRequestFlags() {
+  const resident = useFeature('resident.restructure');
+  const admin = useFeature('admin.debtRestructure');
+  return resident && admin;
+}
+
 export function useMyPlanRequests() {
-  const { apt, userId, enabled } = usePortalScope();
-  const on = useFeature('resident.restructure');
+  const { apt, userId, unitId, enabled } = usePortalScope();
+  const on = usePlanRequestFlags();
   return useQuery({
-    queryKey: portalPlanRequestKeys.mine(apt, userId),
-    queryFn: ({ signal }) => restructureApi.myPlanRequests(signal).then((r) => r.items),
+    queryKey: [...portalPlanRequestKeys.mine(apt, userId), unitId ?? 'auto'] as const,
+    queryFn: ({ signal }) => restructureApi.myPlanRequests(unitId, signal).then((r) => r.items),
     enabled: enabled && on,
     retry,
   });
@@ -250,12 +257,13 @@ export function useWithdrawPlanRequest() {
 // ----- Yonetici: yapilandirma talepleri -----
 
 /** KVKK: talepler yalnizca yonetici + firma (denetci istemez; API 403). */
-export function usePlanRequests(status?: PlanRequestStatus) {
+/** `pending`: cari basliklarindan (ucuz); digerleri en yeni `limit` kadar. */
+export function usePlanRequests(status?: PlanRequestStatus, limit?: number) {
   const { apt, canWrite } = useApt();
   const on = useFeature('admin.debtRestructure');
   return useQuery({
-    queryKey: [...restructureKeys.all(apt), 'plan-requests', status ?? 'all'] as const,
-    queryFn: ({ signal }) => restructureApi.listPlanRequests(status, signal),
+    queryKey: [...restructureKeys.all(apt), 'plan-requests', status ?? 'all', limit ?? 'default'] as const,
+    queryFn: ({ signal }) => restructureApi.listPlanRequests({ ...(status ? { status } : {}), ...(limit ? { limit } : {}) }, signal),
     enabled: canWrite && on,
   });
 }

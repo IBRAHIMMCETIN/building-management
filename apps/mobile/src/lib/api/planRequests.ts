@@ -21,7 +21,7 @@ const unitQuery = (unitId?: string) => (unitId ? { unitId } : undefined);
 
 export const planRequestsApi = {
   options: (api: ApiClient, unitId: string | undefined, signal?: AbortSignal) => api.get(`${P}/options`, { signal, query: unitQuery(unitId), schema: planRequestOptionsSchema }),
-  mine: (api: ApiClient, signal?: AbortSignal) => api.get(P, { signal, schema: myPlanRequestsSchema }),
+  mine: (api: ApiClient, unitId: string | undefined, signal?: AbortSignal) => api.get(P, { signal, query: unitQuery(unitId), schema: myPlanRequestsSchema }),
   create: (api: ApiClient, input: CreatePlanRequestInput) => api.post(P, input, { schema: planRequestWriteSchema }),
   withdraw: (api: ApiClient, requestId: string) => api.post(`${P}/${encodeURIComponent(requestId)}/withdraw`, {}, { schema: planRequestWithdrawSchema }),
 };

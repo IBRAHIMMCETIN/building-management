@@ -347,6 +347,8 @@ function AnnualStatement({ data }: { data: ReportData<'annual-statement'> }) {
         {row('Dönem sonucu', <span className={data.result < 0 ? 'text-danger' : ''}>{`${data.result < 0 ? '−' : ''}${formatTRY(Math.abs(data.result))}`}</span>, true)}
         {row('Sakin alacakları (yıl sonu)', formatTRY(data.receivables.closing))}
         {row('Sakin avansları (yıl sonu)', formatTRY(data.receivables.advancesClosing))}
+        {(data.supplierAdvances.closing !== 0 || data.supplierAdvances.opening !== 0) &&
+          row('Tedarikçilere verilen avans (yıl sonu)', formatTRY(data.supplierAdvances.closing))}
         {row('Tedarikçi borçları (yıl sonu)', formatTRY(data.payables.closing))}
         {data.budget && row('Bütçelenen gelir / gider', `${formatTRY(data.budget.income)} / ${formatTRY(data.budget.expense)}`)}
       </Table>

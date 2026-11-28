@@ -12,7 +12,7 @@ const withdraw = vi.fn();
 let options: unknown;
 let requests: unknown[] = [];
 vi.mock('@/hooks/useRestructure', () => ({
-  usePlanRequestOptions: () => ({ isPending: false, isError: false, data: options }),
+  usePlanRequestOptions: () => (options === 'forbidden' ? { isPending: false, isError: true, data: undefined } : { isPending: false, isError: false, data: options }),
   useMyPlanRequests: () => ({ data: requests }),
   useCreatePlanRequest: () => ({ isPending: false, isError: false, error: null, mutateAsync }),
   useWithdrawPlanRequest: () => ({ isPending: false, isError: false, error: null, mutate: withdraw }),
@@ -87,6 +87,18 @@ describe('Taksit (yapilandirma) talebi karti', () => {
     expect(container.textContent).toContain('Gerekçe: Önce ödeme yapın');
     act(() => button('Geri çek').click());
     expect(withdraw).toHaveBeenCalledWith('r1');
+  });
+
+  it('yonetim talep almiyor (secenekler 403, varsayilan): form yok; gecmis talepler varsa yalnizca liste', () => {
+    options = 'forbidden';
+    requests = [];
+    render();
+    expect(container.textContent).toBe('');
+    container.remove();
+    requests = [request({ requestId: 'rx', status: 'rejected', decision: { at: '2026-09-02T09:00:00.000Z', mode: 'rejected', reason: 'Talepler kapandı' } })];
+    render();
+    expect(container.querySelector('select[aria-label="Taksit sayısı"]')).toBeNull();
+    expect(container.textContent).toContain('Gerekçe: Talepler kapandı');
   });
 
   it('ayni cariyi goren baska uyenin talebi: yalnizca bilgi (KVKK); talep edilecek bir sey yoksa kart gizli', () => {

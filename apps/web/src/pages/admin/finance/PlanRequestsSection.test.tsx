@@ -15,7 +15,7 @@ let items: unknown[] = [];
 const SETTINGS = { isPending: false, isError: false, data: { version: 3, settings: { enabled: true, maxInstallments: 6, minInstallmentAmount: 50000, includeLateFees: true } } };
 const ASIS = { accountId: MAIN, chargeIds: ['c1', 'c2'], installments: 4, firstDueDate: '2026-12-10', includeLateFees: true };
 vi.mock('@/hooks/useRestructure', () => ({
-  usePlanRequests: () => ({ isPending: false, isError: false, isSuccess: true, data: { items, pendingCount: items.length } }),
+  usePlanRequests: (status?: string) => ({ isPending: false, isError: false, isSuccess: true, data: { items: items.filter((r) => !status || (r as { status: string }).status === status), pendingCount: 0 } }),
   usePlanRequestDetail: () => ({ isPending: false, isError: false, data: { request: items[0], settings: {}, asIs: ASIS } }),
   usePlanPreview: () => ({ isError: false, data: { total: 301200, frozenLateFee: 1200, installments: [{ amount: 75300 }] } }),
   useApprovePlanRequest: () => approve,

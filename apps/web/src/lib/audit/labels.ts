@@ -257,6 +257,7 @@ export const LEDGER_FINDING_LABELS: Record<string, string> = {
   fiscal_lock_mismatch: 'Dönem kilidi tutarsız',
   ticket_cost_mismatch: 'Talep / bakım gideri özeti defterle uyuşmuyor',
   explink_orphan: 'Sahipsiz gider bağlantısı',
+  supplier_advance_mismatch: 'Tedarikçi avansı kaydı defterle uyuşmuyor',
 };
 
 export function findingLabel(code: string): string {

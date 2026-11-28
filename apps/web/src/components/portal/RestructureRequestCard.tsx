@@ -44,8 +44,8 @@ export function RestructureRequestCard() {
   const [note, setNote] = useState('');
   const [sent, setSent] = useState(false);
 
-  const o = options.data;
-  const eligible = (o?.accounts ?? []).filter((a) => a.eligible);
+  const o = options.isError ? undefined : options.data;
+  const eligible = o?.settings.enabled ? o.accounts.filter((a) => a.eligible) : [];
   const account = eligible.find((a) => a.accountId === accountId) ?? eligible[0];
   const choices = account ? installmentChoices(account, o?.minInstallments) : [];
   useEffect(() => {
@@ -57,8 +57,11 @@ export function RestructureRequestCard() {
 
   const list = requests.data ?? [];
   // Talep acilamayan ama aciklamasi olan cari (or. bekleyen talep, aktif plan).
-  const notices = (o?.accounts ?? []).filter((a) => !a.eligible && a.reason && a.reason !== 'no_overdue' && !(a.reason === 'pending_request' && a.pendingRequest === 'mine'));
-  if (!o || options.isError || (eligible.length === 0 && list.length === 0 && notices.length === 0)) return null;
+  const notices = (o?.accounts ?? []).filter(
+    (a) => !a.eligible && a.reason && a.reason !== 'no_overdue' && a.reason !== 'disabled' && !(a.reason === 'pending_request' && a.pendingRequest === 'mine'),
+  );
+  // Yonetim talep almiyorsa (varsayilan; secenekler 403) form yok; gecmis talepler varsa yine gorunur.
+  if (eligible.length === 0 && list.length === 0 && notices.length === 0) return null;
 
   const valid = !!account && choices.includes(installments);
   return (
@@ -67,7 +70,7 @@ export function RestructureRequestCard() {
         <CalendarPlus className="size-5 text-muted" aria-hidden="true" />
         Taksit (yapılandırma) talebi
       </CardTitle>
-      {account && (
+      {account && o && (
         <>
           <p className="text-small text-muted">
             Gecikmiş borcunuzu taksitle ödemek istiyorsanız talep oluşturun. Yönetim talebinizi olduğu gibi veya değiştirerek onaylar; vade farkı

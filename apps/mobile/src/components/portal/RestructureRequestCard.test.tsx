@@ -71,6 +71,17 @@ describe('Borçlarım - taksit talebi karti', () => {
     });
     await waitFor(() => expect(screen.queryByText('Taksit talebi')).toBeNull());
   });
+
+  it('yonetim talep almiyor (secenekler 403): form yok, gecmis talep ve karari gorunur', async () => {
+    await renderApp(<RestructureRequestCard />, {
+      routes: {
+        'GET /api/portal/plan-requests/options': { status: 403, body: { error: 'forbidden', message: 'Yönetim şu anda taksit talebi almıyor' } },
+        'GET /api/portal/plan-requests': { items: [request({ requestId: 'r0', status: 'rejected', decision: { at: '2026-10-02T09:00:00.000Z', mode: 'rejected', reason: 'Talepler kapandı' } })] },
+      },
+    });
+    expect(await screen.findByText('Gerekçe: Talepler kapandı')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Talep gönder' })).toBeNull();
+  });
 });
 
 describe('demo veri (yalnizca __DEV__)', () => {
