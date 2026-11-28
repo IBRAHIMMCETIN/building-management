@@ -1,0 +1,15 @@
+# Expo
+.expo/
+dist/
+web-build/
+
+# Native projeler `expo prebuild` / EAS ile uretilir (continuous native generation)
+/ios
+/android
+
+# Metro / Jest
+.metro-health-check*
+coverage/
+
+# Yerel ortam (bkz. .env.example)
+.env*.local
