@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { LEGAL_DOCUMENTS, LEGAL_DOCUMENT_ORDER } from '@bm/shared/legal/documents';
 import { describe, expect, it } from 'vitest';
+import ogImage from '../public/brand/og-image.png?inline';
 import template from '../index.html?raw';
 import { buildPages } from './prerender';
 import { PRERENDER_PAGES, SITE_URL, injectPage } from './prerenderHtml';
@@ -54,5 +55,21 @@ describe('derleme sonu on-render ciktisi', () => {
     const html = injectPage(template, { ...PRERENDER_PAGES[0]!, title: 'A & B <x> "y" $1', description: 'd "q" $& <z>' }, '<main id="ana-icerik"></main>');
     expect(html).toContain('<title>A &amp; B &lt;x&gt; "y" $1</title>');
     expect(html).toContain('content="d &quot;q&quot; $&amp; &lt;z&gt;"');
+  });
+
+  it('paylasim gorseli: her sayfada 1200x630 PNG ve buyuk kart; aciklama arama sonucuna sigar', () => {
+    for (const { html } of pages) {
+      const doc = parse(html);
+      expect(doc.querySelector('meta[property="og:image"]')!.getAttribute('content')).toBe(`${SITE_URL}/brand/og-image.png`);
+      expect(doc.querySelector('meta[name="twitter:image"]')!.getAttribute('content')).toBe(`${SITE_URL}/brand/og-image.png`);
+      expect(doc.querySelector('meta[name="twitter:card"]')!.getAttribute('content')).toBe('summary_large_image');
+      expect(doc.querySelector('meta[property="og:image:alt"]')!.getAttribute('content')).toBeTruthy();
+    }
+    // PNG imzasi ve IHDR'deki genislik / yukseklik (bayt 16-23, big-endian).
+    const png = Uint8Array.from(atob(ogImage.slice(ogImage.indexOf(',') + 1)), (c) => c.charCodeAt(0));
+    const view = new DataView(png.buffer);
+    expect(String.fromCharCode(...png.subarray(1, 4))).toBe('PNG');
+    expect([view.getUint32(16), view.getUint32(20)]).toEqual([1200, 630]);
+    expect(PRERENDER_PAGES[0]!.description.length).toBeLessThanOrEqual(160);
   });
 });
