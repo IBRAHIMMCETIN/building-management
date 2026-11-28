@@ -116,7 +116,10 @@ function usePassed(iso: string): boolean {
   const [passed, setPassed] = useState(() => Date.now() >= at);
   useEffect(() => {
     if (passed) return;
-    const t = setTimeout(() => setPassed(true), Math.max(0, at - Date.now()) + 50);
+    const wait = Math.max(0, at - Date.now()) + 50;
+    // setTimeout 2^31-1 ms'den (~24,8 gun) uzun beklemede hemen calisir: o kadar uzak son saat bu ekranda beklenmez.
+    if (wait > 2_147_483_647) return;
+    const t = setTimeout(() => setPassed(true), wait);
     return () => clearTimeout(t);
   }, [at, passed]);
   return passed;
