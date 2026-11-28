@@ -5,6 +5,8 @@ import { AppText } from './AppText';
 
 type Props = {
   label: string;
+  /** Ekran okuyucu adi gorunen etiketten farkliysa (ayni konu iki kanalda: "Duyurular, mobil bildirim"). */
+  accessibilityLabel?: string;
   description?: string;
   value: boolean;
   disabled?: boolean;
@@ -14,7 +16,7 @@ type Props = {
 };
 
 /** Etiketli anahtar (web: checkbox + label + aciklama `aria-describedby`). */
-export function SwitchRow({ label, description, value, disabled, onValueChange, dimmed }: Props) {
+export function SwitchRow({ label, accessibilityLabel, description, value, disabled, onValueChange, dimmed }: Props) {
   const { colors } = useTheme();
   return (
     <View style={[styles.row, dimmed && styles.dimmed]}>
@@ -29,7 +31,7 @@ export function SwitchRow({ label, description, value, disabled, onValueChange, 
         )}
       </View>
       <Switch
-        accessibilityLabel={label}
+        accessibilityLabel={accessibilityLabel ?? label}
         accessibilityHint={description}
         value={value}
         disabled={disabled}

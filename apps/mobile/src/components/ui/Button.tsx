@@ -15,10 +15,13 @@ export type ButtonProps = Omit<PressableProps, 'children' | 'style'> & {
   block?: boolean;
   /** Satir ici dugmenin hizasi (ortalanmis kartlarda 'center'). */
   align?: 'start' | 'center';
+  /** `large`: saha ekranlari (kapi tableti, eldivenle kullanim; web `h-14 text-body`) - 56 pt. */
+  size?: 'default' | 'large';
 };
 
 /** Web Button karsiligi: birincil (dolu lacivert), ikincil (kenarlikli), sessiz, tehlike. En az 44 pt. */
-export function Button({ label, variant = 'primary', icon: Icon, loading = false, block = false, align = 'start', disabled, accessibilityLabel, ...props }: ButtonProps) {
+export function Button({ label, variant = 'primary', icon: Icon, loading = false, block = false, align = 'start', size = 'default', disabled, accessibilityLabel, ...props }: ButtonProps) {
+  const large = size === 'large';
   const { colors } = useTheme();
   const inactive = disabled || loading;
   const look = {
@@ -37,6 +40,7 @@ export function Button({ label, variant = 'primary', icon: Icon, loading = false
       hitSlop={4}
       style={({ pressed }) => [
         styles.base,
+        large && styles.large,
         { backgroundColor: pressed ? look.pressed : look.bg, borderColor: look.border },
         block ? styles.block : align === 'center' ? styles.center : styles.inline,
         inactive && styles.inactive,
@@ -44,8 +48,8 @@ export function Button({ label, variant = 'primary', icon: Icon, loading = false
       {...props}
     >
       <View style={styles.content}>
-        {loading ? <ActivityIndicator size="small" color={look.fg} /> : Icon ? <Icon size={18} color={look.fg} aria-hidden /> : null}
-        <AppText variant="small" weight="semibold" style={{ color: look.fg }}>
+        {loading ? <ActivityIndicator size="small" color={look.fg} /> : Icon ? <Icon size={large ? 20 : 18} color={look.fg} aria-hidden /> : null}
+        <AppText variant={large ? 'body' : 'small'} weight="semibold" style={{ color: look.fg }}>
           {label}
         </AppText>
       </View>
@@ -54,6 +58,7 @@ export function Button({ label, variant = 'primary', icon: Icon, loading = false
 }
 
 const styles = StyleSheet.create({
+  large: { minHeight: space(14), paddingHorizontal: space(5) },
   base: {
     minHeight: MIN_TOUCH,
     borderRadius: radii.md,

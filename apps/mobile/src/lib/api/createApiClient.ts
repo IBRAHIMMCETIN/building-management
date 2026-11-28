@@ -81,7 +81,12 @@ export function createApiClient(config: ApiClientConfig) {
       data = undefined;
     }
     if (!res.ok) {
-      const body = isApiErrorBody(data) ? data : undefined;
+      let body = isApiErrorBody(data) ? data : undefined;
+      // Deneme siniri: `Retry-After` basligi (sn) govdede yoksa eklenir (kapi dogrulama / plaka, cihaz kaydi).
+      const retryAfter = res.status === 429 ? Number(res.headers?.get?.('retry-after')) : NaN;
+      if (Number.isFinite(retryAfter) && retryAfter > 0 && body?.retryAfterSeconds === undefined) {
+        body = { ...body, error: body?.error ?? 'rate_limited', retryAfterSeconds: retryAfter };
+      }
       throw new ApiError(res.status, body);
     }
     return schema ? schema.parse(data) : (data as T);
