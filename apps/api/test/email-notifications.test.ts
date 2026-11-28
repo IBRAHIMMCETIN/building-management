@@ -289,7 +289,7 @@ function channel(
     record: async (apt, e, u, info) => void sentRecords.set(`${apt}|${e}|${u}`, info.status),
   };
   const preferences: Pick<PreferencesRepository, 'get'> = {
-    get: async (u) => ({ email: { enabled: over.prefs?.[u] ?? true } }),
+    get: async (u) => ({ email: { enabled: over.prefs?.[u] ?? true }, push: { enabled: true } }),
   };
   const core = {
     getSite: vi.fn(async () => ({ siteId: APT, name: 'Lale Sitesi' }) as Site),
@@ -564,8 +564,8 @@ describe('bildirim tercihleri', () => {
   it('kayit yoksa varsayilan acik; kayit USER#<id> / NOTIFPREF', async () => {
     ddb.on(GetCommand).resolvesOnce({}).resolvesOnce({ Item: { emailEnabled: false, updatedAt: ts } });
     const repo = createDynamoPreferencesRepository();
-    expect(await repo.get('user-1')).toEqual({ email: { enabled: true } });
-    expect(await repo.get('user-1')).toEqual({ email: { enabled: false }, updatedAt: ts });
+    expect(await repo.get('user-1')).toEqual({ email: { enabled: true }, push: { enabled: true } });
+    expect(await repo.get('user-1')).toEqual({ email: { enabled: false }, push: { enabled: true }, updatedAt: ts });
     expect(ddb.commandCalls(GetCommand)[0]!.args[0].input.Key).toEqual({ PK: 'USER#user-1', SK: 'NOTIFPREF' });
 
     ddb.on(UpdateCommand).resolves({});
@@ -608,14 +608,14 @@ describe('bildirim tercihleri', () => {
 
   it("GET varsayilan acik; PUT kullanicinin KENDI tercihini kaydeder (kimlik JWT'den)", async () => {
     const { call, store } = api();
-    expect(await (await call('GET', 'res-1')).json()).toEqual({ email: { enabled: true } });
+    expect(await (await call('GET', 'res-1')).json()).toEqual({ email: { enabled: true }, push: { enabled: true } });
     const put = await call('PUT', 'res-1', { email: { enabled: false } });
     expect(put.status).toBe(200);
-    expect(await put.json()).toEqual({ email: { enabled: false }, updatedAt: ts });
-    expect(store.get('res-1')).toEqual({ email: { enabled: false }, updatedAt: ts });
+    expect(await put.json()).toEqual({ email: { enabled: false }, push: { enabled: true }, updatedAt: ts });
+    expect(store.get('res-1')).toEqual({ email: { enabled: false }, push: { enabled: true }, updatedAt: ts });
     expect(await (await call('GET', 'res-1')).json()).toMatchObject({ email: { enabled: false } });
     // Baska kullanici etkilenmez.
-    expect(await (await call('GET', 'res-2')).json()).toEqual({ email: { enabled: true } });
+    expect(await (await call('GET', 'res-2')).json()).toEqual({ email: { enabled: true }, push: { enabled: true } });
   });
 
   it('kimliksiz 401, gecersiz govde 400, govdeden baska kullanici hedeflenemez', async () => {

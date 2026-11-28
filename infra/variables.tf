@@ -108,6 +108,34 @@ variable "notification_channel" {
   }
 }
 
+# --- Mobil bildirim (push, Expo) -------------------------------------------------
+# expo: notification worker alicinin kayitli Expo cihazlarina push gonderir (cihaz yoksa dis istek
+#       yok) ve scheduler saatte bir makbuzlari kontrol eder. off: push yok, makbuz isi yok.
+variable "push_channel" {
+  type        = string
+  default     = "expo"
+  description = "Mobil bildirim kanali: expo | off."
+
+  validation {
+    condition     = contains(["expo", "off"], var.push_channel)
+    error_message = "push_channel expo veya off olmalidir."
+  }
+}
+
+# Karisik proje hatasinda (PUSH_TOO_MANY_EXPERIENCE_IDS) bizim projemiz: Expo hata ayrintisindaki proje
+# anahtari (or. "@sahip/yonesist"). Verilirse baska projelerin token'lari pasife alinir; bos ise hicbiri.
+# Expo erisim anahtari Terraform degiskeni DEGILDIR: push.tf'teki secret'a elle girilir.
+variable "expo_project_id" {
+  type        = string
+  default     = ""
+  description = "Istege bagli Expo proje anahtari (EXPO_PROJECT_ID), or. @sahip/yonesist."
+
+  validation {
+    condition     = var.expo_project_id == "" || can(regex("^(@[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+|[0-9a-f-]{36})$", var.expo_project_id))
+    error_message = "expo_project_id \"@sahip/slug\" veya proje UUID'si olmalidir."
+  }
+}
+
 variable "mfa_enforcement_mode" {
   type        = string
   default     = "warn"

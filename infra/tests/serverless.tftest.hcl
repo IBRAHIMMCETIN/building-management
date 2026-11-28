@@ -120,6 +120,14 @@ run "prod_plan" {
       arn = "arn:aws:sns:eu-central-1:123456789012:building-management-alerts"
     }
   }
+  # Expo erisim anahtari secret'i: rol politikalari ve ortam degiskenleri plan asamasinda karsilastirilabilsin.
+  override_resource {
+    target          = aws_secretsmanager_secret.expo_access_token
+    override_during = plan
+    values = {
+      arn = "arn:aws:secretsmanager:eu-central-1:123456789012:secret:building-management/push/expo-access-token-AbCdEf"
+    }
+  }
   # Pre Token MFA politikasi havuz ARN'ine baglidir: plan asamasinda sabitlenir.
   override_resource {
     target          = aws_cognito_user_pool.main
@@ -302,6 +310,69 @@ run "prod_plan" {
   assert {
     condition     = contains(jsondecode(aws_sns_topic_subscription.notification.filter_policy).eventType, "DUES_BATCH_SUMMARY")
     error_message = "Toplu tahakkuk ozet olayi bildirim kuyruguna ulasmali"
+  }
+
+  # --- Mobil bildirim (push, Expo): varsayilan acik; erisim anahtari ortamda degil, Secrets Manager'da ---
+  assert {
+    condition = (
+      aws_lambda_function.notification_worker.environment[0].variables.PUSH_CHANNEL == "expo" &&
+      aws_lambda_function.scheduler_worker.environment[0].variables.PUSH_CHANNEL == "expo" &&
+      aws_lambda_function.notification_worker.environment[0].variables.EXPO_ACCESS_TOKEN_SECRET_ARN == "arn:aws:secretsmanager:eu-central-1:123456789012:secret:building-management/push/expo-access-token-AbCdEf" &&
+      aws_lambda_function.scheduler_worker.environment[0].variables.EXPO_ACCESS_TOKEN_SECRET_ARN == "arn:aws:secretsmanager:eu-central-1:123456789012:secret:building-management/push/expo-access-token-AbCdEf" &&
+      !contains(keys(aws_lambda_function.notification_worker.environment[0].variables), "EXPO_ACCESS_TOKEN") &&
+      !contains(keys(aws_lambda_function.scheduler_worker.environment[0].variables), "EXPO_ACCESS_TOKEN") &&
+      !contains(keys(aws_lambda_function.notification_worker.environment[0].variables), "EXPO_PROJECT_ID") &&
+      aws_lambda_function.notification_worker.environment[0].variables.METRICS_STACK == "building-management"
+    )
+    error_message = "Push kanali varsayilan expo; erisim anahtari yalnizca secret ARN'i olarak, METRICS_STACK worker'da"
+  }
+  assert {
+    condition     = aws_secretsmanager_secret.expo_access_token[0].name == "building-management/push/expo-access-token" && aws_secretsmanager_secret.expo_access_token[0].recovery_window_in_days == 30
+    error_message = "Expo erisim anahtari secret'i degersiz olusturulmali (prod: 30 gun geri alinabilir)"
+  }
+  assert {
+    condition = alltrue([
+      for doc in [data.aws_iam_policy_document.notification_worker, data.aws_iam_policy_document.scheduler_worker] :
+      [for st in doc.statement : { actions = toset(st.actions), resources = toset(st.resources) } if st.sid == "ReadExpoAccessToken"] == [{ actions = toset(["secretsmanager:GetSecretValue"]), resources = toset(["arn:aws:secretsmanager:eu-central-1:123456789012:secret:building-management/push/expo-access-token-AbCdEf"]) }]
+    ])
+    error_message = "Worker ve scheduler yalnizca Expo secret'ini okuyabilmeli"
+  }
+  assert {
+    condition     = toset(one([for st in data.aws_iam_policy_document.notification_worker.statement : st.actions if st.sid == "DynamoDb"])) == toset(["dynamodb:GetItem", "dynamodb:Query", "dynamodb:PutItem"])
+    error_message = "Worker'in genel tablo yetkisi okuma + PutItem olmali; silme yok"
+  }
+  assert {
+    condition = anytrue([
+      for c in one([for st in data.aws_iam_policy_document.notification_worker.statement : st.condition if st.sid == "PushDeviceUpdate"]) :
+      c.test == "ForAllValues:StringLike" && c.variable == "dynamodb:LeadingKeys" && toset(c.values) == toset(["USER#*", "PUSHTOKEN#*"])
+    ]) && toset(one([for st in data.aws_iam_policy_document.notification_worker.statement : st.actions if st.sid == "PushDeviceUpdate"])) == toset(["dynamodb:UpdateItem"])
+    error_message = "Worker UpdateItem yalnizca USER# / PUSHTOKEN# bolumlerinde (cihaz pasife alma) olmali"
+  }
+  assert {
+    condition = (
+      aws_cloudwatch_metric_alarm.push_rejected[0].metric_name == "PushRejected" &&
+      aws_cloudwatch_metric_alarm.push_rejected[0].threshold == 0 &&
+      aws_cloudwatch_metric_alarm.push_retry[0].metric_name == "PushRetried" &&
+      aws_cloudwatch_metric_alarm.push_rejected[0].dimensions.Stack == "building-management" &&
+      aws_cloudwatch_metric_alarm.push_rejected[0].alarm_actions == toset(["arn:aws:sns:eu-central-1:123456789012:building-management-alerts"])
+    )
+    error_message = "Kalici push hatasi ve uzun Expo kesintisi alarm uretmeli"
+  }
+  assert {
+    condition = (
+      aws_scheduler_schedule.jobs["push_receipts"].schedule_expression == "cron(20 * * * ? *)" &&
+      jsondecode(aws_scheduler_schedule.jobs["push_receipts"].target[0].input).job == "push_receipts"
+    )
+    error_message = "Push makbuz kontrolu saatte bir (:20) calismali"
+  }
+  assert {
+    condition     = aws_lambda_function.notification_worker.timeout == 60 && aws_sqs_queue.notification.visibility_timeout_seconds == 360
+    error_message = "Worker zaman asimi push parcalari icin 60 sn, kuyruk gorunurlugu 6 kati olmali"
+  }
+  # Expo'ya HTTPS cikisi: worker ve scheduler VPC'de degil (NAT gerektirmez).
+  assert {
+    condition     = length(aws_lambda_function.notification_worker.vpc_config) == 0 && length(aws_lambda_function.scheduler_worker.vpc_config) == 0
+    error_message = "Bildirim worker'i ve scheduler VPC'ye baglanmamali (Expo push icin internet cikisi)"
   }
 
   # --- Zamanlanmis gorevler ---
@@ -1013,7 +1084,7 @@ run "payments_iyzico" {
     error_message = "API Lambda yalnizca odeme secret'ini okuyabilmeli (GetSecretValue, tek ARN)"
   }
   assert {
-    condition     = [for st in data.aws_iam_policy_document.scheduler_worker.statement : { actions = toset(st.actions), resources = toset(st.resources) } if anytrue([for a in st.actions : startswith(a, "secretsmanager:")])] == [{ actions = toset(["secretsmanager:GetSecretValue"]), resources = toset(["arn:aws:secretsmanager:eu-central-1:123456789012:secret:building-management-dev/payments/iyzico-AbCdEf"]) }]
+    condition     = [for st in data.aws_iam_policy_document.scheduler_worker.statement : { actions = toset(st.actions), resources = toset(st.resources) } if anytrue([for a in st.actions : startswith(a, "secretsmanager:")]) && st.sid != "ReadExpoAccessToken"] == [{ actions = toset(["secretsmanager:GetSecretValue"]), resources = toset(["arn:aws:secretsmanager:eu-central-1:123456789012:secret:building-management-dev/payments/iyzico-AbCdEf"]) }]
     error_message = "Scheduler worker yalnizca odeme secret'ini okuyabilmeli (GetSecretValue, tek ARN)"
   }
 
@@ -1200,7 +1271,7 @@ run "payments_paytr_and_iyzico" {
     error_message = "API Lambda odeme secret'lerini yalnizca okuyabilmeli (tek ifade, GetSecretValue)"
   }
   assert {
-    condition     = length([for st in data.aws_iam_policy_document.scheduler_worker.statement : st if anytrue([for a in st.actions : startswith(a, "secretsmanager:")])]) == 1
+    condition     = length([for st in data.aws_iam_policy_document.scheduler_worker.statement : st if anytrue([for a in st.actions : startswith(a, "secretsmanager:")]) && st.sid != "ReadExpoAccessToken"]) == 1
     error_message = "Scheduler worker odeme secret'lerini tek ifadeyle okuyabilmeli"
   }
   assert {
@@ -1410,6 +1481,71 @@ run "rejects_unknown_notification_channel" {
   }
 
   expect_failures = [var.notification_channel]
+}
+
+run "push_disabled" {
+  command = plan
+
+  variables {
+    push_channel = "off"
+  }
+
+  assert {
+    condition = (
+      aws_lambda_function.notification_worker.environment[0].variables.PUSH_CHANNEL == "off" &&
+      aws_lambda_function.scheduler_worker.environment[0].variables.PUSH_CHANNEL == "off"
+    )
+    error_message = "push_channel=off worker ve scheduler'a iletilmeli"
+  }
+  assert {
+    condition     = !contains(keys(aws_scheduler_schedule.jobs), "push_receipts")
+    error_message = "Push kapaliyken makbuz isi zamanlanmamali"
+  }
+  assert {
+    condition = (
+      length([for st in data.aws_iam_policy_document.notification_worker.statement : st if contains(["PushDeviceUpdate", "ReadExpoAccessToken"], st.sid)]) == 0 &&
+      length(aws_secretsmanager_secret.expo_access_token) == 0 &&
+      length(aws_cloudwatch_metric_alarm.push_rejected) == 0 &&
+      !contains(keys(aws_lambda_function.notification_worker.environment[0].variables), "EXPO_ACCESS_TOKEN_SECRET_ARN")
+    )
+    error_message = "Push kapaliyken UpdateItem / secret yetkisi, secret ve alarm olmamali"
+  }
+}
+
+run "push_project_id" {
+  command = plan
+
+  variables {
+    expo_project_id = "@yonesist/app"
+  }
+
+  assert {
+    condition = (
+      aws_lambda_function.notification_worker.environment[0].variables.EXPO_PROJECT_ID == "@yonesist/app" &&
+      !contains(keys(aws_lambda_function.scheduler_worker.environment[0].variables), "EXPO_PROJECT_ID")
+    )
+    error_message = "Expo proje anahtari worker'a iletilmeli"
+  }
+}
+
+run "rejects_unknown_push_channel" {
+  command = plan
+
+  variables {
+    push_channel = "fcm"
+  }
+
+  expect_failures = [var.push_channel]
+}
+
+run "rejects_invalid_expo_project_id" {
+  command = plan
+
+  variables {
+    expo_project_id = "yonesist app"
+  }
+
+  expect_failures = [var.expo_project_id]
 }
 
 run "mfa_enforce_mode" {

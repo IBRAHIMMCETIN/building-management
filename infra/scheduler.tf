@@ -57,6 +57,15 @@ locals {
     }
   }
 
+  # Mobil bildirim (push_channel = expo): Expo push makbuzlari; olu cihazlar (DeviceNotRegistered)
+  # pasife alinir. Expo HTTPS cikisi: Lambda VPC'de degil (varsayilan internet erisimi).
+  push_jobs = local.push_enabled ? {
+    push_receipts = {
+      cron        = "cron(20 * * * ? *)"
+      description = "Saatte bir :20 - Expo push makbuzlarini kontrol et, kaldirilmis uygulamalarin cihazlarini pasife al"
+    }
+  } : {}
+
   # Suprucu bu yastan genc outbox kayitlarina dokunmaz (relay'e birakir).
   outbox_sweep_min_age_seconds = 120
 }
@@ -163,6 +172,16 @@ data "aws_iam_policy_document" "scheduler_worker" {
     resources = [aws_sqs_queue.jobs.arn]
   }
 
+  # push_receipts: Expo makbuz sorgusu icin erisim anahtari (push.tf).
+  dynamic "statement" {
+    for_each = local.push_enabled ? [1] : []
+    content {
+      sid       = "ReadExpoAccessToken"
+      actions   = ["secretsmanager:GetSecretValue"]
+      resources = [aws_secretsmanager_secret.expo_access_token[0].arn]
+    }
+  }
+
   # payment_reconcile: saglayicidan sonuc sorgulamak icin anahtar okuma.
   dynamic "statement" {
     for_each = local.payments_enabled ? [values(local.payments_secret_arns)] : []
@@ -218,7 +237,7 @@ resource "aws_lambda_function" "scheduler_worker" {
       OUTBOX_SWEEP_MIN_AGE_SECONDS = tostring(local.outbox_sweep_min_age_seconds)
       # Buyuk sitelerde aylik aidat arka plan isi olarak (bulk_jobs.tf).
       BULK_JOBS_QUEUE_URL = aws_sqs_queue.bulk_jobs.url
-    }, local.payments_env)
+    }, local.payments_env, local.push_env)
   }
 
   depends_on = [
@@ -297,7 +316,7 @@ resource "aws_scheduler_schedule_group" "main" {
 # zamanlayici rolunun mevcut tablo/index ve sns:Publish yetkisi yeterlidir (ek IAM yok). Saat dilimi yalnizca cron
 # ifadelerinde anlamlidir; rate() icin verilmez.
 resource "aws_scheduler_schedule" "jobs" {
-  for_each = merge(local.scheduled_jobs, local.payment_jobs)
+  for_each = merge(local.scheduled_jobs, local.payment_jobs, local.push_jobs)
 
   name                         = replace(each.key, "_", "-")
   group_name                   = aws_scheduler_schedule_group.main.name

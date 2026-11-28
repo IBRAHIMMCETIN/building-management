@@ -10,7 +10,7 @@ import { type CoreRepository, coreRepository } from '../core/repository.js';
 import { type PersonRepository, personRepository } from '../residents/repository.js';
 import { type DeliveryResult, type Notification, type Notifier, createLogNotifier } from './notifier.js';
 import { categoryOfTemplate } from './categories.js';
-import { type PreferencesRepository, createDynamoPreferencesRepository } from './preferences.js';
+import { type NotificationPreferences, createDynamoPreferencesRepository } from './preferences.js';
 import { type EmailContext, renderEmail } from './templates.js';
 
 /**
@@ -158,7 +158,8 @@ export function createDynamoSentLog(now: () => Date = () => new Date()): SentLog
 
 export type EmailNotifierDeps = {
   sender: EmailSender;
-  preferences: Pick<PreferencesRepository, 'get'>;
+  /** Yalnizca e-posta tercihi okunur (push ayri kanalda). */
+  preferences: { get(userId: string): Promise<Pick<NotificationPreferences, 'email'>> };
   people: Pick<PersonRepository, 'get'>;
   /** Kisi kaydi olmayan ekip uyeleri icin yedek adres (ekip kaydindaki davet e-postasi). */
   roles?: Pick<ApartmentRoleRepository, 'list'>;
