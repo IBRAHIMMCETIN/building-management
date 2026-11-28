@@ -1,6 +1,11 @@
-/** "2026-11-08" -> "8 Kas 2026" (saat dilimi kaymasi olmadan). */
+/**
+ * "2026-11-08" -> "8 Kas 2026" (saat dilimi kaymasi olmadan). Tam zaman damgasi verilirse
+ * ("2026-11-10T21:30:00.000Z") once Istanbul gunune cevrilir (-> "11 Kas 2026"); eskiden bu
+ * durumda "Invalid Date" yaziliyordu (talep listeleri createdAt verir).
+ */
 export function formatDate(iso: string): string {
-  const [y, m, d] = iso.split('-').map(Number) as [number, number, number];
+  const day = iso.length > 10 && iso.includes('T') ? isoToIstanbulLocal(iso).slice(0, 10) : iso;
+  const [y, m, d] = day.split('-').map(Number) as [number, number, number];
   return new Date(Date.UTC(y, m - 1, d)).toLocaleDateString('tr-TR', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' });
 }
 
