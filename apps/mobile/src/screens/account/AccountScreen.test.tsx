@@ -77,21 +77,30 @@ describe('Hesabım', () => {
     await waitFor(() => expect(services.session.getSession()).toBeNull());
   });
 
-  it('M1: API push tercihini dondurse de yalnizca e-posta anahtarlari gosterilir', async () => {
-    await renderApp(<AccountScreen />, { routes: prefsApi({ email: { enabled: true }, push: { enabled: false } }) });
-    expect(await screen.findByRole('switch', { name: 'E-posta bildirimleri' })).toBeTruthy();
-    expect(screen.queryByRole('switch', { name: 'Mobil bildirimler' })).toBeNull();
+  it('e-posta ve mobil bildirim ayri kartlarda; push kategorileri kanal adiyla okunur', async () => {
+    const { calls } = await renderApp(<AccountScreen />, { routes: prefsApi({ email: { enabled: true }, push: { enabled: false } }) });
+    expect((await screen.findByRole('switch', { name: 'E-posta bildirimleri' })).props.value).toBe(true);
+    expect(screen.getByRole('switch', { name: 'Mobil bildirimler' }).props.value).toBe(false);
+    expect(screen.getByRole('switch', { name: 'Duyurular, mobil bildirim' }).props.disabled).toBe(true);
+    await fireEvent(screen.getByRole('switch', { name: 'Mobil bildirimler' }), 'valueChange', true);
+    expect(await screen.findByText('Tercihiniz kaydedildi.')).toBeTruthy();
+    expect(calls.find((c) => c.method === 'PUT')?.body).toEqual({ push: { enabled: true } });
+  });
+
+  it('bu cihazda kayit yapilamiyorsa (simulator / EAS projesi yok) acikca soylenir', async () => {
+    await renderApp(<AccountScreen />, { routes: prefsApi({ email: { enabled: true } }) });
+    expect(await screen.findByText(/Bu derlemede mobil bildirim kaydı yapılamıyor/)).toBeTruthy();
   });
 });
 
-describe('Mobil bildirim tercihleri (push fazi icin hazir kanal)', () => {
+describe('Mobil bildirim tercihleri (push kanali)', () => {
   it('push kanali yalnizca push alanini gonderir; e-posta tercihine dokunmaz', async () => {
     const { calls } = await renderApp(<NotificationPreferencesCard channel="push" />, {
       routes: prefsApi({ email: { enabled: false }, push: { enabled: true, gate: false } }),
     });
     expect((await screen.findByRole('switch', { name: 'Mobil bildirimler' })).props.value).toBe(true);
-    expect(switchFor('Ziyaretçi ve kurye').props.value).toBe(false);
-    await fireEvent(switchFor('Aidat ve tahsilat'), 'valueChange', false);
+    expect(switchFor('Ziyaretçi ve kurye, mobil bildirim').props.value).toBe(false);
+    await fireEvent(switchFor('Aidat ve tahsilat, mobil bildirim'), 'valueChange', false);
     expect(await screen.findByText('Tercihiniz kaydedildi.')).toBeTruthy();
     expect(calls.find((c) => c.method === 'PUT')?.body).toEqual({ push: { finance: false } });
   });
@@ -99,6 +108,6 @@ describe('Mobil bildirim tercihleri (push fazi icin hazir kanal)', () => {
   it('push tercihi olmayan (eski) yanit: varsayilan acik', async () => {
     await renderApp(<NotificationPreferencesCard channel="push" />, { routes: prefsApi({ email: { enabled: false } }) });
     expect((await screen.findByRole('switch', { name: 'Mobil bildirimler' })).props.value).toBe(true);
-    expect(switchFor('Duyurular').props.value).toBe(true);
+    expect(switchFor('Duyurular, mobil bildirim').props.value).toBe(true);
   });
 });

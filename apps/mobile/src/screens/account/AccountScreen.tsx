@@ -9,6 +9,7 @@ import { useActiveApartmentName, useContexts } from '@/hooks/useContexts';
 import { space } from '@/theme/tokens';
 import { useTheme } from '@/theme/useTheme';
 import { NotificationPreferencesCard } from './NotificationPreferencesCard';
+import { PushDeviceStatus } from './PushDeviceStatus';
 
 function Field({ label, value }: { label: string; value: string }) {
   return (
@@ -23,7 +24,7 @@ function Field({ label, value }: { label: string; value: string }) {
 
 /**
  * Hesabım (web: pages/account/AccountPage.tsx): profil ve aktif baglam, baglam degistirme, e-posta
- * bildirim tercihleri, cikis. Sakin, bina gorevlisi ve guvenlik ayni ekrani kullanir. Iki adimli
+ * ve mobil bildirim tercihleri (bu telefonun izni / kaydi ile), cikis. Sakin, bina gorevlisi ve guvenlik ayni ekrani kullanir. Iki adimli
  * dogrulama kurulumu bu rollerde zorunlu olmadigindan mobilde yoktur (web Hesabım'da).
  */
 export function AccountScreen({ showTitle = true }: { showTitle?: boolean }) {
@@ -51,6 +52,9 @@ export function AccountScreen({ showTitle = true }: { showTitle?: boolean }) {
       </Card>
 
       <NotificationPreferencesCard />
+      <NotificationPreferencesCard channel="push">
+        <PushDeviceStatus />
+      </NotificationPreferencesCard>
 
       <Button
         variant="secondary"

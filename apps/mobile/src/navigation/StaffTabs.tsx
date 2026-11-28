@@ -7,11 +7,13 @@ import { space } from '@/theme/tokens';
 import { useTheme } from '@/theme/useTheme';
 import { tabBarOptions, tabOptions } from './options';
 
+export type FieldTab = { name: string; title: string; icon: LucideIcon };
+
 /**
- * Saha rolleri (guvenlik, bina gorevlisi) icin iki sekme: rolun ana isi (M3'te gelecek ekran) ve
- * Hesabım. Ana is sekmesinin dosyasi `index.tsx`, Hesabım `account.tsx`.
+ * Saha rolleri (guvenlik, bina gorevlisi): rolun isleri (ilki `index.tsx`) ve en sonda Hesabım
+ * (`account.tsx`). Ayrinti ekranlari sekmelerin ustundeki yigindadir (`app/<rol>/_layout.tsx`).
  */
-export function FieldRoleTabs({ mainTitle, mainIcon }: { mainTitle: string; mainIcon: LucideIcon }) {
+export function FieldRoleTabs({ tabs }: { tabs: readonly FieldTab[] }) {
   const { colors } = useTheme();
   return (
     <Tabs
@@ -26,7 +28,9 @@ export function FieldRoleTabs({ mainTitle, mainIcon }: { mainTitle: string; main
         ),
       }}
     >
-      <Tabs.Screen name="index" options={tabOptions(mainTitle, mainIcon)} />
+      {tabs.map((t) => (
+        <Tabs.Screen key={t.name} name={t.name} options={tabOptions(t.title, t.icon)} />
+      ))}
       <Tabs.Screen name="account" options={tabOptions('Hesabım', UserRound)} />
     </Tabs>
   );

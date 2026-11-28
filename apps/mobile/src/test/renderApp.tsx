@@ -6,6 +6,7 @@ import type { AppEnv } from '@/config/env';
 import { AuthProvider } from '@/context/AuthProvider';
 import { PortalUnitProvider } from '@/context/PortalUnitProvider';
 import { createMockAuthAdapter } from '@/lib/auth/mockAdapter';
+import type { NotificationsAdapter } from '@/lib/push/types';
 import type { KeyValueStorage } from '@/lib/storage/types';
 import { createServices } from '@/services';
 import { ServicesProvider } from '@/services';
@@ -45,12 +46,17 @@ const isResponse = (v: unknown): v is { status: number; body?: unknown } =>
 /** `fetch` yerine: "GET /api/portal/my-summary" -> govde (200), { status, body } veya bunlari donduren fonksiyon. */
 export function mockApi(routes: Routes) {
   const calls: ApiCall[] = [];
+  // Giden Authorization basligi (cagri nesnesinin esitlik karsilastirmasina girmez).
+  const auth = new WeakMap<ApiCall, string | undefined>();
   const fetchImpl = (async (input: string, init?: RequestInit) => {
     const [base = '', qs = ''] = input.replace('https://api.test', '').split('?');
     const query = Object.fromEntries(qs.split('&').filter(Boolean).map((p) => p.split('=').map(decodeURIComponent) as [string, string]));
     const method = (init?.method ?? 'GET').toUpperCase();
-    const body = init?.body ? JSON.parse(String(init.body)) : undefined;
-    calls.push({ method, path: base, query, body });
+    // JSON govde ayristirilir; dosya (imzali linke PUT) oldugu gibi kaydedilir.
+    const body = typeof init?.body === 'string' ? JSON.parse(init.body) : init?.body;
+    const call: ApiCall = { method, path: base, query, body };
+    calls.push(call);
+    auth.set(call, (init?.headers as Record<string, string> | undefined)?.authorization);
     const handler = routes[`${method} ${base}`];
     let status = 200;
     let payload: unknown;
@@ -71,14 +77,17 @@ export function mockApi(routes: Routes) {
     const text = payload === undefined ? '' : JSON.stringify(payload);
     return { ok: status >= 200 && status < 300, status, text: async () => text } as unknown as Response;
   }) as unknown as typeof fetch;
-  return { fetchImpl, calls };
+  return { fetchImpl, calls, authOf: (call: ApiCall | undefined) => (call ? auth.get(call) : undefined) };
 }
 
-type Options = { email?: string | null; routes?: Routes; env?: Partial<AppEnv>; withUnit?: boolean };
+type Options = { email?: string | null; routes?: Routes; env?: Partial<AppEnv>; withUnit?: boolean; notifications?: NotificationsAdapter };
 
-export async function renderApp(ui: ReactElement, { email = 'resident@dev.local', routes = {}, env = {}, withUnit = true }: Options = {}) {
+export async function renderApp(ui: ReactElement, { email = 'resident@dev.local', routes = {}, env = {}, withUnit = true, notifications }: Options = {}) {
   const api = mockApi(routes);
-  const services = createServices({ ...TEST_ENV, ...env }, { adapter: createMockAuthAdapter({ storage: memoryStorage(), delayMs: 0 }), fetchImpl: api.fetchImpl });
+  const services = createServices(
+    { ...TEST_ENV, ...env },
+    { adapter: createMockAuthAdapter({ storage: memoryStorage(), delayMs: 0 }), fetchImpl: api.fetchImpl, pushStorage: memoryStorage(), ...(notifications ? { notifications } : {}) },
+  );
   await services.session.ready;
   if (email) await services.session.signIn({ email, password: 'Mock123456' });
   // Ekran sorgulari kendi tekrar kuralini verir (5xx 2 kez); testte beklemesiz tekrarlanir.

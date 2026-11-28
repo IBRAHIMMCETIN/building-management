@@ -13,6 +13,8 @@ type Props = {
   disabled?: boolean;
   /** Secilen fotograf hazirlanirken (kucultme / sikistirma) `true`: form gonderimi beklemeli. */
   onBusyChange?: (busy: boolean) => void;
+  /** En fazla fotograf (varsayilan olay basina 6; sayac okumasi 1). */
+  max?: number;
 };
 
 const THUMB = 64;
@@ -22,11 +24,11 @@ const THUMB = 64;
  * kaldirma; en fazla 6. Secilen gorsel yuklemeden once kucultulup sikistirilir (lib/photos.ts);
  * yukleme gonderimde yapilir. Web onizlemesinde kamera dugmesi yoktur (dosya secici yeterli).
  */
-export function PhotoPicker({ label = 'Fotoğraflar (isteğe bağlı)', photos, onChange, disabled, onBusyChange }: Props) {
+export function PhotoPicker({ label = 'Fotoğraflar (isteğe bağlı)', photos, onChange, disabled, onBusyChange, max = MAX_PHOTOS }: Props) {
   const { colors } = useTheme();
   const [busy, setBusyState] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const room = MAX_PHOTOS - photos.length;
+  const room = max - photos.length;
   const setBusy = (value: boolean) => {
     setBusyState(value);
     onBusyChange?.(value);
@@ -49,7 +51,7 @@ export function PhotoPicker({ label = 'Fotoğraflar (isteğe bağlı)', photos, 
     <View style={styles.root}>
       <AppText variant="small" weight="medium">
         {label}{' '}
-        <AppText variant="caption" tone="muted">{`(${photos.length}/${MAX_PHOTOS})`}</AppText>
+        <AppText variant="caption" tone="muted">{`(${photos.length}/${max})`}</AppText>
       </AppText>
       {photos.length > 0 && (
         <View style={styles.thumbs}>

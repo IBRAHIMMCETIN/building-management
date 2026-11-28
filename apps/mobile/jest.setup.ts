@@ -4,3 +4,6 @@ process.env.EXPO_PUBLIC_API_MODE = 'demo';
 process.env.EXPO_PUBLIC_WEB_URL = 'https://web.test';
 
 jest.mock('@react-native-async-storage/async-storage', () => require('@react-native-async-storage/async-storage/jest/async-storage-mock'));
+
+// Bildirim katmani testte etkisiz (expo-notifications'a gidilmez); push testleri kendi sahtesini verir.
+jest.mock('@/lib/push/notificationsAdapter', () => ({ notificationsAdapter: require('@/test/notifications').inertNotifications }));

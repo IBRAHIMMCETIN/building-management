@@ -1,12 +1,19 @@
 import type { MeContexts } from '@bm/shared/auth/contextsSchema';
 import { mockContextsFor } from '@bm/shared/auth/mockScenarios';
-import type { AuthAdapter, AuthSession } from '@bm/shared/auth/session';
+import { type AuthAdapter, type AuthSession, apiTokenFor } from '@bm/shared/auth/session';
 import { type ReactNode, createContext, use } from 'react';
 import type { AppEnv } from '@/config/env';
 import { type ApiClient, createApiClient } from '@/lib/api/createApiClient';
 import { endpoints } from '@/lib/api/endpoints';
 import { createAuthAdapter } from '@/lib/auth/adapter';
 import { SessionManager } from '@/lib/auth/sessionManager';
+import { type NoticeStore, createNoticeStore } from '@/lib/notices';
+import { notificationsAdapter } from '@/lib/push/notificationsAdapter';
+import { PushService } from '@/lib/push/pushService';
+import type { NotificationsAdapter } from '@/lib/push/types';
+import { preferences } from '@/lib/storage/preferences';
+import { secureStorage } from '@/lib/storage/secureStorage';
+import type { KeyValueStorage } from '@/lib/storage/types';
 
 /**
  * Uygulama servisleri: oturum yoneticisi, API istemcisi ve baglam listesi. Kok yerlesimde bir kez
@@ -19,9 +26,22 @@ export type Services = {
   api: ApiClient;
   /** Secilebilir apartman/rol baglamlari: cognito'da `GET /api/me/contexts`, mock'ta yerel senaryo. */
   fetchContexts: (session: AuthSession, signal?: AbortSignal) => Promise<MeContexts>;
+  /** Imzali S3 linkine fotograf PUT'u (yetki basligi yok; demo modunda sahte API). */
+  rawFetch: typeof fetch;
+  /** Mobil bildirim kaydi; oturum kancalarina bagli (giris -> kayit, cikis -> silme). */
+  push: PushService;
+  notifications: NotificationsAdapter;
+  /** Uygulama geneli bilgi notu (ust bant). */
+  notices: NoticeStore;
 };
 
-export type ServiceOverrides = { adapter?: AuthAdapter; fetchImpl?: typeof fetch };
+export type ServiceOverrides = {
+  adapter?: AuthAdapter;
+  fetchImpl?: typeof fetch;
+  notifications?: NotificationsAdapter;
+  /** Push cihaz kaydinin deposu (varsayilan: guvenli depo). */
+  pushStorage?: KeyValueStorage;
+};
 
 /**
  * Demo verisi yalnizca gelistirme paketinde yuklenir: demo modu mock kimlik ister, mock kimlik de
@@ -61,7 +81,31 @@ export function createServices(env: AppEnv, overrides: ServiceOverrides = {}): S
     return endpoints.meContexts(api, signal);
   };
 
-  return { env, session, api, fetchContexts };
+  const notifications = overrides.notifications ?? notificationsAdapter;
+  const push = new PushService({
+    adapter: notifications,
+    api,
+    storage: overrides.pushStorage ?? secureStorage,
+    preferences,
+    getSession: () => session.getSession(),
+    tokenFor: (s) => apiTokenFor(s, env.tokenUse),
+    log: (message) => console.info(message),
+  });
+  session.setHooks({
+    afterSignIn: (s) => push.onSignedIn(s),
+    // Giden oturumun token'i kancanin basinda alinir; silme kancanin 3 sn sinirindan sonra da dogrulanir.
+    beforeSignOut: (s) => push.beginSignOut(s),
+  });
+  // Kullanici degisti / oturum dustu (401 dahil): izin aciklamasi ve kayit durumu sifirlanir.
+  session.onScopeChange((prev, next) => push.onSessionChange(prev, next));
+  // Acilista geri yuklenen oturum: izin verilmisse yalnizca token degistiyse yeniden kayit (istem yok).
+  void session.ready.then(() => {
+    const restored = session.getSession();
+    if (restored) void push.onRestored(restored);
+  });
+
+  const rawFetch = fetchImpl ?? (((...args: Parameters<typeof fetch>) => fetch(...args)) as typeof fetch);
+  return { env, session, api, fetchContexts, rawFetch, push, notifications, notices: createNoticeStore() };
 }
 
 const ServicesContext = createContext<Services | null>(null);

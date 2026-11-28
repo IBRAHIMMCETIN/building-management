@@ -2,8 +2,11 @@ import type { NotificationPreferences } from '@bm/shared/api/notificationPrefere
 import { mockContextsFor } from '@bm/shared/auth/mockScenarios';
 import { type SessionClaims, decodeClaims } from '@bm/shared/auth/session';
 import { createGateDemo } from './demo/gate';
+import { createGateDeskDemo } from './demo/gateDesk';
 import { createReservationsDemo } from './demo/reservations';
 import { createTicketsDemo } from './demo/tickets';
+import { DEMO_UPLOAD_PREFIX } from './demo/types';
+import { createWorkDemo } from './demo/work';
 import { createAssembliesDemo } from './demoAssemblies';
 import { createConsumptionDemo } from './demoConsumption';
 import { createPollsDemo } from './demoPolls';
@@ -146,6 +149,9 @@ export function createDemoFetch({ now = () => new Date() }: DemoFetchOptions = {
     createAssembliesDemo(),
     createConsumptionDemo(),
     createTendersDemo(),
+    // Saha rolleri (M3): guvenlik kapisi ve bina gorevlisi.
+    createGateDeskDemo(),
+    createWorkDemo(),
   ];
 
   return (async (input: string | URL | Request, init?: RequestInit) => {
@@ -158,7 +164,11 @@ export function createDemoFetch({ now = () => new Date() }: DemoFetchOptions = {
     const t = now();
     await new Promise((r) => setTimeout(r, 250));
 
+    // Imzali S3 linki yerine demo yukleme hedefi (yetki basligi yok).
+    if (path.startsWith(DEMO_UPLOAD_PREFIX) && method === 'PUT') return respond(200);
     if (!claims) return respond(401, { error: 'unauthorized' });
+
+    if (path.startsWith('/api/me/devices')) return respond(method === 'POST' ? 201 : 200, { device: { deviceId: 'demo-device', platform: 'android', status: 'active' } });
 
     if (path === '/api/me/contexts') {
       const email = claims.email ?? '';
