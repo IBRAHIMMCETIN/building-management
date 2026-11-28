@@ -1,5 +1,6 @@
 import { zodResolver } from '@hookform/resolvers/zod';
 import {
+  DEMO_HONEYPOT_FIELD,
   DEMO_LIMITS,
   DEMO_UNIT_RANGES,
   DEMO_UNIT_RANGE_LABELS,
@@ -10,10 +11,10 @@ import {
 } from '@bm/shared/api/demoRequests';
 import { KVKK_NOTICE } from '@bm/shared/legal/documents';
 import { CircleCheck, Send } from 'lucide-react';
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { Alert, Button, Card, FormField, Input, Select, Textarea } from '@/components/ui';
-import { errorMessage } from '@/lib/api/errors';
+import { ApiError, NetworkError, errorMessage } from '@/lib/api/errors';
 import { submitDemoRequest } from '@/lib/api/publicDemoRequests';
 
 const EMPTY: DemoRequestFormValues = {
@@ -24,22 +25,45 @@ const EMPTY: DemoRequestFormValues = {
   unitRange: '',
   message: '',
   kvkkConsent: false,
-  website: '',
+  [DEMO_HONEYPOT_FIELD]: '',
 };
 
 type Submit = (payload: ReturnType<typeof toDemoRequestPayload>) => Promise<unknown>;
 
+export const TOO_MANY_REQUESTS_MESSAGE = 'Çok fazla istek gönderildi. Lütfen birkaç dakika sonra tekrar deneyin.';
+export const SEND_FAILED_MESSAGE =
+  'Talebiniz gönderilemedi: bağlantı kurulamadı ya da kısa sürede çok fazla istek gönderildi. Lütfen birkaç dakika sonra tekrar deneyin.';
+
 /**
- * Demo talep formu (`#iletisim`). Dogrulama paylasilan zod semasiyla (alan altinda hata), gonderim
- * kimliksiz `POST /api/public/demo-requests`. Basarida form yerine onay paneli; hata (ag, 429, 400)
- * formun ustunde, girilen degerler korunur. Bal kupu alani ekran okuyucudan ve klavyeden gizlidir.
+ * Gonderim hatasinin metni. API'nin kendi 429'u Turkce mesaj ve sure tasir; API Gateway'in rota
+ * throttling 429'unda govde bizim bicimimizde degildir (genel mesaj) ve CORS basliklari olmayabilir:
+ * tarayici o zaman yaniti ag hatasi olarak gorur, bu yuzden ag hatasi da "cok fazla istek olabilir"
+ * diye anlatilir.
+ */
+export function demoSubmitErrorMessage(err: unknown): string {
+  if (err instanceof ApiError && err.status === 429) return err.body?.message ?? TOO_MANY_REQUESTS_MESSAGE;
+  if (err instanceof NetworkError) return SEND_FAILED_MESSAGE;
+  return errorMessage(err);
+}
+
+/**
+ * Demo talep formu (`#iletisim`). Dogrulama paylasilan zod semasiyla (alan altinda hata; API ile ayni
+ * kurallar), gonderim kimliksiz `POST /api/public/demo-requests`. Basarida form yerine onay paneli; hata
+ * (ag, 429, 400) gonder dugmesinin ustunde, girilen degerler korunur.
+ *
+ * On-render HTML'de (hidrasyondan once veya JS parcasi inmezse) form tarayicinin kendi gonderimine
+ * KAPALIDIR: `method="post"` (alanlar adreste gorunmez) ve gonder dugmesi bilesen baglanana kadar
+ * devre disi (Enter ile ortuk gonderim de olmaz).
  */
 export function DemoRequestForm({ submit = submitDemoRequest }: { submit?: Submit }) {
+  const [mounted, setMounted] = useState(false);
   const [done, setDone] = useState(false);
   const [error, setError] = useState<string>();
   const doneRef = useRef<HTMLDivElement>(null);
   const form = useForm<DemoRequestFormValues, unknown, DemoRequestFormOutput>({ resolver: zodResolver(demoRequestFormSchema), defaultValues: EMPTY });
   const { errors, isSubmitting } = form.formState;
+
+  useEffect(() => setMounted(true), []);
 
   const onSubmit = form.handleSubmit(async (values) => {
     setError(undefined);
@@ -49,7 +73,7 @@ export function DemoRequestForm({ submit = submitDemoRequest }: { submit?: Submi
       form.reset(EMPTY);
       requestAnimationFrame(() => doneRef.current?.focus());
     } catch (err) {
-      setError(errorMessage(err));
+      setError(demoSubmitErrorMessage(err));
     }
   });
 
@@ -72,7 +96,7 @@ export function DemoRequestForm({ submit = submitDemoRequest }: { submit?: Submi
 
   return (
     <Card>
-      <form className="flex flex-col gap-4" noValidate onSubmit={onSubmit} aria-label="Demo talep formu">
+      <form method="post" action="#iletisim" className="flex flex-col gap-4" noValidate onSubmit={onSubmit} aria-label="Demo talep formu">
         <div className="grid gap-4 sm:grid-cols-2">
           <FormField label="Ad soyad" error={errors.fullName?.message}>
             <Input autoComplete="name" maxLength={DEMO_LIMITS.fullName} {...form.register('fullName')} />
@@ -101,11 +125,11 @@ export function DemoRequestForm({ submit = submitDemoRequest }: { submit?: Submi
           <Textarea rows={4} maxLength={DEMO_LIMITS.message} {...form.register('message')} />
         </FormField>
 
-        {/* Bal kupu: gercek kullanici gormez ve bos birakir. */}
+        {/* Bal kupu: gercek kullanici gormez ve bos birakir; anlamsiz ad, otomatik doldurma kapali. */}
         <div aria-hidden="true" className="sr-only">
           <label>
-            Web siteniz (boş bırakın)
-            <input type="text" tabIndex={-1} autoComplete="off" {...form.register('website')} />
+            Bu alanı boş bırakın
+            <input type="text" tabIndex={-1} autoComplete="off" data-1p-ignore data-lpignore="true" {...form.register(DEMO_HONEYPOT_FIELD)} />
           </label>
         </div>
 
@@ -136,7 +160,7 @@ export function DemoRequestForm({ submit = submitDemoRequest }: { submit?: Submi
 
         {/* Gonderim hatasi dugmenin hemen ustunde: kullanici o sirada formun sonundadir. */}
         {error && <Alert tone="danger">{error}</Alert>}
-        <Button type="submit" loading={isSubmitting} className="self-start">
+        <Button type="submit" loading={isSubmitting} disabled={!mounted} className="self-start">
           <Send className="size-4" aria-hidden="true" />
           Demo talebini gönder
         </Button>

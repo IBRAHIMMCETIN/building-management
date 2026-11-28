@@ -1,10 +1,41 @@
 /// <reference types="vitest/config" />
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
-import { defineConfig } from 'vite';
+import { type Plugin, defineConfig } from 'vite';
+
+/**
+ * Uygulama acilis parcalari (src/appRoot.tsx ve statik bagimliliklari) index.html'deki satir ici
+ * acilis betigine yazilir (`'__APP_PRELOAD__'`): betik uygulama acilacaksa bunlari `modulepreload` ile
+ * hemen ister (main -> appRoot zincirinde ek bir gidis-donus beklenmez); tanitim sayfasinda istemez.
+ */
+function appPreload(): Plugin {
+  return {
+    name: 'bm-app-preload',
+    apply: 'build',
+    transformIndexHtml: {
+      order: 'post',
+      handler(html, ctx) {
+        const bundle = ctx.bundle;
+        if (!bundle) return html;
+        const entry = Object.values(bundle).find(
+          (c) => c.type === 'chunk' && (c.facadeModuleId ?? '').replace(/\\/g, '/').endsWith('/src/appRoot.tsx'),
+        );
+        const files = new Set<string>();
+        const visit = (name: string) => {
+          const chunk = bundle[name];
+          if (files.has(name) || !chunk || chunk.type !== 'chunk') return;
+          files.add(name);
+          chunk.imports.forEach(visit);
+        };
+        if (entry) visit(entry.fileName);
+        return html.replace("'__APP_PRELOAD__'", JSON.stringify([...files].map((f) => `/${f}`)));
+      },
+    },
+  };
+}
 
 export default defineConfig(({ isSsrBuild }) => ({
-  plugins: [react(), tailwindcss()],
+  plugins: [react(), tailwindcss(), appPreload()],
   resolve: {
     // Proje kokune gore: '@/lib/api' -> '<apps/web>/src/lib/api'
     alias: { '@': '/src' },

@@ -1,4 +1,5 @@
-import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
+import type { DemoEraseStatus } from '@bm/shared/api/demoRequests';
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ApiError } from '@/lib/api/errors';
 import { platformApi } from '@/lib/api/platform';
 import { useAuth } from './useAuth';
@@ -20,6 +21,15 @@ export function useDemoRequests() {
     getNextPageParam: (last) => last.nextCursor,
     enabled: user?.role === 'platform_admin',
     retry,
+  });
+}
+
+/** KVKK silme talebi / spam: basarida liste yeniden yuklenir (kayit listeden duser). */
+export function useEraseDemoRequest() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ requestId, ...body }: { requestId: string; status: DemoEraseStatus; reason: string }) => platformApi.eraseDemoRequest(requestId, body),
+    onSuccess: () => qc.invalidateQueries({ queryKey: platformKeys.demoRequests() }),
   });
 }
 

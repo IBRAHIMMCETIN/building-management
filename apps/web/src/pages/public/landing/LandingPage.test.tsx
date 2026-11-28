@@ -1,12 +1,12 @@
 // @vitest-environment happy-dom
-import { ApiError } from '@bm/shared/api/errors';
+import { ApiError, NetworkError } from '@bm/shared/api/errors';
 import { KVKK_NOTICE } from '@bm/shared/legal/documents';
 import { act } from 'react';
 import { createRoot, hydrateRoot } from 'react-dom/client';
 import { renderToString } from 'react-dom/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { NAV_LINKS, SECTION_IDS } from './content';
-import { DemoRequestForm } from './DemoRequestForm';
+import { DemoRequestForm, SEND_FAILED_MESSAGE, TOO_MANY_REQUESTS_MESSAGE } from './DemoRequestForm';
 import { LandingPage } from './LandingPage';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -228,21 +228,40 @@ describe('demo talep formu', () => {
     expect(container.textContent).toContain('Talebiniz alındı');
   });
 
-  it('ag hatasi genel mesajla gosterilir', async () => {
-    const send = vi.fn().mockRejectedValue(new Error('boom'));
+  it.each([
+    ['ag / CORS hatasi (API Gateway 429 CORS basliksiz olabilir)', new NetworkError(new TypeError('Failed to fetch')), SEND_FAILED_MESSAGE],
+    ['API Gateway 429 (bizim govde bicimimiz degil)', new ApiError(429), TOO_MANY_REQUESTS_MESSAGE],
+    ['beklenmeyen hata', new Error('boom'), 'Beklenmeyen bir hata oluştu.'],
+  ])('%s: anlasilir mesaj', async (_label, err, message) => {
+    const send = vi.fn().mockRejectedValue(err);
     await render(<DemoRequestForm submit={send} />);
     await fillValid();
     await submit();
-    expect(container.querySelector('[role="alert"]')!.textContent).toBe('Beklenmeyen bir hata oluştu.');
+    expect(container.querySelector('[role="alert"]')!.textContent).toBe(message);
   });
 
-  it('bal kupu alani ekran okuyucudan ve klavyeden gizli; KVKK baglantisi aydinlatma metnine yeni sekmede', async () => {
+  it('bal kupu alani anlamsiz adli, ekran okuyucudan / klavyeden gizli, otomatik doldurmaya kapali; KVKK baglantisi yeni sekmede', async () => {
     await render(<DemoRequestForm submit={vi.fn()} />);
-    const trap = container.querySelector<HTMLInputElement>('input[name="website"]')!;
+    expect(container.querySelector('input[name="website"]')).toBeNull();
+    const trap = container.querySelector<HTMLInputElement>('input[name="bmCheck"]')!;
     expect(trap.tabIndex).toBe(-1);
+    expect(trap.getAttribute('autocomplete')).toBe('off');
     expect(trap.closest('[aria-hidden="true"]')).toBeTruthy();
     const kvkk = container.querySelector<HTMLAnchorElement>('a[href="/kvkk"]')!;
     expect(kvkk.target).toBe('_blank');
     expect(kvkk.rel).toContain('noopener');
+  });
+
+  it('hidrasyondan once (on-render HTML): form POST, gonder dugmesi kapali; alanlar adrese dusmez', async () => {
+    container.innerHTML = renderToString(<DemoRequestForm submit={vi.fn()} />);
+    const form = container.querySelector<HTMLFormElement>('form')!;
+    expect(form.getAttribute('method')).toBe('post');
+    expect(form.getAttribute('action')).toBe('#iletisim');
+    const button = form.querySelector<HTMLButtonElement>('button[type="submit"]')!;
+    expect(button.disabled).toBe(true);
+    // Bilesen baglaninca dugme acilir.
+    container.innerHTML = '';
+    await render(<DemoRequestForm submit={vi.fn()} />);
+    expect(container.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled).toBe(false);
   });
 });

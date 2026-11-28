@@ -25,8 +25,11 @@
     <link rel="apple-touch-icon" href="/brand/apple-touch-icon.png" />
     <link rel="manifest" href="/manifest.webmanifest" />
     <!--
-      Tanitim sayfasi derlemede #root'a on-render edilir (scripts/prerender.mjs). Uygulama rotalarinda
-      ve oturum izi olan tarayicida bu icerik boyanmadan gizlenir; karar src/lib/landingBoot.ts ile ayni.
+      Tanitim sayfasi ve hukuki metinler derlemede #root'a on-render edilir (scripts/prerender.mjs); her
+      dosya kendi adresini <meta name="bm-prerender"> ile tasir (derlemede bu betigin hemen ustune eklenir).
+      Adres dosyanin kendi adresi degilse (uygulama rotalari) veya `/`'de oturum izi varsa: icerik boyanmadan
+      gizlenir, kanonik / og:url kaldirilir (kanonik yalnizca kendi adresinde) ve uygulama parcalari
+      onceden istenir (__APP_PRELOAD__ derlemede doldurulur, vite.config.ts). Karar src/lib/landingBoot.ts.
     -->
     <style>
       html[data-app-shell] #root[data-prerender] {
@@ -36,16 +39,32 @@
     <script id="boot-mode">
       (function () {
         var d = document.documentElement;
-        if (location.pathname !== '/') return d.setAttribute('data-app-shell', '');
-        try {
-          var s = window.localStorage;
-          if (s.getItem('bm.mock-session')) return d.setAttribute('data-app-shell', '');
-          for (var i = 0; i < s.length; i++) {
-            var k = s.key(i) || '';
-            if (k.indexOf('CognitoIdentityServiceProvider.') === 0 && /\.LastAuthUser$/.test(k)) return d.setAttribute('data-app-shell', '');
+        var meta = document.querySelector('meta[name="bm-prerender"]');
+        var own = meta ? meta.getAttribute('content') : null;
+        var app = location.pathname !== own;
+        if (!app && own === '/') {
+          try {
+            var s = window.localStorage;
+            if (s.getItem('bm.mock-session')) app = true;
+            for (var i = 0; !app && i < s.length; i++) {
+              var k = s.key(i) || '';
+              if (k.indexOf('CognitoIdentityServiceProvider.') === 0 && /\.LastAuthUser$/.test(k)) app = true;
+            }
+          } catch (e) {
+            // Depo kapaliysa (gizli pencere vb.) tanitim sayfasi gosterilir; giris yine /login'den.
           }
-        } catch (e) {
-          // Depo kapaliysa (gizli pencere vb.) tanitim sayfasi gosterilir; giris yine /login'den.
+        }
+        if (!app) return;
+        d.setAttribute('data-app-shell', '');
+        var drop = document.querySelectorAll('link[rel="canonical"], meta[property="og:url"]');
+        for (var j = 0; j < drop.length; j++) drop[j].parentNode.removeChild(drop[j]);
+        var pre = '__APP_PRELOAD__';
+        if (typeof pre === 'string') return;
+        for (var n = 0; n < pre.length; n++) {
+          var l = document.createElement('link');
+          l.rel = 'modulepreload';
+          l.href = pre[n];
+          document.head.appendChild(l);
         }
       })();
     </script>
