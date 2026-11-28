@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { RefreshControl, ScrollView, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { OfflineBanner } from '@/components/OfflineBanner';
 import { CONTENT_MAX_WIDTH, space } from '@/theme/tokens';
 import { useTheme } from '@/theme/useTheme';
 import { AppText } from './AppText';
@@ -22,7 +23,8 @@ type Props = {
 
 /**
  * Ekran iskeleti: tema zemini, guvenli alanlar, 16 pt kenar boslugu, istege bagli asagi cek-yenile.
- * iPad / tablette icerik ortalanir ve `maxContentWidth`'i gecmez (zemin ve kaydirma tam genislikte kalir).
+ * Cevrimdisiyken en ustte not (OfflineBanner). iPad / tablette icerik ortalanir ve `maxContentWidth`'i
+ * gecmez (zemin ve kaydirma tam genislikte kalir).
  */
 export function Screen({ children, title, refreshing = false, onRefresh, edges = 'bottom', scroll = true, maxContentWidth = CONTENT_MAX_WIDTH }: Props) {
   const { colors } = useTheme();
@@ -42,11 +44,13 @@ export function Screen({ children, title, refreshing = false, onRefresh, edges =
           keyboardShouldPersistTaps="handled"
           refreshControl={onRefresh ? <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.accent} colors={[colors.accent]} /> : undefined}
         >
+          <OfflineBanner />
           {heading}
           {children}
         </ScrollView>
       ) : (
         <View style={[styles.content, styles.fill, styles.centered, width]}>
+          <OfflineBanner />
           {heading}
           {children}
         </View>

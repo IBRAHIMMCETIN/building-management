@@ -7,6 +7,7 @@ import { ReceiptText } from '@/components/icons';
 import { useCallback, useMemo, useState } from 'react';
 import { ActivityIndicator, FlatList, Platform, Pressable, RefreshControl, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { OfflineBanner } from '@/components/OfflineBanner';
 import { PayOnlineButton } from '@/components/portal/PayOnlineButton';
 import { PortalQueryState } from '@/components/portal/PortalQueryState';
 import { RefetchErrorBanner } from '@/components/portal/RefetchErrorBanner';
@@ -201,6 +202,7 @@ export function DuesScreen() {
 
   const header = (
     <View style={styles.header}>
+      <OfflineBanner />
       <AppText variant="title" weight="bold" accessibilityRole="header">
         Borçlarım
       </AppText>

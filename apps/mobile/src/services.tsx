@@ -1,6 +1,7 @@
 import type { MeContexts } from '@bm/shared/auth/contextsSchema';
 import { mockContextsFor } from '@bm/shared/auth/mockScenarios';
 import { type AuthAdapter, type AuthSession, apiTokenFor } from '@bm/shared/auth/session';
+import { onlineManager } from '@tanstack/react-query';
 import { type ReactNode, createContext, use } from 'react';
 import type { AppEnv } from '@/config/env';
 import { type ApiClient, createApiClient } from '@/lib/api/createApiClient';
@@ -71,6 +72,8 @@ export function createServices(env: AppEnv, overrides: ServiceOverrides = {}): S
     baseUrl: env.apiMode === 'demo' ? '' : env.apiUrl,
     getToken: (options) => session.getApiToken(options),
     onAuthFailure: () => session.expire(),
+    // Cevrimdisi (NetInfo -> React Query onlineManager; hooks/useNetwork.ts): yazan istekler gonderilmez.
+    isOnline: () => onlineManager.isOnline(),
     fetchImpl,
   });
 

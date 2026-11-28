@@ -13,6 +13,7 @@ import { env, envResult } from '@/config/env';
 import { AuthProvider, useAuth } from '@/context/AuthProvider';
 import { useReactQueryAppState } from '@/hooks/useAppForeground';
 import { useAppLock } from '@/hooks/useAppLock';
+import { useReactQueryNetwork } from '@/hooks/useNetwork';
 import { createQueryClient } from '@/lib/api/queryClient';
 import { areaForRole } from '@/lib/auth/flow';
 import { applyOrientationPolicy } from '@/lib/orientation';
@@ -102,6 +103,8 @@ function App() {
   const [services] = useState(() => createServices(env));
   const [queryClient] = useState(createQueryClient);
   useReactQueryAppState();
+  // Cevrimdisi farkindaligi: NetInfo -> onlineManager (sorgular bekler, yazimlar acik mesajla reddedilir).
+  useReactQueryNetwork();
   // Acilista: Android bildirim kanallari + on plan gosterim kurali (izin istemez) ve ekran yonu.
   useEffect(() => {
     void services.notifications.configure(services.push.shouldShow);
