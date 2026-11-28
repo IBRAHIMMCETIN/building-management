@@ -447,7 +447,8 @@ export function createPlanService(overrides: Partial<PlanServiceDeps> & Pick<Pla
     const o = asObject(body);
     const key = reqKey(o);
     const p = parsePlanBody(o);
-    const idemId = `PLN_${key}`;
+    // Talepten olusan plan kendi ad alaninda (sakin / yonetici anahtarlariyla cakismaz).
+    const idemId = extra?.idempotencyId ?? `PLN_${key}`;
     const fp = fingerprint({ op: 'plan', ...p });
     const prior = await replay(ctx, idemId, fp);
     if (prior) return { plan: prior, replayed: true };
@@ -907,6 +908,8 @@ export function createPlanService(overrides: Partial<PlanServiceDeps> & Pick<Pla
 
 /** Plan olusturmaya ayni atomik yazimda eklenen kayitlar (sakin talebinin onayi). */
 export type PlanCreateExtra = {
+  /** Idempotency kaydi kimligi (varsayilan `PLN_<idempotencyKey>`). */
+  idempotencyId?: string;
   build(plan: InstallmentPlan): {
     replaceRecords?: ReplaceRecord[];
     outbox?: DomainEvent[];

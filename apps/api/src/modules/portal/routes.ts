@@ -97,11 +97,14 @@ export function portalRoutes({ authenticate, service, paymentReference, offsets,
   }
 
   if (planRequests) {
-    const gate = requireFeature(features, 'resident.restructure');
-    r.use('/plan-requests', gate);
-    r.use('/plan-requests/*', gate);
+    // Sakin karti ve yonetim kuyrugu ayni anda acik olmali (talep onayi plan olusturur); ayrica
+    // yonetim talep almayi acmis olmali (`PLANREQCFG.enabled`, servis: secenekler / yeni talep).
+    for (const gate of [requireFeature(features, 'resident.restructure'), requireFeature(features, 'admin.debtRestructure')]) {
+      r.use('/plan-requests', gate);
+      r.use('/plan-requests/*', gate);
+    }
     r.get('/plan-requests/options', async (c) => c.json(await planRequests.portalOptions(ctx(c), unitId(c))));
-    r.get('/plan-requests', async (c) => c.json(await planRequests.myRequests(ctx(c))));
+    r.get('/plan-requests', async (c) => c.json(await planRequests.myRequests(ctx(c), unitId(c))));
     r.post('/plan-requests', async (c) => {
       const result = await planRequests.createRequest(ctx(c), await readJson(c));
       return c.json(result, result.replayed ? 200 : 201);

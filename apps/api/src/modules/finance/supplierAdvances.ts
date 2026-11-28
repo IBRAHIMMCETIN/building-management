@@ -54,6 +54,8 @@ export type SupplierAdvance = TableKeys & {
   transactionId: string;
   /** open: mahsup edilebilir kalan var; applied: tamami mahsup edildi; reversed: iptal (ters kayit). */
   status: SupplierAdvanceStatus;
+  /** Bu avansin mahsup kayitlari (ayrinti okumasi tum mahsuplari taramaz). */
+  offsetIds?: string[];
   reversal?: { at: IsoDateTime; by: string; reason: string; transactionId: string };
   createdAt: IsoDateTime;
   createdBy: string;
@@ -107,6 +109,13 @@ export const supplierAdvanceRepository: SupplierAdvanceRepository = {
     (await queryTenantAll<SupplierAdvanceOffset>(apartmentId, 'SUPADVOFS#', { ConsistentRead: true })).filter((o) => o.entityType === 'SUPPLIER_ADVANCE_OFFSET'),
 };
 
+/** Avans alt hesaplarinin ayrilmis on eki (`POST /accounts` bu onekle hesap acamaz). */
+export const SUPPLIER_ADVANCE_ACCOUNT_PREFIX = 'supadv-';
+
+/** Hesap gercekten bu tedarikcinin avans alt hesabi mi? */
+export const isAdvanceAccountOf = (a: Pick<Account, 'type' | 'supplierAdvanceOf'> | undefined, payableAccountId: string) =>
+  !!a && a.type === 'receivable' && a.supplierAdvanceOf === payableAccountId;
+
 /** Tedarikcinin avans alt hesabi (deterministik; hesap kimligi 64 karakteri asmaz). */
 export function supplierAdvanceAccountId(payableAccountId: string): string {
   const plain = `supadv-${payableAccountId}`;
@@ -132,8 +141,9 @@ export type SupplierStatementRow = {
   category: SupplierStatementCategory;
   description: string;
   reference?: string;
-  /** Ters kayitta iptal edilen islem. */
+  /** Ters kayitta iptal edilen islem ve onun kategorisi (toplamlar o kategoriden netlenir). */
   reversalOf?: string;
+  reverses?: SupplierStatementCategory;
   /** Isaretli degisim: acik borc (tedarikciye; + artar) ve acik avans (tedarikciden; + artar). */
   payableChange: number;
   advanceChange: number;
@@ -180,14 +190,33 @@ export function buildSupplierStatement(
   let advance = 0;
   let opening = { payableBalance: 0, advanceBalance: 0 };
   const rows: SupplierStatementRow[] = [];
-  const totals: Record<SupplierStatementCategory, number> = { invoice: 0, payment: 0, advance: 0, advance_offset: 0, reversal: 0, other: 0 };
+  /**
+   * Toplamlar isaretli ve NET: ters kayit iptal ettigi islemin kategorisinden duser. Boylece
+   *   kapanis borcu = devir + fatura - odeme - mahsup,  kapanis avansi = devir + verilen avans - mahsup.
+   */
+  const totals = { invoice: 0, payment: 0, advanceGiven: 0, advanceApplied: 0 };
+  const apply = (cat: SupplierStatementCategory, dP: number, dA: number) => {
+    if (cat === 'invoice') totals.invoice += dP;
+    else if (cat === 'payment') totals.payment -= dP;
+    else if (cat === 'advance') totals.advanceGiven += dA;
+    else if (cat === 'advance_offset') totals.advanceApplied -= dP;
+    else {
+      // Beklenmeyen bilesim: borc etkisi fatura / odeme, avans etkisi verilen avans olarak sayilir.
+      if (dP > 0) totals.invoice += dP;
+      else totals.payment -= dP;
+      totals.advanceGiven += dA;
+    }
+  };
+  const deltasOf = (lines: readonly E[]) => ({
+    // Tedarikci (alacak-normal) acik borcu = alacak - borc; avans (borc-normal) = borc - alacak.
+    dP: lines.filter((l) => l.accountId === payableAccountId).reduce((s, l) => s + (l.side === 'credit' ? l.amount : -l.amount), 0),
+    dA: lines.filter((l) => l.accountId === advanceAccountId).reduce((s, l) => s + (l.side === 'debit' ? l.amount : -l.amount), 0),
+  });
   for (const [transactionId, lines] of ordered) {
     const tx = txById.get(transactionId);
     const date = (lines[0] as E).date;
     if (range.to && date > range.to) continue;
-    // Tedarikci (alacak-normal) acik borcu = alacak - borc; avans (borc-normal) = borc - alacak.
-    const dPayable = lines.filter((l) => l.accountId === payableAccountId).reduce((s, l) => s + (l.side === 'credit' ? l.amount : -l.amount), 0);
-    const dAdvance = lines.filter((l) => l.accountId === advanceAccountId).reduce((s, l) => s + (l.side === 'debit' ? l.amount : -l.amount), 0);
+    const { dP: dPayable, dA: dAdvance } = deltasOf(lines);
     payable += dPayable;
     advance += dAdvance;
     if (range.from && date < range.from) {
@@ -196,7 +225,15 @@ export function buildSupplierStatement(
     }
     const kind = tx?.kind ?? 'expense';
     const category = categoryOf(kind, dPayable, dAdvance);
-    totals[category] += category === 'advance' ? dAdvance : category === 'reversal' ? 0 : Math.abs(dPayable);
+    let reverses: SupplierStatementCategory | undefined;
+    if (category === 'reversal') {
+      // Iptal edilen islemin kategorisi: kendi turu ve (ters kaydin tersi olan) etkisi.
+      const original = tx?.reversalOf ? txById.get(tx.reversalOf) : undefined;
+      reverses = categoryOf(original?.kind ?? 'expense', -dPayable, -dAdvance);
+      apply(reverses, dPayable, dAdvance);
+    } else {
+      apply(category, dPayable, dAdvance);
+    }
     rows.push({
       date,
       transactionId,
@@ -205,6 +242,7 @@ export function buildSupplierStatement(
       description: tx?.description ?? transactionId,
       ...(tx?.reference ? { reference: tx.reference } : {}),
       ...(tx?.reversalOf ? { reversalOf: tx.reversalOf } : {}),
+      ...(reverses ? { reverses } : {}),
       payableChange: dPayable,
       advanceChange: dAdvance,
       payableBalance: payable,
@@ -215,7 +253,7 @@ export function buildSupplierStatement(
   return {
     opening: { ...opening, net: opening.payableBalance - opening.advanceBalance },
     rows,
-    totals: { invoice: totals.invoice, payment: totals.payment, advanceGiven: totals.advance, advanceApplied: totals.advance_offset },
+    totals,
     closing: { payableBalance: payable, advanceBalance: advance, net: payable - advance },
   };
 }
@@ -315,7 +353,11 @@ export function createSupplierAdvanceService(overrides: Partial<SupplierAdvanceS
   async function ensureAdvanceAccount(ctx: SupplierAdvanceContext, payable: Account): Promise<Account> {
     const accountId = supplierAdvanceAccountId(payable.accountId);
     const existing = await repo.getAccount(ctx.apartmentId, accountId);
-    if (existing) return existing;
+    if (existing) {
+      // Ayrilmis kimlik baska bir hesapca tutuluyorsa (or. eski elle acilmis hesap) yazilmaz.
+      if (!isAdvanceAccountOf(existing, payable.accountId)) throw new FinanceError('conflict', `${accountId} kimligi baska bir hesapca kullaniliyor; avans hesabi acilamaz`);
+      return existing;
+    }
     const ts = stamp();
     const account: Account = {
       ...financeKeys.account(ctx.apartmentId, accountId),
@@ -335,7 +377,9 @@ export function createSupplierAdvanceService(overrides: Partial<SupplierAdvanceS
       version: 1,
     };
     await repo.ensureAccounts([account]);
-    return (await repo.getAccount(ctx.apartmentId, accountId)) ?? account;
+    const created = (await repo.getAccount(ctx.apartmentId, accountId)) ?? account;
+    if (!isAdvanceAccountOf(created, payable.accountId)) throw new FinanceError('conflict', `${accountId} kimligi baska bir hesapca kullaniliyor; avans hesabi acilamaz`);
+    return created;
   }
 
   /** Tedarikci ve avans hesabinin islemleri (yalnizca bu iki hesabin satirlari). */
@@ -396,7 +440,8 @@ export function createSupplierAdvanceService(overrides: Partial<SupplierAdvanceS
     if (date > day) throw new ValidationError('Avans tarihi bugunden sonra olamaz', 'date');
     const description = (optString(o, 'description', 200) ?? '').trim() || 'Tedarikçi avansı';
     const reference = (optString(o, 'reference', 60) ?? '').trim() || undefined;
-    const idemId = `SADV_${key}`;
+    // Ad alanlari: istemci anahtarlari `_C_`, ic geri alma kimlikleri `_R_` (birbirleriyle cakismaz).
+    const idemId = `SADV_C_${key}`;
     const fp = fingerprint({ op: 'supplier_advance', payableAccountId, fundsAccountId, amount, date, description, reference });
     const prior = await replayRecord(ctx, idemId, fp, (id) => deps.advances.get(ctx.apartmentId, id));
     if (prior) return { advance: prior, replayed: true };
@@ -439,6 +484,7 @@ export function createSupplierAdvanceService(overrides: Partial<SupplierAdvanceS
       ...(reference ? { reference } : {}),
       transactionId: tx.transactionId,
       status: 'open',
+      offsetIds: [],
       createdAt: ts,
       createdBy: ctx.userId,
       updatedAt: ts,
@@ -495,7 +541,7 @@ export function createSupplierAdvanceService(overrides: Partial<SupplierAdvanceS
     const day = today();
     const date = optDate(o, 'date') ?? day;
     if (date > day) throw new ValidationError('Mahsup tarihi bugunden sonra olamaz', 'date');
-    const idemId = `SADVO_${key}`;
+    const idemId = `SADVO_C_${key}`;
     const fp = fingerprint({ op: 'supplier_advance_offset', advanceId, amount, reason, settles: requested ?? null, date });
     const loadOffset = (id: string) => deps.advances.getOffset(ctx.apartmentId, id);
     const prior = await replayRecord(ctx, idemId, fp, loadOffset);
@@ -508,7 +554,7 @@ export function createSupplierAdvanceService(overrides: Partial<SupplierAdvanceS
     if (date < advance.date) throw new ValidationError('Mahsup tarihi avans tarihinden once olamaz', 'date');
     const [payable, advAccount] = await Promise.all([repo.getAccount(ctx.apartmentId, advance.payableAccountId), repo.getAccount(ctx.apartmentId, advance.advanceAccountId)]);
     if (!payable || payable.type !== 'payable') throw new FinanceError('not_found', 'Tedarikci hesabi bulunamadi');
-    if (!advAccount) throw new FinanceError('not_found', 'Avans hesabi bulunamadi');
+    if (!advAccount || !isAdvanceAccountOf(advAccount, payable.accountId)) throw new FinanceError('conflict', 'Avans hesabi bu tedarikciye ait degil');
     const summary = await payableOf(ctx, advance.payableAccountId);
     if (summary.openBalance < 1) throw new FinanceError('unprocessable', 'Tedarikcinin mahsup edilecek acik faturasi yok');
     if (amount > summary.openBalance) throw new FinanceError('unprocessable', `Tutar tedarikcinin acik borcunu (${summary.openBalance} kurus) asiyor`);
@@ -576,6 +622,7 @@ export function createSupplierAdvanceService(overrides: Partial<SupplierAdvanceS
       ...advance,
       applied,
       status: applied >= advance.amount ? 'applied' : 'open',
+      offsetIds: [...(advance.offsetIds ?? []), offsetId],
       updatedAt: ts,
       updatedBy: ctx.userId,
       version: advance.version + 1,
@@ -646,7 +693,7 @@ export function createSupplierAdvanceService(overrides: Partial<SupplierAdvanceS
     try {
       await repo.postBatch({
         transactions: [rev],
-        idempotency: { id: `SADVO_REV_${offsetId}`, fingerprint: fingerprint({ op: 'supplier_advance_offset_reverse', offsetId }), recordId: offsetId, transactionIds: [rev.transactionId] },
+        idempotency: { id: `SADVO_R_${offsetId}`, fingerprint: fingerprint({ op: 'supplier_advance_offset_reverse', offsetId }), recordId: offsetId, transactionIds: [rev.transactionId] },
         replaceRecords: [
           { item: nextOffset, expectedVersion: record.version, label: 'supplier_advance_offset' },
           { item: nextAdvance, expectedVersion: advance.version, label: 'supplier_advance' },
@@ -700,7 +747,7 @@ export function createSupplierAdvanceService(overrides: Partial<SupplierAdvanceS
     try {
       await repo.postBatch({
         transactions: [rev],
-        idempotency: { id: `SADV_REV_${advanceId}`, fingerprint: fingerprint({ op: 'supplier_advance_reverse', advanceId }), recordId: advanceId, transactionIds: [rev.transactionId] },
+        idempotency: { id: `SADV_R_${advanceId}`, fingerprint: fingerprint({ op: 'supplier_advance_reverse', advanceId }), recordId: advanceId, transactionIds: [rev.transactionId] },
         replaceRecords: [{ item: next, expectedVersion: advance.version, label: 'supplier_advance' }],
         audit: {
           apartmentId: ctx.apartmentId,
@@ -739,19 +786,23 @@ export function createSupplierAdvanceService(overrides: Partial<SupplierAdvanceS
     if (q.status !== undefined && !(SUPPLIER_ADVANCE_STATUSES as readonly string[]).includes(q.status)) {
       throw new ValidationError(`status su degerlerden biri olmalidir: ${SUPPLIER_ADVANCE_STATUSES.join(', ')}`, 'status');
     }
-    const [advances, offsets] = await Promise.all([deps.advances.list(ctx.apartmentId), deps.advances.listOffsets(ctx.apartmentId)]);
-    const mine = offsets.filter((o) => o.apartmentId === ctx.apartmentId);
-    const items = advances
+    const chosen = (await deps.advances.list(ctx.apartmentId))
       .filter((a) => a.apartmentId === ctx.apartmentId && (!payableAccountId || a.payableAccountId === payableAccountId) && (!q.status || a.status === q.status))
-      .sort((a, b) => b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt))
-      .map((a) => view(a, mine));
+      .sort((a, b) => b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt));
+    // Tek tedarikci: yalnizca o avanslarin mahsuplari (kimlikle); tum site listesi: tek sorgu.
+    const offsets = payableAccountId ? await offsetsOf(ctx, chosen) : (await deps.advances.listOffsets(ctx.apartmentId)).filter((o) => o.apartmentId === ctx.apartmentId);
+    const items = chosen.map((a) => view(a, offsets));
     return { items, totalOpen: toKurus(items.reduce((s, a) => s + a.open, 0)) };
+  }
+
+  async function offsetsOf(ctx: SupplierAdvanceContext, advances: readonly SupplierAdvance[]): Promise<SupplierAdvanceOffset[]> {
+    const ids = [...new Set(advances.flatMap((a) => a.offsetIds ?? []))];
+    return (await Promise.all(ids.map((id) => deps.advances.getOffset(ctx.apartmentId, id)))).filter((o): o is SupplierAdvanceOffset => !!o && o.apartmentId === ctx.apartmentId);
   }
 
   async function get(ctx: SupplierAdvanceContext, advanceId: string) {
     const a = await requireAdvance(ctx, advanceId);
-    const offsets = (await deps.advances.listOffsets(ctx.apartmentId)).filter((o) => o.apartmentId === ctx.apartmentId);
-    return view(a, offsets);
+    return view(a, await offsetsOf(ctx, [a]));
   }
 
   /** Tedarikci ekstresi + acik kalemler (faturalar ve acik avanslar). */
@@ -763,7 +814,10 @@ export function createSupplierAdvanceService(overrides: Partial<SupplierAdvanceS
       if (v !== undefined && !isIsoDate(v)) throw new ValidationError(`${field} YYYY-MM-DD olmalidir`, field);
     }
     if (from && to && from > to) throw new ValidationError('from, to tarihinden sonra olamaz', 'from');
-    const [{ advanceAccountId, entries, txById }, advances] = await Promise.all([supplierLedger(ctx, payable.accountId), list(ctx, { payableAccountId: payable.accountId })]);
+    const [{ advanceAccountId, entries, txById }, all] = await Promise.all([supplierLedger(ctx, payable.accountId), deps.advances.list(ctx.apartmentId)]);
+    // Ekstre mahsup kayitlarini okumaz (defter satirlari yeterli); yalnizca acik avanslar.
+    const own = all.filter((a) => a.apartmentId === ctx.apartmentId && a.payableAccountId === payable.accountId).map((a) => ({ ...a, open: openOfAdvance(a) }));
+    const advances = { items: own.sort((a, b) => b.date.localeCompare(a.date)), totalOpen: toKurus(own.reduce((s, a) => s + a.open, 0)) };
     const summary = payableSummary(payable.accountId, entries, txById);
     const st = buildSupplierStatement(payable.accountId, advanceAccountId, entries, txById, { ...(from ? { from } : {}), ...(to ? { to } : {}) });
     return {

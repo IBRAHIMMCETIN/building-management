@@ -298,7 +298,7 @@ export function financeRoutes({ authenticate, service, closures, offsets, plans,
     r.use('/plan-requests', gate);
     r.use('/plan-requests/*', gate);
     // KVKK: talep ve sakin notu yalnizca yonetimde (denetci gormez).
-    r.get('/plan-requests', requireRole(WRITE_ROLES), async (c) => c.json(await planRequests.list(ctx(c), { status: c.req.query('status') })));
+    r.get('/plan-requests', requireRole(WRITE_ROLES), async (c) => c.json(await planRequests.list(ctx(c), { status: c.req.query('status'), limit: c.req.query('limit') })));
     r.get('/plan-requests/settings', requireRole(WRITE_ROLES), async (c) => c.json(await planRequests.getSettings(ctx(c))));
     r.put('/plan-requests/settings', requireRole(WRITE_ROLES), async (c) => c.json(await planRequests.updateSettings(ctx(c), await readJson(c))));
     r.get('/plan-requests/:requestId', requireRole(WRITE_ROLES), async (c) => c.json(await planRequests.get(ctx(c), c.req.param('requestId'))));

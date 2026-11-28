@@ -6,7 +6,9 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { AuthClaims } from '../src/auth/claims.js';
-import { buildSupplierStatement, supplierAdvanceAccountId } from '../src/modules/finance/supplierAdvances.js';
+import { type SupplierAdvance, type SupplierAdvanceOffset, buildSupplierStatement, supplierAdvanceAccountId } from '../src/modules/finance/supplierAdvances.js';
+import { checkSupplierAdvances } from '../src/modules/finance/audit.js';
+import { buildAnnualStatement } from '../src/modules/finance/ledgerReports.js';
 import { payableSummary } from '../src/modules/finance/payables.js';
 import { toLedgerEntries } from '../src/modules/finance/repository.js';
 import type { Transaction } from '../src/modules/finance/types.js';
@@ -234,7 +236,12 @@ describe('raporlar', () => {
       ['2026-11-01', 'reversal'],
       ['2026-11-01', 'advance_offset'],
     ]);
-    expect(st.json.totals).toEqual({ invoice: TL(7000), payment: 0, advanceGiven: TL(5000), advanceApplied: TL(5000) });
+    // Toplamlar net: geri alinan 2.000 TL mahsup kendi kategorisinden duser.
+    expect(st.json.totals).toEqual({ invoice: TL(7000), payment: 0, advanceGiven: TL(5000), advanceApplied: TL(3000) });
+    expect(st.json.rows.find((r: any) => r.category === 'reversal')).toMatchObject({ reverses: 'advance_offset' });
+    const t = st.json.totals;
+    expect(st.json.opening.payableBalance + t.invoice - t.payment - t.advanceApplied).toBe(st.json.closing.payableBalance);
+    expect(st.json.opening.advanceBalance + t.advanceGiven - t.advanceApplied).toBe(st.json.closing.advanceBalance);
     expect(st.json.closing).toEqual({ payableBalance: TL(4000), advanceBalance: TL(2000), net: TL(2000) });
     expect(st.json.closing.payableBalance).toBe(-(await w.acc(SUP))!.balance);
     expect(st.json.closing.advanceBalance).toBe((await w.acc(ADV))!.balance);
@@ -267,6 +274,109 @@ describe('raporlar', () => {
     expect(s.openItems).toEqual([expect.objectContaining({ transactionId: 'inv1', open: 40 })]);
     const st = buildSupplierStatement(SUP, ADV, entries, new Map(txs.map((t) => [t.transactionId, t])));
     expect(st.closing).toEqual({ payableBalance: 40, advanceBalance: -60, net: 100 });
+  });
+});
+
+describe('inceleme duzeltmeleri', () => {
+  it('fatura ters kaydi tedarikci hesap surumune kosullu; es zamanli ters kayit + mahsup ikisi birden yazilamaz', async () => {
+    const { w, b } = await world();
+    const rev = await w.call('POST', `/api/finance/transactions/${b.transactionId}/reversal`, manager, { reason: 'Hatalı fatura' });
+    expect(rev.status).toBe(201);
+    expect(w.fake.posted.at(-1)!.expectedVersions).toEqual({ [SUP]: expect.any(Number) });
+
+    const r2 = await world();
+    const [x, y] = await Promise.all([
+      r2.w.call('POST', `/api/finance/transactions/${r2.b.transactionId}/reversal`, manager, { reason: 'Hatalı fatura' }),
+      r2.w.call('POST', `/api/finance/supplier-advances/${r2.advance.advanceId}/offsets`, manager, offsetBody({ settles: [{ transactionId: r2.b.transactionId, amount: TL(2000) }] })),
+    ]);
+    expect([x.status, y.status].filter((s) => s < 300).length).toBeLessThanOrEqual(1);
+    const txs = await r2.w.txs();
+    const reversed = txs.some((t) => t.kind === 'reversal' && t.reversalOf === r2.b.transactionId);
+    const offsetLive = txs.some((t) => t.kind === 'supplier_advance_offset');
+    expect(reversed && offsetLive).toBe(false);
+    await assertLedger(r2.w);
+  });
+
+  it('kapali doneme tarihli avans ve mahsup reddedilir (409 period_closed)', async () => {
+    const { w, advance } = await world();
+    w.fake.docs.set(`APT#apt-1|FINLOCK`, { PK: 'APT#apt-1', SK: 'FINLOCK', entityType: 'FINANCE_LOCK', lockedThrough: '2026-10-31', version: 1 });
+    const adv = await w.call('POST', '/api/finance/supplier-advances', manager, { idempotencyKey: 'adv-lock1', payableAccountId: SUP, fundsAccountId: 'cash', amount: TL(100), date: '2026-10-15' });
+    expect(adv.status).toBe(409);
+    expect(adv.json.error).toBe('period_closed');
+    const ofs = await w.call('POST', `/api/finance/supplier-advances/${advance.advanceId}/offsets`, manager, offsetBody({ idempotencyKey: 'ofs-lock1', date: '2026-10-20' }));
+    expect(ofs.status).toBe(409);
+    expect(ofs.json.error).toBe('period_closed');
+    // Acik doneme tarihli mahsup yazilir.
+    expect((await w.call('POST', `/api/finance/supplier-advances/${advance.advanceId}/offsets`, manager, offsetBody({ idempotencyKey: 'ofs-lock2' }))).status).toBe(201);
+  });
+
+  it('avans hesabi kimligi ayrilmis: POST /accounts supadv- 400; baska hesapca tutulan kimlik avans actirmaz', async () => {
+    const { w } = await world();
+    expect((await w.call('POST', '/api/finance/accounts', manager, { accountId: 'supadv-x', type: 'payable', name: 'Sahte' })).status).toBe(400);
+    expect((await w.call('POST', '/api/finance/accounts', manager, { accountId: 'pay-yeni', type: 'payable', name: 'Yeni Tedarikçi' })).status).toBe(201);
+    // Eski veriyle cakisan kimlik (avans hesabi olmayan hesap): avans reddedilir, defter yazilmaz.
+    const ts = '2026-01-01T00:00:00.000Z';
+    await w.fake.repo.ensureAccounts([
+      { PK: 'APT#apt-1', SK: `ACCT#${supplierAdvanceAccountId('pay-yeni')}`, entityType: 'ACCOUNT', accountId: supplierAdvanceAccountId('pay-yeni'), siteId: 'apt-1', type: 'receivable', name: 'Eski', status: 'active', balance: 0 as never, createdAt: ts, createdBy: 'x', updatedAt: ts, updatedBy: 'x', version: 1 },
+    ]);
+    const r = await w.call('POST', '/api/finance/supplier-advances', manager, { idempotencyKey: 'adv-clash', payableAccountId: 'pay-yeni', fundsAccountId: 'cash', amount: TL(100) });
+    expect(r.status).toBe(409);
+    expect((await w.txs()).filter((t) => t.kind === 'supplier_advance')).toHaveLength(1);
+  });
+
+  it('pasif tedarikcinin acik avansi listede kalir; toplam ozet kartiyla ayni', async () => {
+    const { w } = await world();
+    // Faturalar ters kayitla iptal (bakiyesi olan hesap pasife alinamaz): borc 0, avans acik.
+    for (const t of (await w.txs()).filter((x) => x.kind === 'expense')) {
+      expect((await w.call('POST', `/api/finance/transactions/${t.transactionId}/reversal`, manager, { reason: 'Hatalı fatura' })).status).toBe(201);
+    }
+    const acc = (await w.acc(SUP))!;
+    expect((await w.call('PATCH', `/api/finance/accounts/${SUP}`, manager, { status: 'inactive', version: acc.version })).status).toBeLessThan(300);
+    const list = (await w.call('GET', '/api/finance/payables', observer)).json;
+    expect(list.items.find((i: any) => i.accountId === SUP)).toMatchObject({ status: 'inactive', openBalance: 0, advanceOpen: TL(5000) });
+    expect(list.totalAdvanceOpen).toBe((await w.call('GET', '/api/finance/summary', observer)).json.supplierAdvances);
+  });
+
+  it('kesin hesap: tedarikci avansi sakin alacaklarina sayilmaz, ayri satir', async () => {
+    const { w } = await world();
+    const accounts = [...w.fake.accounts.values()];
+    const txs = await w.txs();
+    const byMonth = new Map<string, Map<string, { debit: number; credit: number }>>();
+    for (const t of txs) {
+      const m = t.date.slice(0, 7);
+      const cur = byMonth.get(m) ?? new Map();
+      for (const l of t.lines) {
+        const mv = cur.get(l.accountId) ?? { debit: 0, credit: 0 };
+        mv[l.side] += l.amount;
+        cur.set(l.accountId, mv);
+      }
+      byMonth.set(m, cur);
+    }
+    const st = buildAnnualStatement({ accounts, months: ['2026-09', '2026-10', '2026-11'], opening: new Map(), byMonth, closedMonths: [] });
+    // Sakin carisinde 20.000 TL avans (odeme), alacak yok; tedarikci avansi ayri.
+    expect(st.receivables).toMatchObject({ closing: 0, advancesClosing: TL(20000) });
+    expect(st.supplierAdvances).toEqual({ opening: 0, closing: TL(5000) });
+  });
+
+  it('gece denetimi: avans kaydi, mahsuplar ve avans hesabi defterle tutarli; bozulma bulgu uretir', async () => {
+    const { w, advance, b } = await world();
+    const o = (await w.call('POST', `/api/finance/supplier-advances/${advance.advanceId}/offsets`, manager, offsetBody({ settles: [{ transactionId: b.transactionId, amount: TL(2000) }] }))).json.offset;
+    await w.call('POST', `/api/finance/supplier-advance-offsets/${o.offsetId}/reverse`, manager, { reason: 'Yanlış fatura seçildi' });
+    await w.call('POST', `/api/finance/supplier-advances/${advance.advanceId}/offsets`, manager, offsetBody({ idempotencyKey: 'ofs-0002', amount: TL(1500) }));
+    const docs = [...w.fake.docs.values()];
+    const snap = (advances: SupplierAdvance[]) => ({
+      transactions: txs,
+      entries: txs.flatMap((t) => toLedgerEntries(t)),
+      supplierAdvances: advances,
+      supplierAdvanceOffsets: docs.filter((d) => d.entityType === 'SUPPLIER_ADVANCE_OFFSET') as unknown as SupplierAdvanceOffset[],
+    });
+    const txs = await w.txs();
+    const advances = docs.filter((d) => d.entityType === 'SUPPLIER_ADVANCE') as unknown as SupplierAdvance[];
+    expect(checkSupplierAdvances(snap(advances))).toEqual([]);
+    const tampered = advances.map((a) => ({ ...a, applied: (a.applied + 100) as never }));
+    expect(checkSupplierAdvances(snap(tampered)).map((f) => f.detail)).toEqual([`applied:${advance.advanceId}`, 'advance_balance']);
+    // Ad alanlari: istemci anahtari `SADVO_C_`, ic geri alma `SADVO_R_`.
+    expect(w.fake.batches.map((x) => x.idempotency.id).filter((id) => id.startsWith('SADVO_'))).toEqual([`SADVO_C_ofs-0001`, `SADVO_R_${o.offsetId}`, 'SADVO_C_ofs-0002']);
   });
 });
 

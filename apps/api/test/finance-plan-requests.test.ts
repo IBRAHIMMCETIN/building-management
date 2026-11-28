@@ -16,7 +16,9 @@ import type { Notification } from '../src/modules/notifications/notifier.js';
 import { renderPush } from '../src/modules/notifications/push-templates.js';
 import { renderEmail } from '../src/modules/notifications/templates.js';
 import type { UnitMembership } from '../src/modules/portal/types.js';
-import { buildNotifications } from '../src/workers/notification-worker.js';
+import { buildNotifications, createNotificationWorker } from '../src/workers/notification-worker.js';
+import { buildEvent } from '../src/events/publisher.js';
+import { staticSiteFeatureReader } from '../src/modules/features/guard.js';
 import { APT, MAIN, TL, cariWorld, manager, observer, resident } from './fakes/cariWorld.js';
 
 type W = ReturnType<typeof cariWorld>;
@@ -25,12 +27,19 @@ const foreignManager: AuthClaims = { userId: 'mgr-x', role: 'apartment_manager',
 const foreignResident: AuthClaims = { userId: 'tenant-a', role: 'resident', apartmentId: 'apt-2' };
 
 /** Kiraci: Agustos, Eylul, Ekim aidatlari (1.000'er TL) odenmemis; bugun 05.11.2026. */
-async function overdueTenant(w: W) {
+/** Yonetim talepleri acar (varsayilan kapali). */
+async function enable(w: W) {
+  const cur = (await w.call('GET', '/api/finance/plan-requests/settings', manager)).json as { version: number };
+  expect((await w.call('PUT', '/api/finance/plan-requests/settings', manager, { version: cur.version, enabled: true })).status).toBe(200);
+}
+
+async function overdueTenant(w: W, opts: { enable?: boolean } = {}) {
   w.member('tenant-a', { relation: 'tenant', residesInUnit: true });
   await w.charge('c-aug', 1000, '2026-08-01', '2026-08-10');
   await w.charge('c-sep', 1000, '2026-09-01', '2026-09-10');
   await w.charge('c-oct', 1000, '2026-10-01', '2026-10-10');
   w.setNow('2026-11-05');
+  if (opts.enable !== false) await enable(w);
 }
 
 const req = (over: Record<string, unknown> = {}) => ({ idempotencyKey: 'plan-req-0001', installments: 4, note: 'Maaşım gecikti', ...over });
@@ -106,6 +115,7 @@ describe('sakin talebi', () => {
     fresh.member('tenant-a', { relation: 'tenant', residesInUnit: true });
     await fresh.charge('c-nov', 1000, '2026-09-01', '2026-09-10');
     fresh.setNow('2026-09-05');
+    await enable(fresh);
     const opt = await fresh.call('GET', '/api/portal/plan-requests/options', resident);
     expect(opt.json.accounts[0]).toMatchObject({ eligible: false, reason: 'no_overdue', overdue: 0 });
     expect((await fresh.call('POST', '/api/portal/plan-requests', resident, req())).status).toBe(422);
@@ -288,15 +298,79 @@ describe('yonetim karari', () => {
   });
 });
 
-describe('ayarlar', () => {
-  it('varsayilan, surum kontrollu guncelleme, sinirlarin talebe yansimasi, yetki', async () => {
-    const w = cariWorld();
+describe('yonetim karari - KVKK, sinirlar ve borc degisimi', () => {
+  async function pending(w: W, over: Record<string, unknown> = {}) {
     await overdueTenant(w);
+    return (await w.call('POST', '/api/portal/plan-requests', resident, req(over))).json.request as { requestId: string };
+  }
+
+  it('KVKK: sakin notu defter islemine, plana ve denetim kayitlarina girmez (yalnizca PLANREQ#)', async () => {
+    const w = cariWorld();
+    const { requestId } = await pending(w);
+    const r = await w.call('POST', `/api/finance/plan-requests/${requestId}/approve`, manager, {});
+    expect(r.status).toBe(201);
+    expect(r.json.plan.reason).toBe(`Sakin talebi ${requestId} onaylandı`);
+    const plans = [...w.fake.docs.values()].filter((d) => d.entityType === 'INSTALLMENT_PLAN');
+    const audits = w.fake.batches.map((b) => b.audit);
+    for (const blob of [JSON.stringify(await w.txs()), JSON.stringify(plans), JSON.stringify(audits), JSON.stringify(r.json.plan)]) {
+      expect(blob).not.toContain('Maaşım gecikti');
+    }
+    const rq = [...w.fake.docs.values()].find((d) => d.entityType === 'PLAN_REQUEST') as unknown as PlanRequest;
+    expect(rq.note).toBe('Maaşım gecikti');
+  });
+
+  it('onayda yonetim sinirlari: en fazla taksit ve en dusuk taksit tutari', async () => {
+    const w = cariWorld();
+    const { requestId } = await pending(w, { installments: 3 });
+    const v = (await w.call('GET', '/api/finance/plan-requests/settings', manager)).json.version as number;
+    await w.call('PUT', '/api/finance/plan-requests/settings', manager, { version: v, maxInstallments: 4, minInstallmentAmount: TL(900) });
+    expect((await w.call('POST', `/api/finance/plan-requests/${requestId}/approve`, manager, { installments: 5 })).status).toBe(400);
+    // ~3.000 TL + tazminat / 900 TL = 3: dort taksit en dusuk taksidin altina iner.
+    const four = await w.call('POST', `/api/finance/plan-requests/${requestId}/approve`, manager, { installments: 4 });
+    expect(four.status).toBe(400);
+    expect(four.json.message).toMatch(/en fazla 3/);
+    expect((await w.call('GET', `/api/finance/plan-requests/${requestId}`, manager)).json.limits).toMatchObject({ maxInstallments: 3 });
+    expect((await w.call('POST', `/api/finance/plan-requests/${requestId}/approve`, manager, { installments: 3 })).status).toBe(201);
+  });
+
+  it('borc talepten sonra degisti: odenen kalem ve yeni geciken kalem "oldugu gibi" sayilmaz', async () => {
+    const w = cariWorld();
+    const { requestId } = await pending(w);
+    // Talepten sonra: Agustos aidati odendi, Kasim aidati gecikmeye dustu.
+    await w.pay('p-aug', 1000, '2026-11-05');
+    await w.charge('c-nov', 1000, '2026-11-01', '2026-11-03');
+    const detail = await w.call('GET', `/api/finance/plan-requests/${requestId}`, manager);
+    expect(detail.json.drift).toMatchObject({ changed: true, overdueThen: TL(3000), newItems: 1 });
+    expect(detail.json.asIs.chargeIds).toHaveLength(2);
+    const r = await w.call('POST', `/api/finance/plan-requests/${requestId}/approve`, manager, {});
+    expect(r.status).toBe(201);
+    expect(r.json.request.decision.mode).toBe('changed');
+    // Yalnizca talepteki (hala acik) iki kalem plana alindi; Kasim kalemi disarida.
+    const selected = (r.json.plan.selected as { lateFee: boolean }[]).filter((s) => !s.lateFee);
+    expect(selected).toHaveLength(2);
+    expect(w.fake.batches.at(-1)!.audit).toMatchObject({ details: { mode: 'changed', drift: { changed: true } } });
+  });
+});
+
+describe('ayarlar ve ozellik anahtarlari', () => {
+  it('eski (legacy) site varsayilani: talepler KAPALI; yonetim acana kadar portal 403', async () => {
+    const w = cariWorld();
+    await overdueTenant(w, { enable: false });
     const g = await w.call('GET', '/api/finance/plan-requests/settings', manager);
-    expect(g.json).toMatchObject({ version: 0, settings: { enabled: true, maxInstallments: 6 } });
-    const u = await w.call('PUT', '/api/finance/plan-requests/settings', manager, { version: 0, maxInstallments: 3, minInstallmentAmount: TL(800), includeLateFees: false });
+    expect(g.json).toMatchObject({ version: 0, settings: { enabled: false, maxInstallments: 6 } });
+    expect((await w.call('GET', '/api/portal/plan-requests/options', resident)).status).toBe(403);
+    expect((await w.call('POST', '/api/portal/plan-requests', resident, req())).status).toBe(403);
+    expect(w.fake.events('RESTRUCTURE_REQUESTED')).toHaveLength(0);
+    await enable(w);
+    expect((await w.call('GET', '/api/portal/plan-requests/options', resident)).status).toBe(200);
+  });
+
+  it('surum kontrollu guncelleme, sinirlarin talebe yansimasi, yetki; kapatilinca yeni talep yok ama gecmis gorunur', async () => {
+    const w = cariWorld();
+    await overdueTenant(w, { enable: false });
+    const u = await w.call('PUT', '/api/finance/plan-requests/settings', manager, { version: 0, enabled: true, maxInstallments: 3, minInstallmentAmount: TL(800), includeLateFees: false });
     expect(u.status).toBe(200);
-    expect(u.json).toMatchObject({ version: 1, settings: { maxInstallments: 3, minInstallmentAmount: TL(800), includeLateFees: false } });
+    expect(u.json).toMatchObject({ version: 1, settings: { enabled: true, maxInstallments: 3, minInstallmentAmount: TL(800), includeLateFees: false } });
     expect(w.fake.batches.at(-1)!.audit).toMatchObject({ action: 'finance.plan_request_settings' });
     expect((await w.call('PUT', '/api/finance/plan-requests/settings', manager, { version: 0, maxInstallments: 4 })).status).toBe(409);
     expect((await w.call('PUT', '/api/finance/plan-requests/settings', manager, { version: 1, maxInstallments: 61 })).status).toBe(400);
@@ -307,10 +381,49 @@ describe('ayarlar', () => {
     expect((await w.call('POST', '/api/portal/plan-requests', resident, req({ installments: 4 }))).status).toBe(400);
     const ok = await w.call('POST', '/api/portal/plan-requests', resident, req({ idempotencyKey: 'plan-req-0040', installments: 3 }));
     expect(ok.json.request.estimate).toMatchObject({ total: TL(3000), installmentAmount: TL(1000) });
-    // Yonetim talepleri kapatir: yeni talep acilamaz.
     await w.call('PUT', '/api/finance/plan-requests/settings', manager, { version: 1, enabled: false });
-    const w2opt = await w.call('GET', '/api/portal/plan-requests/options', resident);
-    expect(w2opt.json.settings.enabled).toBe(false);
+    expect((await w.call('GET', '/api/portal/plan-requests/options', resident)).status).toBe(403);
+    // Sakin bekleyen talebini ve kararini gormeye devam eder; yonetim sonuclandirabilir.
+    expect((await w.call('GET', '/api/portal/plan-requests', resident)).json.items).toHaveLength(1);
+    expect((await w.call('POST', `/api/finance/plan-requests/${ok.json.request.requestId}/reject`, manager, { reason: 'Talepler kapatıldı' })).status).toBe(200);
+  });
+
+  it('iki anahtar da gerekli: sakin acik / yonetim kapali (ve tersi) -> portal 403 feature_disabled', async () => {
+    for (const off of ['admin.debtRestructure', 'resident.restructure'] as const) {
+      const w = cariWorld('2026-09-01', { features: staticSiteFeatureReader({ [off]: false }) });
+      await overdueTenant(w, { enable: false });
+      // Ayar dogrudan depoya (yonetim ucu admin anahtari kapaliyken 403).
+      w.fake.docs.set(`APT#${APT}|PLANREQCFG`, { PK: `APT#${APT}`, SK: 'PLANREQCFG', entityType: 'PLAN_REQUEST_SETTINGS', apartmentId: APT, enabled: true, maxInstallments: 6, minInstallmentAmount: TL(500), includeLateFees: true, updatedAt: 'x', updatedBy: 'mgr-1', version: 1 });
+      for (const [method, path] of [['GET', '/api/portal/plan-requests/options'], ['GET', '/api/portal/plan-requests'], ['POST', '/api/portal/plan-requests']] as const) {
+        const r = await w.call(method, path, resident, method === 'POST' ? req() : undefined);
+        expect(r.status, `${off} ${path}`).toBe(403);
+        expect(r.json.error).toBe('feature_disabled');
+      }
+      if (off === 'admin.debtRestructure') expect((await w.call('GET', '/api/finance/plan-requests', manager)).status).toBe(403);
+    }
+  });
+
+  it('worker: admin.debtRestructure kapaliysa RESTRUCTURE_* bildirimi gonderilmez', async () => {
+    const event = buildEvent({ eventId: 'RESTRUCTURE_REQUESTED:r1', type: 'RESTRUCTURE_REQUESTED', apartmentId: APT, actorId: 'tenant-a', payload: { requestId: 'r1' } });
+    const run = async (adminOn: boolean) => {
+      const sent: Notification[] = [];
+      const worker = createNotificationWorker({
+        memberships: { list: async () => [] },
+        roles: { list: async () => [{ userId: 'mgr-1', apartmentId: APT, role: 'apartment_manager', status: 'active', startDate: '2026-01-01' } as ApartmentRole] },
+        planRequests: { get: async () => ({ requestId: 'r1', apartmentId: APT, userId: 'tenant-a', unitId: 'u1', liableParty: 'occupant', installments: 4, estimate: { overdue: TL(3000), accruedLateFee: 0, total: TL(3000), installmentAmount: TL(750) }, status: 'pending' }) as unknown as PlanRequest },
+        features: staticSiteFeatureReader({ 'admin.debtRestructure': adminOn }),
+        notifier: { channel: 'test', send: async (n) => void sent.push(n) },
+        push: null,
+        isProcessed: async () => false,
+        markProcessed: async () => {},
+        now: () => new Date('2026-11-05T09:00:00.000Z'),
+        log: { info: () => {}, error: () => {} },
+      });
+      await worker({ Records: [{ messageId: 'm1', body: JSON.stringify(event) }] });
+      return sent;
+    };
+    expect(await run(false)).toEqual([]);
+    expect((await run(true)).map((n) => [n.userId, n.template, n.category])).toEqual([['mgr-1', 'restructure_requested', 'finance']]);
   });
 });
 
@@ -334,6 +447,7 @@ describe('bildirimler', () => {
     liableParty: 'occupant',
     installments: 4,
     note: 'Özel not',
+    chargeIds: ['c1', 'c2', 'c3'],
     estimate: { overdue: TL(3000), accruedLateFee: TL(100), total: TL(3100), installmentAmount: TL(775) },
     status: 'pending',
     clientKey: 'k',

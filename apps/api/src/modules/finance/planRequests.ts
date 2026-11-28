@@ -2,23 +2,25 @@
  * Finans 2.2 sonrasi - Sakin portalindan yapilandirma (taksit) talebi.
  *
  * Akis:
- *  1. Sakin (vadesi gecmis borcu olan alt carinin sorumlu tarafi) portaldan taksit sayisi (+ istege
- *     bagli not) ile talep acar. Sinirlar yonetimin ayarlarindan gelir (`PLANREQCFG`): en fazla taksit,
- *     en dusuk taksit tutari, dondurulan gecikme tazminatinin taksitlere dahil olup olmadigi. Tutar
- *     tahmini: vadesi gecmis (plana bagli olmayan) kalemler + (dahilse) bugune kadar islemis tazminat.
- *  2. Cari basina tek acik talep: `PLANREQHEAD#<cari>` (sira + acik talep) surum kosullu yazilir;
- *     ayni anda iki talep ayni sira numarasiyla (`PLNRQ_<cari ozeti>_<sira>` idempotency) yarisir,
- *     ikincisi 409 alir.
- *  3. Yonetim talebi oldugu gibi veya degisiklikle onaylar (taksit sayisi, ilk vade, kalemler,
- *     tazminatin dahil olmasi, muacceliyet esikleri) ya da gerekceyle reddeder. Onay, planlari
+ *  1. Yonetim talepleri acar (`PLANREQCFG.enabled`, VARSAYILAN KAPALI) ve sinirlari belirler: en
+ *     fazla taksit, en dusuk taksit tutari, dondurulan gecikme tazminatinin taksitlere dahil olup
+ *     olmadigi. Portal uclari ayrica `resident.restructure` VE `admin.debtRestructure` ister.
+ *  2. Sakin (vadesi gecmis borcu olan alt carinin sorumlu tarafi) taksit sayisi (+ istege bagli not)
+ *     ile talep acar. Talep anindaki vadesi gecmis kalemler (`chargeIds`) ve tahmin kayda yazilir.
+ *  3. Cari basina tek acik talep: `PLANREQHEAD#<cari>` (sira, acik talep, son talepler) surum
+ *     kosullu yazilir; ayni anda iki talep ayni sira numarasiyla (`PLNRQ_<cari ozeti>_<sira>`
+ *     idempotency) yarisir, ikincisi 409 alir. Sakin anahtari ayri kayitta (`PLANREQKEY#`).
+ *  4. Yonetim talebi oldugu gibi veya degisiklikle onaylar ya da gerekceyle reddeder. Onay, planlari
  *     olusturan MEVCUT yapilandirma servisinden (`plans.ts createFromRequest`) gecer: ayni defter
- *     kayitlari (tazminat dondurma, hedefli kapama, taksitler); talep, cari basligi, bildirim olayi ve
- *     denetim ayni atomik yazimdadir. Yeni defter mantigi yoktur.
- *  4. Bildirim (outbox, kategori `finance`): talep -> yonetim (`RESTRUCTURE_REQUESTED`), onay / ret ->
+ *     kayitlari; talep, cari basligi, bildirim olayi ve denetim ayni atomik yazimdadir. "Oldugu gibi"
+ *     yalnizca talepteki kalemleri kapsar; borc talepten sonra degistiyse onay `changed` sayilir.
+ *     Taksit sayisi yonetim sinirlarina (en fazla taksit, en dusuk taksit) uyar.
+ *  5. Bildirim (outbox, kategori `finance`): talep -> yonetim (`RESTRUCTURE_REQUESTED`), onay / ret ->
  *     talebi acan sakin (`RESTRUCTURE_APPROVED` / `_REJECTED`).
  *
  * KVKK: talebi yalnizca acan sakin (kendi talepleri) ve yonetim (yonetici + firma; denetci degil)
- * gorur. Ayni cariyi goren diger uyeye yalnizca "bekleyen talep var" bilgisi verilir (not, kisi yok).
+ * gorur. Sakin notu YALNIZCA `PLANREQ#` kaydinda kalir: defter islemi, plan ve denetim kaydi
+ * (denetci okuyabilir) notu tasimaz. Ayni cariyi goren diger uyeye yalnizca "bekleyen talep var".
  */
 import { createHash, randomUUID } from 'node:crypto';
 import { getTenantItem, queryTenantAll, skKey, tenantPk } from '../../config/dynamodb.js';
@@ -26,7 +28,7 @@ import { type DomainEvent, type NewEvent, buildEvent } from '../../events/publis
 import { type CoreRepository, coreRepository } from '../core/repository.js';
 import { type IsoDate, type IsoDateTime, type Kurus, type LiableParty, type TableKeys, toKurus } from '../core/types.js';
 import { ValidationError, asObject, assertId, isIsoDate, optString, reqString } from '../core/validation.js';
-import type { PortalContext, PortalService } from '../portal/service.js';
+import { PortalError, type PortalContext, type PortalService } from '../portal/service.js';
 import { MAX_INSTALLMENTS, type PlanRule, type PlanService, addMonths } from './plans.js';
 import { type FinanceRepository, LedgerConflictError, type ReplaceRecord, financeRepository } from './repository.js';
 import { FinanceError, MAX_AMOUNT } from './service.js';
@@ -36,7 +38,7 @@ import { FinanceError, MAX_AMOUNT } from './service.js';
 // ---------------------------------------------------------------------------
 
 export type PlanRequestSettings = {
-  /** Kapaliysa sakin yeni talep acamaz (mevcut talepler sonuclandirilabilir). */
+  /** Kapaliysa (varsayilan) sakin talep acamaz; mevcut talepler sonuclandirilabilir. */
   enabled: boolean;
   /** Sakinin isteyebilecegi en fazla taksit (2-60). */
   maxInstallments: number;
@@ -46,8 +48,11 @@ export type PlanRequestSettings = {
   includeLateFees: boolean;
 };
 
-export const DEFAULT_PLAN_REQUEST_SETTINGS: PlanRequestSettings = { enabled: true, maxInstallments: 6, minInstallmentAmount: toKurus(50_000), includeLateFees: true };
+/** Sahip karari: yapilandirma talebi varsayilan kapali; yonetim acar (eski siteler dahil). */
+export const DEFAULT_PLAN_REQUEST_SETTINGS: PlanRequestSettings = { enabled: false, maxInstallments: 6, minInstallmentAmount: toKurus(50_000), includeLateFees: true };
 export const MIN_REQUEST_INSTALLMENTS = 2;
+const HEAD_HISTORY = 20;
+const DEFAULT_LIST_LIMIT = 100;
 
 /** PK = `APT#<apartmentId>`, SK = `PLANREQCFG` */
 export type PlanRequestSettingsDoc = TableKeys &
@@ -61,9 +66,14 @@ export type PlanRequestHead = TableKeys & {
   /** Bu caride acilmis talep sayisi (sira). */
   seq: number;
   openRequestId?: string;
+  /** Son talepler (yeniden eskiye, en fazla 20): sakin listesi tum talepleri taramaz. */
+  history?: string[];
   updatedAt: IsoDateTime;
   version: number;
 };
+
+/** PK = `APT#<apartmentId>`, SK = `PLANREQKEY#<ozet(kullanici:anahtar)>`: sakin anahtarinin tekrar gonderimi. */
+export type PlanRequestKey = TableKeys & { entityType: 'PLAN_REQUEST_KEY'; apartmentId: string; requestId: string; fingerprint: string; createdAt: IsoDateTime };
 
 export const PLAN_REQUEST_STATUSES = ['pending', 'approved', 'rejected', 'withdrawn'] as const;
 export type PlanRequestStatus = (typeof PLAN_REQUEST_STATUSES)[number];
@@ -92,7 +102,10 @@ export type PlanRequest = TableKeys & {
   liableParty: LiableParty;
   /** Istenen taksit sayisi. */
   installments: number;
+  /** Sakin notu (KVKK: yalnizca bu kayitta; defter / plan / denetime girmez). */
   note?: string;
+  /** Talep anindaki vadesi gecmis (plana bagli olmayan) kalemler: "oldugu gibi" onayin kapsami. */
+  chargeIds: string[];
   /** Talep anindaki tahmin (bilgi amacli; plan onay aninda defterden yeniden hesaplanir). */
   estimate: { overdue: Kurus; accruedLateFee: Kurus; total: Kurus; installmentAmount: Kurus };
   status: PlanRequestStatus;
@@ -110,22 +123,30 @@ export type PlanRequest = TableKeys & {
 export const planRequestKeys = {
   request: (apartmentId: string, requestId: string): TableKeys => ({ PK: tenantPk(apartmentId), SK: skKey('PLANREQ', requestId) }),
   head: (apartmentId: string, accountId: string): TableKeys => ({ PK: tenantPk(apartmentId), SK: skKey('PLANREQHEAD', accountId) }),
+  key: (apartmentId: string, tag: string): TableKeys => ({ PK: tenantPk(apartmentId), SK: skKey('PLANREQKEY', tag) }),
   settings: (apartmentId: string): TableKeys => ({ PK: tenantPk(apartmentId), SK: 'PLANREQCFG' }),
 };
 
 export type PlanRequestRepository = {
   get(apartmentId: string, requestId: string): Promise<PlanRequest | undefined>;
+  /** Tum talepler (yalnizca yonetim listesinde, durum filtresi `pending` disinda). */
   list(apartmentId: string): Promise<PlanRequest[]>;
   getHead(apartmentId: string, accountId: string): Promise<PlanRequestHead | undefined>;
+  /** Cari basliklari (talep acilmis cari sayisi kadar): bekleyen talepler buradan bulunur. */
+  listHeads(apartmentId: string): Promise<PlanRequestHead[]>;
+  getKey(apartmentId: string, tag: string): Promise<PlanRequestKey | undefined>;
   getSettings(apartmentId: string): Promise<PlanRequestSettingsDoc | undefined>;
 };
 
 export const planRequestRepository: PlanRequestRepository = {
   get: (apartmentId, requestId) => getTenantItem<PlanRequest>(planRequestKeys.request(apartmentId, requestId)),
-  // `PLANREQ#` oneki `PLANREQHEAD#` / `PLANREQCFG` kayitlarini kapsamaz.
+  // `PLANREQ#` oneki `PLANREQHEAD#` / `PLANREQKEY#` / `PLANREQCFG` kayitlarini kapsamaz.
   list: async (apartmentId) =>
     (await queryTenantAll<PlanRequest>(apartmentId, 'PLANREQ#', { ConsistentRead: true })).filter((r) => r.entityType === 'PLAN_REQUEST'),
   getHead: (apartmentId, accountId) => getTenantItem<PlanRequestHead>(planRequestKeys.head(apartmentId, accountId)),
+  listHeads: async (apartmentId) =>
+    (await queryTenantAll<PlanRequestHead>(apartmentId, 'PLANREQHEAD#', { ConsistentRead: true })).filter((h) => h.entityType === 'PLAN_REQUEST_HEAD'),
+  getKey: (apartmentId, tag) => getTenantItem<PlanRequestKey>(planRequestKeys.key(apartmentId, tag)),
   getSettings: (apartmentId) => getTenantItem<PlanRequestSettingsDoc>(planRequestKeys.settings(apartmentId)),
 };
 
@@ -150,6 +171,9 @@ export function defaultFirstDueDate(today: IsoDate, dueDayOfMonth = 10): IsoDate
   return `${next.slice(0, 8)}${String(day).padStart(2, '0')}`;
 }
 
+/** Onayda varsayilan gerekce: sakin notu defter / plan / denetime girmez (KVKK). */
+export const approvalReason = (requestId: string) => `Sakin talebi ${requestId} onaylandı`;
+
 // ---------------------------------------------------------------------------
 // Servis
 // ---------------------------------------------------------------------------
@@ -168,7 +192,7 @@ export type PlanRequestServiceDeps = {
 
 const LIABLE_PARTIES: readonly LiableParty[] = ['owner', 'occupant'];
 const fingerprint = (value: unknown): string => createHash('sha256').update(JSON.stringify(value)).digest('hex');
-const accountTag = (accountId: string) => createHash('sha256').update(accountId).digest('hex').slice(0, 24);
+const tagOf = (value: string, n = 24) => createHash('sha256').update(value).digest('hex').slice(0, n);
 
 function reqKey(o: Record<string, unknown>): string {
   const key = reqString(o, 'idempotencyKey', 100);
@@ -191,6 +215,8 @@ function boolField(o: Record<string, unknown>, key: string): boolean | undefined
   if (typeof v !== 'boolean') throw new ValidationError(`${key} boolean olmalidir`, key);
   return v;
 }
+
+const sameSet = (a: readonly string[], b: readonly string[]) => a.length === b.length && [...a].sort().join('\u0000') === [...b].sort().join('\u0000');
 
 export function createPlanRequestService(overrides: Partial<PlanRequestServiceDeps> & Pick<PlanRequestServiceDeps, 'plans'>) {
   const deps: PlanRequestServiceDeps = {
@@ -265,29 +291,31 @@ export function createPlanRequestService(overrides: Partial<PlanRequestServiceDe
 
   // ----- Ortak hesap -----
 
+  type OpenItems = Awaited<ReturnType<PlanService['openItems']>>;
+
   /** Carinin talep icin durumu (yazmaz). */
   async function accountState(ctx: PlanRequestContext, accountId: string, settings: PlanRequestSettings) {
     const [open, head] = await Promise.all([
       // Hic hareketi olmayan (henuz acilmamis) cari: acik kalem yok.
-      deps.plans.openItems(ctx, accountId).catch((err: unknown) => {
-        if (err instanceof FinanceError && err.code === 'not_found') return { accountId, date: today(), lateFeeMonthlyBasisPoints: 0, accruedLateFee: toKurus(0), items: [] as Awaited<ReturnType<PlanService['openItems']>>['items'] } as Awaited<ReturnType<PlanService['openItems']>>;
+      deps.plans.openItems(ctx, accountId).catch((err: unknown): OpenItems => {
+        if (err instanceof FinanceError && err.code === 'not_found') return { accountId, date: today(), lateFeeMonthlyBasisPoints: 0, accruedLateFee: toKurus(0), items: [] };
         throw err;
       }),
       deps.requests.getHead(ctx.apartmentId, accountId),
     ]);
     const overdueItems = open.items.filter((i) => i.overdue && !i.planId && i.remaining > 0);
     const overdue = toKurus(overdueItems.reduce((s, i) => s + i.remaining, 0));
-    const accruedLateFee = settings.includeLateFees ? open.accruedLateFee : toKurus(0);
-    const total = toKurus(overdue + accruedLateFee);
+    const total = toKurus(overdue + (settings.includeLateFees ? open.accruedLateFee : 0));
     const maxInstallments = maxAllowedInstallments(total, settings);
-    const pendingRequestId = head?.apartmentId === ctx.apartmentId ? head.openRequestId : undefined;
+    const validHead = head?.apartmentId === ctx.apartmentId ? head : undefined;
+    const pendingRequestId = validHead?.openRequestId;
     let reason: 'disabled' | 'no_overdue' | 'active_plan' | 'pending_request' | 'too_small' | undefined;
     if (!settings.enabled) reason = 'disabled';
     else if (pendingRequestId) reason = 'pending_request';
     else if (open.activePlanId) reason = 'active_plan';
     else if (overdue <= 0) reason = 'no_overdue';
     else if (maxInstallments < MIN_REQUEST_INSTALLMENTS) reason = 'too_small';
-    return { open, head, overdueItems, overdue, accruedLateFee: open.accruedLateFee, total, maxInstallments, pendingRequestId, eligible: !reason, reason };
+    return { open, head: validHead, overdueItems, overdue, accruedLateFee: open.accruedLateFee, total, maxInstallments, pendingRequestId, eligible: !reason, reason };
   }
 
   function requirePortal(): Pick<PortalService, 'resolveUnit'> {
@@ -301,7 +329,14 @@ export function createPlanRequestService(overrides: Partial<PlanRequestServiceDe
     return { unitId: resolved.unit.unitId, parties: resolved.parties.map((party) => ({ party, accountId: resolved.accounts[party] })) };
   }
 
-  /** Sakin gorunumu: idempotency ozeti, yonetici kimligi ve ic alanlar yok. */
+  /** Yonetim talep almiyorsa (varsayilan) portal secenek / talep uclari 403. */
+  async function requireEnabled(apartmentId: string) {
+    const s = await settingsOf(apartmentId);
+    if (!s.settings.enabled) throw new PortalError('forbidden', 'Yönetim şu anda taksit (yapılandırma) talebi almıyor');
+    return s;
+  }
+
+  /** Sakin gorunumu: idempotency ozeti, kalem listesi, yonetici kimligi ve ic alanlar yok. */
   function residentView(r: PlanRequest) {
     return {
       requestId: r.requestId,
@@ -335,16 +370,18 @@ export function createPlanRequestService(overrides: Partial<PlanRequestServiceDe
     return rest;
   }
 
+  const ownRequest = async (apartmentId: string, requestId: string | undefined) => (requestId ? deps.requests.get(apartmentId, requestId) : undefined);
+
   // ----- Sakin -----
 
   async function portalOptions(ctx: PortalContext, unitId?: string) {
+    const { settings } = await requireEnabled(ctx.apartmentId);
     const { unitId: u, parties } = await residentAccounts(ctx, unitId);
-    const { settings } = await settingsOf(ctx.apartmentId);
-    const mine = (await deps.requests.list(ctx.apartmentId)).filter((r) => r.apartmentId === ctx.apartmentId && r.userId === ctx.userId);
     const accounts = await Promise.all(
       parties.map(async ({ party, accountId }) => {
         const st = await accountState(ctx, accountId, settings);
-        const own = st.pendingRequestId ? mine.find((r) => r.requestId === st.pendingRequestId) : undefined;
+        const pending = await ownRequest(ctx.apartmentId, st.pendingRequestId);
+        const own = pending && pending.userId === ctx.userId ? pending : undefined;
         return {
           accountId,
           liableParty: party,
@@ -368,9 +405,16 @@ export function createPlanRequestService(overrides: Partial<PlanRequestServiceDe
     };
   }
 
-  async function myRequests(ctx: PortalContext) {
-    const items = (await deps.requests.list(ctx.apartmentId))
-      .filter((r) => r.apartmentId === ctx.apartmentId && r.userId === ctx.userId)
+  /**
+   * Sakinin bu dairedeki talepleri: carilerin basliklarindaki son talepler (tum talepler taranmaz),
+   * yalnizca kendi actiklari. Talep almayi kapatan yonetimde de sakin kararini gorebilir.
+   */
+  async function myRequests(ctx: PortalContext, unitId?: string) {
+    const { parties } = await residentAccounts(ctx, unitId);
+    const heads = await Promise.all(parties.map((p) => deps.requests.getHead(ctx.apartmentId, p.accountId)));
+    const ids = [...new Set(heads.flatMap((h) => (h && h.apartmentId === ctx.apartmentId ? (h.history ?? []) : [])))];
+    const items = (await Promise.all(ids.map((id) => deps.requests.get(ctx.apartmentId, id))))
+      .filter((r): r is PlanRequest => !!r && r.apartmentId === ctx.apartmentId && r.userId === ctx.userId)
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
       .map(residentView);
     return { items };
@@ -386,26 +430,28 @@ export function createPlanRequestService(overrides: Partial<PlanRequestServiceDe
     if (installments === undefined) throw new ValidationError('installments zorunlu', 'installments');
     const note = (optString(o, 'note', 300) ?? '').trim();
     const fp = fingerprint({ op: 'plan_request', unitId, party, installments, note });
+    const keyTag = tagOf(`${ctx.userId}:${key}`, 32);
 
-    // Tekrar gonderim: ayni sakinin ayni anahtarli talebi.
+    // Tekrar gonderim: ayni sakinin ayni anahtarli talebi (tek okuma; talepler taranmaz).
     const replay = async () => {
-      const prior = (await deps.requests.list(ctx.apartmentId)).find((r) => r.apartmentId === ctx.apartmentId && r.userId === ctx.userId && r.clientKey === key);
-      if (!prior) return undefined;
-      if (prior.fingerprint !== fp) throw new FinanceError('idempotency_conflict', 'Bu idempotencyKey farkli bir istekle kullanilmis');
+      const k = await deps.requests.getKey(ctx.apartmentId, keyTag);
+      if (!k || k.apartmentId !== ctx.apartmentId) return undefined;
+      if (k.fingerprint !== fp) throw new FinanceError('idempotency_conflict', 'Bu idempotencyKey farkli bir istekle kullanilmis');
+      const prior = await deps.requests.get(ctx.apartmentId, k.requestId);
+      if (!prior || prior.userId !== ctx.userId) throw new FinanceError('conflict', 'Talep kaydi bulunamadi');
       return { request: residentView(prior), replayed: true };
     };
     const prior = await replay();
     if (prior) return prior;
 
+    const { settings } = await requireEnabled(ctx.apartmentId);
     const resolved = await residentAccounts(ctx, unitId);
     const choice = party ? resolved.parties.find((p) => p.party === party) : resolved.parties.length === 1 ? resolved.parties[0] : undefined;
     if (!choice) {
       if (party) throw new ValidationError('Bu dairede bu cariyi göremezsiniz', 'liableParty');
       throw new ValidationError('Birden fazla cariniz var; liableParty seçin', 'liableParty');
     }
-    const { settings } = await settingsOf(ctx.apartmentId);
     const st = await accountState(ctx, choice.accountId, settings);
-    if (st.reason === 'disabled') throw new FinanceError('unprocessable', 'Yönetim şu anda yapılandırma talebi kabul etmiyor');
     if (st.reason === 'pending_request') throw new FinanceError('conflict', 'Bu cari için bekleyen bir yapılandırma talebi var');
     if (st.reason === 'active_plan') throw new FinanceError('conflict', 'Bu caride zaten aktif bir taksit planı var');
     if (st.reason === 'no_overdue') throw new FinanceError('unprocessable', 'Vadesi geçmiş borcunuz yok; yapılandırma talebi açılamaz');
@@ -427,6 +473,7 @@ export function createPlanRequestService(overrides: Partial<PlanRequestServiceDe
       liableParty: choice.party,
       installments,
       ...(note ? { note } : {}),
+      chargeIds: st.overdueItems.map((i) => i.chargeId),
       estimate: { overdue: st.overdue, accruedLateFee: st.accruedLateFee, total: st.total, installmentAmount: toKurus(Math.floor(st.total / installments)) },
       status: 'pending',
       clientKey: key,
@@ -445,18 +492,21 @@ export function createPlanRequestService(overrides: Partial<PlanRequestServiceDe
       accountId: choice.accountId,
       seq,
       openRequestId: requestId,
+      history: [requestId, ...(st.head?.history ?? [])].slice(0, HEAD_HISTORY),
       updatedAt: ts,
       version: (st.head?.version ?? 0) + 1,
     };
+    const keyDoc: PlanRequestKey = { ...planRequestKeys.key(ctx.apartmentId, keyTag), entityType: 'PLAN_REQUEST_KEY', apartmentId: ctx.apartmentId, requestId, fingerprint: fp, createdAt: ts };
     try {
       await repo.postBatch({
         transactions: [],
-        idempotency: { id: `PLNRQ_${accountTag(choice.accountId)}_${seq}`, fingerprint: fp, recordId: requestId },
-        newDocs: [request, ...(st.head ? [] : [head])],
+        idempotency: { id: `PLNRQ_${tagOf(choice.accountId)}_${seq}`, fingerprint: fp, recordId: requestId },
+        newDocs: [request, keyDoc, ...(st.head ? [] : [head])],
         ...(st.head ? { replaceRecords: [{ item: head, expectedVersion: st.head.version, label: 'plan_request_head' }] } : {}),
         outbox: [
           toEvent({ eventId: `RESTRUCTURE_REQUESTED:${requestId}`, type: 'RESTRUCTURE_REQUESTED', apartmentId: ctx.apartmentId, actorId: ctx.userId, groupKey: resolved.unitId, payload: { requestId } }),
         ],
+        // Not denetime yazilmaz (KVKK: denetci okur); yalnizca talep kaydinda.
         audit: {
           apartmentId: ctx.apartmentId,
           action: 'finance.plan_request',
@@ -484,7 +534,7 @@ export function createPlanRequestService(overrides: Partial<PlanRequestServiceDe
     return r;
   }
 
-  /** Talep sonuclaninca cari basligi serbest kalir (yeni talep acilabilir). */
+  /** Talep sonuclaninca cari basligi serbest kalir (yeni talep acilabilir; gecmis korunur). */
   async function releasedHead(ctx: PlanRequestContext, r: PlanRequest, ts: IsoDateTime): Promise<ReplaceRecord[]> {
     const head = await deps.requests.getHead(ctx.apartmentId, r.accountId);
     if (!head || head.openRequestId !== r.requestId) return [];
@@ -507,7 +557,7 @@ export function createPlanRequestService(overrides: Partial<PlanRequestServiceDe
         transactions: [],
         idempotency: { id: `PLNRQ_DEC_${requestId}`, fingerprint: fingerprint({ op: 'plan_request_withdraw', requestId }), recordId: requestId },
         replaceRecords: [{ item: next, expectedVersion: r.version, label: 'plan_request' }, ...(await releasedHead(ctx, r, ts))],
-        audit: { apartmentId: ctx.apartmentId, action: 'finance.plan_request_withdraw', target: { type: 'plan_request', id: requestId }, actorId: ctx.userId, reason, details: { accountId: r.accountId } },
+        audit: { apartmentId: ctx.apartmentId, action: 'finance.plan_request_withdraw', target: { type: 'plan_request', id: requestId }, actorId: ctx.userId, details: { accountId: r.accountId } },
       });
     } catch (err) {
       if (err instanceof LedgerConflictError) throw new FinanceError('conflict', 'Talep zaten sonuçlandırılmış veya eş zamanlı değişti');
@@ -518,40 +568,74 @@ export function createPlanRequestService(overrides: Partial<PlanRequestServiceDe
 
   // ----- Yonetim -----
 
-  async function list(ctx: PlanRequestContext, q: { status?: string } = {}) {
+  /**
+   * `pending`: cari basliklarindan (talep acilmis cari sayisi kadar okuma). Diger durumlar / tumu:
+   * yonetim listesi icin tum talepler taranir, en yeni `limit` kadari doner (varsayilan 100, en fazla 500).
+   */
+  async function list(ctx: PlanRequestContext, q: { status?: string; limit?: string } = {}) {
     if (q.status !== undefined && !(PLAN_REQUEST_STATUSES as readonly string[]).includes(q.status)) {
       throw new ValidationError(`status su degerlerden biri olmalidir: ${PLAN_REQUEST_STATUSES.join(', ')}`, 'status');
     }
-    const items = (await deps.requests.list(ctx.apartmentId))
-      .filter((r) => r.apartmentId === ctx.apartmentId && (!q.status || r.status === q.status))
+    const limit = q.limit === undefined ? DEFAULT_LIST_LIMIT : Number(q.limit);
+    if (!Number.isInteger(limit) || limit < 1 || limit > 500) throw new ValidationError('limit 1-500 arasi tam sayi olmalidir', 'limit');
+    const heads = (await deps.requests.listHeads(ctx.apartmentId)).filter((h) => h.apartmentId === ctx.apartmentId && h.openRequestId);
+    const pending = (await Promise.all(heads.map((h) => deps.requests.get(ctx.apartmentId, h.openRequestId as string)))).filter(
+      (r): r is PlanRequest => !!r && r.apartmentId === ctx.apartmentId && r.status === 'pending',
+    );
+    const source = q.status === 'pending' ? pending : (await deps.requests.list(ctx.apartmentId)).filter((r) => r.apartmentId === ctx.apartmentId && (!q.status || r.status === q.status));
+    const items = source
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .slice(0, limit)
       .map(managerView);
-    return { items, pendingCount: items.filter((r) => r.status === 'pending').length };
+    return { items, pendingCount: pending.length };
   }
 
-  /** Talep + carinin guncel durumu + "oldugu gibi onay" varsayilanlari (sihirbaz onizlemesi icin). */
-  async function get(ctx: PlanRequestContext, requestId: string) {
-    const r = await requireRequest(ctx, requestId);
-    const { settings } = await settingsOf(ctx.apartmentId);
-    if (r.status !== 'pending') return { request: managerView(r), settings };
+  /**
+   * Talebin onay cercevesi: talepteki kalemlerden hala acik olanlar ("oldugu gibi"), talepten sonra
+   * borcun degisip degismedigi ve yonetim sinirlarina gore en fazla taksit.
+   */
+  async function approvalFrame(ctx: PlanRequestContext, r: PlanRequest, settings: PlanRequestSettings) {
     const [st, site] = await Promise.all([accountState(ctx, r.accountId, settings), deps.core.getSite ? deps.core.getSite(ctx.apartmentId) : undefined]);
+    const currentIds = st.overdueItems.map((i) => i.chargeId);
+    const asIsItems = st.overdueItems.filter((i) => r.chargeIds.includes(i.chargeId));
+    const asIsOverdue = asIsItems.reduce((s, i) => s + i.remaining, 0);
+    const newItems = currentIds.filter((id) => !r.chargeIds.includes(id)).length;
+    const drift = !sameSet(asIsItems.map((i) => i.chargeId), r.chargeIds) || newItems > 0 || asIsOverdue !== r.estimate.overdue;
+    const totalOf = (ids: readonly string[], includeLateFees: boolean) =>
+      st.open.items.filter((i) => ids.includes(i.chargeId)).reduce((s, i) => s + i.remaining, 0) + (includeLateFees ? st.open.accruedLateFee : 0);
     return {
-      request: managerView(r),
-      settings,
-      current: {
-        overdue: st.overdue,
-        accruedLateFee: st.accruedLateFee,
-        total: st.total,
-        ...(st.open.activePlanId ? { activePlanId: st.open.activePlanId } : {}),
-        items: st.open.items,
-      },
+      st,
       asIs: {
         accountId: r.accountId,
-        chargeIds: st.overdueItems.map((i) => i.chargeId),
+        chargeIds: asIsItems.map((i) => i.chargeId),
         installments: r.installments,
         firstDueDate: defaultFirstDueDate(today(), site?.settings.dueDayOfMonth),
         includeLateFees: settings.includeLateFees,
       },
+      drift: { changed: drift, overdueThen: r.estimate.overdue, overdueNow: st.overdue, asIsOverdue: toKurus(asIsOverdue), newItems },
+      totalOf,
+    };
+  }
+
+  /** Talep + carinin guncel durumu + "oldugu gibi" varsayilanlari ve sinirlar (onizleme icin). */
+  async function get(ctx: PlanRequestContext, requestId: string) {
+    const r = await requireRequest(ctx, requestId);
+    const { settings } = await settingsOf(ctx.apartmentId);
+    if (r.status !== 'pending') return { request: managerView(r), settings };
+    const f = await approvalFrame(ctx, r, settings);
+    return {
+      request: managerView(r),
+      settings,
+      current: {
+        overdue: f.st.overdue,
+        accruedLateFee: f.st.accruedLateFee,
+        total: f.st.total,
+        ...(f.st.open.activePlanId ? { activePlanId: f.st.open.activePlanId } : {}),
+        items: f.st.open.items,
+      },
+      asIs: f.asIs,
+      drift: f.drift,
+      limits: { maxInstallments: maxAllowedInstallments(f.totalOf(f.asIs.chargeIds, f.asIs.includeLateFees), settings), minInstallmentAmount: settings.minInstallmentAmount },
     };
   }
 
@@ -560,64 +644,79 @@ export function createPlanRequestService(overrides: Partial<PlanRequestServiceDe
     const r = await requireRequest(ctx, requestId);
     if (r.status !== 'pending') throw new FinanceError('conflict', 'Talep zaten sonuçlandırılmış');
     const { settings } = await settingsOf(ctx.apartmentId);
-    const [st, site] = await Promise.all([accountState(ctx, r.accountId, settings), deps.core.getSite ? deps.core.getSite(ctx.apartmentId) : undefined]);
-    const asIsIds = st.overdueItems.map((i) => i.chargeId);
-    const firstDefault = defaultFirstDueDate(today(), site?.settings.dueDayOfMonth);
+    const f = await approvalFrame(ctx, r, settings);
     const installments = intField(o, 'installments', 1, MAX_INSTALLMENTS) ?? r.installments;
-    const firstDueDate = o.firstDueDate === undefined ? firstDefault : o.firstDueDate;
+    const firstDueDate = o.firstDueDate === undefined ? f.asIs.firstDueDate : o.firstDueDate;
     if (typeof firstDueDate !== 'string' || !isIsoDate(firstDueDate)) throw new ValidationError('firstDueDate YYYY-MM-DD olmalidir', 'firstDueDate');
-    const chargeIds = o.chargeIds === undefined ? asIsIds : o.chargeIds;
-    if (!Array.isArray(chargeIds) || chargeIds.length === 0) {
-      throw new FinanceError('unprocessable', 'Carinin vadesi geçmiş açık kalemi kalmamış; kalem seçerek onaylayın veya reddedin');
+    if (o.chargeIds !== undefined && (!Array.isArray(o.chargeIds) || o.chargeIds.some((c) => typeof c !== 'string'))) {
+      throw new ValidationError('chargeIds metin dizisi olmalidir', 'chargeIds');
+    }
+    const chargeIds = (o.chargeIds as string[] | undefined) ?? f.asIs.chargeIds;
+    if (chargeIds.length === 0) {
+      throw new FinanceError('unprocessable', 'Talepteki gecikmiş kalemler kapanmış; kalem seçerek onaylayın veya reddedin');
     }
     const includeLateFees = boolField(o, 'includeLateFees') ?? settings.includeLateFees;
     const rule = o.rule as PlanRule | undefined;
-    const reason = (optString(o, 'reason', 300) ?? '').trim() || `Sakin yapılandırma talebi onaylandı${r.note ? `: ${r.note}` : ''}`.slice(0, 300);
-    const sameIds = chargeIds.length === asIsIds.length && [...chargeIds].sort().join(',') === [...asIsIds].sort().join(',');
-    const mode: 'as_is' | 'changed' =
-      installments === r.installments && firstDueDate === firstDefault && sameIds && includeLateFees === settings.includeLateFees && rule === undefined ? 'as_is' : 'changed';
+    // Yonetim sinirlari (en fazla taksit, en dusuk taksit tutari) onayda da gecerli.
+    const max = maxAllowedInstallments(f.totalOf(chargeIds, includeLateFees), settings);
+    if (installments > max) {
+      throw new ValidationError(
+        max < 1 ? 'Seçilen tutar taksitlendirme sınırının altında' : `Taksit sayısı en fazla ${max} olabilir (en fazla ${settings.maxInstallments} taksit, bir taksit en az ${settings.minInstallmentAmount} kuruş)`,
+        'installments',
+      );
+    }
+    // Varsayilan gerekce sakin notunu ICERMEZ (defter / plan / denetim; KVKK).
+    const reason = (optString(o, 'reason', 300) ?? '').trim() || approvalReason(requestId);
+    const same =
+      installments === r.installments && firstDueDate === f.asIs.firstDueDate && sameSet(chargeIds, f.asIs.chargeIds) && includeLateFees === settings.includeLateFees && rule === undefined;
+    // Borc talepten sonra degistiyse (odeme, yeni gecikme) onay "degisiklikle" sayilir.
+    const mode: 'as_is' | 'changed' = same && !f.drift.changed ? 'as_is' : 'changed';
 
     const ts = stamp();
     const headReplace = await releasedHead(ctx, r, ts);
-    const result = await deps.plans.createFromRequest(
-      ctx,
-      {
-        idempotencyKey: `rq-${requestId}`,
-        accountId: r.accountId,
-        chargeIds,
-        installments,
-        firstDueDate,
-        includeLateFees,
-        ...(rule !== undefined ? { rule } : {}),
-        reason,
-      },
-      {
-        build: (plan) => {
-          const next: PlanRequest = {
-            ...r,
-            status: 'approved',
-            decision: { at: ts, by: ctx.userId, mode, reason, planId: plan.planId, installments: plan.installments.length, firstDueDate, total: plan.total },
-            updatedAt: ts,
-            updatedBy: ctx.userId,
-            version: r.version + 1,
-          };
-          return {
-            replaceRecords: [{ item: next, expectedVersion: r.version, label: 'plan_request' }, ...headReplace],
-            outbox: [toEvent({ eventId: `RESTRUCTURE_APPROVED:${requestId}`, type: 'RESTRUCTURE_APPROVED', apartmentId: ctx.apartmentId, actorId: ctx.userId, groupKey: r.unitId, payload: { requestId } })],
-            audit: {
-              action: 'finance.plan_request_approve',
-              target: { type: 'plan_request', id: requestId },
-              details: { requestId, mode, requestedInstallments: r.installments, requesterId: r.userId },
-            },
-          };
+    const result = await deps.plans
+      .createFromRequest(
+        ctx,
+        {
+          idempotencyKey: `request-${requestId}`,
+          accountId: r.accountId,
+          chargeIds,
+          installments,
+          firstDueDate,
+          includeLateFees,
+          ...(rule !== undefined ? { rule } : {}),
+          reason,
         },
-      },
-    ).catch((err: unknown) => {
-      if (err instanceof FinanceError && err.code === 'conflict' && /es zamanli|eş zamanlı/i.test(err.message)) {
-        throw new FinanceError('conflict', 'Talep eş zamanlı sonuçlandırıldı; listeyi yenileyin');
-      }
-      throw err;
-    });
+        {
+          // Sakin anahtarlarindan ayri ad alani (`POST /plans` anahtari `PLN_<anahtar>`).
+          idempotencyId: `PLNRQA_${requestId}`,
+          build: (plan) => {
+            const next: PlanRequest = {
+              ...r,
+              status: 'approved',
+              decision: { at: ts, by: ctx.userId, mode, reason, planId: plan.planId, installments: plan.installments.length, firstDueDate, total: plan.total },
+              updatedAt: ts,
+              updatedBy: ctx.userId,
+              version: r.version + 1,
+            };
+            return {
+              replaceRecords: [{ item: next, expectedVersion: r.version, label: 'plan_request' }, ...headReplace],
+              outbox: [toEvent({ eventId: `RESTRUCTURE_APPROVED:${requestId}`, type: 'RESTRUCTURE_APPROVED', apartmentId: ctx.apartmentId, actorId: ctx.userId, groupKey: r.unitId, payload: { requestId } })],
+              audit: {
+                action: 'finance.plan_request_approve',
+                target: { type: 'plan_request', id: requestId },
+                details: { requestId, mode, requestedInstallments: r.installments, requesterId: r.userId, ...(f.drift.changed ? { drift: f.drift } : {}) },
+              },
+            };
+          },
+        },
+      )
+      .catch((err: unknown) => {
+        if (err instanceof FinanceError && err.code === 'conflict' && /es zamanli|eş zamanlı/i.test(err.message)) {
+          throw new FinanceError('conflict', 'Talep eş zamanlı sonuçlandırıldı; listeyi yenileyin');
+        }
+        throw err;
+      });
     if (result.replayed) {
       // Ayni onay daha once yazildi (es zamanli ikinci onay): talep o planla onaylanmissa ayni sonuc.
       const after = await requireRequest(ctx, requestId);

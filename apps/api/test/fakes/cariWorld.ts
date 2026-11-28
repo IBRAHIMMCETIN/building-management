@@ -13,6 +13,7 @@ import { type InstallmentPlan, type PlanRepository, createPlanService } from '..
 import {
   type PlanRequest,
   type PlanRequestHead,
+  type PlanRequestKey,
   type PlanRequestRepository,
   type PlanRequestSettingsDoc,
   createPlanRequestService,
@@ -31,6 +32,7 @@ import type { PortalRepository } from '../../src/modules/portal/repository.js';
 import { type PortalServiceDeps, createPortalService } from '../../src/modules/portal/service.js';
 import type { UnitMembership } from '../../src/modules/portal/types.js';
 import { createFakeFinanceRepo } from './financeRepo.js';
+import type { SiteFeatureReader } from '../../src/modules/features/guard.js';
 
 export const APT = 'apt-1';
 export const TL = (n: number) => toKurus(Math.round(n * 100));
@@ -64,7 +66,7 @@ export function unit(id: string): Unit {
 }
 
 /** vacancyRule: finans servisine uyelikler verilir (bos daire kurali acik). */
-export function cariWorld(start = '2026-09-01', opts: { vacancyRule?: boolean } = {}) {
+export function cariWorld(start = '2026-09-01', opts: { vacancyRule?: boolean; features?: SiteFeatureReader } = {}) {
   const fake = createFakeFinanceRepo();
   let n = 0;
   let now = new Date(`${start}T09:00:00.000Z`);
@@ -145,6 +147,8 @@ export function cariWorld(start = '2026-09-01', opts: { vacancyRule?: boolean } 
     get: async (apt, id) => docsOf<PlanRequest>('PLAN_REQUEST').find((r) => r.apartmentId === apt && r.requestId === id),
     list: async (apt) => docsOf<PlanRequest>('PLAN_REQUEST').filter((r) => r.apartmentId === apt),
     getHead: async (apt, accountId) => docsOf<PlanRequestHead>('PLAN_REQUEST_HEAD').find((h) => h.apartmentId === apt && h.accountId === accountId),
+    listHeads: async (apt) => docsOf<PlanRequestHead>('PLAN_REQUEST_HEAD').filter((h) => h.apartmentId === apt),
+    getKey: async (apt, tag) => fake.docs.get(`APT#${apt}|PLANREQKEY#${tag}`) as unknown as PlanRequestKey | undefined,
     getSettings: async (apt) => docsOf<PlanRequestSettingsDoc>('PLAN_REQUEST_SETTINGS').find((s) => s.apartmentId === apt),
   };
   const planRequests = createPlanRequestService({
@@ -182,6 +186,7 @@ export function cariWorld(start = '2026-09-01', opts: { vacancyRule?: boolean } 
     planService: plans,
     planRequestService: planRequests,
     supplierAdvanceService: supplierAdvances,
+    ...(opts.features ? { siteFeatures: opts.features } : {}),
     portalService: portal,
     membershipService: createMembershipService({ repository: membershipRepo, core: core as Pick<CoreRepository, 'getUnit'>, now: () => now }),
     authenticate: (c) => {

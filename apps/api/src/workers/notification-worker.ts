@@ -22,6 +22,7 @@ import { type TenderSnapshot, isTenderEvent, tenderRecipients } from '../modules
 import { type TenderRepository, tenderRepository } from '../modules/tenders/repository.js';
 import { type PlanRequestSnapshot, isRestructureEvent, restructureRecipients } from '../modules/finance/planRequestNotifications.js';
 import { type PlanRequestRepository, planRequestRepository } from '../modules/finance/planRequests.js';
+import { type SiteFeatureReader, createSiteFeatureReader } from '../modules/features/guard.js';
 
 export type { DeliveryResult, Notification, NotificationTemplate, Notifier } from '../modules/notifications/notifier.js';
 export { createLogNotifier } from '../modules/notifications/notifier.js';
@@ -54,7 +55,8 @@ export { createLogNotifier } from '../modules/notifications/notifier.js';
  *                                 olayla uyusmuyorsa kimse. TENDER_REPLIED -> yanitlanan acik sorularin
  *                                 yazarlari (hala uyeyse) (modules/tenders/notifications.ts)
  *       RESTRUCTURE_REQUESTED  -> yonetim (yonetici + firma); RESTRUCTURE_APPROVED / _REJECTED -> talebi
- *                                 acan sakin; talebin guncel durumu olayla uyusmuyorsa kimse
+ *                                 acan sakin; talebin guncel durumu olayla uyusmuyorsa veya sitede
+ *                                 `admin.debtRestructure` kapaliysa kimse
  *                                 (modules/finance/planRequestNotifications.ts)
  *  4. Her aliciya `Notifier` ile bildirim gonderilir: NOTIFICATION_CHANNEL=log (yapilandirilmis
  *     log) veya ses (e-posta; tercih, adres ve alici bazli tekrar korumasi kanal icinde, bkz.
@@ -375,6 +377,8 @@ export type WorkerDeps = {
   tenders: Pick<TenderRepository, 'get' | 'listComments'>;
   /** Yapilandirma talebi: guncel durum (bayat olay elenir), alici ve tutarlar. */
   planRequests: Pick<PlanRequestRepository, 'get'>;
+  /** Site ozellikleri: `admin.debtRestructure` kapaliysa RESTRUCTURE_* bildirimleri gonderilmez. */
+  features: Pick<SiteFeatureReader, 'resolve'>;
   notifier: Notifier;
   /** Mobil bildirim kanali; null: kapali (PUSH_CHANNEL=off). */
   push: PushChannel | null;
@@ -401,6 +405,7 @@ export function createNotificationWorker(overrides: Partial<WorkerDeps> = {}) {
     assemblies: assemblyRepository,
     tenders: tenderRepository,
     planRequests: planRequestRepository,
+    features: overrides.features ?? createSiteFeatureReader({ getSite: (id) => coreRepository.getSite(id) }),
     notifier: overrides.notifier ?? createNotifierFromEnv(),
     push: overrides.push !== undefined ? overrides.push : createPushChannelFromEnv(process.env, { now }),
     isProcessed: async (apt, id) => Boolean(await getTenantItem(processedKey(apt, id))),
@@ -485,6 +490,8 @@ export function createNotificationWorker(overrides: Partial<WorkerDeps> = {}) {
       return { now: deps.now(), tender: t && t.apartmentId === event.apartmentId ? { tender: t, ...(comments ? { comments: comments.filter((c) => c.apartmentId === event.apartmentId) } : {}) } : null };
     }
     if (isRestructureEvent(event)) {
+      // Borc yapilandirma sitede kapatildiysa (sonradan da olsa) talep bildirimi gitmez.
+      if (!(await deps.features.resolve(event.apartmentId))['admin.debtRestructure']) return { now: deps.now(), planRequest: null };
       const r = await deps.planRequests.get(event.apartmentId, event.payload.requestId);
       return { now: deps.now(), planRequest: r && r.apartmentId === event.apartmentId ? r : null };
     }
