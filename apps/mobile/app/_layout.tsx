@@ -8,6 +8,7 @@ import { BrandMark } from '@/components/Brand';
 import { AppText, Card, Screen } from '@/components/ui';
 import { env, envResult } from '@/config/env';
 import { AuthProvider, useAuth } from '@/context/AuthProvider';
+import { useReactQueryAppState } from '@/hooks/useAppForeground';
 import { createQueryClient } from '@/lib/api/queryClient';
 import { areaForRole } from '@/lib/auth/flow';
 import { headerOptions } from '@/navigation/options';
@@ -85,6 +86,7 @@ function RootStack() {
 function App() {
   const [services] = useState(() => createServices(env));
   const [queryClient] = useState(createQueryClient);
+  useReactQueryAppState();
   const { scheme, colors } = useTheme();
   const navTheme = useMemo(() => {
     const base = scheme === 'dark' ? DarkTheme : DefaultTheme;

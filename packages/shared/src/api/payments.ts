@@ -52,4 +52,4 @@ export const quoteSchema = z.object({
 export type PaymentQuote = z.infer<typeof quoteSchema>;
 
 /** "Online öde" yalnizca apartmanda online odeme aciksa ve odenecek tutar varsa gosterilir. */
-export const canPayOnline = (quote: PaymentQuote | undefined): boolean => !!quote?.onlinePaymentEnabled && quote.totalDue >= 1;
+export const canPayOnline = (quote: PaymentQuote | undefined): quote is PaymentQuote => !!quote?.onlinePaymentEnabled && quote.totalDue >= 1;

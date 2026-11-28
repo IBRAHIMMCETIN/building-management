@@ -1,5 +1,6 @@
 import { Stack } from 'expo-router';
 import { PortalUnitProvider } from '@/context/PortalUnitProvider';
+import { PortalForegroundRefresh } from '@/hooks/useAppForeground';
 import { headerOptions } from '@/navigation/options';
 import { useTheme } from '@/theme/useTheme';
 
@@ -8,6 +9,7 @@ export default function ResidentLayout() {
   const { colors } = useTheme();
   return (
     <PortalUnitProvider>
+      <PortalForegroundRefresh />
       <Stack screenOptions={{ ...headerOptions(colors), contentStyle: { backgroundColor: colors.bg } }}>
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
         <Stack.Screen name="announcements/[id]" options={{ title: 'Duyuru' }} />

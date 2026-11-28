@@ -10,7 +10,8 @@ import { PAYMENT_WEB_PATH } from '@/lib/nav';
 /**
  * "Online öde" (web: components/portal/PayOnlineButton.tsx): yalnizca apartmanda online odeme
  * aciksa ve odenecek tutar varsa. Mobilde kart girisi YOKTUR: web odeme sayfasi uygulama ici
- * tarayicida acilir (iyzico / PayTR sayfasi). Tarayici kapaninca borc ve hareketler yenilenir.
+ * tarayicida acilir (iyzico / PayTR sayfasi). Donuste borc ve hareketler yenilenir (iOS: tarayici
+ * kapaninca; Android / web: uygulama one gelince, PortalForegroundRefresh).
  * `hint`: online odeme kapaliysa elden / havale notu.
  */
 export function PayOnlineButton({ hint = false }: { hint?: boolean }) {
@@ -21,7 +22,9 @@ export function PayOnlineButton({ hint = false }: { hint?: boolean }) {
   if (canPayOnline(quote.data)) {
     return (
       <WebLinkButton
-        path={PAYMENT_WEB_PATH}
+        // Web odeme sayfasi kendi daire secimini degil, mobilde gosterilen daireyi kullanir
+        // (web PaymentPage `?unitId=`'yi kullanicinin dairesiyse uygular).
+        path={`${PAYMENT_WEB_PATH}?unitId=${encodeURIComponent(quote.data.unitId)}`}
         label="Online öde"
         icon={CreditCard}
         onClosed={() => void queryClient.invalidateQueries({ queryKey: portalKeys.all(user?.apartmentId ?? '', user?.sub ?? '') })}

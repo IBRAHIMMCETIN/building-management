@@ -6,11 +6,13 @@ import type { SignedDownload } from '@bm/shared/api/documents';
  * openSignedDocument ile ayni (apps/web/src/lib/api/documentModel.ts).
  */
 
-export async function openInAppBrowser(url: string): Promise<void> {
+/** Yeni sekme (`opened`): donus sekme / pencere odagiyla anlasilir. */
+export async function openInAppBrowser(url: string): Promise<'closed' | 'opened'> {
   // `noopener` ozelligi verilirse window.open null doner; bu yuzden opener elle kesilir.
   const win = window.open(url, '_blank');
   if (win) win.opener = null;
   else window.location.assign(url);
+  return 'opened';
 }
 
 export async function openDocument(load: () => Promise<SignedDownload>): Promise<void> {

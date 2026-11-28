@@ -1,12 +1,18 @@
-import { fireEvent, screen, waitFor } from '@testing-library/react-native';
+import { act, fireEvent, screen, waitFor } from '@testing-library/react-native';
 import * as WebBrowser from 'expo-web-browser';
 import { announcements, quote, summary, ticket } from '@/test/fixtures';
 import { renderApp } from '@/test/renderApp';
+import { AppState } from 'react-native';
+import { PortalForegroundRefresh } from '@/hooks/useAppForeground';
 import { HomeScreen } from './HomeScreen';
 
 const mockRouter = { push: jest.fn(), navigate: jest.fn(), replace: jest.fn(), back: jest.fn(), canGoBack: () => true };
 jest.mock('expo-router', () => ({ useRouter: () => mockRouter }));
-jest.mock('expo-web-browser', () => ({ openBrowserAsync: jest.fn(async () => ({ type: 'opened' })), WebBrowserPresentationStyle: { PAGE_SHEET: 'pageSheet' } }));
+jest.mock('expo-web-browser', () => ({
+  openBrowserAsync: jest.fn(async () => ({ type: 'opened' })),
+  WebBrowserPresentationStyle: { PAGE_SHEET: 'pageSheet' },
+  WebBrowserResultType: { DISMISS: 'dismiss', OPENED: 'opened' },
+}));
 
 const routes = (over: Record<string, unknown> = {}) => ({
   'GET /api/portal/my-summary': summary(),
@@ -40,11 +46,37 @@ describe('Ana Sayfa', () => {
     expect(mockRouter.push).toHaveBeenCalledWith({ pathname: '/resident/announcements/[id]', params: { id: 'an-2' } });
   });
 
-  it('online odeme acikken "Online öde" web odeme sayfasini uygulama ici tarayicida acar; kapaninca borc yenilenir', async () => {
+  it('"Online öde" gosterilen dairenin web odeme sayfasini acar; iOS: tarayici kapaninca borc yenilenir', async () => {
+    jest.mocked(WebBrowser.openBrowserAsync).mockResolvedValueOnce({ type: WebBrowser.WebBrowserResultType.DISMISS });
     const { calls } = await renderApp(<HomeScreen />, { routes: routes() });
     await fireEvent.press(await screen.findByRole('link', { name: 'Online öde' }));
-    expect(WebBrowser.openBrowserAsync).toHaveBeenCalledWith('https://web.test/app/odeme', expect.anything());
+    expect(WebBrowser.openBrowserAsync).toHaveBeenCalledWith('https://web.test/app/odeme?unitId=u-3', expect.anything());
     await waitFor(() => expect(calls.filter((c) => c.path === '/api/portal/my-summary').length).toBe(2));
+  });
+
+  it('Android: tarayici hemen doner (yenileme yok); uygulama one gelince borc yenilenir', async () => {
+    const listeners: Array<(s: string) => void> = [];
+    const spy = jest.spyOn(AppState, 'addEventListener').mockImplementation((_type, listener) => {
+      listeners.push(listener as (s: string) => void);
+      return { remove: () => undefined } as ReturnType<typeof AppState.addEventListener>;
+    });
+    const { calls } = await renderApp(
+      <>
+        <PortalForegroundRefresh />
+        <HomeScreen />
+      </>,
+      { routes: routes() },
+    );
+    await fireEvent.press(await screen.findByRole('link', { name: 'Online öde' }));
+    await new Promise((r) => setTimeout(r, 20));
+    const summaries = () => calls.filter((c) => c.path === '/api/portal/my-summary').length;
+    expect(summaries()).toBe(1);
+    await act(async () => {
+      for (const l of listeners) l('background');
+      for (const l of listeners) l('active');
+    });
+    await waitFor(() => expect(summaries()).toBe(2));
+    spy.mockRestore();
   });
 
   it('online odeme kapaliysa elden / havale notu', async () => {

@@ -11,13 +11,18 @@ import { palettes } from '@/theme/tokens';
  *    link saklanmaz.
  */
 
-export async function openInAppBrowser(url: string): Promise<void> {
-  await WebBrowser.openBrowserAsync(url, {
+/**
+ * Uygulama ici tarayici. `closed`: kullanici kapatana kadar beklendi (iOS SFSafariViewController);
+ * `opened`: hemen dondu (Android Custom Tabs uygulamayi arka plana alir; donus AppState ile anlasilir).
+ */
+export async function openInAppBrowser(url: string): Promise<'closed' | 'opened'> {
+  const result = await WebBrowser.openBrowserAsync(url, {
     controlsColor: palettes.light.accent,
     toolbarColor: palettes.light.surface,
     presentationStyle: WebBrowser.WebBrowserPresentationStyle.PAGE_SHEET,
     enableBarCollapsing: true,
   });
+  return result.type === 'opened' ? 'opened' : 'closed';
 }
 
 export async function openDocument(load: () => Promise<SignedDownload>): Promise<void> {

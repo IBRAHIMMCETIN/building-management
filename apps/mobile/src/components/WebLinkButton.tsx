@@ -14,7 +14,10 @@ type Props = {
   variant?: 'primary' | 'secondary';
   block?: boolean;
   align?: 'start' | 'center';
-  /** Uygulama ici tarayici kapaninca (ornek: odeme sonrasi borc verisini yenilemek icin). */
+  /**
+   * Uygulama ici tarayici kullanici kapatinca (yalnizca iOS bunu bildirir). Android / web'de tarayici
+   * hemen doner; donus uygulamanin one gelmesiyle (AppState, ForegroundRefresh) yakalanir.
+   */
   onClosed?: () => void;
 };
 
@@ -48,7 +51,9 @@ export function WebLinkButton({ path, label, icon = ExternalLink, variant = 'pri
         onPress={() => {
           setError(null);
           openInAppBrowser(url)
-            .then(() => onClosed?.())
+            .then((result) => {
+              if (result === 'closed') onClosed?.();
+            })
             .catch((err: unknown) => setError(errorMessage(err)));
         }}
       />
