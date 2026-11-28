@@ -1,7 +1,7 @@
 import { type Context, Hono } from 'hono';
 import type { Authenticator, Role } from '../../auth/claims.js';
 import { type Env, authenticateWith, handleError, readJson, requireRole } from '../../http/helpers.js';
-import { type SiteFeatureReader, requireFeature } from '../features/guard.js';
+import { type SiteFeatureReader, featureAllowed, requireFeature } from '../features/guard.js';
 import { TenderError } from './errors.js';
 import type { TenderContext, TenderService } from './service.js';
 
@@ -118,7 +118,13 @@ export function tenderPortalRoutes({ authenticate, service, features }: TenderRo
   const r = base(authenticate, features);
   r.use('*', requireRole(['resident']));
   r.get('/', async (c) => c.json(await service.portalList(ctxOf(c))));
-  r.get('/:id', async (c) => c.json(await service.portalGet(ctxOf(c), id(c))));
+  r.get('/:id', async (c) => {
+    const out = await service.portalGet(ctxOf(c), id(c));
+    // Genel kurul modulu sitede kapaliysa karar baglantisi acilamaz (portal 403 doner): baglanti yok.
+    const ad = out.tender.assemblyDecision as { portalLink?: boolean } | undefined;
+    if (ad?.portalLink && !(await featureAllowed(features, c.get('claims'), 'admin.assemblies'))) ad.portalLink = false;
+    return c.json(out);
+  });
   r.get('/:id/quotes/:quoteId/document', async (c) => c.json(await service.portalQuoteDocument(ctxOf(c), id(c), quoteId(c))));
   r.post('/:id/comments', async (c) => {
     const result = await service.comment(ctxOf(c), id(c), await readJson(c));

@@ -60,6 +60,14 @@ describe('ozellik anahtarlari', () => {
     expect((await get(a, '/api/assemblies')).status).toBe(200);
   });
 
+  it('ihale portali: genel kurul kapaliysa karar baglantisi (portalLink) verilmez', async () => {
+    const tenderService = { portalGet: async () => ({ tender: { tenderId: 't1', assemblyDecision: { assemblyId: 'asm1', portalLink: true } } }) } as unknown as TenderService;
+    const build = (off: boolean) =>
+      createApp({ version: 'test', authenticate: createMockAuthenticator(), assemblyService: stub<AssemblyService>(), tenderService, siteFeatures: staticSiteFeatureReader({ 'admin.assemblies': !off }) });
+    expect((await get(build(false), '/api/portal/tenders/t1', 'resident')).body).toMatchObject({ tender: { assemblyDecision: { portalLink: true } } });
+    expect((await get(build(true), '/api/portal/tenders/t1', 'resident')).body).toMatchObject({ tender: { assemblyDecision: { portalLink: false } } });
+  });
+
   it('worker: modulu kapali sitenin olayi gonderilmez, islenmis sayilir; diger olaylar etkilenmez', async () => {
     expect(featureOfEvent('ASSEMBLY_RESCHEDULED')).toBe('admin.assemblies');
     expect(featureOfEvent('TENDER_REPLIED')).toBe('admin.tenders');

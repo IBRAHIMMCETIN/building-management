@@ -15,9 +15,10 @@ import {
 } from '@bm/shared/api/tenders';
 import { formatDate, formatDateTime } from '@bm/shared/dates';
 import { formatTRY } from '@bm/shared/money';
+import { useRouter } from 'expo-router';
 import { useState } from 'react';
 import { StyleSheet, View } from 'react-native';
-import { CircleCheck, FileText, Trophy } from '@/components/icons';
+import { CircleCheck, FileText, Landmark, Trophy } from '@/components/icons';
 import { PortalQueryState } from '@/components/portal/PortalQueryState';
 import { RefetchErrorBanner } from '@/components/portal/RefetchErrorBanner';
 import { Alert, AppText, Badge, Button, Card, CardTitle, LoadingBlock, Screen, TextField } from '@/components/ui';
@@ -77,7 +78,9 @@ export function TenderDetailScreen({ id }: { id: string }) {
 
 function Detail({ tender: t }: { tender: Tender }) {
   const { colors } = useTheme();
+  const router = useRouter();
   const d = t.decision;
+  const ad = t.assemblyDecision;
 
   return (
     <>
@@ -117,6 +120,28 @@ function Detail({ tender: t }: { tender: Tender }) {
                 <AppText variant="small" tone="muted">
                   {`Karar referansı: ${d.reference}`}
                 </AppText>
+              )}
+              {ad && (
+                <View style={styles.field}>
+                  <AppText variant="small" tone="muted">
+                    {`Dayanak genel kurul kararı: ${formatDate(ad.meetingAt)} · ${ad.itemTitle}`}
+                  </AppText>
+                  {ad.corrected && (
+                    <AppText variant="caption" tone="muted">
+                      {`Bu karar sonradan düzeltildi${ad.currentDecision === 'rejected' ? ' (güncel kayıt: reddedildi)' : ''}.`}
+                    </AppText>
+                  )}
+                  {/* Genel kurul sayfasi yalnizca maliklere ve tutanak kesinlesince acik (portalLink). */}
+                  {ad.portalLink && (
+                    <Button
+                      variant="ghost"
+                      icon={Landmark}
+                      label="Genel kurul kararını aç"
+                      accessibilityRole="link"
+                      onPress={() => router.push({ pathname: '/resident/assemblies/[id]', params: { id: ad.assemblyId } })}
+                    />
+                  )}
+                </View>
               )}
             </View>
           </View>
@@ -294,6 +319,7 @@ function Questions({ tender: t }: { tender: Tender }) {
                   {formatDateTime(c.createdAt)}
                 </AppText>
               </View>
+              {c.replyTo && <ReplyQuote question={t.comments.find((x) => x.commentId === c.replyTo)} />}
               <AppText variant="small">{c.body}</AppText>
             </View>
           ))}
@@ -335,7 +361,21 @@ function Questions({ tender: t }: { tender: Tender }) {
   );
 }
 
+/** Yonetim yaniti belirli bir soruya: sorunun kisa alintisi (web TenderComments ile ayni). */
+function ReplyQuote({ question }: { question: TenderComment | undefined }) {
+  const { colors } = useTheme();
+  if (!question) return null;
+  const excerpt = question.body.length > 120 ? `${question.body.slice(0, 119).trimEnd()}…` : question.body;
+  return (
+    <View style={[styles.quoteBox, { borderColor: colors.border }]}>
+      <AppText variant="caption" tone="muted">{`Yanıtlanan soru: ${excerpt}`}</AppText>
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
+  field: { gap: space(1) },
+  quoteBox: { borderLeftWidth: 2, paddingLeft: space(2) },
   meta: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: space(2) },
   description: { borderRadius: radii.lg, padding: space(3) },
   decision: { flexDirection: 'row', alignItems: 'flex-start', gap: space(3) },
