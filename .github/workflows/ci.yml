@@ -1,6 +1,6 @@
 name: CI
 
-# Her push ve PR'da tum calisma alanlari: typecheck, test, web derlemesi.
+# Her push ve PR'da tum calisma alanlari: typecheck, test, web derlemesi; mobil (Expo) ayri is.
 # AWS kimlik bilgisi GEREKMEZ (testler mock/sahte istemcilerle kosar). Dagitim ayri:
 # serverless-deploy.yml (API + altyapi).
 
@@ -43,3 +43,29 @@ jobs:
           VITE_COGNITO_REGION: eu-north-1
           VITE_COGNITO_USER_POOL_ID: eu-north-1_ci
           VITE_COGNITO_USER_POOL_CLIENT: ci-client
+
+  # Mobil uygulama (apps/mobile, Expo) ve ortak paket (packages/shared). EAS derlemesi YOK
+  # (Expo hesabi / imza gerekmez); Metro paketlemesi web hedefiyle denetlenir.
+  mobile:
+    name: Mobil (typecheck, test, Metro paketi)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck --workspace @bm/shared --workspace @bm/mobile
+      - run: npm test --workspace @bm/shared --workspace @bm/mobile
+      # Sahte Cognito degerleriyle production paketi (yalnizca derlenebilirlik; yayinlanmaz).
+      - name: Metro paketi (web hedefi)
+        run: npx expo export --platform web
+        working-directory: apps/mobile
+        env:
+          CI: "1"
+          EXPO_PUBLIC_AUTH_MODE: cognito
+          EXPO_PUBLIC_API_URL: https://api.example.invalid
+          EXPO_PUBLIC_COGNITO_REGION: eu-north-1
+          EXPO_PUBLIC_COGNITO_USER_POOL_ID: eu-north-1_ci
+          EXPO_PUBLIC_COGNITO_USER_POOL_CLIENT: ci-client
