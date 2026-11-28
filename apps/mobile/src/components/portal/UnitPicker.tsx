@@ -53,9 +53,17 @@ export function UnitPicker() {
       </Pressable>
 
       <Modal visible={open} transparent animationType="fade" onRequestClose={() => setOpen(false)}>
-        <Pressable accessibilityLabel="Kapat" style={[styles.scrim, { backgroundColor: colors.scrim }]} onPress={() => setOpen(false)}>
+        {/* Karartma pencerenin kardesi ve ekran okuyucudan gizli (ebeveyn Pressable tum pencereyi tek oge yapardi); bkz. Sheet. */}
+        <View style={styles.scrim}>
+          <Pressable
+            accessible={false}
+            importantForAccessibility="no-hide-descendants"
+            accessibilityElementsHidden
+            onPress={() => setOpen(false)}
+            style={[StyleSheet.absoluteFill, { backgroundColor: colors.scrim }]}
+          />
           <SafeAreaView edges={['bottom']} style={styles.sheetWrap}>
-            <Pressable style={[styles.sheet, { backgroundColor: colors.bg }]} onPress={(e) => e.stopPropagation()}>
+            <View accessibilityViewIsModal onAccessibilityEscape={() => setOpen(false)} style={[styles.sheet, { backgroundColor: colors.bg }]}>
               <AppText variant="heading" weight="semibold" accessibilityRole="header">
                 Daire seçin
               </AppText>
@@ -78,9 +86,9 @@ export function UnitPicker() {
                 ))}
               </View>
               <Button variant="ghost" label="Vazgeç" onPress={() => setOpen(false)} />
-            </Pressable>
+            </View>
           </SafeAreaView>
-        </Pressable>
+        </View>
       </Modal>
     </>
   );

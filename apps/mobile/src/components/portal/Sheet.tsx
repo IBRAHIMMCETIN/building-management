@@ -16,16 +16,28 @@ type Props = {
 /**
  * Alttan acilan pencere (web: components/ui/Dialog.tsx). Cerceve ust cubuk daire secicisiyle ayni
  * (UnitPicker): karartma, tema zemini, ust koseler yuvarlak; baslik + "Kapat", icerik kaydirilir,
- * klavye acilinca yukari itilir. Karartmaya veya geri tusuna basinca kapanir.
+ * klavye acilinca yukari itilir.
+ *
+ * Erisilebilirlik: karartma pencerenin KARDESIDIR (ebeveyni degil) ve ekran okuyucudan gizlidir;
+ * RN'de Pressable varsayilan olarak tek bir erisilebilir oge oldugundan ebeveyn karartma tum
+ * pencereyi tek bir "Kapat" ogesine cevirirdi. Pencere `accessibilityViewIsModal` (VoiceOver arkadaki
+ * ekrani okumaz), iOS kacis hareketi ve Android geri tusu kapatir; gorunen "Kapat" dugmesi basliktadir.
  */
 export function Sheet({ open, title, onClose, children }: Props) {
   const { colors } = useTheme();
   return (
     <Modal visible={open} transparent animationType="fade" onRequestClose={onClose}>
-      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.fill}>
-        <Pressable accessibilityLabel="Kapat" style={[styles.scrim, { backgroundColor: colors.scrim }]} onPress={onClose}>
+      <View style={styles.fill}>
+        <Pressable
+          accessible={false}
+          importantForAccessibility="no-hide-descendants"
+          accessibilityElementsHidden
+          onPress={onClose}
+          style={[StyleSheet.absoluteFill, { backgroundColor: colors.scrim }]}
+        />
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} pointerEvents="box-none" style={styles.bottom}>
           <SafeAreaView edges={['bottom']} style={styles.sheetWrap}>
-            <Pressable style={[styles.sheet, { backgroundColor: colors.bg }]} onPress={(e) => e.stopPropagation()}>
+            <View accessibilityViewIsModal onAccessibilityEscape={onClose} style={[styles.sheet, { backgroundColor: colors.bg }]}>
               <View style={styles.header}>
                 <AppText variant="heading" weight="semibold" accessibilityRole="header" style={styles.title}>
                   {title}
@@ -42,17 +54,17 @@ export function Sheet({ open, title, onClose, children }: Props) {
               <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.content}>
                 {children}
               </ScrollView>
-            </Pressable>
+            </View>
           </SafeAreaView>
-        </Pressable>
-      </KeyboardAvoidingView>
+        </KeyboardAvoidingView>
+      </View>
     </Modal>
   );
 }
 
 const styles = StyleSheet.create({
   fill: { flex: 1 },
-  scrim: { flex: 1, justifyContent: 'flex-end' },
+  bottom: { flex: 1, justifyContent: 'flex-end' },
   sheetWrap: { width: '100%', maxHeight: '92%' },
   sheet: { borderTopLeftRadius: radii.xl, borderTopRightRadius: radii.xl, paddingTop: space(2), flexShrink: 1 },
   header: { flexDirection: 'row', alignItems: 'center', gap: space(2), paddingLeft: space(4), paddingRight: space(2) },
