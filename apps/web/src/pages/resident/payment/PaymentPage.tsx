@@ -1,9 +1,9 @@
 import { CreditCard, Lock, ReceiptText } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
-import { Link } from 'react-router';
+import { Link, useSearchParams } from 'react-router';
 import { PortalQueryState } from '@/components/portal/PortalQueryState';
 import { Alert, Badge, Button, Card, CardTitle, FilterChips, FormField, Input, Skeleton } from '@/components/ui';
-import { usePortalUnit } from '@/context/PortalUnitContext';
+import { usePortalUnit, useRequestedUnit } from '@/context/PortalUnitContext';
 import { useIdempotencyKey } from '@/hooks/useIdempotencyKey';
 import { useCreatePayment, usePaymentQuote } from '@/hooks/usePayments';
 import { ApiError, errorMessage } from '@/lib/api/errors';
@@ -328,9 +328,12 @@ function PaymentForm({ quote }: { quote: PaymentQuote }) {
 
 export function PaymentPage() {
   const quote = usePaymentQuote();
+  // Mobil uygulamadan `?unitId=` ile gelindiyse once o daire secilir (kullanicinin dairesiyse).
+  const [params] = useSearchParams();
+  const requested = useRequestedUnit(params.get('unitId'));
 
   let content;
-  if (quote.isPending) {
+  if (quote.isPending || requested.pending) {
     content = (
       <Card role="status" aria-label="Ödeme bilgileri yükleniyor" className="flex flex-col gap-3">
         <Skeleton className="h-5 w-1/3" />

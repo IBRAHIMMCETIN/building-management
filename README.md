@@ -12,6 +12,7 @@ Türkiye'deki apartman, site ve profesyonel yönetim firmaları için çok kirac
 - [Repo Yapısı](#repo-yapısı)
 - [Gereksinimler](#gereksinimler)
 - [Yerel Geliştirme](#yerel-geliştirme)
+- [Mobil uygulama (apps/mobile)](#mobil-uygulama-appsmobile)
 - [Ortam Değişkenleri](#ortam-değişkenleri)
 - [Test](#test)
 - [Altyapı (Terraform)](#altyapı-terraform)
@@ -83,7 +84,10 @@ building-management/
 │   │   │   └── workers/          # SQS tüketen worker Lambda'lar
 │   │   ├── scripts/              # seed-admin, backfill:sites, backfill:expense-index, backfill:finance-summary, backfill:month-summary, fix:receivable-names
 │   │   └── test/                 # Vitest testleri
-│   └── web/                      # @bm/web — React + Vite
+│   ├── web/                      # @bm/web — React + Vite
+│   └── mobile/                   # @bm/mobile — Expo (React Native) mobil uygulama; bkz. Mobil uygulama
+├── packages/
+│   └── shared/                   # @bm/shared — web + mobil ortak, çerçeveden bağımsız TS (para, tarih, hata, şemalar)
 ├── infra/                        # Serverless Terraform yığını
 │   ├── api.tf  cognito.tf  dynamodb.tf  sns_sqs.tf  worker.tf  outbox.tf  operations.tf
 │   ├── scheduler.tf  bulk_jobs.tf  audit.tf  security_monitoring.tf  payments.tf  bank.tf  storage.tf
@@ -98,7 +102,7 @@ building-management/
 └── scripts/                      # CI yardımcıları, sürüm betiği
 ```
 
-Kök dizin bir npm workspaces monoreposudur (`apps/*`).
+Kök dizin bir npm workspaces monoreposudur (`apps/*`, `packages/*`).
 
 ---
 
@@ -152,7 +156,7 @@ npm run dev:api
 | --- | --- |
 | `npm run typecheck` | Tüm workspace'lerde `tsc --noEmit` |
 | `npm test` | Tüm workspace testleri |
-| `npm run build` | Tüm workspace build'leri |
+| `npm run build` | `build` betiği olan workspace'lerin build'leri (`--if-present`; mobil ve ortak paketin build adımı yoktur) |
 | `npm run release` | Sürüm paketi oluşturur (`scripts/make-release.mjs`) |
 
 ### API komutları (`apps/api`)
@@ -166,6 +170,63 @@ npm run dev:api
 | `npm run backfill:finance-summary -w @bm/api` | Alt cari özetlerini (`FSUM#`) doldurur/tazeler; `--verify` eski tam-defter hesabıyla karşılaştırır; bkz. [Veri düzeltme betikleri](#veri-düzeltme-betikleri) |
 | `npm run backfill:month-summary -w @bm/api` | Hesap-ay hareket özetinin (`MSUM#`) P1-c öncesi toplamlarını doldurur, defterle birebir doğrular ve siteyi hazır işaretler; `--dry-run`, `--verify`, `--site <id>` |
 | `npm run seed:admin -w @bm/api` | İlk kurulum betiği (bkz. [Bootstrap](#ilk-kurulum-bootstrap)) |
+
+---
+
+## Mobil uygulama (apps/mobile)
+
+App Store / Google Play için **YÖNESİST** mobil uygulaması: Expo SDK 58 (React Native 0.88, React 19.3.0), Expo Router (dosya tabanlı), TypeScript strict, React Query. İlk hedef kitle **sakin**, **bina görevlisi** ve **güvenlik**; yönetim paneli web'de kalır. Ortak, çerçeveden bağımsız kod `packages/shared`'tadır (`@bm/shared`: kuruş ↔ TRY, Europe/Istanbul tarihleri, API hata modeli ve Türkçe mesajlar, Cognito hata eşlemesi, JWT claim çözümleme, mock kimlik senaryoları, M1'in API şemaları); web'deki eski yollar (`@/lib/money` vb.) bu modülleri yeniden dışa aktarır.
+
+### Çalıştırma
+
+```bash
+npm install                                          # kökten (workspaces)
+
+# Web önizlemesi, API ve Cognito olmadan: mock kimlik + demo veri -> http://localhost:8081
+npm run web:demo -w @bm/mobile                       # port: npm run web:demo -w @bm/mobile -- --port 8090
+
+# Yerel / gerçek API ile: apps/mobile/.env.example -> apps/mobile/.env.local, sonra
+npm run start -w @bm/mobile                          # QR: Expo Go (yalnızca mock kimlik), w: web
+```
+
+- **Expo Go** yalnızca `EXPO_PUBLIC_AUTH_MODE=mock` ile çalışır. Cognito girişi (Amplify v6 + `@aws-amplify/react-native`, SRP için native modül) Expo Go'da çalışmaz; **geliştirme derlemesi** gerekir (`npx expo run:ios|android` veya EAS development build). Web önizlemesi Cognito ile de çalışır.
+- Mock giriş senaryoları web ile aynıdır: `resident@dev.local`, `security_guard@dev.local`, `building_staff@dev.local`, `apartment_manager@dev.local`, `multi@dev.local` (bağlam seçimi), şifre `Gecici` + 5 rakam (yeni şifre adımı), e-postada `+mfa` (TOTP, kod `123456`). Demo modunda (`EXPO_PUBLIC_API_MODE=demo`) API'ye gidilmez, üst çubukta "Demo verisi" etiketi görünür; mock / demo store derlemesinde reddedilir.
+- Web önizlemesi tarayıcıdan gerçek API'ye gidecekse önizleme adresi (ör. `http://localhost:8081`) API'nin CORS listesinde olmalıdır (`cors_allow_origins`); cihazdaki uygulama CORS'a tabi değildir. Telefondan yerel API için `EXPO_PUBLIC_API_URL`'e bilgisayarın yerel ağ adresi yazılır.
+
+| Değişken | Açıklama |
+| --- | --- |
+| `EXPO_PUBLIC_API_URL` | API Gateway adresi (web `VITE_API_URL` ile aynı); demo modu dışında zorunlu |
+| `EXPO_PUBLIC_AUTH_MODE` | `cognito` (varsayılan) \| `mock` (yalnızca geliştirme paketi) |
+| `EXPO_PUBLIC_API_MODE` | `live` (varsayılan) \| `demo` (örnek veri; yalnızca mock ile) |
+| `EXPO_PUBLIC_COGNITO_REGION` / `_USER_POOL_ID` / `_USER_POOL_CLIENT` | Cognito (web `VITE_COGNITO_*` ile aynı değerler; gizli değildir) |
+| `EXPO_PUBLIC_COGNITO_TOKEN_USE` | `id` (varsayılan, LITE / Pre Token V1) \| `access` |
+| `EXPO_PUBLIC_WEB_URL` | Web uygulamasının kökü: mobilde henüz olmayan ekranlar ve online ödeme uygulama içi tarayıcıda buradan açılır |
+
+`EXPO_PUBLIC_*` değerleri pakete gömülür; bunlara gizli bilgi yazılmaz. Eksik / hatalı yapılandırmada uygulama açılışta hangi değişkenin eksik olduğunu gösterir.
+
+### M1 kapsamı (temel)
+
+- **Kimlik:** giriş (SRP), ilk girişte yeni şifre, şifremi unuttum (kod), TOTP adımı, birden fazla apartman / rolde bağlam seçimi ve Hesabım'dan değiştirme, token yenileme (401'de tek sefer, eşzamanlı istekler tek yenilemeyi paylaşır), çıkış. Oturum **yalnızca kimlik sağlayıcısının reddinde** düşer (`NotAuthorizedException`, iptal edilmiş / yeniden kullanılmış refresh token vb.); ağ kesintisinde oturum korunur, istek "Sunucuya ulaşılamadı" ile döner ve sonra yeniden denenir; çevrimdışı açılışta saklanan token'larla açılır. Kullanıcı / apartman / rol değişince (giriş, çıkış, bağlam, 401) React Query önbelleği oturum değişmeden **önce** temizlenir (`SessionManager.onScopeChange`), sorgu anahtarları bu kapsamı içerir. Token'lar cihazda **Keychain / Keystore**'da (`expo-secure-store`, ~2 KB sınırı için parçalı; yeni parçalar yazıldıktan sonra eskiler silinir, işlemler sıralı; iOS Keychain uygulama silinince kaldığı için yeniden kurulumda ilk açılışta temizlenir); web önizlemesinde `localStorage`.
+- **Gezinti:** korumalı ekranlar (`Stack.Protected`): oturum yoksa giriş yığını, rolsüz oturumda bağlam seçimi, role göre alan. Sakin sekmeleri: Ana Sayfa, Borçlarım, Talepler, Duyurular, Diğer (Ziyaretçi, Rezervasyon, Oylamalar, Genel Kurul (yalnızca maliklere), Tüketimim, İhaleler, Hesabım). Güvenlik: Kapı + Hesabım; bina görevlisi: İşlerim + Hesabım; diğer roller: "Yönetim paneli web'de" ekranı (web'de açma, bağlam değiştirme, çıkış). Birden fazla dairesi olan sakinde üst çubukta daire seçici.
+- **Hazır ekranlar:** Ana Sayfa (borç kartı ve durumu, gecikme uyarısı, sıradaki son ödeme, son ödeme, açık / onay bekleyen talepler, son 3 duyuru), Borçlarım (bakiye ve toplamlar, hesap hareketleri; aşağı çek-yenile, 20'şer satır — API tüm hareketleri tek yanıtta döner; makbuz PDF'i imzalı linkle sistem görüntüleyicisinde), Duyurular (liste + ayrıntı), Hesabım (profil, bağlam değiştirme, web ile aynı kategorilerde e-posta bildirim tercihleri — yalnızca değişen alan gönderilir, çıkış).
+- **Online ödeme:** "Online öde" web ödeme sayfasını (`/app/odeme?unitId=<gösterilen daire>`) uygulama içi tarayıcıda açar; kart bilgisi uygulamaya girmez. Web `PaymentPage` `?unitId=`'yi kullanıcının dairesiyse seçer (değilse yok sayar; parametresiz davranış aynı). Web oturumu ayrıdır (tarayıcıda giriş gerekebilir). Dönüşte borç verisi yenilenir: iOS'ta tarayıcı kapanınca, Android'de (Custom Tabs uygulamayı arka plana alır) ve web önizlemesinde uygulama öne gelince (`AppState`; React Query `focusManager` da `AppState`'e bağlı).
+- **Yer tutucular** ("Yakında — şimdilik web'den" + web'de aç): Talepler, Diğer'deki özellikler (M2), güvenlik Kapı ve görevli İşlerim (M3). Bildirimden (`?id=`) gelinen yer tutucu web'de aynı kaydı açar (ör. `/app/oylamalar/<id>`).
+- **Bildirim bağlantıları:** push `data.url` yolları kökte karşılanır (`app/borclar.tsx`, `app/duyurular/[id].tsx`, `app/oylamalar/[id].tsx`, `app/talepler/[id].tsx`, `app/kapi.tsx`, `app/rezervasyonlar.tsx`, `app/genel-kurul/[id].tsx`, `app/ihaleler/[id].tsx` ve kimliksiz biçimleri) ve aktif role göre yönlendirilir (`src/lib/deepLinks.ts`): sakinde hazır ekran veya yer tutucu, güvenlik / görevli kendi alanı, yönetim rolleri panel ekranı; oturum yoksa giriş. Sakin ekranı M2'de gerçek ekrana bağlanırken yalnızca bu eşleme değişir.
+- **Push fazı için hazır (M1'de push kaydı yok):** `SessionManager.setHooks({ afterSignIn, beforeSignOut })` — `afterSignIn` etkileşimli girişten sonra (açılışta geri yüklemede değil; girişi bekletmez) `POST /api/me/devices` için, `beforeSignOut` çıkışta token hâlâ geçerliyken (en fazla 3 sn, hata çıkışı engellemez) `DELETE /api/me/devices/:deviceId` için; 401 ile düşen oturumda çıkış kancası çağrılmaz. Bildirim tercihi şeması `push` kanalını içerir; `NotificationPreferencesCard channel="push"` ("Mobil bildirim", yalnızca `push` alanını gönderir) hazırdır, M1 Hesabım'ı yalnızca e-posta anahtarlarını gösterir.
+- **Tasarım:** web tema token'larının (`styles/theme.css`) karşılığı `src/theme/tokens.ts` (açık / koyu, sistem temasına göre), marka logoları `assets/`, `lucide-react-native` (derin import, `src/components/icons.ts`), ekran okuyucu etiketleri, en az 44 pt dokunma alanı, güvenli alanlar.
+
+### Teknik notlar
+
+- **React sürümleri:** Expo SDK 58 React'i `19.3.0`'a sabitler, web `^19.3.1` kullanır. npm, mobilin kopyasını `apps/mobile/node_modules`'a koyar (kökte web'inki kalır; web derlemesi etkilenmez). Kökteki ortak kütüphaneler (`react-native-web`, React Query, Expo Router) de mobilin React'ini kullansın diye `metro.config.js` ve `jest.config.js` `react` / `react-dom`'u uygulamanın kopyasına yönlendirir (native platformlarda Expo autolinking de aynısını yapar).
+- **TypeScript:** depo TypeScript 7 kullanır; Expo `~6.0` önerir. Babel derlediği için yalnızca tip denetimi etkilenir ve temizdir; `expo install --check` uyarısı `package.json` → `expo.install.exclude` ile kapatıldı.
+- **Testler:** `npm test -w @bm/mobile` (oturum akışı / reducer, mock adapter senaryoları, oturum kapsamı ve önbellek, yenileme / ağ hatası kararları, Cognito adapter hata eşlemesi ve çevrimdışı açılış, güvenli depo parçalama / yeniden kurulum, API istemcisi hata eşlemesi, ortam doğrulaması; sahte API ile Ana Sayfa / Borçlarım / Duyurular / Diğer / Hesabım tercihleri ve daire seçici; gerçek `app/` dizininde `renderRouter` ile role göre korumalı ekranlar ve bildirim bağlantıları). CI: `.github/workflows/ci.yml` → `mobile` işi (typecheck, test, `expo export --platform android` ve `--platform web` paket kontrolü; EAS derlemesi yok); `api` / `web` / `shared` `check` işinde.
+
+### Mağaza derlemesi öncesi (sahip)
+
+- **Paket kimliği yer tutucudur:** `app.json` → `ios.bundleIdentifier` ve `android.package` = `com.yonesist.app`. İlk store derlemesinden önce onaylanmalı; mağazaya yüklendikten sonra değiştirilemez.
+- **Hesaplar (sahibin kendisi açar ve yönetir):** Expo hesabı + EAS (`eas init`, `eas.json` derleme profilleri, `eas build` / `eas submit`), Apple Developer Program üyeliği (yıllık ücret; şirket adına D-U-N-S numarası), Google Play Console geliştirici hesabı (tek seferlik ücret). İmza anahtarları ve sertifikalar bu hesaplarda kalır; repoya veya `EXPO_PUBLIC_*` değişkenlerine yazılmaz.
+- **Varlıklar ve metinler:** 1024×1024 uygulama ikonu (şu an 512 px marka ikonu), mağaza ekran görüntüleri, gizlilik politikası adresi, App Store "App Privacy" ve Play "Data safety" formları (e-posta, finansal kayıtlar; reklam / izleme yok).
+- **Ortam:** production derlemesinde `EXPO_PUBLIC_AUTH_MODE=cognito`, prod API ve Cognito değerleri, `EXPO_PUBLIC_WEB_URL` = prod web adresi (EAS ortam değişkenleri).
 
 ---
 
@@ -220,6 +281,10 @@ npm test -w @bm/api
 # Web birim / bileşen testleri (Vitest + happy-dom) ve üretim derlemesi
 npm test -w @bm/web
 npm run build -w @bm/web
+
+# Ortak paket (Vitest) ve mobil uygulama (jest-expo + @testing-library/react-native)
+npm test -w @bm/shared
+npm test -w @bm/mobile
 
 # Terraform plan testleri (AWS kimlik bilgisi gerektirmez, mock provider)
 terraform -chdir=infra init -backend=false
@@ -408,6 +473,8 @@ Yedi rol: `platform_admin`, `management_company`, `apartment_manager`, `resident
 | Apartmanlar, Ödeme Hesapları, Aktarımlar, Faturalar, Kullanıcılar | — | — | — | — | — | ✓ |
 
 `resident` yalnızca sakin portalını (`/app/*`; misafir / kurye / araç: `/app/ziyaretci`; paylaşılmış ihaleler: `/app/ihale`; genel kurul yalnızca kat maliklerine: `/app/genel-kurul`) görür; üst çubukta aktif sitenin adı (yoksa **YÖNESİST** markası) gösterilir.
+
+Mobil uygulama (`apps/mobile`) aynı rolleri ve aynı API yetkilerini kullanır: `resident` sakin sekmelerine, `security_guard` ve `building_staff` saha sekmelerine girer; yönetim rolleri ve `platform_admin` için "Yönetim paneli web'de" ekranı gösterilir (bkz. [Mobil uygulama](#mobil-uygulama-appsmobile)).
 
 ---
 
@@ -835,7 +902,7 @@ API Gateway sınırı istemci başına değil, rota başınadır: arka ucu ve ma
 - [x] Makbuzlar: başarılı ticket'lar `PUSHRCPT#<UTC saat>` kovasına (3 gün TTL); `push_receipts` işi saatte bir (:20) imleçten (`PUSHRCPT#CURSOR`) sonraki, kapanışından 15 dk geçmiş, en fazla son 24 saatlik kovaları 1000'lik parçalarla sorgular, `DeviceNotRegistered` cihazları (gönderimden sonra yeniden kaydedilmediyse: `lastSeenAt` ticket zamanından eski) pasife alır, diğer hata kodlarını tek satır loglar (`PushReceiptsChecked`, `PushDevicesDeactivated` metrikleri). Geçici hatada imleç ilerlemez
 - [x] Altyapı (`infra/push.tf`): `push_channel` (`expo` varsayılan \| `off`), isteğe bağlı `expo_project_id`; Expo erişim anahtarı için değersiz Secrets Manager secret'ı (çıktı `expo_access_token_secret_arn`; worker ve scheduler yalnızca bu ARN'i okur, anahtar Lambda ortamında / state'te yok); push açıkken worker'a `dynamodb:UpdateItem` yalnızca `USER#*` / `PUSHTOKEN#*` bölümlerinde (`dynamodb:LeadingKeys`); `PushRejected` / `PushRetried` alarmları; `push_receipts` zamanlaması; worker zaman aşımı 30 → 60 sn, bildirim kuyruğu görünürlüğü 180 → 360 sn. Bu yüzden rezervasyon iptalinde ücret iadesi beklenen olay (`DeferredEventError`) artık ~3 değil **~6 dk** sonra yeniden denenir. Lambda'lar VPC'de değil: Expo'ya HTTPS çıkışı için NAT gerekmez (**`terraform apply` gerekir**)
 - [x] Mobil uygulamanın çağırması gerekenler: girişten sonra ve token değişince (her uygulama açılışında değil; `429` zararsızdır, kayıt durur) `POST /api/me/devices` (`Notifications.getExpoPushTokenAsync({ projectId })` token'ı, `platform`, `appVersion`, `locale`; yanıttaki `deviceId` saklanır); token değiştiyse eski `deviceId` için `DELETE`; çıkışta (token yenilemeden önce) `DELETE /api/me/devices/:deviceId`; tercih ekranı `GET|PUT /api/me/notification-preferences` → `push`. Açılışta Android kanalları oluşturulur: `default` (Genel bildirimler) ve `gate` (Kapı ve kurye, yüksek önem); olmayan kanaldaki bildirim gösterilmez. Bildirime dokununca `data.url` açılır (çok apartmanlı kullanıcıda önce `data.apartmentId` bağlamı): `/borclar`, `/duyurular/<id>`, `/oylamalar/<id>`, `/talepler/<id>` (`/talepler` günlük özet), `/kapi`, `/rezervasyonlar`, `/genel-kurul/<id>`, `/ihaleler/<id>`
-- [x] Web değişmedi: şema bilinmeyen `push` alanını atar, kart yalnızca `email` gönderir (push'a dokunmaz). Hesabım'a "Mobil bildirim" bölümü sonraya bırakıldı (aşağıda)
+- [x] Web kartı yalnızca `email` gönderir (push'a dokunmaz); ortak şema (`packages/shared/src/api/notificationPreferences.ts`) `push`'u isteğe bağlı okur. Hesabım'a "Mobil bildirim" bölümü sonraya bırakıldı (aşağıda; mobilde kart bileşeni `channel="push"` ile hazır)
 - [x] Testler: `apps/api/test/push-devices.test.ts`, `push-notifications.test.ts`, `push-receipts.test.ts`, `notification-preferences.test.ts` (push + eski kayıt uyumu); `infra/tests/serverless.tftest.hcl` (`push_disabled`, `push_access_token`, geçersiz değerler)
 
 **Arıza & bakım v2 — ekipman sicili ve görevlinin tahmini tutar notu (`feature/ekipman-sicili`)** (modül: `apps/api/src/modules/equipment/`)
@@ -935,6 +1002,14 @@ API Gateway sınırı istemci başına değil, rota başınadır: arka ucu ve ma
 - [ ] Abonelik / lisans
 - [ ] Portföy devamı: tüm sayfalar yüklenmeden portföy geneli toplam (sunucuda apartman başına özet önbelleği veya arka plan toplama), portföyde sunucu tarafı ad araması, firma (`ORG#`) kaydı ve firma çalışanı yönetimi gerekirse ayrı bir yetki modeli
 - [ ] Otomasyon / kanallar: SMS / WhatsApp, rapor / OCR worker'ları
+
+**Mobil uygulama (Expo, `apps/mobile`)**
+
+- [x] M1 — temel: workspace, ortak paket (`packages/shared`), Cognito / mock kimlik, API istemcisi, rol bazlı gezinti, Ana Sayfa / Borçlarım / Duyurular / Hesabım
+- [ ] M2 — kalan sakin ekranları (Talepler, Ziyaretçi, Rezervasyon, Oylamalar, Genel Kurul, Tüketimim, İhaleler)
+- [ ] M3 — güvenlik (Kapı: QR / plaka / kurye) ve bina görevlisi (İşlerim, sayaç okuma) ekranları
+- [ ] Push kaydı (`expo-notifications`): Android kanalları (`default`, `gate`), `SessionManager` kancalarıyla `/api/me/devices`, bildirime dokununca `data.apartmentId` bağlamına geçip `data.url` (rotalar hazır), Hesabım'a "Mobil bildirim" kartı
+- [ ] Mağaza: paket kimliğinin onayı, Expo / Apple / Google hesapları, EAS derleme profilleri (bkz. [Mağaza derlemesi öncesi](#mağaza-derlemesi-öncesi-sahip))
 
 **Güvenlik sertleştirmesi (G3 alan adına bağlı, beklemede)**
 

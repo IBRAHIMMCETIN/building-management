@@ -1,0 +1,49 @@
+{
+  "expo": {
+    "name": "YÖNESİST",
+    "slug": "yonesist",
+    "scheme": "yonesist",
+    "version": "0.1.0",
+    "description": "Bina ve toplu konut yönetim sistemi: sakin, bina görevlisi ve güvenlik uygulaması.",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "ios": {
+      "bundleIdentifier": "com.yonesist.app",
+      "supportsTablet": false,
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
+    },
+    "android": {
+      "package": "com.yonesist.app",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/mark.png",
+        "backgroundColor": "#ffffff"
+      }
+    },
+    "web": {
+      "bundler": "metro",
+      "output": "single",
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-secure-store",
+      "expo-web-browser",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/mark.png",
+          "imageWidth": 160,
+          "resizeMode": "contain",
+          "backgroundColor": "#fafafa",
+          "dark": {
+            "image": "./assets/mark-dark.png",
+            "backgroundColor": "#09090b"
+          }
+        }
+      ]
+    ]
+  }
+}

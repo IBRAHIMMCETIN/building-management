@@ -1,17 +1,12 @@
-import { z } from 'zod';
+import type { SignedDownload } from '@bm/shared/api/documents';
 
 /*
  * Belge modeli ve saf yardimcilar: API istemcisine (ve ortam yapilandirmasina) bagimli
  * DEGILDIR; testler buradan import eder. Uclar icin bkz. ./documents.ts.
+ * Imzali link semasi web + mobil ortak: packages/shared/src/api/documents.ts.
  */
 
-export const signedDownloadSchema = z.object({
-  url: z.string(),
-  fileName: z.string(),
-  contentType: z.string(),
-  expiresAt: z.string(),
-});
-export type SignedDownload = z.infer<typeof signedDownloadSchema>;
+export { signedDownloadSchema, type SignedDownload } from '@bm/shared/api/documents';
 
 /** API ile ayni kurallar (keys.ts): PDF / gorsel, en fazla 10 MB. */
 export const INVOICE_ACCEPT = 'application/pdf,image/jpeg,image/png,image/webp,image/heic';

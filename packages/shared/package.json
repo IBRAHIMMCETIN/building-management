@@ -1,0 +1,22 @@
+{
+  "name": "@bm/shared",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Web ve mobil uygulamanin ortak, cerceve bagimsiz TypeScript kodu (para, tarih, hata mesajlari, oturum claim'leri, API semalari).",
+  "sideEffects": false,
+  "exports": {
+    "./*": "./src/*.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2",
+    "vitest": "^5.1.0"
+  }
+}

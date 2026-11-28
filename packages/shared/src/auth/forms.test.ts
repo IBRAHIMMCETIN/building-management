@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { forgotConfirmSchema, newPasswordFormSchema } from './schemas';
+import { forgotConfirmSchema, newPasswordFormSchema } from './forms';
 
 describe('sifre semalari (Cognito politikasi)', () => {
   it.each([
@@ -27,7 +27,7 @@ describe('sifre semalari (Cognito politikasi)', () => {
 
 describe('e-posta', () => {
   it('bosluklu ve buyuk harfli girisi normalize edip kabul eder', async () => {
-    const { loginSchema } = await import('./schemas');
+    const { loginSchema } = await import('./forms');
     expect(loginSchema.parse({ email: '  Ayse@Site.COM ', password: 'x' }).email).toBe('ayse@site.com');
   });
 });
