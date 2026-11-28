@@ -29,6 +29,14 @@
  * Bir adayin hatasi digerlerini durdurmaz: `gate_departure_failed` logu (yalnizca apartman / bolum
  * kimligi, kisi verisi yok) + `GateDepartureFailed` EMF metrigi (operations.tf alarmi); sonraki gun
  * aday hala geriye bakis penceresindeyse yeniden denenir.
+ *
+ * Aninda adim (`releaseNow`): uyeligi bugun itibariyla oturmayacak sekilde degistiren yazimlar
+ * (uyelik PATCH / iptal, cari kapama) ayni atomik islemde `MEMBERSHIP_ENDED` outbox olayi yazar;
+ * olay SNS -> `scheduled-jobs` kuyrugu ile zamanlanmis gorev worker'ina gelir ve yalnizca o
+ * kullanici + bolum icin GECE TARAMASININ KURALIYLA (`departureCandidates`, ayni gun ve geriye
+ * bakis) `release` calisir. Sonuc taramanin yapacagiyla birebir aynidir, yalnizca erken: bitis
+ * bugun ise (bitis gunu boyunca oturur) veya cari kapama geri alma payi dolmadiysa adim hicbir sey
+ * yazmaz ve gece taramasi isi zamaninda yapar. Tekrar teslim zararsizdir (idempotent `release`).
  */
 import type { MetricsEmitter } from '../../observability/metrics.js';
 import type { IsoDate } from '../core/types.js';
@@ -49,6 +57,12 @@ const RETRIES = 3;
 
 export type DepartureCandidate = { userId: string; unitId: string };
 export type DepartureResult = { passIds: string[]; vehicleIds: string[] };
+/** Aninda adimin sonucu: neden yazilmadigi (`resides`: hala oturuyor, `closure_grace`: kapama payi). */
+export type ImmediateDeparture =
+  | ({ status: 'released' } & DepartureResult)
+  | { status: 'skipped'; reason: 'resides' | 'closure_grace' | 'not_departed' };
+/** Denetim kaydina eklenen tetikleyici (gece taramasinda yok). */
+export type DepartureTrigger = { trigger: 'membership_ended'; eventId: string };
 
 /** Uye bu gun bolumde oturuyor mu (service.ts `residingUnits` ile ayni kural). */
 export function residesOn(m: UnitMembership, day: IsoDate): boolean {
@@ -123,7 +137,7 @@ export function createGateDepartures(deps: GateDeparturesDeps) {
   }
 
   /** Bir kullanicinin bir bolumdeki aktif gecis ve araclarini pasife alir (idempotent, denetimli). */
-  async function release(apartmentId: string, c: DepartureCandidate, day: IsoDate, actorId: string): Promise<DepartureResult> {
+  async function release(apartmentId: string, c: DepartureCandidate, day: IsoDate, actorId: string, trigger?: DepartureTrigger): Promise<DepartureResult> {
     const done: DepartureResult = { passIds: [], vehicleIds: [] };
     for (let attempt = 1; ; attempt++) {
       const [passes, vehicles] = await Promise.all([activePasses(apartmentId, c, day), activeVehicles(apartmentId, c)]);
@@ -180,7 +194,7 @@ export function createGateDepartures(deps: GateDeparturesDeps) {
               target: { type: 'membership', id: `${c.userId}:${c.unitId}` },
               actorId,
               reason: DEPARTURE_REASON,
-              details: { userId: c.userId, unitId: c.unitId, passIds, vehicleIds },
+              details: { userId: c.userId, unitId: c.unitId, passIds, vehicleIds, ...(trigger ?? {}) },
             },
           });
           done.passIds.push(...passIds);
@@ -216,7 +230,33 @@ export function createGateDepartures(deps: GateDeparturesDeps) {
     return { candidates: candidates.length, passesRevoked, vehiclesDeactivated, failed };
   }
 
-  return { release, sweep };
+  /**
+   * Aninda adim (`MEMBERSHIP_ENDED`): yalnizca bu kullanici + bolum, gece taramasiyla ayni kural ve
+   * gun. Hata firlatir (olay SQS'te yeniden denenir; gece taramasi da guvenlik agidir).
+   */
+  async function releaseNow(apartmentId: string, target: DepartureCandidate, day: IsoDate, actorId: string, trigger?: DepartureTrigger): Promise<ImmediateDeparture> {
+    const members = (await deps.memberships.list(apartmentId, { unitId: target.unitId })).filter((m) => m.apartmentId === apartmentId && m.unitId === target.unitId);
+    const candidate = departureCandidates(members, apartmentId, day).find((c) => c.userId === target.userId && c.unitId === target.unitId);
+    if (!candidate) {
+      const mine = members.filter((m) => m.userId === target.userId);
+      if (mine.some((m) => residesOn(m, day))) return { status: 'skipped', reason: 'resides' };
+      if (mine.some((m) => m.endedByClosureId)) return { status: 'skipped', reason: 'closure_grace' };
+      return { status: 'skipped', reason: 'not_departed' };
+    }
+    return { status: 'released', ...(await release(apartmentId, candidate, day, actorId, trigger)) };
+  }
+
+  return { release, sweep, releaseNow };
+}
+
+/**
+ * Yazim yolunun karari: bu degisiklikten sonra kullanici bugun bolumde oturmuyor ve degisiklik
+ * oturmayi etkiledi mi? (Olay yazilir; asil karar worker'da gece taramasinin kuraliyla verilir.)
+ */
+export function endsResidency(before: UnitMembership | undefined, after: UnitMembership, day: IsoDate): boolean {
+  if (after.startDate > day || residesOn(after, day)) return false;
+  if (!before) return false;
+  return residesOn(before, day) || before.status !== after.status || before.endDate !== after.endDate || before.residesInUnit !== after.residesInUnit;
 }
 
 export type GateDepartures = ReturnType<typeof createGateDepartures>;

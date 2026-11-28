@@ -212,6 +212,15 @@ run "prod_plan" {
     condition     = aws_sns_topic_subscription.notification.raw_message_delivery
     error_message = "Raw delivery acik olmali (govde = olay JSON)"
   }
+  # Kapi devami: bildirim olmayan olaylar zamanlanmis gorev kuyruguna (raw, filtreli).
+  assert {
+    condition     = jsondecode(aws_sns_topic_subscription.jobs_events.filter_policy).eventType == ["MEMBERSHIP_ENDED"]
+    error_message = "Zamanlanmis gorev kuyrugu yalnizca MEMBERSHIP_ENDED olayina abone olmali"
+  }
+  assert {
+    condition     = aws_sns_topic_subscription.jobs_events.raw_message_delivery && aws_sns_topic_subscription.jobs_events.protocol == "sqs"
+    error_message = "Olay aboneligi SQS'e raw delivery ile olmali"
+  }
   assert {
     condition     = aws_sqs_queue.notification.sqs_managed_sse_enabled && aws_sqs_queue.notification_dlq.sqs_managed_sse_enabled
     error_message = "Kuyruklar SSE-SQS ile sifrelenmeli"
