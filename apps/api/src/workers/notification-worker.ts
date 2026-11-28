@@ -20,6 +20,7 @@ import { type AssemblyCallSnapshot, assemblyCallRecipients, isAssemblyEvent, mee
 import { type AssemblyRepository, assemblyRepository } from '../modules/assemblies/repository.js';
 import { type TenderSnapshot, isTenderEvent, tenderRecipients } from '../modules/tenders/notifications.js';
 import { type TenderRepository, tenderRepository } from '../modules/tenders/repository.js';
+import { bulkJobRecipients, isBulkJobEvent } from '../modules/bulkjobs/notifications.js';
 
 export type { DeliveryResult, Notification, NotificationTemplate, Notifier } from '../modules/notifications/notifier.js';
 export { createLogNotifier } from '../modules/notifications/notifier.js';
@@ -51,6 +52,8 @@ export { createLogNotifier } from '../modules/notifications/notifier.js';
  *       TENDER_PUBLISHED / _DECIDED / _CANCELLED -> apartmanin guncel uyeleri; ihalenin guncel durumu
  *                                 olayla uyusmuyorsa kimse. TENDER_REPLIED -> yanitlanan acik sorularin
  *                                 yazarlari (hala uyeyse) (modules/tenders/notifications.ts)
+ *       BULK_JOB_FINISHED      -> toplu isi baslatan yonetici (o gun aktif yonetim rolu varsa)
+ *                                 (modules/bulkjobs/notifications.ts)
  *  4. Her aliciya `Notifier` ile bildirim gonderilir: NOTIFICATION_CHANNEL=log (yapilandirilmis
  *     log) veya ses (e-posta; tercih, adres ve alici bazli tekrar korumasi kanal icinde, bkz.
  *     modules/notifications/email.ts). SMS / WhatsApp ayni arayuzle eklenecek.
@@ -162,6 +165,9 @@ export function buildNotifications(
 
   if (event.type === 'OPERATIONS_DIGEST') {
     return operationsDigestRecipients(event, roles, day).map((r) => ({ eventId: event.eventId, apartmentId: event.apartmentId, userId: r.userId, template: r.template, data: r.data }));
+  }
+  if (isBulkJobEvent(event)) {
+    return bulkJobRecipients(event, roles, day).map((r) => ({ eventId: event.eventId, apartmentId: event.apartmentId, userId: r.userId, template: r.template, data: r.data }));
   }
   if (isGateEvent(event)) {
     return gateRecipients(event, memberships, day, { now: records.now ?? new Date(), ...('courier' in records ? { courier: records.courier } : {}) }).map((r) => ({
@@ -473,7 +479,7 @@ export function createNotificationWorker(overrides: Partial<WorkerDeps> = {}) {
         ? new Map((await deps.core.listUnits(event.apartmentId)).map((u) => [u.unitId, u.blockId]))
         : new Map<string, string>();
 
-    const roles = isTicketEvent(event) || event.type === 'OPERATIONS_DIGEST' ? await deps.roles.list(event.apartmentId) : [];
+    const roles = isTicketEvent(event) || event.type === 'OPERATIONS_DIGEST' || isBulkJobEvent(event) ? await deps.roles.list(event.apartmentId) : [];
     const records = await recordsFor(event);
     // Yonetim iptalinin hemen ardindaki ucret iadesi henuz yazilmadiysa sonucu beklenir (sinirli).
     if (refundSettling(event, records.booking, deps.now())) throw new DeferredEventError('Ucret iadesi sonucu bekleniyor');

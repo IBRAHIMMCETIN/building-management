@@ -48,6 +48,7 @@ export const EVENT_TYPES = [
   'TENDER_CANCELLED',
   'TENDER_REPLIED',
   'MEMBERSHIP_ENDED',
+  'BULK_JOB_FINISHED',
 ] as const;
 export type EventType = (typeof EVENT_TYPES)[number];
 
@@ -348,6 +349,7 @@ type PayloadByType = {
   TENDER_CANCELLED: TenderEventPayload;
   TENDER_REPLIED: TenderRepliedPayload;
   MEMBERSHIP_ENDED: MembershipEndedPayload;
+  BULK_JOB_FINISHED: BulkJobFinishedPayload;
 };
 
 export type DomainEvent<T extends EventType = EventType> = {

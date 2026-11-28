@@ -24,6 +24,7 @@ locals {
     "RESERVATION_APPROVED", "RESERVATION_REJECTED", "RESERVATION_CANCELLED",
     "ASSEMBLY_CALLED",
     "TENDER_PUBLISHED", "TENDER_DECIDED", "TENDER_CANCELLED", "TENDER_REPLIED",
+    "BULK_JOB_FINISHED",
   ]
   # Worker Lambda zaman asimi x 6 (AWS onerisi); worker 60 sn (worker.tf).
   notification_visibility_timeout = 360

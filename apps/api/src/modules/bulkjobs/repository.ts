@@ -1,5 +1,8 @@
+import { TransactionCanceledException } from '@aws-sdk/client-dynamodb';
 import { PutCommand, TransactWriteCommand } from '@aws-sdk/lib-dynamodb';
 import { DataAccessError, getDynamo, getTenantItem, putVersionedItem, queryTenantAll, skKey, tenantPk, toDataAccessError } from '../../config/dynamodb.js';
+import { toOutboxItems } from '../../events/outbox.js';
+import type { DomainEvent } from '../../events/publisher.js';
 import type { BulkDuesLine, BulkDuesLineResult } from '../finance/service.js';
 import type { BulkJob, DuesLineChunk, DuesResultChunk } from './types.js';
 
@@ -11,8 +14,11 @@ export type BulkJobRepository = {
   get(apartmentId: string, jobId: string): Promise<BulkJob | undefined>;
   /** Is kaydi yoksa (kosullu) is + satir kayitlari atomik yazilir; varsa `DataAccessError('conflict')`. */
   create(job: BulkJob, lineChunks: readonly BulkDuesLine[][]): Promise<void>;
-  /** `expectedVersion` tutarsa ustune yazar; degilse `DataAccessError('conflict')`. */
-  update(job: BulkJob, expectedVersion: number): Promise<void>;
+  /**
+   * `expectedVersion` tutarsa ustune yazar; degilse `DataAccessError('conflict')`. `outbox`: ayni
+   * atomik yazimda saklanacak olaylar (bitis ozeti `BULK_JOB_FINISHED`).
+   */
+  update(job: BulkJob, expectedVersion: number, opts?: { outbox?: DomainEvent[] }): Promise<void>;
   getLines(apartmentId: string, jobId: string, index: number): Promise<BulkDuesLine[]>;
   /** Ayni `start` ile tekrar yazim ayni icerigi yazar (idempotent). */
   putResults(apartmentId: string, jobId: string, start: number, results: readonly BulkDuesLineResult[], ttl: number): Promise<void>;
@@ -71,8 +77,35 @@ export function createDynamoBulkJobRepository(): BulkJobRepository {
         throw mapped;
       }
     },
-    async update(job, expectedVersion) {
-      await putVersionedItem(job, expectedVersion);
+    async update(job, expectedVersion, opts = {}) {
+      if (!opts.outbox?.length) {
+        await putVersionedItem(job, expectedVersion);
+        return;
+      }
+      const { client, tableName } = getDynamo();
+      try {
+        await client.send(
+          new TransactWriteCommand({
+            TransactItems: [
+              {
+                Put: {
+                  TableName: tableName,
+                  Item: job,
+                  ConditionExpression: 'attribute_exists(PK) AND #version = :expectedVersion',
+                  ExpressionAttributeNames: { '#version': 'version' },
+                  ExpressionAttributeValues: { ':expectedVersion': expectedVersion },
+                },
+              },
+              ...toOutboxItems(opts.outbox, job.updatedAt, job.apartmentId).map((o) => ({ Put: { TableName: tableName, Item: o, ConditionExpression: 'attribute_not_exists(PK)' } })),
+            ],
+          }),
+        );
+      } catch (err) {
+        if (err instanceof TransactionCanceledException && err.CancellationReasons?.some((r) => r.Code === 'ConditionalCheckFailed')) {
+          throw new DataAccessError('conflict', 'Kosul saglanmadi (surum catismasi)', { cause: err });
+        }
+        throw toDataAccessError(err);
+      }
     },
     async getLines(apartmentId, jobId, index) {
       const item = await getTenantItem<DuesLineChunk>(bulkJobKeys.lines(apartmentId, jobId, index));
@@ -100,6 +133,8 @@ export function createMemoryBulkJobRepository() {
   const jobs = new Map<string, BulkJob>();
   const lines = new Map<string, BulkDuesLine[]>();
   const results = new Map<string, DuesResultChunk>();
+  /** Is kaydiyla ayni yazimda saklanan olaylar (yazim sirasiyla). */
+  const outbox: DomainEvent[] = [];
   const k = (apartmentId: string, jobId: string) => `${apartmentId}|${jobId}`;
   const clone = <T>(v: T): T => structuredClone(v);
   const repository: BulkJobRepository = {
@@ -115,10 +150,12 @@ export function createMemoryBulkJobRepository() {
       jobs.set(k(job.apartmentId, job.jobId), clone(job));
       chunks.forEach((c, i) => lines.set(`${k(job.apartmentId, job.jobId)}|${i}`, clone([...c])));
     },
-    async update(job, expectedVersion) {
+    async update(job, expectedVersion, opts = {}) {
       const cur = jobs.get(k(job.apartmentId, job.jobId));
       if (!cur || cur.version !== expectedVersion) throw new DataAccessError('conflict', 'Kosul saglanmadi (kayit mevcut veya surum catismasi)');
+      if (opts.outbox?.some((e) => outbox.some((o) => o.eventId === e.eventId))) throw new DataAccessError('conflict', 'Olay zaten var');
       jobs.set(k(job.apartmentId, job.jobId), clone(job));
+      outbox.push(...(opts.outbox ?? []).map(clone));
     },
     async getLines(apartmentId, jobId, index) {
       const l = lines.get(`${k(apartmentId, jobId)}|${index}`);
@@ -133,5 +170,5 @@ export function createMemoryBulkJobRepository() {
       return mergeResults([...results.entries()].filter(([key]) => key.startsWith(prefix)).map(([, v]) => v));
     },
   };
-  return { repository, jobs, lines, results };
+  return { repository, jobs, lines, results, outbox };
 }

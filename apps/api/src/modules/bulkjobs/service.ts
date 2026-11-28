@@ -20,6 +20,8 @@
  */
 import { createHash, randomUUID } from 'node:crypto';
 import { DataAccessError } from '../../config/dynamodb.js';
+import { type BulkJobFinishedPayload, type DomainEvent, buildEvent } from '../../events/publisher.js';
+import { SYSTEM_ACTOR } from '../finance/service.js';
 import { contentionBackoffMs } from '../audit/log.js';
 import { mapLimit } from '../core/concurrency.js';
 import { ValidationError } from '../core/validation.js';
@@ -94,6 +96,9 @@ export type BulkJobDeps = {
   options?: Partial<BulkJobOptions>;
   log?: Pick<Console, 'info' | 'error'>;
 };
+
+/** Bitisinde baslatana ozet bildirimi giden is turleri (defter yazan isler). */
+export const NOTIFY_KINDS: readonly BulkJob['kind'][] = ['dues_bulk', 'meter_posting', 'meter_reversal'];
 
 /** Worker'in kalan suresi (Lambda `context.getRemainingTimeInMillis`). */
 export type Budget = { remainingMs(): number };
@@ -181,6 +186,38 @@ export function createBulkJobService(deps: BulkJobDeps) {
       version: 1,
       ttl: ttl(),
     };
+  }
+
+  /**
+   * `BULK_JOB_FINISHED` (bitis ozeti): kimlik is surumunden (yeniden denenen is yeniden bildirir,
+   * ayni bitis iki kez yazilamaz). Sistemin baslattigi is (aylik otomatik aidat) icin olay yok.
+   */
+  function finishedEvent(job: BulkJob): DomainEvent | undefined {
+    if (!isTerminal(job.status) || !NOTIFY_KINDS.includes(job.kind) || !job.createdBy || job.createdBy === SYSTEM_ACTOR) return undefined;
+    const p = jobView(job).params as { periodId?: string; periodName?: string; description?: string };
+    const label = (p.periodName ?? p.description)?.slice(0, 120);
+    return buildEvent(
+      {
+        eventId: `BULK_JOB_FINISHED:${job.jobId}:${job.version}`,
+        type: 'BULK_JOB_FINISHED',
+        apartmentId: job.apartmentId,
+        actorId: SYSTEM_ACTOR,
+        payload: {
+          jobId: job.jobId,
+          kind: job.kind,
+          status: job.status as BulkJobFinishedPayload['status'],
+          startedBy: job.createdBy,
+          total: job.total,
+          succeeded: job.succeeded,
+          failed: job.failed,
+          written: job.written,
+          ...(p.periodId ? { periodId: p.periodId } : {}),
+          ...(label ? { label } : {}),
+          ...(job.status === 'failed' && job.error?.message ? { errorMessage: job.error.message.slice(0, 200) } : {}),
+        },
+      },
+      now,
+    );
   }
 
   async function enqueue(job: BulkJob, seq = 0) {
@@ -366,8 +403,11 @@ export function createBulkJobService(deps: BulkJobDeps) {
       const next: BulkJob = { ...job, ...patch, finishedAt: stamp(), updatedAt: stamp(), version: job.version + 1 };
       delete next.leaseUntil;
       delete next.leaseToken;
+      // Bildirim devami: bitis ozeti baslatana (is kaydiyla ayni atomik yazimda; sistem baslattiysa yok).
+      const summary = finishedEvent(next);
       try {
-        await repo.update(next, job.version);
+        if (summary) await repo.update(next, job.version, { outbox: [summary] });
+        else await repo.update(next, job.version);
       } catch (err) {
         if (err instanceof DataAccessError && err.code === 'conflict') throw new LeaseLostError();
         throw err;
