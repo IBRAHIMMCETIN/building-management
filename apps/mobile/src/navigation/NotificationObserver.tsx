@@ -64,7 +64,7 @@ export function NotificationObserver(): null {
         }
         if (decision.kind === 'switch') await setActiveContext(decision.context);
         // Baglam degisince korumali yigin yeniden kurulur; yonlendirme bir sonraki turda.
-        setTimeout(() => router.navigate(decision.url as Href), 0);
+        setTimeout(() => router.navigate(decision.url as Href, { withAnchor: true }), 0);
       } catch (err) {
         notices.show(`Bildirim açılamadı: ${errorMessage(err)}`, 'warning');
         router.navigate('/');

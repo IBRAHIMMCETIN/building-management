@@ -11,5 +11,7 @@ export function DeepLinkRedirect() {
   const pathname = usePathname();
   const { user } = useAuth();
   const target = deepLinkTarget(pathname, user?.role ? areaForRole(user.role) : null);
-  return <Redirect href={(target ?? homeRouteFor(user)) as Href} />;
+  // withAnchor: hedef ekranin altina rol yiginin ilk rotasi (sekmeler) konur; bildirimle dogrudan
+  // acilan ekranda Geri dugmesi olur (app/*/_layout.tsx `unstable_settings.initialRouteName`).
+  return <Redirect href={(target ?? homeRouteFor(user)) as Href} withAnchor />;
 }

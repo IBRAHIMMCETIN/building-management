@@ -48,6 +48,18 @@ describe('sakin M2a ekranlari (gercek yonlendirme)', () => {
     await expectPath(result, '/resident/gate');
   });
 
+  it('bildirim baglantisi uygulama soguk acilistaki gibi tek basina acilinca altinda sekmeler olur (Geri calisir)', async () => {
+    const result = await renderRouter(APP_DIR, { initialUrl: '/' });
+    await fireEvent.press(await screen.findByRole('button', { name: 'Daire Sakini' }, { timeout: 5000 }));
+    await expectPath(result, '/resident');
+    // Gecmisi sifirla: yalnizca baglanti (bildirime dokunma) ile acilmis gibi.
+    await act(() => router.replace('/kapi'));
+    await expectPath(result, '/resident/gate');
+    expect(router.canGoBack()).toBe(true);
+    await act(() => router.back());
+    await expectPath(result, '/resident');
+  });
+
   it('Talepler sekmesi ve yeni talep sihirbazi', async () => {
     const result = await renderRouter(APP_DIR, { initialUrl: '/' });
     await fireEvent.press(await screen.findByRole('button', { name: 'Daire Sakini' }, { timeout: 5000 }));

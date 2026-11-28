@@ -5,6 +5,12 @@ import { headerOptions } from '@/navigation/options';
 import { useTheme } from '@/theme/useTheme';
 
 /**
+ * Bildirim / derin baglantiyla dogrudan bir ust ekran acildiginda (ornek: /oylamalar) altinda
+ * sekmeler olsun: Geri dugmesi ve iOS'ta geri kaydirma calisir, kullanici ekranda mahsur kalmaz.
+ */
+export const unstable_settings = { initialRouteName: '(tabs)' };
+
+/**
  * Sakin alani: sekmeler + ustune acilan ekranlar (duyuru ve talep ayrintisi, yeni talep, Ziyaretçi,
  * Rezervasyon, Hesabım, web'deki ozellikler).
  */
