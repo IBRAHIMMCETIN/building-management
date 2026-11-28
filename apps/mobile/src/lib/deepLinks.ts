@@ -12,13 +12,17 @@ import type { RoleArea } from './auth/flow';
 
 export type DeepLinkTarget = string | { pathname: string; params: Record<string, string> };
 
-/** Sakin icin henuz yer tutucu olan ozellikler: bildirim yolu -> "Diğer" anahtari (lib/nav.ts). */
+/** Sakin icin hala yer tutucu olan ozellikler: bildirim yolu -> "Diğer" anahtari (lib/nav.ts). */
 const RESIDENT_WEB_FEATURES: Record<string, string> = {
-  oylamalar: 'oylamalar',
   kapi: 'ziyaretci',
   rezervasyonlar: 'rezervasyon',
-  'genel-kurul': 'genel-kurul',
-  ihaleler: 'ihale',
+};
+
+/** Sakin icin yerel ekrani olan ozellikler (M2b): bildirim yolu -> liste ekrani (ayrinti: `<liste>/[id]`). */
+const RESIDENT_NATIVE: Record<string, '/resident/polls' | '/resident/assemblies' | '/resident/tenders'> = {
+  oylamalar: '/resident/polls',
+  'genel-kurul': '/resident/assemblies',
+  ihaleler: '/resident/tenders',
 };
 
 export const DEEP_LINK_ROOTS = ['borclar', 'duyurular', 'oylamalar', 'talepler', 'kapi', 'rezervasyonlar', 'genel-kurul', 'ihaleler'] as const;
@@ -60,6 +64,8 @@ export function deepLinkTarget(path: string, area: RoleArea | null): DeepLinkTar
     case 'talepler':
       return id ? { pathname: '/resident/tickets', params: { id } } : '/resident/tickets';
     default: {
+      const native = RESIDENT_NATIVE[root];
+      if (native) return id ? { pathname: `${native}/[id]`, params: { id } } : native;
       const feature = RESIDENT_WEB_FEATURES[root];
       return feature ? { pathname: '/resident/web/[feature]', params: withId({ feature }) } : null;
     }
