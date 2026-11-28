@@ -4,6 +4,7 @@ import { handleError } from '../../http/helpers.js';
 import { setRequestActor } from '../audit/context.js';
 import { accessTokenFrom } from '../mfa/routes.js';
 import type { MfaService } from '../mfa/service.js';
+import type { DeviceService } from '../notifications/devices.js';
 import type { PreferencesService } from '../notifications/preferences.js';
 import type { MeService } from './service.js';
 
@@ -14,6 +15,8 @@ export type MeRoutesDeps = {
   service: MeService;
   /** Bildirim tercihleri; verilmezse uclar 404 (yalnizca testler / eski cagiranlar). */
   preferences?: PreferencesService;
+  /** Mobil push cihaz kaydi; verilmezse `/devices` uclari yok (yalnizca eski testler). */
+  devices?: DeviceService;
   /** TOTP kurulumu; verilmezse `/mfa` uclari yok (yalnizca eski testler). */
   mfa?: MfaService;
 };
@@ -25,11 +28,15 @@ export type MeRoutesDeps = {
  * Buradan hicbir apartman verisi donmez; yalnizca kullanicinin kendi yetkileri.
  *
  *   GET /contexts  -> { userId, isPlatformAdmin, active, contexts[] }
- *   GET /notification-preferences -> { email: { enabled, finance?, announcements?, tickets?, gate?,
- *                                     reservations?, polls? } }   (kayit yoksa varsayilan: hepsi acik)
- *   PUT /notification-preferences   { email: { enabled: boolean, <kategori>?: boolean } }
- *                                   (verilmeyen kategoride onceki secim korunur)
- * Tercih kullanicinin kendisine aittir: kimlik JWT'den gelir, govdede kullanici kimligi yoktur.
+ *   GET /notification-preferences -> { email: { enabled, <kategori>? }, push: { enabled, <kategori>? } }
+ *                                   (kayit yoksa varsayilan: hepsi acik)
+ *   PUT /notification-preferences   { email?: { enabled?, <kategori>? }, push?: { enabled?, <kategori>? } }
+ *                                   (verilmeyen alanda onceki secim korunur)
+ *   GET    /devices              -> { devices: [{ deviceId, platform, appVersion?, locale?, status, createdAt, lastSeenAt }] }
+ *   POST   /devices                { token: "ExponentPushToken[...]", platform: ios|android, appVersion?, locale? }
+ *                                -> 201 (yeni / yeniden etkin / baska kullanicidan tasindi) | 200 (tazeleme) { device }
+ *   DELETE /devices/:deviceId    -> { device } (pasife alir; oturum kapatmada; baska kullanicinin cihazi 404)
+ * Tercih ve cihazlar kullanicinin kendisine aittir: kimlik JWT'den gelir, govdede kullanici kimligi yoktur.
  *
  * Zorunlu MFA (G2) kurulumu da buradadir; `MFA_REQUIRED` durumundaki kullanici yalnizca bu
  * uclari kullanabilir (merkezi MFA ara katmani `/api/me`'ye uygulanmaz):
@@ -41,7 +48,7 @@ export type MeRoutesDeps = {
  * ister (yoksa Authorization'daki token denenir). Basarili kurulumdan sonra istemci token'i
  * yenilemelidir (`mfa_enabled` claim'i).
  */
-export function meRoutes({ identify, service, preferences, mfa }: MeRoutesDeps) {
+export function meRoutes({ identify, service, preferences, devices, mfa }: MeRoutesDeps) {
   const r = new Hono<MeEnv>();
   r.onError(handleError);
   r.use('*', async (c, next) => {
@@ -66,6 +73,20 @@ export function meRoutes({ identify, service, preferences, mfa }: MeRoutesDeps) 
       const body = await c.req.json().catch(() => undefined);
       return c.json(await preferences.update(c.get('identity').userId, body));
     });
+  }
+
+  if (devices) {
+    r.get('/devices', async (c) => {
+      c.header('cache-control', 'no-store');
+      return c.json(await devices.list(c.get('identity').userId));
+    });
+    r.post('/devices', async (c) => {
+      const body = await c.req.json().catch(() => undefined);
+      const { device, created } = await devices.register(c.get('identity').userId, body);
+      c.header('cache-control', 'no-store');
+      return c.json({ device }, created ? 201 : 200);
+    });
+    r.delete('/devices/:deviceId', async (c) => c.json(await devices.remove(c.get('identity').userId, c.req.param('deviceId'))));
   }
 
   if (mfa) {
