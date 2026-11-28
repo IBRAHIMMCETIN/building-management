@@ -1,6 +1,9 @@
 import type { NotificationPreferences } from '@bm/shared/api/notificationPreferences';
 import { mockContextsFor } from '@bm/shared/auth/mockScenarios';
 import { decodeClaims } from '@bm/shared/auth/session';
+import { createGateDemo } from './demo/gate';
+import { DEMO_UPLOAD_PREFIX, type DemoHandler } from './demo/types';
+import { createWorkDemo } from './demo/work';
 
 /*
  * DEMO veri (EXPO_PUBLIC_API_MODE=demo, yalnizca mock kimlikle): API calismadan web onizlemesinde
@@ -143,6 +146,8 @@ export type DemoFetchOptions = { now?: () => Date };
 /** `fetch` yerine gecer: yalnizca M1 uclarini yanitlar, digerleri 404. */
 export function createDemoFetch({ now = () => new Date() }: DemoFetchOptions = {}): typeof fetch {
   let prefs: NotificationPreferences = { email: { enabled: true }, push: { enabled: true } };
+  // Alan bazli demo isleyicileri (src/dev/demo/*): sirayla sorulur.
+  const domains: DemoHandler[] = [createGateDemo(), createWorkDemo()];
 
   return (async (input: string | URL | Request, init?: RequestInit) => {
     const raw = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
@@ -154,7 +159,17 @@ export function createDemoFetch({ now = () => new Date() }: DemoFetchOptions = {
     const t = now();
     await new Promise((r) => setTimeout(r, 250));
 
+    // Imzali S3 linki yerine demo yukleme hedefi (yetki basligi yok).
+    if (path.startsWith(DEMO_UPLOAD_PREFIX) && method === 'PUT') return respond(200);
     if (!claims) return respond(401, { error: 'unauthorized' });
+
+    if (path === '/api/me/devices') return respond(201, { device: { deviceId: 'demo-device', platform: 'android', status: 'active' } });
+    const params = new URLSearchParamsLite(qs);
+    const body = typeof init?.body === 'string' && init.body ? (JSON.parse(init.body) as Record<string, unknown>) : {};
+    for (const handle of domains) {
+      const out = handle({ method, path, query: (k) => params.get(k), body, claims, now: t });
+      if (out) return respond(out.status, out.body);
+    }
 
     if (path === '/api/me/contexts') {
       const email = claims.email ?? '';

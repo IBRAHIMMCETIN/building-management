@@ -59,10 +59,28 @@ describe('korumali ekranlar ve bildirim baglantilari', () => {
 
     await act(() => router.push('/kapi'));
     await expectPath(result, '/guard');
+    expect(await screen.findByRole('button', { name: 'QR okut' }, { timeout: 5000 })).toBeTruthy();
+    await act(() => router.push('/guard/manual-entry?plate=34XYZ9'));
+    await expectPath(result, '/guard/manual-entry');
+    expect(screen.getByDisplayValue('34XYZ9')).toBeTruthy();
 
     await act(() => router.push('/resident/dues'));
     await waitFor(() => expect(result.getPathname()).not.toBe('/resident/dues'), { timeout: 5000 });
     expect(result.getPathname().startsWith('/resident')).toBe(false);
+  });
+
+  it('bina gorevlisi: İşlerim; talep bildirimi dogrudan talep ayrintisini acar', async () => {
+    const result = await renderRouter(APP_DIR, { initialUrl: '/' });
+    await signInAs('Bina Görevlisi');
+    await expectPath(result, '/staff');
+    expect(await screen.findByText('Kombi basıncı düşüyor', {}, { timeout: 5000 })).toBeTruthy();
+
+    await act(() => router.push('/talepler/tk-41'));
+    await expectPath(result, '/staff/ticket/tk-41');
+    expect(await screen.findByText('B Blok asansörü katlar arasında duruyor', {}, { timeout: 5000 })).toBeTruthy();
+
+    await act(() => router.push('/staff/readings'));
+    expect((await screen.findAllByText(/Salon peteği/, {}, { timeout: 5000 })).length).toBeGreaterThan(0);
   });
 
   it('yonetim rolu: panel web\'de ekrani; cikis girise doner', async () => {
