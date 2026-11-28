@@ -8,18 +8,20 @@ export function createFakePreferencesRepo() {
   const store = new Map<string, NotificationPreferences>();
   const tick = () => new Promise<void>((r) => setTimeout(r, 0));
   const calls: string[] = [];
+  const empty = (): NotificationPreferences => ({ email: { enabled: true }, push: { enabled: true } });
   const repository: PreferencesRepository = {
     async get(userId) {
       calls.push(`get:${userId}`);
       await tick();
-      return structuredClone(store.get(userId) ?? { email: { enabled: true } });
+      return structuredClone(store.get(userId) ?? empty());
     },
     async patch(userId, p) {
       calls.push(`patch:${userId}`);
       await tick();
-      const cur = store.get(userId);
+      const cur = store.get(userId) ?? empty();
       store.set(userId, {
-        email: { ...(cur?.email ?? { enabled: true }), ...(p.enabled === undefined ? {} : { enabled: p.enabled }), ...p.categories },
+        email: { ...cur.email, ...(p.enabled === undefined ? {} : { enabled: p.enabled }), ...p.categories },
+        push: { ...cur.push, ...(p.push?.enabled === undefined ? {} : { enabled: p.push.enabled }), ...(p.push?.categories ?? {}) },
         updatedAt: p.updatedAt,
       });
     },

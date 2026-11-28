@@ -21,21 +21,38 @@ import { NOTIFICATION_CATEGORIES, type NotificationCategory, isNotificationCateg
  * `emailAnnouncements`, `emailGate`, `emailReservations`, `emailPolls`, `emailAssemblies`, `emailTenders`). Guncelleme
  * OKUMADAN yalnizca gonderilen alanlari `SET` eder (UpdateExpression): iki cihazin es zamanli kismi
  * guncellemesi birbirini ezmez; eski sekme yalnizca degistirdigi alani gonderdigi icin ana anahtari geri acamaz.
+ *
+ * Mobil bildirim (push, Expo): ayni yapi `push.enabled` + `push.<kategori>` (ana anahtar ve kategoriler
+ * e-postadan BAGIMSIZ); oznitelikler `pushEnabled`, `pushFinance`, `pushAnnouncements`, `pushTickets`,
+ * `pushGate`, `pushReservations`, `pushPolls`, `pushAssemblies`, `pushTenders`. Push ozniteligi olmayan
+ * eski kayit: push ACIK. GET her zaman `push: { enabled, ... }` doner; PUT `email` ve/veya `push` alir.
  */
 
 export type EmailCategoryPreferences = Partial<Record<NotificationCategory, boolean>>;
 
+export type ChannelPreferences = { enabled: boolean } & EmailCategoryPreferences;
+
 export type NotificationPreferences = {
-  email: { enabled: boolean } & EmailCategoryPreferences;
+  email: ChannelPreferences;
+  /** Mobil bildirim (push); e-postadan bagimsiz. */
+  push: ChannelPreferences;
   updatedAt?: string;
 };
 
-/** PUT govdesi / kismi guncelleme: yalnizca gonderilen alanlar degisir. */
-export type PreferencesInput = { email: { enabled?: boolean } & EmailCategoryPreferences };
+type ChannelInput = { enabled?: boolean } & EmailCategoryPreferences;
 
-export type PreferencesPatch = { enabled?: boolean; categories: EmailCategoryPreferences; updatedAt: string };
+/** PUT govdesi / kismi guncelleme: yalnizca gonderilen alanlar degisir (`email` ve/veya `push`). */
+export type PreferencesInput = { email?: ChannelInput; push?: ChannelInput };
 
-export const DEFAULT_PREFERENCES: NotificationPreferences = { email: { enabled: true } };
+export type PreferencesPatch = {
+  enabled?: boolean;
+  categories: EmailCategoryPreferences;
+  /** Push kanali (verilmezse push alanlari yazilmaz). */
+  push?: { enabled?: boolean; categories: EmailCategoryPreferences };
+  updatedAt: string;
+};
+
+export const DEFAULT_PREFERENCES: NotificationPreferences = { email: { enabled: true }, push: { enabled: true } };
 
 /** Kategori -> kayit ozniteligi (ariza icin O1-2'nin `ticketEmails` adi korunur). */
 export const CATEGORY_ATTRIBUTES: Record<NotificationCategory, string> = {
@@ -47,6 +64,18 @@ export const CATEGORY_ATTRIBUTES: Record<NotificationCategory, string> = {
   polls: 'emailPolls',
   assemblies: 'emailAssemblies',
   tenders: 'emailTenders',
+};
+
+/** Push kategori -> kayit ozniteligi. */
+export const PUSH_CATEGORY_ATTRIBUTES: Record<NotificationCategory, string> = {
+  finance: 'pushFinance',
+  announcements: 'pushAnnouncements',
+  tickets: 'pushTickets',
+  gate: 'pushGate',
+  reservations: 'pushReservations',
+  polls: 'pushPolls',
+  assemblies: 'pushAssemblies',
+  tenders: 'pushTenders',
 };
 
 /** Yalnizca bilinen kategoriler, yalnizca boolean degerler (sira sabit). */
@@ -80,7 +109,13 @@ export function createDynamoPreferencesRepository(): PreferencesRepository {
         const item = out.Item as Record<string, unknown> | undefined;
         if (!item) return structuredClone(DEFAULT_PREFERENCES);
         const stored = Object.fromEntries(NOTIFICATION_CATEGORIES.map((c) => [c, item[CATEGORY_ATTRIBUTES[c]]]));
-        return { email: { enabled: item.emailEnabled !== false, ...categoriesOf(stored) }, ...(typeof item.updatedAt === 'string' ? { updatedAt: item.updatedAt } : {}) };
+        const pushStored = Object.fromEntries(NOTIFICATION_CATEGORIES.map((c) => [c, item[PUSH_CATEGORY_ATTRIBUTES[c]]]));
+        return {
+          email: { enabled: item.emailEnabled !== false, ...categoriesOf(stored) },
+          // Push ozniteligi olmayan (eski) kayit: push acik.
+          push: { enabled: item.pushEnabled !== false, ...categoriesOf(pushStored) },
+          ...(typeof item.updatedAt === 'string' ? { updatedAt: item.updatedAt } : {}),
+        };
       } catch (err) {
         throw toDataAccessError(err);
       }
@@ -98,6 +133,9 @@ export function createDynamoPreferencesRepository(): PreferencesRepository {
       if (patch.enabled !== undefined) set('emailEnabled', patch.enabled);
       const categories = categoriesOf(patch.categories);
       for (const c of NOTIFICATION_CATEGORIES) if (categories[c] !== undefined) set(CATEGORY_ATTRIBUTES[c], categories[c] as boolean);
+      if (patch.push?.enabled !== undefined) set('pushEnabled', patch.push.enabled);
+      const pushCategories = categoriesOf(patch.push?.categories);
+      for (const c of NOTIFICATION_CATEGORIES) if (pushCategories[c] !== undefined) set(PUSH_CATEGORY_ATTRIBUTES[c], pushCategories[c] as boolean);
       // Kullanici geneli tercih: PLATFORM zincirine denetlenir (apartmandan bagimsiz).
       await auditedUpdate(
         preferenceKeys(userId),
@@ -106,31 +144,46 @@ export function createDynamoPreferencesRepository(): PreferencesRepository {
           action: 'notification_preferences.update',
           target: { type: 'user', id: userId },
           actorId: userId,
-          details: { ...(patch.enabled === undefined ? {} : { emailEnabled: patch.enabled }), ...(Object.keys(categories).length ? { emailCategories: categories } : {}) },
+          details: {
+            ...(patch.enabled === undefined ? {} : { emailEnabled: patch.enabled }),
+            ...(Object.keys(categories).length ? { emailCategories: categories } : {}),
+            ...(patch.push?.enabled === undefined ? {} : { pushEnabled: patch.push.enabled }),
+            ...(Object.keys(pushCategories).length ? { pushCategories } : {}),
+          },
         },
       );
     },
   };
 }
 
+/** Tek kanalin govdesi: `enabled?` + bilinen kategoriler, yalnizca boolean. */
+function parseChannel(value: unknown, field: 'email' | 'push'): ChannelInput {
+  const o = asObject(value, field);
+  if (o.enabled !== undefined && typeof o.enabled !== 'boolean') throw new ValidationError(`${field}.enabled true veya false olmali`, `${field}.enabled`);
+  const extra = Object.keys(o).filter((k) => k !== 'enabled' && !isNotificationCategory(k));
+  if (extra.length) throw new ValidationError(`Bilinmeyen alan: ${field}.${extra[0]}`, `${field}.${extra[0]}`);
+  for (const c of NOTIFICATION_CATEGORIES) {
+    if (o[c] !== undefined && typeof o[c] !== 'boolean') throw new ValidationError(`${field}.${c} true veya false olmali`, `${field}.${c}`);
+  }
+  return { ...(o.enabled === undefined ? {} : { enabled: o.enabled as boolean }), ...categoriesOf(o) };
+}
+
+const isEmpty = (c: ChannelInput | undefined) => !c || Object.keys(c).length === 0;
+
 /**
- * PUT govdesi: `{ email: { enabled?, finance?, announcements?, tickets?, gate?, reservations?, polls?,
- * assemblies?, tenders?: boolean } }`; en az bir alan zorunlu, bilinmeyen alan reddedilir. Verilmeyen alan degismez.
+ * PUT govdesi: `{ email?: { enabled?, finance?, announcements?, tickets?, gate?, reservations?, polls?,
+ * assemblies?, tenders?: boolean }, push?: { ...ayni alanlar } }`; toplamda en az bir alan zorunlu, bilinmeyen
+ * alan reddedilir. Verilmeyen alan degismez (eski istemcinin yalnizca `email` gondermesi push'a dokunmaz).
  */
 export function parsePreferences(body: unknown): PreferencesInput {
   const o = asObject(body);
-  const extra = Object.keys(o).filter((k) => k !== 'email');
+  const extra = Object.keys(o).filter((k) => k !== 'email' && k !== 'push');
   if (extra.length) throw new ValidationError(`Bilinmeyen alan: ${extra.join(', ')}`, extra[0]);
-  const email = asObject(o.email, 'email');
-  if (email.enabled !== undefined && typeof email.enabled !== 'boolean') throw new ValidationError('email.enabled true veya false olmali', 'email.enabled');
-  const extraEmail = Object.keys(email).filter((k) => k !== 'enabled' && !isNotificationCategory(k));
-  if (extraEmail.length) throw new ValidationError(`Bilinmeyen alan: email.${extraEmail[0]}`, `email.${extraEmail[0]}`);
-  for (const c of NOTIFICATION_CATEGORIES) {
-    if (email[c] !== undefined && typeof email[c] !== 'boolean') throw new ValidationError(`email.${c} true veya false olmali`, `email.${c}`);
-  }
-  const categories = categoriesOf(email);
-  if (email.enabled === undefined && Object.keys(categories).length === 0) throw new ValidationError('En az bir bildirim tercihi gönderilmeli', 'email');
-  return { email: { ...(email.enabled === undefined ? {} : { enabled: email.enabled }), ...categories } };
+  if (o.email === undefined && o.push === undefined) throw new ValidationError('email veya push tercihi gönderilmeli', 'email');
+  const email = o.email === undefined ? undefined : parseChannel(o.email, 'email');
+  const push = o.push === undefined ? undefined : parseChannel(o.push, 'push');
+  if (isEmpty(email) && isEmpty(push)) throw new ValidationError('En az bir bildirim tercihi gönderilmeli', email ? 'email' : 'push');
+  return { ...(isEmpty(email) ? {} : { email }), ...(isEmpty(push) ? {} : { push }) };
 }
 
 export function createPreferencesService(deps: { repository?: PreferencesRepository; now?: () => Date } = {}) {
@@ -141,8 +194,9 @@ export function createPreferencesService(deps: { repository?: PreferencesReposit
     /** Yalnizca gonderilen alanlar yazilir (okumadan); yanit yazim sonrasi guncel tercihtir. */
     async update(userId: string, body: unknown): Promise<NotificationPreferences> {
       const parsed = parsePreferences(body);
-      const { enabled, ...rest } = parsed.email;
-      await repository.patch(userId, { ...(enabled === undefined ? {} : { enabled }), categories: categoriesOf(rest), updatedAt: now().toISOString() });
+      const { enabled, ...rest } = parsed.email ?? {};
+      const push = parsed.push ? { ...(parsed.push.enabled === undefined ? {} : { enabled: parsed.push.enabled }), categories: categoriesOf(parsed.push) } : undefined;
+      await repository.patch(userId, { ...(enabled === undefined ? {} : { enabled }), categories: categoriesOf(rest), ...(push ? { push } : {}), updatedAt: now().toISOString() });
       return repository.get(userId);
     },
   };
