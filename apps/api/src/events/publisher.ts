@@ -326,6 +326,8 @@ export type BulkJobFinishedPayload = {
   label?: string;
   errorMessage?: string;
 };
+
+/**
  * Finans 2.2 sonrasi: sakin yapilandirma talebi (`planRequests.ts`). REQUESTED -> yonetim;
  * APPROVED / REJECTED -> talebi acan sakin (hala dairenin uyesiyse). Payload yalnizca kimlik
  * tasir; tutar, taksit ve ret gerekcesi worker'in okudugu guncel talep kaydindan gelir.
