@@ -23,12 +23,18 @@ const RESIDENT_WEB_FEATURES: Record<string, string> = {
 
 export const DEEP_LINK_ROOTS = ['borclar', 'duyurular', 'oylamalar', 'talepler', 'kapi', 'rezervasyonlar', 'genel-kurul', 'ihaleler'] as const;
 
+/** Bozuk kacis dizisi (`%E0%A4%A`) hata firlatmasin: cozulemeyen parca null olur. */
+function decode(segment: string): string | null {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return null;
+  }
+}
+
 /** `/duyurular/an-1?x=1` -> ['duyurular', 'an-1'] (bos parcalar ve sorgu atilir). */
-function segments(path: string): string[] {
-  return (path.split(/[?#]/)[0] ?? '')
-    .split('/')
-    .filter(Boolean)
-    .map((s) => decodeURIComponent(s));
+function segments(path: string): Array<string | null> {
+  return (path.split(/[?#]/)[0] ?? '').split('/').filter(Boolean).map(decode);
 }
 
 /**
@@ -36,7 +42,9 @@ function segments(path: string): string[] {
  * null (cagiran acilis ekranina gider).
  */
 export function deepLinkTarget(path: string, area: RoleArea | null): DeepLinkTarget | null {
-  const [root, id] = segments(path);
+  // Kimlik cozulemezse (bozuk baglanti) liste ekranina dusulur.
+  const [root, rawId] = segments(path);
+  const id = rawId ?? undefined;
   if (!root || !(DEEP_LINK_ROOTS as readonly string[]).includes(root) || !area) return null;
   const withId = (params: Record<string, string>) => (id ? { ...params, id } : params);
 

@@ -11,6 +11,9 @@ import { decodeClaims } from '@bm/shared/auth/session';
 
 type Json = Record<string, unknown>;
 
+/** Demo sakinin dairesi: ozet ve baglam listesi ayni daireyi gosterir (malik: Genel Kurul gorunur). */
+export const DEMO_UNIT = { unitId: 'u-demo-7', unitNumber: '7', relation: 'owner' as const };
+
 const day = 86_400_000;
 const isoDate = (d: Date) => d.toISOString().slice(0, 10);
 
@@ -155,7 +158,15 @@ export function createDemoFetch({ now = () => new Date() }: DemoFetchOptions = {
 
     if (path === '/api/me/contexts') {
       const email = claims.email ?? '';
-      return respond(200, { userId: claims.sub, email, ...mockContextsFor(email), active: claims.role ? { role: claims.role, apartmentId: claims.apartmentId } : null });
+      const { isPlatformAdmin, contexts } = mockContextsFor(email);
+      return respond(200, {
+        userId: claims.sub,
+        email,
+        isPlatformAdmin,
+        // Daire bilgisi olmayan senaryo sakin baglamlari demo dairesinin maliki (ozetteki "Daire 7 · Malik").
+        contexts: contexts.map((c) => (c.role === 'resident' && !c.units ? { ...c, units: [DEMO_UNIT] } : c)),
+        active: claims.role ? { role: claims.role, apartmentId: claims.apartmentId } : null,
+      });
     }
     if (path === '/api/me/notification-preferences') {
       if (method === 'PUT') {

@@ -35,7 +35,9 @@ export function createServices(env: AppEnv, overrides: ServiceOverrides = {}): S
   });
 
   const fetchContexts = async (current: AuthSession, signal?: AbortSignal): Promise<MeContexts> => {
-    if (env.authMode === 'mock') {
+    // Mock kimlik + gercek (yerel) API: web gibi yerel senaryo. Demo veride liste demo API'den gelir
+    // (sakin baglaminda ozetle ayni daire ve malik iliskisi).
+    if (env.authMode === 'mock' && env.apiMode !== 'demo') {
       const { claims } = current;
       return {
         userId: claims.sub,

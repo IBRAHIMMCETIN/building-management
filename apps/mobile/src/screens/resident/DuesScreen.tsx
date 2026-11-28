@@ -161,6 +161,8 @@ function MovementRow({ row, onReceipt, receiptPending }: { row: StatementRow; on
  */
 export function DuesScreen() {
   const statement = useMyStatement();
+  // Ozet de hataliysa (ayni sebep: daire secimi, uyelik yok) hata ozet kartinda bir kez gosterilir.
+  const summaryFailed = useMySummary().isError;
   const { api } = useServices();
   const { unitId } = usePortalUnit();
   const { user } = useAuth();
@@ -206,6 +208,8 @@ export function DuesScreen() {
             <Skeleton key={i} height={64} />
           ))}
         </View>
+      ) : statement.isError ? (
+        summaryFailed ? null : <PortalQueryState error={statement.error} onRetry={() => void statement.refetch()} />
       ) : statement.isSuccess && rows.length === 0 ? (
         <EmptyState icon={ReceiptText} title="Henüz hesap hareketi yok" description="Aidat tahakkukları ve ödemeleriniz burada listelenecek." />
       ) : statement.isSuccess ? (

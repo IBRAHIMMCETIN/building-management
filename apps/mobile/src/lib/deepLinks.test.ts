@@ -23,6 +23,11 @@ describe('bildirim baglantilari (push data.url)', () => {
     expect(deepLinkTarget('/talepler/tk-1', 'panel')).toBe('/panel');
   });
 
+  it('bozuk kacis dizili kimlik: hata yerine liste ekrani', () => {
+    expect(deepLinkTarget('/duyurular/%E0%A4%A', 'resident')).toBe('/resident/announcements');
+    expect(deepLinkTarget('/ihaleler/%ZZ', 'resident')).toEqual({ pathname: '/resident/web/[feature]', params: { feature: 'ihale' } });
+  });
+
   it('bilinmeyen yol veya rolsuz oturum: null (acilis kurali)', () => {
     expect(deepLinkTarget('/bilinmeyen', 'resident')).toBeNull();
     expect(deepLinkTarget('/borclar', null)).toBeNull();

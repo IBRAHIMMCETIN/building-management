@@ -66,6 +66,18 @@ describe('Borçlarım', () => {
     expect(calls.filter((c) => c.path === '/api/portal/my-summary').length).toBeGreaterThanOrEqual(2);
   });
 
+  it('ozet gelip hareketler alinamazsa hata ve tekrar dene gosterilir', async () => {
+    let fail = true;
+    await renderApp(<DuesScreen />, {
+      routes: { ...routes(3), 'GET /api/portal/my-statement': () => (fail ? { status: 500, body: { error: 'internal' } } : statement(3)) },
+    });
+    expect(await screen.findByText('Sunucuda beklenmeyen bir hata oluştu.')).toBeTruthy();
+    expect(screen.getByText('₺3.000,00')).toBeTruthy();
+    fail = false;
+    await fireEvent.press(screen.getByRole('button', { name: 'Tekrar dene' }));
+    expect(await screen.findByText('3 hareket, en yeni önce')).toBeTruthy();
+  });
+
   it('hareket yoksa bos durum', async () => {
     await renderApp(<DuesScreen />, { routes: routes(0) });
     expect(await screen.findByText('Henüz hesap hareketi yok')).toBeTruthy();
