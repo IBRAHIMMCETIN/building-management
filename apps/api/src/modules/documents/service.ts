@@ -10,6 +10,7 @@ import { DocumentError } from './errors.js';
 import {
   INVOICE_CONTENT_TYPES,
   MAX_INVOICE_BYTES,
+  assemblyConsentDocumentKey,
   contentDisposition,
   invoiceKey,
   isInvoiceContentType,
@@ -266,6 +267,27 @@ export function createDocumentsService(overrides: Partial<DocumentsServiceDeps> 
     return sign(doc.key, doc.fileName, doc.contentType);
   }
 
+  /**
+   * Genel kurul sonrasi: yazili riza kaydi sirasinda (genel kurul servisi cagirir) gider faturasi
+   * akisiyla yuklenen tarama `apartments/{apt}/assemblies/consents/{consentId}/{unitId}/...` altina.
+   */
+  async function promoteAssemblyConsent(
+    apartmentId: string,
+    upload: { uploadId: string; fileName: string },
+    target: { consentId: string; unitId: string },
+  ): Promise<InvoiceAttachment> {
+    assertId(target.consentId, 'consentId');
+    assertId(target.unitId, 'unitId');
+    return promotePending(apartmentId, upload, 'document.uploadId', 'riza', 'Rıza belgesi', (ext, uploadId) => assemblyConsentDocumentKey(apartmentId, target.consentId, target.unitId, uploadId, ext));
+  }
+
+  /** Yazili riza belgesi icin imzali link; anahtar bu apartmanin genel kurul on ekinde olmali. */
+  async function signAssemblyDocument(apartmentId: string, doc: Pick<InvoiceAttachment, 'key' | 'fileName' | 'contentType'>): Promise<SignedDownload> {
+    const prefix = `apartments/${apartmentId}/assemblies/`;
+    if (!doc.key.startsWith(prefix) || doc.key.includes('..')) throw new DocumentError('not_found', 'Belge bulunamadi');
+    return sign(doc.key, doc.fileName, doc.contentType);
+  }
+
   /** Yonetici/denetci: gider hareketinin faturasi. */
   async function invoiceForTransaction(apartmentId: string, transactionId: string) {
     assertId(transactionId, 'transactionId');
@@ -287,6 +309,8 @@ export function createDocumentsService(overrides: Partial<DocumentsServiceDeps> 
     invoiceForTransaction,
     promoteTenderQuote,
     signTenderDocument,
+    promoteAssemblyConsent,
+    signAssemblyDocument,
   };
 }
 

@@ -149,3 +149,17 @@ export function assemblyMinutesKey(apartmentId: string, meetingDate: IsoDate, as
 export function assemblyDecisionBookKey(apartmentId: string, asOf: IsoDate, dataHash: string): string {
   return `apartments/${apartmentId}/reports/${ym(asOf)}/assembly-decision-book-${dataHash.slice(0, 16)}.pdf`;
 }
+
+/**
+ * Genel kurul sonrasi: toplanti disinda yazili riza sonuc tutanagi. `dataHash` talep + riza kayitlari +
+ * sonuc + sablon ozetidir: yeni riza / duzeltme yeni dosya uretir.
+ *   apartments/{apt}/reports/{yyyy}/{mm}/assembly-consent-{consentId}-{hash}.pdf
+ */
+export function assemblyConsentReportKey(apartmentId: string, rollDate: IsoDate, consentId: string, dataHash: string): string {
+  return `apartments/${apartmentId}/reports/${ym(rollDate)}/assembly-consent-${consentId}-${dataHash.slice(0, 16)}.pdf`;
+}
+
+/** Yazili riza belgesi taramasi (fatura yuklemesiyle ayni gecici alan ve sinirlar). */
+export function assemblyConsentDocumentKey(apartmentId: string, consentId: string, unitId: string, uploadId: string, extension: string): string {
+  return `apartments/${apartmentId}/assemblies/consents/${consentId}/${unitId}/${uploadId}.${extension}`;
+}

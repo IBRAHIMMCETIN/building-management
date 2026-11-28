@@ -196,7 +196,7 @@ export function personKeys(entries: readonly Entry[], attendance: readonly Att[]
  * oyunu kullandigi bolumler ayni oyu alir (kisinin tek oyu vardir, m.31 siniri kisi basina). Kisi
  * sayimli kurallarda ayni kat malikine (kisi kimligi) dusen bolumler de ayni oyu alir. Sorun yoksa null.
  */
-export function unitVotesIssue(entries: readonly Entry[], attendance: readonly Att[], votes: ReadonlyMap<string, VoteChoice>, rule: MajorityRule = 'attendees'): string | null {
+export function unitVotesIssue<C extends string = VoteChoice>(entries: readonly Entry[], attendance: readonly Att[], votes: ReadonlyMap<string, C>, rule: MajorityRule = 'attendees'): string | null {
   const ids = identities(entries, attendance);
   const byUnit = new Map(ids.map((x) => [x.e.unitId, x]));
   for (const unitId of votes.keys()) {
@@ -205,7 +205,7 @@ export function unitVotesIssue(entries: readonly Entry[], attendance: readonly A
     if (!x.present) return `Bölüm (${unitId}) toplantıya katılmadı; oyu girilemez`;
   }
   const consistent = (key: 'voter' | 'person') => {
-    const choiceOf = new Map<string, VoteChoice | undefined>();
+    const choiceOf = new Map<string, C | undefined>();
     for (const x of ids) {
       if (!x.present) continue;
       const c = votes.get(x.e.unitId);

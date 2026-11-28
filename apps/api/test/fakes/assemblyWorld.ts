@@ -8,9 +8,18 @@ import { createApp } from '../../src/app.js';
 import { createMockAuthenticator, encodeMockToken } from '../../src/auth/authenticators.js';
 import { DataAccessError } from '../../src/config/dynamodb.js';
 import type { DomainEvent } from '../../src/events/publisher.js';
-import { type AssemblyRepository, assertExtrasBelong } from '../../src/modules/assemblies/repository.js';
-import { createAssemblyService } from '../../src/modules/assemblies/service.js';
-import type { Assembly, AssemblyAttendance, AssemblyCall, AssemblyDecision } from '../../src/modules/assemblies/types.js';
+import { type AssemblyRepository, assertExtrasBelong, resolveCall } from '../../src/modules/assemblies/repository.js';
+import { type AssemblyDocuments, createAssemblyService } from '../../src/modules/assemblies/service.js';
+import type {
+  Assembly,
+  AssemblyAttendance,
+  AssemblyCall,
+  AssemblyCallRecipients,
+  AssemblyDecision,
+  AssemblyServiceRecord,
+  ConsentEntry,
+  ConsentRequest,
+} from '../../src/modules/assemblies/types.js';
 import type { AuditDraft } from '../../src/modules/audit/log.js';
 import type { Block, LandShare, Unit } from '../../src/modules/core/types.js';
 import { createMemoryDocumentStore } from '../../src/modules/documents/store.js';
@@ -71,11 +80,20 @@ export function setup(opts: { store?: boolean; units?: Unit[]; members?: UnitMem
   const clock = { set: (iso: string) => void (now = new Date(iso)) };
   const docs = new Map<string, Assembly>();
   const atts = new Map<string, AssemblyAttendance>();
-  const extra = new Map<string, AssemblyDecision | AssemblyCall>();
+  const extra = new Map<string, AssemblyDecision | AssemblyCall | AssemblyCallRecipients>();
+  const services = new Map<string, AssemblyServiceRecord>();
+  const consents = new Map<string, ConsentRequest>();
+  const consentEntries = new Map<string, ConsentEntry>();
   const outbox: DomainEvent[] = [];
   const audits: AuditDraft[] = [];
   const rolls = createMemoryRollStore();
   const clone = <T>(x: T): T => structuredClone(x);
+  const buckets = () => [...extra.values()].filter((x): x is AssemblyCallRecipients => x.entityType === 'ASSEMBLY_CALL_RECIPIENTS');
+  const calls = (apt: string, id: string) =>
+    [...extra.values()]
+      .filter((x): x is AssemblyCall => x.entityType === 'ASSEMBLY_CALL' && x.apartmentId === apt && x.assemblyId === id)
+      .sort((x, y) => x.seq - y.seq)
+      .map((c) => resolveCall(clone(c), buckets()));
   const repo: AssemblyRepository = {
     get: async (apt, id) => clone(docs.get(`${apt}|${id}`)),
     list: async (apt) => [...docs.values()].filter((a) => a.apartmentId === apt).map(clone),
@@ -86,7 +104,9 @@ export function setup(opts: { store?: boolean; units?: Unit[]; members?: UnitMem
     update: async (a, expected, audit, extras = {}) => {
       assertExtrasBelong(a, extras);
       if (docs.get(`${a.apartmentId}|${a.assemblyId}`)?.version !== expected) throw new DataAccessError('conflict', 'surum');
-      const news = [extras.decision, extras.call].filter((x): x is AssemblyDecision | AssemblyCall => Boolean(x));
+      const news = [extras.decision, extras.call, ...(extras.callRecipients ?? [])].filter((x): x is AssemblyDecision | AssemblyCall | AssemblyCallRecipients => Boolean(x));
+      // DynamoDB ogesi 400 KB'yi asamaz (JSON boyutu yaklasik olcu).
+      if (news.some((x) => JSON.stringify(x).length > 400_000)) throw new Error('Oge 400 KB sinirini asti');
       if (news.some((x) => extra.has(`${x.PK}|${x.SK}`))) throw new DataAccessError('conflict', 'kayit var');
       if (extras.outbox?.some((e) => outbox.some((o) => o.eventId === e.eventId))) throw new DataAccessError('conflict', 'olay var');
       if (extras.roll?.length) rolls.put(extras.roll);
@@ -107,7 +127,39 @@ export function setup(opts: { store?: boolean; units?: Unit[]; members?: UnitMem
     },
     listDecisions: async (apt, id) =>
       [...extra.values()].filter((x): x is AssemblyDecision => x.entityType === 'ASSEMBLY_DECISION' && x.apartmentId === apt && (!id || x.assemblyId === id)).map(clone),
-    getCall: async (apt, id, seq) => clone([...extra.values()].find((x): x is AssemblyCall => x.entityType === 'ASSEMBLY_CALL' && x.apartmentId === apt && x.assemblyId === id && x.seq === seq)),
+    getCall: async (apt, id, seq) => calls(apt, id).find((c) => c.seq === seq),
+    listCalls: async (apt, id) => calls(apt, id),
+    listServiceRecords: async (apt, id) => [...services.values()].filter((x) => x.apartmentId === apt && x.assemblyId === id).map(clone),
+    getServiceRecord: async (apt, id, ownerId) => clone(services.get(`${apt}|${id}|${ownerId}`)),
+    putServiceRecord: async (rec, expected, audit) => {
+      const host = docs.get(`${rec.apartmentId}|${rec.assemblyId}`);
+      if (!host || host.status === 'cancelled') throw new DataAccessError('conflict', 'iptal');
+      const k = `${rec.apartmentId}|${rec.assemblyId}|${rec.ownerId}`;
+      if ((services.get(k)?.version ?? 0) !== expected) throw new DataAccessError('conflict', 'surum');
+      services.set(k, clone(rec));
+      audits.push(clone(audit));
+    },
+    getConsent: async (apt, cid) => clone(consents.get(`${apt}|${cid}`)),
+    listConsents: async (apt) => [...consents.values()].filter((c) => c.apartmentId === apt).map(clone),
+    createConsent: async (req, roll, audit) => {
+      if (consents.has(`${req.apartmentId}|${req.consentId}`)) throw new DataAccessError('conflict', 'var');
+      rolls.put(roll);
+      consents.set(`${req.apartmentId}|${req.consentId}`, clone(req));
+      audits.push(clone(audit));
+    },
+    updateConsent: async (req, expected, audit) => {
+      if (consents.get(`${req.apartmentId}|${req.consentId}`)?.version !== expected) throw new DataAccessError('conflict', 'surum');
+      consents.set(`${req.apartmentId}|${req.consentId}`, clone(req));
+      audits.push(clone(audit));
+    },
+    listConsentEntries: async (apt, cid) => [...consentEntries.values()].filter((e) => e.apartmentId === apt && e.consentId === cid).map(clone),
+    putConsentEntry: async (entry, audit) => {
+      if (consents.get(`${entry.apartmentId}|${entry.consentId}`)?.status !== 'open') throw new DataAccessError('conflict', 'kapali');
+      const k = `${entry.PK}|${entry.SK}`;
+      if (consentEntries.has(k)) throw new DataAccessError('conflict', 'var');
+      consentEntries.set(k, clone(entry));
+      audits.push(clone(audit));
+    },
   };
   const units = opts.units ?? defaultUnits();
   const members = opts.members ?? defaultMembers();
@@ -118,6 +170,14 @@ export function setup(opts: { store?: boolean; units?: Unit[]; members?: UnitMem
   ] as Block[];
   const { store } = createMemoryDocumentStore();
   let n = 0;
+  // Riza belgesi: gecici yukleme kimligi `up-*` ise kalici anahtara "tasinir"; imzali link anahtari doner.
+  const documents: AssemblyDocuments = {
+    promote: async (apt, upload, target) => {
+      if (!upload.uploadId.startsWith('up-')) throw new Error('yukleme yok');
+      return { key: `apartments/${apt}/assemblies/consents/${target.consentId}/${target.unitId}/${upload.uploadId}.pdf`, fileName: upload.fileName, contentType: 'application/pdf', size: 1234 };
+    },
+    sign: async (_apt, doc) => ({ url: `https://signed.example/${doc.key}`, fileName: doc.fileName, contentType: doc.contentType, expiresAt: new Date(now.getTime() + 300_000).toISOString() }),
+  };
   const service = createAssemblyService({
     repository: repo,
     core: { listUnits: async () => units, listBlocks: async () => blocks, getSite: async () => ({ name: 'Lale Apartmanı' }) as never },
@@ -126,6 +186,7 @@ export function setup(opts: { store?: boolean; units?: Unit[]; members?: UnitMem
     people: { list: async () => people },
     rolls,
     store: opts.store === false ? undefined : store,
+    documents,
     now: () => now,
     newId: () => `asm${++n}`,
   });
@@ -144,7 +205,7 @@ export function setup(opts: { store?: boolean; units?: Unit[]; members?: UnitMem
   const portal = (path: string, auth: string) => request('/api/portal/assemblies', 'GET', path, undefined, auth);
   const attend = (unitId: string, mode: string, extraBody: Record<string, unknown> = {}, id = 'asm1') => call('PUT', `/${id}/attendance/${unitId}`, { mode, ...extraBody });
   const version = (id = 'asm1') => docs.get(`${APT}|${id}`)!.version;
-  return { call, portal, token, attend, audits, store, docs, units, members, version, clock, rolls, outbox, extra, repo, service };
+  return { call, portal, token, attend, audits, store, docs, units, members, version, clock, rolls, outbox, extra, services, consents, consentEntries, repo, service };
 }
 
 export const meeting = {

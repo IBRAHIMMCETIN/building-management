@@ -203,7 +203,7 @@ run "prod_plan" {
       "POLL_PUBLISHED",
       "GATE_COURIER_ARRIVED", "GATE_GUEST_ENTERED",
       "RESERVATION_APPROVED", "RESERVATION_REJECTED", "RESERVATION_CANCELLED",
-      "ASSEMBLY_CALLED",
+      "ASSEMBLY_CALLED", "ASSEMBLY_CANCELLED", "ASSEMBLY_RESCHEDULED",
       "TENDER_PUBLISHED", "TENDER_DECIDED", "TENDER_CANCELLED", "TENDER_REPLIED",
     ]
     error_message = "Bildirim kuyrugu worker'in isledigi tum olay turlerine abone olmali (ariza/talep, gunluk operasyon ozeti ve oylama yayini dahil)"

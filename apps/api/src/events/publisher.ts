@@ -43,6 +43,8 @@ export const EVENT_TYPES = [
   'RESERVATION_REJECTED',
   'RESERVATION_CANCELLED',
   'ASSEMBLY_CALLED',
+  'ASSEMBLY_CANCELLED',
+  'ASSEMBLY_RESCHEDULED',
   'TENDER_PUBLISHED',
   'TENDER_DECIDED',
   'TENDER_CANCELLED',
@@ -272,6 +274,24 @@ export type AssemblyCalledPayload = {
 };
 
 /**
+ * Genel kurul sonrasi: cagrisi gonderilmis toplanti iptal edildi (`ASSEMBLY_CANCELLED:<id>`; iptal bir
+ * kez olur) veya ertelendi / yeri degisti (`ASSEMBLY_RESCHEDULED:<id>:<sira>`). Alicilar toplantinin
+ * TUM cagri kayitlarindaki (`ASMCALL#` + kovalar) kullanicilar, hala apartman uyesiyse. Iptal gerekcesi
+ * ve erteleme gerekcesi serbest metindir: TASINMAZ, worker toplanti kaydindan okur; toplanti bu arada
+ * yeniden degistiyse (eski erteleme) veya kayit olayla uyusmuyorsa bildirim gitmez.
+ */
+export type AssemblyCancelledPayload = { assemblyId: string; scheduledAt: IsoDateTime; kind: 'ordinary' | 'extraordinary' };
+export type AssemblyRescheduledPayload = {
+  assemblyId: string;
+  seq: number;
+  kind: 'ordinary' | 'extraordinary';
+  previousScheduledAt: IsoDateTime;
+  scheduledAt: IsoDateTime;
+  location?: string;
+  onlineUrl?: string;
+};
+
+/**
  * Ihale devami: yonetim ihaleyi sakinlerle paylasti (`TENDER_PUBLISHED`), yayindaki ihaleyi karara
  * bagladi (`TENDER_DECIDED`) veya iptal etti (`TENDER_CANCELLED`; yalnizca yayindan sonra). Payload
  * yalnizca kimlik tasir: worker ihalenin GUNCEL halini okur, durum olayla uyusmuyorsa (ornegin yayin
@@ -307,6 +327,8 @@ type PayloadByType = {
   RESERVATION_REJECTED: ReservationDecisionPayload;
   RESERVATION_CANCELLED: ReservationDecisionPayload;
   ASSEMBLY_CALLED: AssemblyCalledPayload;
+  ASSEMBLY_CANCELLED: AssemblyCancelledPayload;
+  ASSEMBLY_RESCHEDULED: AssemblyRescheduledPayload;
   TENDER_PUBLISHED: TenderEventPayload;
   TENDER_DECIDED: TenderEventPayload;
   TENDER_CANCELLED: TenderEventPayload;

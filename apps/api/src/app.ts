@@ -414,7 +414,8 @@ export function createApp(config: AppConfig) {
   // Y1: anket / oylama. Oy hakki ve agirlik mulkiyet modulunun oy listesinden; sakin dairesi portal kuraliyla.
   const pollService = config.pollService ?? createPollService({ portal: portalService });
   app.route('/api/polls', pollRoutes({ authenticate, service: pollService }));
-  const assemblyService = config.assemblyService ?? createAssemblyService();
+  const assemblyService =
+    config.assemblyService ?? createAssemblyService({ documents: { promote: documentsService.promoteAssemblyConsent, sign: documentsService.signAssemblyDocument } });
   app.route('/api/assemblies', assemblyRoutes({ authenticate, service: assemblyService }));
 
   // Faz 3 (O1): ariza / talep (yonetim, gorevli, guvenlik, denetci).

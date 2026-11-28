@@ -16,7 +16,15 @@ import { type GateRepository, gateRepository } from '../modules/gate/repository.
 import { type Courier, gateKeys } from '../modules/gate/types.js';
 import { type BookingSnapshot, isReservationEvent, refundSettling, reservationRecipients } from '../modules/reservations/notifications.js';
 import { type ReservationRepository, reservationRepository } from '../modules/reservations/repository.js';
-import { type AssemblyCallSnapshot, assemblyCallRecipients, isAssemblyEvent, meetingHash } from '../modules/assemblies/notifications.js';
+import {
+  type AssemblyCallSnapshot,
+  type AssemblyNoticeSnapshot,
+  assemblyCallRecipients,
+  assemblyNoticeRecipients,
+  isAssemblyEvent,
+  isAssemblyNoticeEvent,
+  meetingHash,
+} from '../modules/assemblies/notifications.js';
 import { type AssemblyRepository, assemblyRepository } from '../modules/assemblies/repository.js';
 import { type TenderSnapshot, isTenderEvent, tenderRecipients } from '../modules/tenders/notifications.js';
 import { type TenderRepository, tenderRepository } from '../modules/tenders/repository.js';
@@ -48,6 +56,8 @@ export { createLogNotifier } from '../modules/notifications/notifier.js';
  *                                 guncel durumu rezervasyon kaydindan (modules/reservations/notifications.ts)
  *       ASSEMBLY_CALLED        -> cagri kaydindaki malik kullanicilar (hala apartman uyesiyse); toplanti
  *                                 iptal edildiyse / basladiysa kimse (modules/assemblies/notifications.ts)
+ *       ASSEMBLY_CANCELLED / _RESCHEDULED -> toplantinin tum cagrilarindaki alicilar (hala uyeyse);
+ *                                 kayit olayla uyusmuyorsa (eski erteleme, iptal edilmemis) kimse
  *       TENDER_PUBLISHED / _DECIDED / _CANCELLED -> apartmanin guncel uyeleri; ihalenin guncel durumu
  *                                 olayla uyusmuyorsa kimse. TENDER_REPLIED -> yanitlanan acik sorularin
  *                                 yazarlari (hala uyeyse) (modules/tenders/notifications.ts)
@@ -141,7 +151,14 @@ const receives = (m: UnitMembership, item: { unitId: string; userId?: string }, 
  * Worker'in olay icin ayrica okudugu kayitlar (payload kisisel veri / serbest metin tasimaz).
  * `now`: zamana bagli kurallar (kurye yanit suresi); verilmezse su an.
  */
-export type NotificationRecords = { now?: Date; courier?: CourierSnapshot; booking?: BookingSnapshot; assemblyCall?: AssemblyCallSnapshot; tender?: TenderSnapshot };
+export type NotificationRecords = {
+  now?: Date;
+  courier?: CourierSnapshot;
+  booking?: BookingSnapshot;
+  assemblyCall?: AssemblyCallSnapshot;
+  assemblyNotice?: AssemblyNoticeSnapshot;
+  tender?: TenderSnapshot;
+};
 
 /** Olaydan alici bazli bildirimleri uretir (ayni kullaniciya ayni olay icin tek bildirim). */
 export function buildNotifications(
@@ -183,6 +200,15 @@ export function buildNotifications(
   }
   if (isAssemblyEvent(event)) {
     return assemblyCallRecipients(event, memberships, day, records.now ?? new Date(), records.assemblyCall).map((r) => ({
+      eventId: event.eventId,
+      apartmentId: event.apartmentId,
+      userId: r.userId,
+      template: r.template,
+      data: r.data,
+    }));
+  }
+  if (isAssemblyNoticeEvent(event)) {
+    return assemblyNoticeRecipients(event, memberships, day, records.now ?? new Date(), records.assemblyNotice).map((r) => ({
       eventId: event.eventId,
       apartmentId: event.apartmentId,
       userId: r.userId,
@@ -348,8 +374,8 @@ export type WorkerDeps = {
   gate: Pick<GateRepository, 'get'>;
   /** Rezervasyon: gerekce / not ve ucret iadesinin guncel durumu. */
   reservations: Pick<ReservationRepository, 'getBooking'>;
-  /** Genel kurul cagrisi: cagri kaydi (alicilar) ve toplantinin guncel durumu. */
-  assemblies: Pick<AssemblyRepository, 'get' | 'getCall'>;
+  /** Genel kurul cagrisi: cagri kaydi (alicilar) ve toplantinin guncel durumu; iptal / ertelemede tum cagrilar. */
+  assemblies: Pick<AssemblyRepository, 'get' | 'getCall' | 'listCalls'>;
   /** Ihale: guncel durum (bayat olay elenir) ve yanit olayinda yorumlar. */
   tenders: Pick<TenderRepository, 'get' | 'listComments'>;
   notifier: Notifier;
@@ -448,6 +474,28 @@ export function createNotificationWorker(overrides: Partial<WorkerDeps> = {}) {
                 recipientUserIds: call.recipientUserIds,
                 ...(a.calls?.find((c) => c.seq === call.seq)?.meetingHash ? { callMeetingHash: a.calls.find((c) => c.seq === call.seq)?.meetingHash } : {}),
                 currentMeetingHash: meetingHash(a),
+              }
+            : null,
+      };
+    }
+    if (isAssemblyNoticeEvent(event)) {
+      const { assemblyId } = event.payload;
+      const [a, calls] = await Promise.all([deps.assemblies.get(event.apartmentId, assemblyId), deps.assemblies.listCalls(event.apartmentId, assemblyId)]);
+      return {
+        now: deps.now(),
+        assemblyNotice:
+          a && a.apartmentId === event.apartmentId
+            ? {
+                assemblyId,
+                status: a.status,
+                kind: a.kind,
+                scheduledAt: a.scheduledAt,
+                ...(a.location ? { location: a.location } : {}),
+                ...(a.onlineUrl ? { onlineUrl: a.onlineUrl } : {}),
+                ...(a.cancelReason ? { cancelReason: a.cancelReason } : {}),
+                reschedules: a.reschedules ?? [],
+                currentMeetingHash: meetingHash(a),
+                recipientUserIds: [...new Set(calls.filter((c) => c.apartmentId === event.apartmentId).flatMap((c) => c.recipientUserIds))],
               }
             : null,
       };

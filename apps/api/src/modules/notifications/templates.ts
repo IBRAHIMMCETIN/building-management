@@ -311,6 +311,9 @@ function spec(n: Notification, ctx: EmailContext): Spec | undefined {
       return reservationSpec(n, ctx);
     case 'assembly_called':
       return assemblyCallSpec(n);
+    case 'assembly_cancelled':
+    case 'assembly_rescheduled':
+      return assemblyNoticeSpec(n);
     case 'tender_published':
     case 'tender_decided':
     case 'tender_cancelled':
@@ -428,6 +431,54 @@ function assemblyCallSpec(n: Notification): Spec {
       { kind: 'note', text: ASSEMBLY_CALL_DISCLAIMER },
     ],
     cta: { label: 'Toplantı ayrıntıları', path: str(d.assemblyId) ? `genel-kurul/${encodeURIComponent(str(d.assemblyId))}` : 'genel-kurul' },
+  };
+}
+
+/** Cagrisi gonderilmis toplantinin iptali veya ertelenmesi / yer degisikligi (cagri alicilarina). */
+function assemblyNoticeSpec(n: Notification): Spec {
+  const d = n.data;
+  const kind = d.kind === 'extraordinary' ? 'Olağanüstü' : 'Olağan';
+  const reason = str(d.reason);
+  const cta = { label: 'Toplantı ayrıntıları', path: str(d.assemblyId) ? `genel-kurul/${encodeURIComponent(str(d.assemblyId))}` : 'genel-kurul' };
+  if (n.template === 'assembly_cancelled') {
+    const when = formatDateTime(d.scheduledAt);
+    return {
+      subject: `İptal: kat malikleri kurulu toplantısı - ${when}`,
+      heading: `${kind} kat malikleri kurulu toplantısı iptal edildi`,
+      preheader: `${when} tarihli toplantı yapılmayacak`,
+      blocks: [
+        { kind: 'p', text: `${when} (Türkiye saati) tarihinde yapılması planlanan ${kind.toLocaleLowerCase('tr')} kat malikleri kurulu toplantısı yönetim tarafından iptal edildi. Bu tarihte toplantı yapılmayacaktır.` },
+        ...(reason ? [{ kind: 'p' as const, text: `Gerekçe: ${reason}` }] : []),
+        { kind: 'note', text: 'Yeni bir toplantı yapılacaksa ayrıca çağrı gönderilir. Bu e-posta bilgilendirme amaçlıdır.' },
+      ],
+      cta,
+    };
+  }
+  const when = formatDateTime(d.scheduledAt);
+  const prev = formatDateTime(d.previousScheduledAt);
+  const timeChanged = d.timeChanged === 'true';
+  const rows: [string, string][] = [
+    ...(timeChanged ? [['Önceki tarih', `${prev} (Türkiye saati)`] as [string, string]] : []),
+    ['Yeni tarih ve saat', `${when} (Türkiye saati)`],
+    ...(str(d.location) ? [['Yer', str(d.location)] as [string, string]] : []),
+    ...(str(d.onlineUrl) ? [['Çevrim içi bağlantı', str(d.onlineUrl)] as [string, string]] : []),
+  ];
+  return {
+    subject: `${timeChanged ? 'Ertelendi' : 'Yer değişikliği'}: kat malikleri kurulu toplantısı - ${when}`,
+    heading: `${kind} kat malikleri kurulu toplantısı ${timeChanged ? 'ertelendi' : 'yeri değişti'}`,
+    preheader: timeChanged ? `${prev} yerine ${when}` : `Yeni yer: ${str(d.location) || str(d.onlineUrl)}`,
+    blocks: [
+      {
+        kind: 'p',
+        text: timeChanged
+          ? `${prev} tarihli kat malikleri kurulu toplantısı yönetim tarafından ertelendi. Toplantı aşağıdaki tarihte yapılacaktır.`
+          : 'Kat malikleri kurulu toplantısının yeri değişti; toplantı aşağıdaki yerde yapılacaktır.',
+      },
+      { kind: 'rows', rows },
+      ...(reason ? [{ kind: 'p' as const, text: `Gerekçe: ${reason}` }] : []),
+      { kind: 'note', text: ASSEMBLY_CALL_DISCLAIMER },
+    ],
+    cta,
   };
 }
 

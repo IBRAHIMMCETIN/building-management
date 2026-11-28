@@ -30,6 +30,9 @@ export type NotificationTemplate =
   | 'reservation_cancelled'
   /** Genel kurul: kat malikleri kurulu toplanti cagrisi (oy listesindeki malik kullanicilar). */
   | 'assembly_called'
+  /** Genel kurul: cagrisi gonderilmis toplantinin iptali / ertelenmesi (cagri alicilari). */
+  | 'assembly_cancelled'
+  | 'assembly_rescheduled'
   /** Ihale: sakinlerle paylasim, karar, yayindan sonra iptal (apartman uyeleri) ve soruya yonetim yaniti (soran sakin). */
   | 'tender_published'
   | 'tender_decided'
