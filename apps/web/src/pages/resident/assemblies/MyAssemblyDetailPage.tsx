@@ -169,7 +169,7 @@ function Detail({ assembly: a }: { assembly: PortalAssembly }) {
               </div>
               {item.description && <p className="text-small whitespace-pre-line break-words text-text-secondary">{item.description}</p>}
               <p className="text-xs text-muted">Gerekli çoğunluk: {MAJORITY_LABELS[item.majority]}</p>
-              {item.candidates && item.candidates.length > 0 && !item.decision?.election && <p className="text-xs text-muted">Adaylar: {item.candidates.map((c) => c.name).join(', ')}</p>}
+              {item.candidateCount !== undefined && item.candidateCount > 0 && !item.decision?.election && <p className="text-xs text-muted">{item.candidateCount} aday</p>}
               {item.decision?.election ? (
                 <ElectionResult election={item.decision.election} />
               ) : item.decision && (

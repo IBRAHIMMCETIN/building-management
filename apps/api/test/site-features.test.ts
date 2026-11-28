@@ -112,8 +112,11 @@ describe('ozellik katalogu', () => {
     expect(r['auth.phoneOtp']).toBe(false);
   });
 
-  it('sade mod: tum gizlemeler ve kancalar kapali; override profili ezer', () => {
-    expect(Object.values(resolveFeatures(simpleModeFeatures())).every((v) => v === false)).toBe(true);
+  it('sade mod: tum gizlemeler ve kancalar kapali (modul anahtarlari mevcut davranisla acik); override profili ezer', () => {
+    const MODULE_KEYS = ['admin.assemblies', 'admin.tenders'];
+    const simple = Object.entries(resolveFeatures(simpleModeFeatures()));
+    expect(simple.filter(([k]) => !MODULE_KEYS.includes(k)).every(([, v]) => v === false)).toBe(true);
+    expect(simple.filter(([k]) => MODULE_KEYS.includes(k)).every(([, v]) => v === true)).toBe(true);
     const r = resolveFeatures({ profile: 'simple', overrides: { 'admin.debtRestructure': true } });
     expect(r['admin.debtRestructure']).toBe(true);
     expect(r['resident.restructure']).toBe(false);

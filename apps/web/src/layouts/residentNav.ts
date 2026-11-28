@@ -17,9 +17,9 @@ export const RESIDENT_NAV: readonly NavItem[] = [
   { to: '/app/ziyaretci', label: 'Ziyaretçi', icon: DoorOpen },
   { to: '/app/rezervasyon', label: 'Rezervasyon', icon: CalendarDays },
   { to: '/app/oylamalar', label: 'Oylamalar', icon: Vote },
-  { to: '/app/genel-kurul', label: 'Genel Kurul', icon: Landmark, ownersOnly: true },
+  { to: '/app/genel-kurul', label: 'Genel Kurul', icon: Landmark, ownersOnly: true, feature: 'admin.assemblies' },
   { to: '/app/tuketim', label: 'Tüketimim', icon: Gauge },
-  { to: '/app/ihale', label: 'İhaleler', icon: Scale },
+  { to: '/app/ihale', label: 'İhaleler', icon: Scale, feature: 'admin.tenders' },
 ];
 
 export const PRIMARY_TABS = 4;

@@ -288,8 +288,11 @@ describe('cok adayli secim (m.34 / m.41)', () => {
     await w.call('PUT', '/asm1/minutes', { version: w.version(), chair: 'Ayşe Yılmaz', clerks: ['Mehmet Kaya'] });
     await w.call('POST', '/asm1/finalize', { version: w.version() });
     const p = await w.portal('/asm1', w.token('own-3', 'resident'));
-    expect(p.body.agenda[0]).toMatchObject({ candidates: [{ name: 'Ali Veli' }, { name: 'Ayşe Kaya' }], decision: { decision: 'accepted', election: { winnerName: 'Ali Veli' } } });
+    // KVKK: portalda yalnizca secilenin adi (m.34 son fikra: zaten asilir); digeri sira etiketiyle.
+    expect(p.body.agenda[0]).toMatchObject({ candidateCount: 2, decision: { decision: 'accepted', election: { winnerName: 'Ali Veli', candidates: [{ name: 'Ali Veli', elected: true }, { name: 'Aday 2', elected: false }] } } });
     expect(JSON.stringify(p.body)).not.toContain('own-');
+    expect(JSON.stringify(p.body)).not.toContain('Ayşe Kaya');
+    expect(JSON.stringify(p.body)).not.toContain('Mehmet Demir');
   });
 });
 

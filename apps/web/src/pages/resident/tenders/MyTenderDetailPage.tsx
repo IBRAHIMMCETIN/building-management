@@ -3,6 +3,7 @@ import { Link, useParams } from 'react-router';
 import { QuoteComparison } from '@/components/tenders/QuoteComparison';
 import { TenderComments } from '@/components/tenders/TenderComments';
 import { Alert, Badge, Card, CardTitle, Skeleton } from '@/components/ui';
+import { useFeature } from '@/context/SiteFeaturesContext';
 import { useAskTenderQuestion, useMyTender } from '@/hooks/useTenders';
 import { errorMessage } from '@/lib/api/errors';
 import { type Tender, portalTendersApi } from '@/lib/api/tenders';
@@ -27,6 +28,8 @@ export function MyTenderDetailPage() {
 
 function Detail({ tender: t }: { tender: Tender }) {
   const ask = useAskTenderQuestion();
+  // Genel kurul modulu sitede kapaliysa karar baglantisi duz metin (sayfa acilmaz).
+  const assembliesOn = useFeature('admin.assemblies');
   const d = t.decision;
   return (
     <>
@@ -59,7 +62,7 @@ function Detail({ tender: t }: { tender: Tender }) {
             {t.assemblyDecision && (
               <p className="text-small text-muted">
                 Dayandığı genel kurul kararı:{' '}
-                {t.assemblyDecision.portalLink ? (
+                {t.assemblyDecision.portalLink && assembliesOn ? (
                   <Link to={`/app/genel-kurul/${encodeURIComponent(t.assemblyDecision.assemblyId)}`} className="text-accent underline-offset-4 hover:underline">
                     {formatDate(t.assemblyDecision.meetingAt)} · {t.assemblyDecision.itemTitle}
                   </Link>

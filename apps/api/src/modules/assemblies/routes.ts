@@ -1,13 +1,15 @@
 import { type Context, Hono, type MiddlewareHandler } from 'hono';
 import type { Authenticator, Role } from '../../auth/claims.js';
 import { type Env, authenticateWith, handleError, readJson, requireRole } from '../../http/helpers.js';
+import { type SiteFeatureReader, requireFeature } from '../features/guard.js';
 import type { AssemblyContext, AssemblyPortalContext, AssemblyService } from './service.js';
 
 /** Duyuru ve oylamalarla ayni rol listeleri. */
 const READ_ROLES: readonly Role[] = ['apartment_manager', 'management_company', 'observer'];
 const WRITE_ROLES: readonly Role[] = ['apartment_manager', 'management_company'];
 
-export type AssemblyRoutesDeps = { authenticate: Authenticator; service: AssemblyService };
+/** `features`: site ozellik anahtari `admin.assemblies` kapaliysa tum uclar 403 `feature_disabled` (verilmezse kontrol yok). */
+export type AssemblyRoutesDeps = { authenticate: Authenticator; service: AssemblyService; features?: SiteFeatureReader };
 
 function requireApartment(): MiddlewareHandler<Env> {
   return async (c, next) => {
@@ -54,11 +56,12 @@ function requireApartment(): MiddlewareHandler<Env> {
  *
  * Tenant izolasyonu: `apartmentId` YALNIZCA JWT claim'inden. `observer` salt okunur.
  */
-export function assemblyRoutes({ authenticate, service }: AssemblyRoutesDeps) {
+export function assemblyRoutes({ authenticate, service, features }: AssemblyRoutesDeps) {
   const r = new Hono<Env>();
   r.onError(handleError);
   r.use('*', authenticateWith(authenticate));
   r.use('*', requireApartment());
+  r.use('*', requireFeature(features, 'admin.assemblies'));
 
   const ctx = (c: Context<Env>): AssemblyContext => {
     const claims = c.get('claims');
@@ -117,12 +120,13 @@ export function assemblyRoutes({ authenticate, service }: AssemblyRoutesDeps) {
  *
  * KVKK: baska maliklerin adi, bolum bazinda katilim ve oy hicbir yanitta yok (yalnizca toplamlar).
  */
-export function assemblyPortalRoutes({ authenticate, service }: AssemblyRoutesDeps) {
+export function assemblyPortalRoutes({ authenticate, service, features }: AssemblyRoutesDeps) {
   const r = new Hono<Env>();
   r.onError(handleError);
   r.use('*', authenticateWith(authenticate));
   r.use('*', requireRole(['resident']));
   r.use('*', requireApartment());
+  r.use('*', requireFeature(features, 'admin.assemblies'));
   r.use('*', async (c, next) => {
     await next();
     c.header('Cache-Control', 'no-store');

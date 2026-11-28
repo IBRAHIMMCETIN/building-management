@@ -115,6 +115,8 @@ describe('yonetim menusu: site ozellik anahtarlari (Adim 1)', () => {
     expect(filterNav(items, 'apartment_manager').map((n) => n.to)).toEqual(['/admin/a', '/admin/b']);
     expect(filterNav(items, 'apartment_manager', () => false).map((n) => n.to)).toEqual(['/admin/a']);
     expect(filterNav(items, 'observer', () => true).map((n) => n.to)).toEqual(['/admin/a']);
-    expect(navItemsFor('apartment_manager', false, () => false)).toEqual(navItemsFor('apartment_manager'));
+    // Gercek menude yalnizca modul anahtarli ogeler (varsayilan acik) ozellige baglidir.
+    const off = navItemsFor('apartment_manager', false, () => false).map((n) => n.to);
+    expect(navItemsFor('apartment_manager').map((n) => n.to).filter((to) => !off.includes(to))).toEqual(['/admin/tenders', '/admin/assemblies']);
   });
 });

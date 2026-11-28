@@ -139,14 +139,14 @@ describe('sakin genel kurul ayrintisi', () => {
     const decision = { decision: 'accepted', rule: 'persons_and_land', votes: { yes: 3, no: 1, abstain: 0 }, units: null, landShareBps: null, corrected: false, recordedAt: '2026-12-15T17:00:00.000Z' };
     const candidates = [
       { candidateId: 'c1', name: 'Ali Veli', votes: 3, persons: 3, units: 3, landShareBps: 9000, elected: true },
-      { candidateId: 'c2', name: 'Ayşe Kaya', votes: 1, persons: 1, units: 1, landShareBps: 1000, elected: false },
+      { candidateId: 'c2', name: 'Aday 2', votes: 1, persons: 1, units: 1, landShareBps: 1000, elected: false },
     ];
     state = ok(
       assembly({
         phase: 'held',
         status: 'held',
         agenda: [
-          { itemId: 'a1', title: 'Yönetici seçimi', decisionKind: 'manager_election', majority: 'persons_and_land', candidates: [{ candidateId: 'c1', name: 'Ali Veli' }, { candidateId: 'c2', name: 'Ayşe Kaya' }], decision: { ...decision, election: { winnerName: 'Ali Veli', candidates } } },
+          { itemId: 'a1', title: 'Yönetici seçimi', decisionKind: 'manager_election', majority: 'persons_and_land', candidateCount: 2, decision: { ...decision, election: { winnerName: 'Ali Veli', candidates } } },
           { itemId: 'a2', title: 'Denetçi seçimi', decisionKind: 'auditor_election', majority: 'persons_and_land', decision: { ...decision, decision: 'rejected', election: { winnerName: null, noWinner: 'Seçim yapılamadı: hiçbir aday çoğunluğa ulaşmadı.', candidates } } },
         ] as never,
       }),
@@ -154,7 +154,7 @@ describe('sakin genel kurul ayrintisi', () => {
     await render(<MyAssemblyDetailPage />);
     const text = container.textContent ?? '';
     expect(text).toContain('Seçilen: Ali Veli');
-    expect(text).toContain('Ayşe Kaya1 oy · 1 kat maliki · 1 bölüm · arsa payı');
+    expect(text).toContain('Aday 21 oy · 1 kat maliki · 1 bölüm · arsa payı');
     expect(text).toContain('Seçim yapılamadı: hiçbir aday çoğunluğa ulaşmadı.');
   });
 });

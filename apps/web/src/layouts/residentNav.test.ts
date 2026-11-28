@@ -16,6 +16,13 @@ describe('sakin menusu: alt sekmeler ve "Diğer"', () => {
     expect(splitResidentNav(residentNavFor(false)).more.map((n) => n.to)).toEqual(['/app/ziyaretci', '/app/rezervasyon', '/app/oylamalar', '/app/tuketim', '/app/ihale']);
   });
 
+  it('Genel Kurul ve İhaleler site ozellik anahtarina bagli (admin.assemblies / admin.tenders)', () => {
+    expect(RESIDENT_NAV.filter((n) => n.feature).map((n) => [n.to, n.feature])).toEqual([
+      ['/app/genel-kurul', 'admin.assemblies'],
+      ['/app/ihale', 'admin.tenders'],
+    ]);
+  });
+
   it('cekmeceye tek oge kalacaksa hepsi cubukta gosterilir', () => {
     const five = RESIDENT_NAV.slice(0, PRIMARY_TABS + 1);
     expect(splitResidentNav(five).more).toEqual([]);

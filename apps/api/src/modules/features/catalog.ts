@@ -24,6 +24,9 @@ export const FEATURE_KEYS = [
   // Yonetici tarafi gizlemeleri
   'admin.sharedOwnership',
   'admin.debtRestructure',
+  // Modul anahtarlari (yonetim + sakin ekranlari birlikte; varsayilan acik, mevcut siteler degismez)
+  'admin.assemblies',
+  'admin.tenders',
   // Sonraki adimlar (3-7) icin hazir kancalar
   'resident.expenseChart',
   'channels.whatsapp',
@@ -95,6 +98,20 @@ export const FEATURE_CATALOG: Readonly<Record<FeatureKey, FeatureDefinition>> = 
     label: 'Borç yapılandırma ve muacceliyet',
     description: 'Yönetici taksit planları, muacceliyet ve günlük temerrüt taraması.',
     defaults: { legacy: true, simple: false },
+  },
+  'admin.assemblies': {
+    key: 'admin.assemblies',
+    area: 'admin',
+    label: 'Genel kurul',
+    description: 'Kat malikleri kurulu toplantıları, çağrı / iptal / erteleme bildirimleri, tebligat takibi, yazılı rıza ve sakin portalındaki genel kurul ekranı.',
+    defaults: { legacy: true, simple: true },
+  },
+  'admin.tenders': {
+    key: 'admin.tenders',
+    area: 'admin',
+    label: 'İhale / teklif toplama',
+    description: 'İhaleler, teklif karşılaştırması, hakedişler, sakin soruları ve sakin portalındaki ihale ekranı.',
+    defaults: { legacy: true, simple: true },
   },
   'resident.expenseChart': {
     key: 'resident.expenseChart',

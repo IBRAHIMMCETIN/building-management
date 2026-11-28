@@ -546,7 +546,8 @@ export const portalAssemblySchema = z.object({
       description: z.string().optional(),
       decisionKind: z.enum(DECISION_KINDS).optional(),
       majority: z.enum(MAJORITY_RULES),
-      candidates: z.array(z.object({ candidateId: z.string(), name: z.string() })).optional(),
+      /** Secim maddesi: aday sayisi (KVKK: diger sakinlerin adi portalda yok). */
+      candidateCount: z.number().int().optional(),
       decision: z
         .object({
           decision: z.enum(['accepted', 'rejected']),

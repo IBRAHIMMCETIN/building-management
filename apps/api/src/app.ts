@@ -416,7 +416,7 @@ export function createApp(config: AppConfig) {
   app.route('/api/polls', pollRoutes({ authenticate, service: pollService }));
   const assemblyService =
     config.assemblyService ?? createAssemblyService({ documents: { promote: documentsService.promoteAssemblyConsent, sign: documentsService.signAssemblyDocument } });
-  app.route('/api/assemblies', assemblyRoutes({ authenticate, service: assemblyService }));
+  app.route('/api/assemblies', assemblyRoutes({ authenticate, service: assemblyService, features: siteFeatures }));
 
   // Faz 3 (O1): ariza / talep (yonetim, gorevli, guvenlik, denetci).
   const ticketService = config.ticketService ?? createTicketService();
@@ -433,7 +433,7 @@ export function createApp(config: AppConfig) {
   const tenderService =
     config.tenderService ??
     createTenderService({ documents: { promote: documentsService.promoteTenderQuote, sign: documentsService.signTenderDocument }, finance: financeService });
-  app.route('/api/tenders', tenderRoutes({ authenticate, service: tenderService }));
+  app.route('/api/tenders', tenderRoutes({ authenticate, service: tenderService, features: siteFeatures }));
 
   // Yonetim firmasi portfoyu: kullanicinin yonettigi / denetledigi tum apartmanlarin ozetleri,
   // mevcut servislerin salt okunur ozetlerinden (yeniden hesaplama yok).
@@ -466,8 +466,8 @@ export function createApp(config: AppConfig) {
   app.route('/api/portal/reservations', reservationPortalRoutes({ authenticate, service: reservationService }));
   app.route('/api/portal/polls', pollPortalRoutes({ authenticate, service: pollService }));
   // Genel kurul devami: kat maliki sakinler icin toplantilar, kararlar ve tutanak.
-  app.route('/api/portal/assemblies', assemblyPortalRoutes({ authenticate, service: assemblyService }));
-  app.route('/api/portal/tenders', tenderPortalRoutes({ authenticate, service: tenderService }));
+  app.route('/api/portal/assemblies', assemblyPortalRoutes({ authenticate, service: assemblyService, features: siteFeatures }));
+  app.route('/api/portal/tenders', tenderPortalRoutes({ authenticate, service: tenderService, features: siteFeatures }));
   app.route(
     '/api/portal',
     portalRoutes({

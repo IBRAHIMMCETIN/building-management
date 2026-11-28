@@ -1,13 +1,15 @@
 import { type Context, Hono } from 'hono';
 import type { Authenticator, Role } from '../../auth/claims.js';
 import { type Env, authenticateWith, handleError, readJson, requireRole } from '../../http/helpers.js';
+import { type SiteFeatureReader, requireFeature } from '../features/guard.js';
 import { TenderError } from './errors.js';
 import type { TenderContext, TenderService } from './service.js';
 
 const READ_ROLES: readonly Role[] = ['apartment_manager', 'management_company', 'observer'];
 const WRITE_ROLES: readonly Role[] = ['apartment_manager', 'management_company'];
 
-export type TenderRoutesDeps = { authenticate: Authenticator; service: TenderService };
+/** `features`: site ozellik anahtari `admin.tenders` kapaliysa tum uclar 403 `feature_disabled` (verilmezse kontrol yok). */
+export type TenderRoutesDeps = { authenticate: Authenticator; service: TenderService; features?: SiteFeatureReader };
 
 /** Modul hatasi + ortak hata eslemesi (paylasilan `handleError`'a dokunmadan). */
 function onError(err: Error, c: Context) {
@@ -15,7 +17,7 @@ function onError(err: Error, c: Context) {
   return handleError(err, c);
 }
 
-function base(authenticate: Authenticator) {
+function base(authenticate: Authenticator, features?: SiteFeatureReader) {
   const r = new Hono<Env>();
   r.onError(onError);
   r.use('*', authenticateWith(authenticate));
@@ -25,6 +27,7 @@ function base(authenticate: Authenticator) {
     // Imzali belge linkleri ve teklif bilgisi onbelleklenmez.
     c.header('Cache-Control', 'no-store');
   });
+  r.use('*', requireFeature(features, 'admin.tenders'));
   return r;
 }
 
@@ -66,8 +69,8 @@ const quoteId = (c: Context<Env>) => c.req.param('quoteId') ?? '';
  *                                              gerekce zorunlu; tekrar ayni sonuc; `ledger.expense` denetimi)
  * Belge yukleme: `POST /api/documents/invoice-uploads` (gider faturasiyla ayni sinirlar).
  */
-export function tenderRoutes({ authenticate, service }: TenderRoutesDeps) {
-  const r = base(authenticate);
+export function tenderRoutes({ authenticate, service, features }: TenderRoutesDeps) {
+  const r = base(authenticate, features);
   r.get('/', requireRole(READ_ROLES), async (c) => c.json(await service.list(ctxOf(c), { status: c.req.query('status') })));
   r.post('/', requireRole(WRITE_ROLES), async (c) => {
     const result = await service.create(ctxOf(c), await readJson(c));
@@ -111,8 +114,8 @@ export function tenderRoutes({ authenticate, service }: TenderRoutesDeps) {
  *   GET   /:id/quotes/:quoteId/document      imzali link
  *   POST  /:id/comments                      { idempotencyKey, body }   soru (yalnizca yayinda)
  */
-export function tenderPortalRoutes({ authenticate, service }: TenderRoutesDeps) {
-  const r = base(authenticate);
+export function tenderPortalRoutes({ authenticate, service, features }: TenderRoutesDeps) {
+  const r = base(authenticate, features);
   r.use('*', requireRole(['resident']));
   r.get('/', async (c) => c.json(await service.portalList(ctxOf(c))));
   r.get('/:id', async (c) => c.json(await service.portalGet(ctxOf(c), id(c))));

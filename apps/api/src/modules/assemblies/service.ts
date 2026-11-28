@@ -183,8 +183,8 @@ export type PortalAssemblyView = {
     description?: string;
     decisionKind: AgendaItem['decisionKind'];
     majority: MajorityRule;
-    /** Secim maddesinde aday adlari (gundemin parcasi). */
-    candidates?: { candidateId: string; name: string }[];
+    /** Secim maddesinde aday sayisi (KVKK: adlar portalda yok). */
+    candidateCount?: number;
     decision?: PortalDecision;
   }[];
   quorum?: { met: boolean; secondMeeting: boolean; noAttendance: boolean; presentOwners: number; totalOwners: number; presentVotes: number; totalVotes: number };
@@ -1389,10 +1389,22 @@ export function createAssemblyService(overrides: Partial<AssemblyServiceDeps> = 
     };
   }
 
+  /**
+   * KVKK: sakin portalinda diger kisilerin adi yok. Yalnizca SECILEN adayin adi gosterilir (yoneticinin
+   * adi KMK m.34 son fikra uyarinca bina girisine zaten asilir); digerleri sira etiketiyle ("Aday 2").
+   */
   const portalElection = (e: ElectionResult): NonNullable<PortalDecision['election']> => ({
     winnerName: e.candidates.find((c) => c.candidateId === e.winnerCandidateId)?.name ?? null,
     ...(e.noWinner ? { noWinner: e.noWinner } : {}),
-    candidates: e.candidates.map((c) => ({ candidateId: c.candidateId, name: c.name, votes: c.votes, persons: c.persons, units: c.units, landShareBps: c.landShareBps, elected: c.elected })),
+    candidates: e.candidates.map((c, i) => ({
+      candidateId: c.candidateId,
+      name: c.candidateId === e.winnerCandidateId ? c.name : `Aday ${i + 1}`,
+      votes: c.votes,
+      persons: c.persons,
+      units: c.units,
+      landShareBps: c.landShareBps,
+      elected: c.elected,
+    })),
   });
 
   function portalView(a: Assembly, decisions: readonly AssemblyDecision[] = []): PortalAssemblyView {
@@ -1433,7 +1445,8 @@ export function createAssemblyService(overrides: Partial<AssemblyServiceDeps> = 
         ...(i.description ? { description: i.description } : {}),
         decisionKind: itemKind(i),
         majority: itemRule(i),
-        ...(i.candidates?.length ? { candidates: i.candidates.map((c) => ({ candidateId: c.candidateId, name: c.name })) } : {}),
+        // KVKK: aday adlari (diger sakinler) portalda yok; yalnizca aday sayisi.
+        ...(i.candidates?.length ? { candidateCount: i.candidates.length } : {}),
         ...(held && i.tally ? { decision: portalDecision(i.tally, recordOf(i.itemId, i.tally.seq)) } : {}),
       })),
       ...(held && q
