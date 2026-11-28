@@ -3,7 +3,7 @@ import { formatDate, formatDateTime } from '@bm/shared/dates';
 import { formatTRY } from '@bm/shared/money';
 import { useQueryClient } from '@tanstack/react-query';
 import { useRouter } from 'expo-router';
-import { ArrowRight, CircleCheck, Megaphone, TriangleAlert, Wrench } from '@/components/icons';
+import { ArrowRight, CircleCheck, Megaphone, Plus, TriangleAlert, Wrench } from '@/components/icons';
 import { useState } from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
 import { PayOnlineButton } from '@/components/portal/PayOnlineButton';
@@ -11,7 +11,6 @@ import { PortalQueryState } from '@/components/portal/PortalQueryState';
 import { RefetchErrorBanner } from '@/components/portal/RefetchErrorBanner';
 import { PortalStatusBadge } from '@/components/portal/PortalStatusBadge';
 import { AppText, Button, Card, CardTitle, LoadingBlock, Screen, Skeleton } from '@/components/ui';
-import { WebLinkButton } from '@/components/WebLinkButton';
 import { useAuth } from '@/context/AuthProvider';
 import { portalKeys, useMyAnnouncements, useMyOpenTickets, useMySummary } from '@/hooks/usePortal';
 import { MIN_TOUCH, radii, space, withAlpha } from '@/theme/tokens';
@@ -112,9 +111,10 @@ function MyTicketsCard() {
   return (
     <Card>
       <CardTitle icon={<Wrench size={20} color={colors.muted} aria-hidden />}>Arıza / Talep</CardTitle>
+      {list.isError && list.data && <RefetchErrorBanner error={list.error} onRetry={() => void list.refetch()} />}
       {list.isPending ? (
         <Skeleton height={20} width="50%" />
-      ) : list.isError ? (
+      ) : !list.data ? (
         <AppText variant="small" tone="muted">
           Talepler şu an yüklenemedi.
         </AppText>
@@ -129,7 +129,7 @@ function MyTicketsCard() {
         </AppText>
       )}
       <View style={styles.wrap}>
-        <WebLinkButton path="/app/talepler/yeni" label="Arıza bildir" variant="secondary" />
+        <Button variant="secondary" icon={Plus} label="Arıza bildir" onPress={() => router.push('/resident/tickets/new')} />
         <Button variant="ghost" icon={ArrowRight} label="Taleplerim" onPress={() => router.navigate('/resident/tickets')} />
       </View>
     </Card>

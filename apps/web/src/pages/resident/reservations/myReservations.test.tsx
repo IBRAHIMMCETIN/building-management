@@ -3,6 +3,7 @@ import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 vi.mock('@/lib/api/client', () => ({ apiClient: {} }));
+import { ApiError } from '@/lib/api/errors';
 import { type Availability, type MyBooking, availabilitySchema, myBookingSchema, portalFacilitiesSchema } from '@/lib/api/reservations';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -66,14 +67,15 @@ const day: Availability = availabilitySchema.parse({
   slots: [slot('09:00', '10:00', 'busy'), slot('10:00', '11:00', 'free'), slot('11:00', '12:00', 'free'), slot('12:00', '13:00', 'mine')],
 });
 
-const mutation = (resolved: unknown = {}) => ({ isPending: false, isError: false, error: null, reset: vi.fn(), mutate: vi.fn(), mutateAsync: vi.fn().mockResolvedValue(resolved) });
+const mutation = (resolved: unknown = {}) => ({ isPending: false, isError: false, error: null as unknown, reset: vi.fn(), mutate: vi.fn(), mutateAsync: vi.fn().mockResolvedValue(resolved) });
 const create = mutation({ booking: booking(), replayed: false });
 const cancel = mutation();
 let mine = { upcoming: [booking()], history: [booking({ bookingId: 'b0', status: 'rejected', decisionNote: 'Bakım var', canCancel: false, past: true, fee: { amount: 0, status: 'none' } })] };
+let currentDay: Availability = day;
 
 vi.mock('@/hooks/useReservations', () => ({
   usePortalFacilities: () => ({ isPending: false, isError: false, data: facilities }),
-  useAvailability: () => ({ isPending: false, isError: false, data: day, refetch: vi.fn() }),
+  useAvailability: () => ({ isPending: false, isError: false, data: currentDay, refetch: vi.fn() }),
   useMyBookings: () => ({ isPending: false, isError: false, data: mine }),
   useCreateBooking: () => create,
   useCancelMyBooking: () => cancel,
@@ -135,6 +137,32 @@ describe('sakin rezervasyon ekrani', () => {
     expect(keys[0]).toBe(keys[1]);
     expect(keys[2]).not.toBe(keys[1]);
     expect((create.mutateAsync.mock.calls[2]?.[0] as { start: string }).start).toBe('11:00');
+  });
+
+  it('dilim dolmussa (409): hata kartin disinda kalir, dolan dilim birakilir; yeni dilim secimi hatayi sifirlar', async () => {
+    await render();
+    await click(byText('Toplantı Salonu'));
+    await click(buttons().find((b) => b.textContent?.startsWith('10:00')));
+    create.mutateAsync.mockRejectedValueOnce(new ApiError(409, { error: 'slot_taken', message: 'Seçilen saat artık müsait değil.' }));
+    await click(byText('Rezervasyonu onayla'));
+    // Hook hata durumuna gecer ve yenilenen musaitlikte 10:00 doludur.
+    create.isError = true;
+    create.error = new ApiError(409, { error: 'slot_taken', message: 'Seçilen saat artık müsait değil.' });
+    currentDay = availabilitySchema.parse({ ...day, slots: day.slots.map((s) => (s.start === '10:00' ? { ...s, state: 'busy' } : s)) });
+    const note = container.querySelector('textarea') as HTMLTextAreaElement;
+    const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(note), 'value')?.set;
+    await act(async () => {
+      setter?.call(note, 'x');
+      note.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    expect(byText('Rezervasyonu onayla')).toBeUndefined();
+    expect(container.textContent).toContain('Seçilen saat artık müsait değil.');
+    create.reset.mockClear();
+    await click(buttons().find((b) => b.textContent?.startsWith('11:00')));
+    expect(create.reset).toHaveBeenCalled();
+    create.isError = false;
+    create.error = null;
+    currentDay = day;
   });
 
   it('rezervasyonlarim: iptal onayi, ret gerekcesi ve ucret durumu', async () => {

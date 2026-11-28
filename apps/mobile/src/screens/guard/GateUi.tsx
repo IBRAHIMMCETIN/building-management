@@ -6,7 +6,7 @@ import { useEffect, useState } from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
 import { Check, LogIn, LogOut } from '@/components/icons';
 import { Alert, AppText, Badge, Button, Skeleton, TextField } from '@/components/ui';
-import { useGateUnits } from '@/hooks/useGate';
+import { useGateUnits } from '@/hooks/useGateDesk';
 import { MIN_TOUCH, radii, space } from '@/theme/tokens';
 import { useTheme } from '@/theme/useTheme';
 

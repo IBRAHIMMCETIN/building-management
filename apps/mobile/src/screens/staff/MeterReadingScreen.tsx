@@ -6,9 +6,10 @@ import { StyleSheet, View } from 'react-native';
 import { Check, ClipboardPen } from '@/components/icons';
 import { Alert, AppText, Badge, Button, Card, ChipGroup, EmptyState, LoadingBlock, Screen, TextField, type TextFieldHandle } from '@/components/ui';
 import { useReadingPeriods, useReadingSheet, useSaveReading, useSiteLabels } from '@/hooks/useWork';
-import type { LocalPhoto } from '@/lib/photos';
+import { PhotoPicker } from '@/components/tickets/PhotoPicker';
+import type { PreparedPhoto } from '@/lib/photos';
 import { space } from '@/theme/tokens';
-import { PhotoPicker } from './WorkUi';
+
 
 type Show = 'missing' | 'all';
 
@@ -162,7 +163,7 @@ function ReadingCard({ periodId, row, unitLabel, autoFocus, onSaved }: { periodI
   const [value, setValue] = useState('');
   const [note, setNote] = useState('');
   const [error, setError] = useState<string | null>(null);
-  const [photos, setPhotos] = useState<LocalPhoto[]>([]);
+  const [photos, setPhotos] = useState<PreparedPhoto[]>([]);
   const [saved, setSaved] = useState<string | null>(null);
 
   useEffect(() => {

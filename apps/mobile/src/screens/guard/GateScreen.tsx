@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { StyleSheet, View, useWindowDimensions } from 'react-native';
 import { ChipGroup, Screen } from '@/components/ui';
 import { useAuth } from '@/context/AuthProvider';
-import { gateKeys, useDeskCouriers } from '@/hooks/useGate';
+import { deskKeys, useDeskCouriers } from '@/hooks/useGateDesk';
 import { space } from '@/theme/tokens';
 import { CourierDesk } from './CourierDesk';
 import { GateLog } from './GateLog';
@@ -36,7 +36,7 @@ export function GateScreen({ active = true, initialTab = 'pass' }: { active?: bo
   const refresh = async () => {
     setRefreshing(true);
     try {
-      await queryClient.refetchQueries({ queryKey: gateKeys.all(user?.apartmentId ?? ''), type: 'active' });
+      await queryClient.refetchQueries({ queryKey: deskKeys.all(user?.apartmentId ?? ''), type: 'active' });
     } finally {
       setRefreshing(false);
     }

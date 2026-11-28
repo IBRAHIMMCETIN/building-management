@@ -6,18 +6,9 @@ import {
   sheetSchema,
 } from '@bm/shared/api/meterReadings';
 import { signedDownloadSchema } from '@bm/shared/api/documents';
-import { type EstimateInput, ticketListSchema } from '@bm/shared/api/tickets';
-import {
-  type CompleteTaskInput,
-  assigneesSchema,
-  photoUploadSchema,
-  taskCompleteSchema,
-  taskListSchema,
-  taskOneSchema,
-  ticketDetailSchema,
-  ticketEventSchema,
-  ticketOneSchema,
-} from '@bm/shared/api/work';
+import { ticketOneSchema } from '@bm/shared/api/portalTickets';
+import { type EstimateInput, photoUploadSchema, ticketDetailSchema, ticketEventSchema, ticketListSchema } from '@bm/shared/api/tickets';
+import { type CompleteTaskInput, assigneesSchema, taskCompleteSchema, taskListSchema, taskOneSchema } from '@bm/shared/api/work';
 import type { TicketPriority, TransitionAction } from '@bm/shared/tickets/model';
 import { z } from 'zod';
 import type { ApiClient } from './createApiClient';

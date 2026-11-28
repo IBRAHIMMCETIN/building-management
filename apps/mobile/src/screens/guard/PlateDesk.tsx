@@ -5,7 +5,7 @@ import { useEffect, useState } from 'react';
 import { Platform, StyleSheet, View } from 'react-native';
 import { Car, Search, UserPlus } from '@/components/icons';
 import { Alert, AppText, Badge, Button, Card, Skeleton, TextField } from '@/components/ui';
-import { usePlateLookup } from '@/hooks/useGate';
+import { usePlateLookup } from '@/hooks/useGateDesk';
 import { radii, space, withAlpha } from '@/theme/tokens';
 import { useTheme } from '@/theme/useTheme';
 import { RateLimitNotice, useCountdown } from './GateUi';

@@ -1,25 +1,22 @@
 /*
- * Guvenlik kapisi - saf yardimcilar (web: apps/web/src/lib/gate/plate.ts ile ayni kurallar; API:
- * apps/api/src/modules/gate/model.ts). Yetkinin ve dogrulamanin asli API'dedir. Web dosyasi paralel
- * kapi dallari birlesince buraya yeniden dışa aktarıma çevrilebilir.
+ * Guvenlik kapisi - gorevli masasinin saf yardimcilari (web: apps/web/src/lib/gate/plate.ts ile ayni
+ * kurallar; API: apps/api/src/modules/gate/model.ts). Plaka, kisa kod gosterimi, karar / gunluk
+ * etiketleri ve tarih yardimcilari tek kaynaktan (../api/portalGate.ts) yeniden dışa aktarilir; burada
+ * yalnizca okutma (QR / kisa kod ayristirma), kurye durumu ve masaya ozgu sabitler vardir.
  */
-import { formatDate } from '../dates';
-
-/** Bosluk / tire / nokta atilir, buyuk harf; Turkce `i` / `ı` / `İ` plakadaki Latin `I`. */
-export function normalizePlate(input: string): string {
-  return input
-    .replace(/[ıİi]/g, 'I')
-    .toUpperCase()
-    .replace(/[\s.\-_/]/g, '');
-}
-
-const PLATE_RE = /^(0[1-9]|[1-7][0-9]|8[01])([ABCDEFGHIJKLMNOPRSTUVYZ]{1,3})([0-9]{2,5})$/;
-
-/** `34ABC123` -> `34 ABC 123`; Turk plakasi degilse oldugu gibi. */
-export function formatPlate(plate: string): string {
-  const m = PLATE_RE.exec(plate);
-  return m ? `${m[1]} ${m[2]} ${m[3]}` : plate;
-}
+export {
+  DIRECTION_TEXT,
+  type GateTone,
+  LOG_KIND_TEXT,
+  type PassVerdict,
+  VERDICT_TEXT,
+  formatPlate,
+  formatShortCode,
+  normalizePlate,
+  timeOf,
+  validityText,
+} from '../api/portalGate';
+import type { GateTone } from '../api/portalGate';
 
 /** Plaka sorgusu icin en az karakter (API: tam plaka veya son >= 3 karakter). */
 export const PLATE_MIN_QUERY = 3;
@@ -37,9 +34,6 @@ export function normalizeShortCode(input: string): string | undefined {
   return code.length === 8 && [...code].every((c) => SHORT_CODE_ALPHABET.includes(c)) ? code : undefined;
 }
 
-/** `K7M2PQ4X` -> `K7M2-PQ4X` (okumasi ve yazmasi kolay). */
-export const formatShortCode = (code: string) => (code.length === 8 ? `${code.slice(0, 4)}-${code.slice(4)}` : code);
-
 export type ScanResult = { token: string } | { code: string };
 
 /** Okutulan QR / yazilan metin: gecis baglantisi (`/gecis/<jeton>#<kod>`), ham jeton veya kisa kod. */
@@ -55,20 +49,8 @@ export function parseScan(text: string): ScanResult | undefined {
 export const UNKNOWN_CODE_MESSAGE = 'Kod tanınmadı. 8 karakterlik kısa kodu (örnek: K7M2-PQ4X) yazın.';
 
 // ---------------------------------------------------------------------------
-// Etiketler
+// Kurye (gorevli gorunumu)
 // ---------------------------------------------------------------------------
-
-export type PassVerdict = 'valid' | 'not_yet_valid' | 'expired' | 'used' | 'revoked' | 'host_left';
-export type GateTone = 'success' | 'warning' | 'danger' | 'neutral' | 'accent';
-
-export const VERDICT_TEXT: Record<PassVerdict, { label: string; tone: GateTone }> = {
-  valid: { label: 'Geçerli', tone: 'success' },
-  not_yet_valid: { label: 'Henüz başlamadı', tone: 'warning' },
-  expired: { label: 'Süresi doldu', tone: 'danger' },
-  used: { label: 'Kullanıldı', tone: 'neutral' },
-  revoked: { label: 'İptal edildi', tone: 'danger' },
-  host_left: { label: 'Ev sahibi taşındı', tone: 'danger' },
-};
 
 export type CourierState = 'waiting' | 'approved' | 'approval_expired' | 'declined' | 'cancelled' | 'expired' | 'inside' | 'done';
 
@@ -95,23 +77,5 @@ export const COURIER_TEXT: Record<CourierState, { label: string; tone: GateTone 
 /** Gorevlinin kapidaki kurye hizli secimleri (web CourierDesk ile ayni). */
 export const COURIER_COMPANIES = ['Trendyol', 'Hepsiburada', 'Amazon', 'Getir', 'Yemeksepeti', 'Yurtiçi', 'Aras', 'MNG', 'PTT'] as const;
 
-export const LOG_KIND_TEXT: Record<string, string> = { guest: 'Misafir', courier: 'Kurye', manual: 'Elle kayıt' };
-export const DIRECTION_TEXT: Record<string, string> = { entry: 'Giriş', exit: 'Çıkış' };
-
-/** "27 Kas 2026" veya "27 Kas 2026 – 29 Kas 2026". */
-export const validityText = (from: string, until: string) => (from === until ? formatDate(from) : `${formatDate(from)} – ${formatDate(until)}`);
-
-/** Saat:dakika (Istanbul). */
-export const timeOf = (iso: string) => new Date(iso).toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Istanbul' });
-
-/** Istanbul gunu (YYYY-MM-DD). */
-export function istanbulDay(now: Date = new Date()): string {
-  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Istanbul' }).format(now);
-}
-
-/** `YYYY-MM-DD` + n gun. */
-export function addDays(day: string, n: number): string {
-  const d = new Date(`${day}T00:00:00Z`);
-  d.setUTCDate(d.getUTCDate() + n);
-  return d.toISOString().slice(0, 10);
-}
+/** Istanbul gunu (YYYY-MM-DD) ve gun ekleme: tek kaynak takvim yardimcilari. */
+export { addDays, istanbulToday as istanbulDay } from '../reservations/model';

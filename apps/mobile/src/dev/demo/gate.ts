@@ -1,158 +1,135 @@
-import { addDays, istanbulDay } from '@bm/shared/gate/plate';
+import { formatPlate, isTurkishPlate, normalizePlate, passFormError } from '@bm/shared/api/portalGate';
+import { istanbulToday } from '@bm/shared/reservations/model';
 import type { DemoHandler } from '../demoApi';
-import { bodyOf, fail, ok } from './types';
 
 /*
- * DEMO: guvenlik kapisi (security_guard). Kisa kodlar: K7M2-PQ4X gecerli (tek giris), ABCD-2345
- * suresi dolmus; baska kod "bulunamadi" ve 5 hatali denemede 429 (deneme siniri, geri sayim).
- * Plakalar: 34 ABC 123 (A Blok 7, aktif), 06 XY 4512 (B Blok 2, pasif). Kurye kaydi 20 sn sonra
- * sakin tarafindan "onaylanir" (canli durum).
+ * DEMO: sakin "Ziyaretçi" (/api/portal/gate). Acilista kapida onay bekleyen bir kurye, iki misafir
+ * gecisi, bir arac ve son kapi kayitlari vardir; islemler bellekte. QR jetonu yalnizca olusturma /
+ * yenileme yanitinda doner (gercek API gibi). Gercek veri DEGILDIR.
  */
 
-const UNITS = [
-  { unitId: 'u-a-1', label: 'A Blok · Daire 1' },
-  { unitId: 'u-a-2', label: 'A Blok · Daire 2' },
-  { unitId: 'u-demo-7', label: 'A Blok · Daire 7' },
-  { unitId: 'u-b-2', label: 'B Blok · Daire 2' },
-  { unitId: 'u-b-5', label: 'B Blok · Daire 5' },
-  { unitId: 'u-c-12', label: 'C Blok · Daire 12' },
-];
-
-const PLATES = [
-  { plate: '34ABC123', plateDisplay: '34 ABC 123', unitId: 'u-demo-7', unitLabel: 'A Blok · Daire 7', registered: true, active: true, note: 'Gri sedan' },
-  { plate: '06XY4512', plateDisplay: '06 XY 4512', unitId: 'u-b-2', unitLabel: 'B Blok · Daire 2', registered: true, active: false },
-];
-
 type Json = Record<string, unknown>;
+type Pass = Json & { passId: string; version: number; status: string; validFrom: string; validUntil: string };
 
-export function createGateDemo(): DemoHandler {
-  let failures = 0;
-  let lockedUntil = 0;
-  let seq = 0;
-  const passes: Record<string, Json> = {};
-  const couriers: Json[] = [];
-  const log: Json[] = [];
+const P = '/api/portal/gate';
+const UNIT = { unitId: 'u-demo-7', unitLabel: 'A Blok · Daire 7' };
+const LIMITS = { maxVehiclesPerUnit: 4, maxPassDays: 31, maxPassLeadDays: 90, courierResponseMinutes: 60 };
+const ALPHABET = '23456789ABCDEFGHJKMNPQRSTUVWXYZ';
+const TOKEN_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-';
 
-  const addLog = (entry: Json, now: Date) => {
-    const e = { logId: `log-${++seq}`, at: now.toISOString(), recordedByName: 'Siz', ...entry };
-    log.unshift(e);
-    return e;
+const pick = (chars: string, n: number) => Array.from({ length: n }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
+const addDays = (date: string, days: number) => new Date(Date.parse(`${date}T00:00:00Z`) + days * 86_400_000).toISOString().slice(0, 10);
+
+export function createGateDemo(now0: Date = new Date()): DemoHandler {
+  const today0 = istanbulToday(now0);
+  const iso = (msAgo: number) => new Date(now0.getTime() - msAgo).toISOString();
+  const courier: Json = {
+    courierId: 'c-1',
+    ...UNIT,
+    company: 'Yemeksepeti',
+    note: 'Sipariş teslimatı, kapıda bekliyor',
+    status: 'waiting',
+    expired: false,
+    createdAt: iso(3 * 60_000),
+    respondBy: new Date(now0.getTime() + 57 * 60_000).toISOString(),
+    canRespond: true,
+    canEnter: false,
+    canExit: false,
+    canCancel: false,
+    version: 1,
+  };
+  const base = { ...UNIT, entryCount: 0, inside: false, mine: true, createdAt: iso(86_400_000), version: 1 };
+  const passes: Pass[] = [
+    { ...base, passId: 'ps-2', guestName: 'Mehmet Yılmaz', validFrom: today0, validUntil: addDays(today0, 2), entryMode: 'multi', status: 'active', verdict: 'valid', entryCount: 1, inside: true, lastEntryAt: iso(2 * 3_600_000), canRevoke: true, canRotate: true },
+    { ...base, passId: 'ps-1', guestName: 'Ayşe Demir', validFrom: addDays(today0, -3), validUntil: addDays(today0, -3), entryMode: 'single', status: 'used', verdict: 'used', entryCount: 1, canRevoke: false, canRotate: false },
+  ];
+  const vehicles: Json[] = [
+    { vehicleId: 'v-1', ...UNIT, plate: '34ABC123', plateDisplay: '34 ABC 123', note: 'Beyaz Fiat Egea', status: 'active', createdAt: iso(30 * 86_400_000), updatedAt: iso(30 * 86_400_000), createdByRole: 'resident', version: 1 },
+  ];
+  const log: Json[] = [
+    { logId: 'l-3', at: iso(2 * 3_600_000), direction: 'entry', kind: 'guest', ...UNIT, passId: 'ps-2', visitorName: 'Mehmet Yılmaz' },
+    { logId: 'l-2', at: iso(26 * 3_600_000), direction: 'exit', kind: 'courier', ...UNIT, company: 'Trendyol', visitorName: 'Kurye' },
+    { logId: 'l-1', at: iso(26.2 * 3_600_000), direction: 'entry', kind: 'courier', ...UNIT, company: 'Trendyol', visitorName: 'Kurye' },
+  ];
+  let seq = 3;
+  const conflict = { status: 409, body: { error: 'conflict', message: 'Kayıt bu arada güncellendi; yenileyip tekrar deneyin.' } };
+  const view = (p: Pass) => {
+    const { token: _t, shortCode: _s, ...rest } = p;
+    return rest;
   };
 
-  const passFor = (code: string, now: Date): Json | undefined => {
-    const today = istanbulDay(now);
-    if (code === 'K7M2PQ4X') {
-      passes['p-valid'] ??= {
-        passId: 'p-valid', unitId: 'u-demo-7', unitLabel: 'A Blok · Daire 7', guestName: 'Ayşe Yılmaz', validFrom: today, validUntil: today, entryMode: 'single',
-        plate: '34KLM778', plateDisplay: '34 KLM 778', note: 'Akşam yemeğine geliyor', verdict: 'valid', entryCount: 0, inside: false, canEnter: true, canExit: false, version: 1,
-      };
-      return passes['p-valid'];
-    }
-    if (code === 'ABCD2345') {
-      return {
-        passId: 'p-expired', unitId: 'u-b-5', unitLabel: 'B Blok · Daire 5', guestName: 'Mehmet Kaya', validFrom: addDays(today, -3), validUntil: addDays(today, -1), entryMode: 'multi',
-        verdict: 'expired', message: 'Geçişin süresi dolmuş.', entryCount: 2, inside: false, canEnter: false, canExit: false, version: 3,
-      };
-    }
-    return undefined;
-  };
+  return ({ method, path, body, now }) => {
+    if (!path.startsWith(P)) return undefined;
+    const rest = path.slice(P.length);
+    const b = (body ?? {}) as Json;
+    const today = istanbulToday(now);
 
-  /** 20 sn sonra sakin "onaylar"; onayin gecerliligi 15 dk. */
-  const tick = (now: Date) => {
-    for (const c of couriers) {
-      if (c.status === 'waiting' && now.getTime() - Date.parse(String(c.createdAt)) > 20_000) {
-        c.status = 'approved';
-        c.respondedAt = now.toISOString();
-        c.enterBy = new Date(now.getTime() + 15 * 60_000).toISOString();
-        c.canEnter = true;
-        c.canCancel = true;
-        c.version = Number(c.version) + 1;
+    if (rest === '') return { status: 200, body: { units: [{ unitId: UNIT.unitId, label: UNIT.unitLabel }], limits: LIMITS } };
+    if (rest === '/couriers') return { status: 200, body: { items: [courier], pollSeconds: 15 } };
+    if (rest === '/passes' && method === 'GET') return { status: 200, body: { items: passes.map(view) } };
+    if (rest === '/vehicles' && method === 'GET') return { status: 200, body: { items: vehicles, maxPerUnit: LIMITS.maxVehiclesPerUnit } };
+    if (rest === '/log') return { status: 200, body: { items: log, from: addDays(today, -7), to: today } };
+
+    if (rest === '/passes' && method === 'POST') {
+      const validFrom = String(b.validFrom ?? '');
+      const validUntil = typeof b.validUntil === 'string' ? b.validUntil : validFrom;
+      const problem = passFormError({ guestName: String(b.guestName ?? ''), validFrom, validUntil: typeof b.validUntil === 'string' ? b.validUntil : '', today, maxPassDays: LIMITS.maxPassDays, maxPassLeadDays: LIMITS.maxPassLeadDays });
+      if (problem) return { status: 400, body: { error: 'validation', message: problem } };
+      const pass: Pass = {
+        ...base,
+        createdAt: now.toISOString(),
+        passId: `ps-${seq++}`,
+        guestName: String(b.guestName),
+        validFrom,
+        validUntil,
+        entryMode: b.entryMode === 'multi' ? 'multi' : 'single',
+        ...(typeof b.plate === 'string' && b.plate ? { plate: b.plate, plateDisplay: formatPlate(b.plate) } : {}),
+        ...(typeof b.note === 'string' ? { note: b.note } : {}),
+        status: 'active',
+        verdict: validFrom > today ? 'not_yet_valid' : 'valid',
+        canRevoke: true,
+        canRotate: true,
+        token: pick(TOKEN_CHARS, 24),
+        shortCode: pick(ALPHABET, 8),
+      };
+      passes.unshift(pass);
+      return { status: 201, body: { pass, replayed: false } };
+    }
+
+    const [, kind = '', id = '', action] = rest.split('/').map(decodeURIComponent);
+    if (kind === 'couriers' && action === 'respond') {
+      if (b.version !== courier.version) return conflict;
+      Object.assign(courier, { status: b.decision === 'approve' ? 'approved' : 'declined', respondedAt: now.toISOString(), canRespond: false, version: Number(courier.version) + 1 });
+      return { status: 200, body: { courier } };
+    }
+    if (kind === 'passes') {
+      const p = passes.find((x) => x.passId === id);
+      if (!p) return { status: 404, body: { error: 'not_found', message: 'Geçiş bulunamadı.' } };
+      if (b.version !== p.version) return conflict;
+      if (action === 'revoke') {
+        Object.assign(p, { status: 'revoked', verdict: 'revoked', revokedAt: now.toISOString(), canRevoke: false, canRotate: false, version: p.version + 1 });
+        return { status: 200, body: { pass: view(p) } };
+      }
+      if (action === 'rotate') {
+        Object.assign(p, { version: p.version + 1 });
+        return { status: 200, body: { pass: { ...view(p), token: pick(TOKEN_CHARS, 24), shortCode: pick(ALPHABET, 8) } } };
       }
     }
-  };
-
-  return ({ method, path, query, body: raw, claims, now }) => {
-    const body = bodyOf(raw);
-    if (!path.startsWith('/api/gate')) return undefined;
-    if (claims.role !== 'security_guard') return fail(403, 'forbidden', 'Bu işlem için yetkiniz yok.');
-
-    if (path === '/api/gate/units') {
-      const q = (query.q ?? '').toLocaleLowerCase('tr-TR');
-      return ok({ items: UNITS.filter((u) => !q || u.label.toLocaleLowerCase('tr-TR').includes(q)) });
+    if (rest === '/vehicles' && method === 'POST') {
+      const plate = normalizePlate(String(b.plate ?? ''));
+      if (!isTurkishPlate(plate)) return { status: 400, body: { error: 'validation', message: 'Plaka Türkiye plaka biçiminde olmalıdır', field: 'plate' } };
+      if (vehicles.some((v) => v.plate === plate)) return { status: 409, body: { error: 'conflict', message: 'Bu plaka zaten kayıtlı.' } };
+      if (vehicles.filter((v) => v.status === 'active').length >= LIMITS.maxVehiclesPerUnit) return { status: 422, body: { error: 'unprocessable', message: `Bir daireye en fazla ${LIMITS.maxVehiclesPerUnit} aktif araç kaydedilebilir.` } };
+      const vehicle = { vehicleId: `v-${seq++}`, ...UNIT, plate, plateDisplay: formatPlate(plate), ...(typeof b.note === 'string' ? { note: b.note } : {}), status: 'active', createdAt: now.toISOString(), updatedAt: now.toISOString(), createdByRole: 'resident', version: 1 };
+      vehicles.unshift(vehicle);
+      return { status: 201, body: { vehicle } };
     }
-    if (path === '/api/gate/plates') {
-      const q = query.q ?? '';
-      const items = PLATES.filter((p) => p.plate === q || p.plate.endsWith(q)).map((p) => ({ ...p, exact: p.plate === q }));
-      return ok({ query: q, queryDisplay: q, items });
-    }
-    if (path === '/api/gate/passes/verify' && method === 'POST') {
-      if (now.getTime() < lockedUntil) {
-        const s = Math.ceil((lockedUntil - now.getTime()) / 1000);
-        return fail(429, 'rate_limited', `Çok fazla geçiş sorgusu yapıldı. Güvenlik nedeniyle ${Math.ceil(s / 60)} dakika sonra tekrar deneyin.`, { retryAfterSeconds: s });
-      }
-      const pass = passFor(String(body.code ?? ''), now);
-      if (!pass) {
-        failures += 1;
-        if (failures >= 5) lockedUntil = now.getTime() + 2 * 60_000;
-        return fail(404, 'not_found', 'Geçiş bulunamadı. Kodu kontrol edin.');
-      }
-      failures = 0;
-      return ok({ pass });
-    }
-    const passMove = /^\/api\/gate\/passes\/([^/]+)\/(entry|exit)$/.exec(path);
-    if (passMove && method === 'POST') {
-      const p = passes[passMove[1] ?? ''];
-      if (!p) return fail(409, 'pass_expired', 'Geçişin süresi dolmuş.');
-      const entry = passMove[2] === 'entry';
-      Object.assign(p, entry ? { inside: true, entryCount: Number(p.entryCount) + 1, lastEntryAt: now.toISOString(), canEnter: false, canExit: true, verdict: 'used' } : { inside: false, canExit: false });
-      p.version = Number(p.version) + 1;
-      return ok({ pass: p, log: addLog({ direction: entry ? 'entry' : 'exit', kind: 'guest', unitId: p.unitId, unitLabel: p.unitLabel, passId: p.passId, visitorName: p.guestName, plateDisplay: p.plateDisplay }, now) });
-    }
-
-    if (path === '/api/gate/couriers' && method === 'GET') {
-      tick(now);
-      const open = query.status !== 'all';
-      return ok({ items: couriers.filter((c) => !open || (!c.exitedAt && c.status !== 'cancelled' && c.status !== 'declined')), pollSeconds: 15 });
-    }
-    if (path === '/api/gate/couriers' && method === 'POST') {
-      const unit = UNITS.find((u) => u.unitId === body.unitId);
-      if (!unit) return fail(404, 'not_found', 'Bağımsız bölüm bulunamadı.');
-      const c: Json = {
-        courierId: `c-${++seq}`, unitId: unit.unitId, unitLabel: unit.label, ...(body.company ? { company: body.company } : {}), ...(body.note ? { note: body.note } : {}),
-        status: 'waiting', expired: false, respondBy: new Date(now.getTime() + 10 * 60_000).toISOString(), createdAt: now.toISOString(),
-        canRespond: false, canEnter: false, canExit: false, canCancel: true, version: 1,
-      };
-      couriers.unshift(c);
-      return { status: 201, body: { courier: c } };
-    }
-    const courierAct = /^\/api\/gate\/couriers\/([^/]+)\/(entry|exit|cancel)$/.exec(path);
-    if (courierAct && method === 'POST') {
-      const c = couriers.find((x) => x.courierId === courierAct[1]);
-      if (!c) return fail(404, 'not_found', 'Kurye kaydı bulunamadı.');
-      const kind = courierAct[2];
-      if (kind === 'cancel') Object.assign(c, { status: 'cancelled', canEnter: false, canCancel: false });
-      if (kind === 'entry') Object.assign(c, { enteredAt: now.toISOString(), canEnter: false, canCancel: false, canExit: true });
-      if (kind === 'exit') Object.assign(c, { exitedAt: now.toISOString(), canExit: false });
-      c.version = Number(c.version) + 1;
-      const entryLog = kind === 'cancel' ? undefined : addLog({ direction: kind === 'entry' ? 'entry' : 'exit', kind: 'courier', unitId: c.unitId, unitLabel: c.unitLabel, courierId: c.courierId, company: c.company }, now);
-      return ok({ courier: c, ...(entryLog ? { log: entryLog } : {}) });
-    }
-
-    if (path === '/api/gate/log' && method === 'POST') {
-      const unit = UNITS.find((u) => u.unitId === body.unitId);
-      const entry = addLog({ direction: body.direction, kind: 'manual', visitorName: body.visitorName, ...(unit ? { unitId: unit.unitId, unitLabel: unit.label } : {}), ...(body.plate ? { plate: body.plate, plateDisplay: body.plate } : {}), ...(body.note ? { note: body.note } : {}) }, now);
-      return { status: 201, body: { log: entry, replayed: false } };
-    }
-    if (path === '/api/gate/log' && method === 'GET') {
-      const kind = query.kind;
-      const seed = [
-        { logId: 'log-s2', at: new Date(now.getTime() - 50 * 60_000).toISOString(), direction: 'exit', kind: 'courier', unitId: 'u-a-2', unitLabel: 'A Blok · Daire 2', company: 'Trendyol', recordedByName: 'Gece görevlisi' },
-        { logId: 'log-s1', at: new Date(now.getTime() - 55 * 60_000).toISOString(), direction: 'entry', kind: 'courier', unitId: 'u-a-2', unitLabel: 'A Blok · Daire 2', company: 'Trendyol', recordedByName: 'Gece görevlisi' },
-        { logId: 'log-s0', at: new Date(now.getTime() - 20 * 3600_000).toISOString(), direction: 'entry', kind: 'manual', visitorName: 'Asansör servisi', plateDisplay: '34 SRV 210', note: 'Periyodik bakım', recordedByName: 'Gündüz görevlisi' },
-      ];
-      const items = [...log, ...seed].filter((e) => !kind || e.kind === kind);
-      const today = istanbulDay(now);
-      return ok({ items, from: addDays(today, -1), to: today });
+    if (kind === 'vehicles' && method === 'PATCH') {
+      const v = vehicles.find((x) => x.vehicleId === id);
+      if (!v) return { status: 404, body: { error: 'not_found', message: 'Araç bulunamadı.' } };
+      if (b.version !== v.version) return conflict;
+      Object.assign(v, { ...(b.status ? { status: b.status } : {}), updatedAt: now.toISOString(), version: Number(v.version) + 1 });
+      return { status: 200, body: { vehicle: v } };
     }
     return undefined;
   };

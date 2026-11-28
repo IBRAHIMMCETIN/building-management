@@ -5,7 +5,7 @@ import { useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 import { LogIn, LogOut, Package, X } from '@/components/icons';
 import { Alert, AppText, Button, Card, CardTitle, ChipGroup, EmptyState, LoadingBlock, TextField } from '@/components/ui';
-import { COURIER_POLL_MS, useDeskActions, useDeskCouriers } from '@/hooks/useGate';
+import { COURIER_POLL_MS, useDeskActions, useDeskCouriers } from '@/hooks/useGateDesk';
 import { useIdempotencyKey } from '@/lib/idempotency';
 import { radii, space } from '@/theme/tokens';
 import { useTheme } from '@/theme/useTheme';

@@ -1,49 +1,15 @@
 import { z } from 'zod';
-import { TICKET_CATEGORIES, TICKET_STATUSES } from '../tickets/model';
-import { staffEstimateSchema, ticketSchema } from './tickets';
+import { TICKET_CATEGORIES } from '../tickets/model';
+import { staffEstimateSchema } from './tickets';
 
 /*
- * Bina gorevlisi "İşlerim": talep ayrintisi (olaylar), fotograf yukleme ve periyodik bakim gorevi
- * (apps/api/src/modules/tickets, maintenance; web karsiliklari: apps/web/src/lib/api/tickets.ts,
- * maintenance.ts, lib/maintenance/schedule.ts, lib/tickets/myWork.ts, MaintenanceTaskDialog
- * `checklistErrors`). Yetki ve gecis kararlarini API verir (`actions`).
+ * Bina gorevlisi "İşlerim": periyodik bakim gorevi, gorevli listesi, gruplama ve kontrol listesi
+ * dogrulamasi (apps/api/src/modules/maintenance; web: lib/api/maintenance.ts, lib/maintenance/schedule.ts,
+ * lib/tickets/myWork.ts, MaintenanceTaskDialog `checklistErrors`). Talep, olay, ayrinti ve foto yukleme
+ * semalari tek kaynaktan: ./tickets.ts, ./portalTickets.ts. Yetki ve gecisleri API verir (`actions`).
  */
 
-export const ticketEventSchema = z.object({
-  eventId: z.string(),
-  kind: z.string(),
-  visibility: z.enum(['public', 'internal']),
-  at: z.string(),
-  by: z.string().optional(),
-  byRole: z.string().optional(),
-  mine: z.boolean().optional(),
-  from: z.enum(TICKET_STATUSES).optional(),
-  to: z.enum(TICKET_STATUSES).optional(),
-  assigneeId: z.string().optional(),
-  body: z.string().optional(),
-  changes: z.record(z.string(), z.tuple([z.unknown(), z.unknown()])).optional(),
-  photoKeys: z.array(z.string()).optional(),
-  rating: z.number().optional(),
-  amount: z.number().optional(),
-  expenseId: z.string().optional(),
-  transactionId: z.string().optional(),
-});
-export type TicketEvent = z.infer<typeof ticketEventSchema>;
-
-export const ticketDetailSchema = z.object({ ticket: ticketSchema, events: z.array(ticketEventSchema) });
-export type TicketDetail = z.infer<typeof ticketDetailSchema>;
-export const ticketOneSchema = z.object({ ticket: ticketSchema });
-
 export const assigneesSchema = z.object({ items: z.array(z.object({ userId: z.string(), name: z.string() })) });
-
-/** Imzali S3 yukleme linki (talep / bakim fotografi): istemci dosyayi dogrudan PUT eder. */
-export const photoUploadSchema = z.object({ uploadId: z.string(), uploadUrl: z.string(), headers: z.record(z.string(), z.string()).default({}) });
-export type PhotoUpload = z.infer<typeof photoUploadSchema>;
-
-/** API kabul ettigi fotograf turleri ve siniri (meters/common.ts, tickets/photos.ts). */
-export const PHOTO_CONTENT_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/heic'] as const;
-export const MAX_PHOTO_BYTES = 10 * 1024 * 1024;
-export const MAX_PHOTOS_PER_EVENT = 6;
 
 // ---------------------------------------------------------------------------
 // Periyodik bakim gorevi

@@ -6,7 +6,7 @@ import { type ReactNode, useState } from 'react';
 import { Platform, StyleSheet, View } from 'react-native';
 import { CircleCheck, CircleX, LogIn, LogOut, QrCode } from '@/components/icons';
 import { Alert, AppText, Button, Card, TextField } from '@/components/ui';
-import { useDeskActions } from '@/hooks/useGate';
+import { useDeskActions } from '@/hooks/useGateDesk';
 import { useIdempotencyKey } from '@/lib/idempotency';
 import { space, withAlpha } from '@/theme/tokens';
 import { useTheme } from '@/theme/useTheme';

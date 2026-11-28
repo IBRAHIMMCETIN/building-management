@@ -1,15 +1,26 @@
 import { z } from 'zod';
 import { ApiError } from './errors';
+import { PASS_VERDICTS, gateLogSchema, gateUnitSchema } from './portalGate';
 
 /*
  * Guvenlik kapisi - gorevli (masa) semalari (apps/api/src/modules/gate; web karsiligi:
- * apps/web/src/lib/api/gate.ts `gateDeskApi`). Gorevli yanitlarinda sakin adi / iletisim / borc yoktur;
- * QR jetonu yalnizca sakine doner. Sakin portali semalari web dosyasindadir (M2 mobil sakin ekranlari).
+ * apps/web/src/lib/api/gate.ts `gateDeskApi`). Kurye, kapi gunlugu ve bolum secenegi semalari sakin
+ * portaliyla ortaktir (tek kaynak: ./portalGate.ts); burada yalnizca masaya ozgu olanlar (plaka sorgusu,
+ * gorevli gecis gorunumu, elle kayit, deneme siniri). Gorevli yanitlarinda sakin adi / iletisim / borc yoktur.
  */
+export {
+  type Courier,
+  type GateLogEntry,
+  type GateLogPage,
+  courierListSchema,
+  courierOneSchema,
+  courierSchema,
+  gateLogPageSchema,
+  gateLogSchema,
+} from './portalGate';
 
-const verdict = z.enum(['valid', 'not_yet_valid', 'expired', 'used', 'revoked', 'host_left']);
-
-export const unitOptionSchema = z.object({ unitId: z.string(), label: z.string() });
+/** Bolum secici secenegi (yalnizca etiket). */
+export const unitOptionSchema = gateUnitSchema;
 export type UnitOption = z.infer<typeof unitOptionSchema>;
 export const unitOptionListSchema = z.object({ items: z.array(unitOptionSchema), total: z.number().optional() });
 
@@ -39,7 +50,7 @@ export const deskPassSchema = z.object({
   plate: z.string().optional(),
   plateDisplay: z.string().optional(),
   note: z.string().optional(),
-  verdict,
+  verdict: z.enum(PASS_VERDICTS),
   message: z.string().optional(),
   entryCount: z.number(),
   inside: z.boolean(),
@@ -50,55 +61,8 @@ export const deskPassSchema = z.object({
 });
 export type DeskPass = z.infer<typeof deskPassSchema>;
 
-export const courierSchema = z.object({
-  courierId: z.string(),
-  unitId: z.string(),
-  unitLabel: z.string(),
-  company: z.string().optional(),
-  note: z.string().optional(),
-  status: z.enum(['waiting', 'approved', 'declined', 'cancelled']),
-  expired: z.boolean(),
-  respondBy: z.string(),
-  respondedAt: z.string().optional(),
-  responseNote: z.string().optional(),
-  enteredAt: z.string().optional(),
-  exitedAt: z.string().optional(),
-  /** Onaylanan kuryenin iceri alinabilecegi son an (onay suresi). */
-  enterBy: z.string().optional(),
-  approvalExpired: z.boolean().optional(),
-  createdAt: z.string(),
-  canRespond: z.boolean(),
-  canEnter: z.boolean(),
-  canExit: z.boolean(),
-  canCancel: z.boolean(),
-  version: z.number(),
-});
-export type Courier = z.infer<typeof courierSchema>;
-
-export const gateLogSchema = z.object({
-  logId: z.string(),
-  at: z.string(),
-  direction: z.enum(['entry', 'exit']),
-  kind: z.enum(['guest', 'courier', 'manual']),
-  unitId: z.string().optional(),
-  unitLabel: z.string().optional(),
-  passId: z.string().optional(),
-  courierId: z.string().optional(),
-  visitorName: z.string().optional(),
-  company: z.string().optional(),
-  plate: z.string().optional(),
-  plateDisplay: z.string().optional(),
-  note: z.string().optional(),
-  recordedBy: z.string().optional(),
-  recordedByName: z.string().optional(),
-});
-export type GateLogEntry = z.infer<typeof gateLogSchema>;
-export const gateLogPageSchema = z.object({ items: z.array(gateLogSchema), from: z.string(), to: z.string(), nextCursor: z.string().optional() });
-export type GateLogPage = z.infer<typeof gateLogPageSchema>;
 export type GateLogFilter = { from?: string; to?: string; kind?: string; unitId?: string; cursor?: string };
 
-export const courierOneSchema = z.object({ courier: courierSchema, replayed: z.boolean().optional(), log: gateLogSchema.optional() });
-export const courierListSchema = z.object({ items: z.array(courierSchema), pollSeconds: z.number() });
 export const deskPassOneSchema = z.object({ pass: deskPassSchema, replayed: z.boolean().optional(), log: gateLogSchema.optional() });
 export const verifyResultSchema = z.object({ pass: deskPassSchema });
 export const manualEntryResultSchema = z.object({ log: gateLogSchema, replayed: z.boolean() });

@@ -1,81 +1,107 @@
-import type { CreateCourierInput, GateLogFilter, ManualEntryInput } from '@bm/shared/api/gate';
-import type { ScanResult } from '@bm/shared/gate/plate';
+import type { CreatePassInput, CreateVehicleInput, MyPass, UpdateVehicleInput } from '@bm/shared/api/portalGate';
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useRef } from 'react';
 import { useAuth } from '@/context/AuthProvider';
-import { gateEndpoints } from '@/lib/api/gateEndpoints';
+import { portalGateApi } from '@/lib/api/portalGate';
 import { useServices } from '@/services';
+import { portalKeys } from './usePortal';
 
 /*
- * Guvenlik gorevlisi kapi sorgulari (web: hooks/useGate.ts masa kismi). Anahtarlar apartman bazli
- * (`['apartment', apt, 'gate', ...]`): baglam degisince onbellek temizlenir, on planda gelen bildirim
- * aktif apartmani tazeler.
+ * Sakin "Ziyaretçi" (web: hooks/useGate.ts sakin bolumu). Bekleyen kurye onayi ekran acikken 15 sn'de
+ * bir yenilenir (arka planda durur) ve uygulama one gelince hemen tazelenir (focusManager AppState'e
+ * bagli + PortalForegroundRefresh). Kurye kaydinda oturan sakinlere bildirim de gider; yenileme yedektir.
  */
 
-/** Kurye listesi bu aralikla yenilenir (gorevliye anlik bildirim yok; sakin onayi burada gorunur). */
 export const COURIER_POLL_MS = 15_000;
 
 export const gateKeys = {
-  all: (apt: string) => ['apartment', apt, 'gate'] as const,
-  units: (apt: string, q: string) => [...gateKeys.all(apt), 'units', q] as const,
-  plate: (apt: string, q: string) => [...gateKeys.all(apt), 'plate', q] as const,
-  couriers: (apt: string, status: string) => [...gateKeys.all(apt), 'couriers', status] as const,
-  log: (apt: string, f: GateLogFilter) => [...gateKeys.all(apt), 'log', f] as const,
+  all: (apt: string, user: string) => [...portalKeys.all(apt, user), 'gate'] as const,
+  overview: (apt: string, user: string) => [...gateKeys.all(apt, user), 'overview'] as const,
+  vehicles: (apt: string, user: string) => [...gateKeys.all(apt, user), 'vehicles'] as const,
+  passes: (apt: string, user: string) => [...gateKeys.all(apt, user), 'passes'] as const,
+  couriers: (apt: string, user: string) => [...gateKeys.all(apt, user), 'couriers'] as const,
+  log: (apt: string, user: string, unitId: string) => [...gateKeys.all(apt, user), 'log', unitId] as const,
 };
 
-function useDesk() {
+function useScope() {
   const { user } = useAuth();
   const { api } = useServices();
   const apt = user?.apartmentId ?? '';
-  return { api, apt, enabled: !!apt && user?.role === 'security_guard' };
+  return { api, apt, userId: user?.sub ?? '', enabled: user?.role === 'resident' && !!apt };
 }
 
-/** Bolum secici (en fazla 50; yalnizca etiket). */
-export function useGateUnits(q: string) {
-  const { api, apt, enabled } = useDesk();
-  return useQuery({ queryKey: gateKeys.units(apt, q), queryFn: ({ signal }) => gateEndpoints.units(api, q, signal).then((r) => r.items), enabled, staleTime: 5 * 60_000 });
+export function useMyGate() {
+  const { api, apt, userId, enabled } = useScope();
+  return useQuery({ queryKey: gateKeys.overview(apt, userId), queryFn: ({ signal }) => portalGateApi.overview(api, signal), enabled, staleTime: 5 * 60_000 });
 }
 
-/** Plaka sorgusu: yalnizca yeterli karakterle (cagiran beklemeli / debounced verir). 429 tekrar denenmez. */
-export function usePlateLookup(q: string | undefined) {
-  const { api, apt, enabled } = useDesk();
-  return useQuery({ queryKey: gateKeys.plate(apt, q ?? ''), queryFn: ({ signal }) => gateEndpoints.lookupPlate(api, q ?? '', signal), enabled: enabled && !!q, staleTime: 30_000, retry: false });
+export function useMyVehicles() {
+  const { api, apt, userId, enabled } = useScope();
+  return useQuery({ queryKey: gateKeys.vehicles(apt, userId), queryFn: ({ signal }) => portalGateApi.vehicles(api, signal), enabled });
 }
 
-/** Kurye listesi; `live` iken (ekran gorunur) 15 sn'de bir yenilenir. */
-export function useDeskCouriers(status: 'open' | 'all', live = true) {
-  const { api, apt, enabled } = useDesk();
+export function useMyPasses() {
+  const { api, apt, userId, enabled } = useScope();
+  return useQuery({ queryKey: gateKeys.passes(apt, userId), queryFn: ({ signal }) => portalGateApi.passes(api, signal).then((r) => r.items), enabled });
+}
+
+/** Yenileme araligi sunucunun `pollSeconds` degeriyle (yoksa 15 sn). */
+export function useMyCouriers() {
+  const { api, apt, userId, enabled } = useScope();
   return useQuery({
-    queryKey: gateKeys.couriers(apt, status),
-    queryFn: ({ signal }) => gateEndpoints.couriers(api, status, signal),
+    queryKey: gateKeys.couriers(apt, userId),
+    queryFn: ({ signal }) => portalGateApi.couriers(api, signal),
+    select: (r) => r.items,
     enabled,
-    refetchInterval: live ? COURIER_POLL_MS : false,
+    refetchInterval: (query) => (query.state.data?.pollSeconds ? query.state.data.pollSeconds * 1000 : COURIER_POLL_MS),
+    refetchOnWindowFocus: true,
   });
 }
 
-/** Kapi kayitlari (gorevli: dun + bugun; API de bunu zorlar), "Daha fazla yükle" ile sayfali. */
-export function useGateLog(f: GateLogFilter) {
-  const { api, apt, enabled } = useDesk();
+/**
+ * Misafir gecisi olusturma ve "Yeni QR oluştur": jeton YALNIZCA bu yanitlarda gelir. Yanit kanca
+ * duzeyindeki `onSuccess` ile `onIssued`'a verilir (dugmeye ozel `mutate` geri cagrisi degil): istek
+ * surerken bolum degisip liste ekrandan kalksa da jeton kaybolmaz. Kanca, bolumler arasinda kalici
+ * olan ekran duzeyinde kullanilir.
+ */
+export function usePassIssuing(onIssued: (pass: MyPass) => void) {
+  const { api, apt, userId } = useScope();
+  const qc = useQueryClient();
+  const callback = useRef(onIssued);
+  callback.current = onIssued;
+  const opts = {
+    onSuccess: (r: { pass: MyPass }) => callback.current(r.pass),
+    onSettled: () => qc.invalidateQueries({ queryKey: gateKeys.all(apt, userId) }),
+  };
+  return {
+    create: useMutation({ mutationFn: (v: CreatePassInput) => portalGateApi.createPass(api, v), ...opts }),
+    rotate: useMutation({ mutationFn: (v: { id: string; version: number }) => portalGateApi.rotatePass(api, v.id, v.version), ...opts }),
+  };
+}
+
+/** Dairenin son 7 gunluk kapi kayitlari: "Daha fazla yükle" ile sayfali. */
+export function useGateLog(unitId: string) {
+  const { api, apt, userId, enabled } = useScope();
   return useInfiniteQuery({
-    queryKey: gateKeys.log(apt, f),
-    queryFn: ({ signal, pageParam }) => gateEndpoints.log(api, { ...f, ...(pageParam ? { cursor: pageParam } : {}) }, signal),
+    queryKey: gateKeys.log(apt, userId, unitId),
+    queryFn: ({ signal, pageParam }) => portalGateApi.log(api, { unitId, cursor: pageParam }, signal),
     initialPageParam: '' as string,
     getNextPageParam: (last) => last.nextCursor,
     enabled,
   });
 }
 
-export function useDeskActions() {
-  const { api, apt } = useDesk();
+export function useMyGateActions() {
+  const { api, apt, userId } = useScope();
   const qc = useQueryClient();
-  const opts = { onSettled: () => qc.invalidateQueries({ queryKey: gateKeys.all(apt) }) };
+  const opts = { onSettled: () => qc.invalidateQueries({ queryKey: gateKeys.all(apt, userId) }) };
   return {
-    verify: useMutation({ mutationFn: (input: ScanResult) => gateEndpoints.verifyPass(api, input) }),
-    passEntry: useMutation({ mutationFn: (v: { id: string; key: string }) => gateEndpoints.passEntry(api, v.id, v.key), ...opts }),
-    passExit: useMutation({ mutationFn: (v: { id: string; key: string }) => gateEndpoints.passExit(api, v.id, v.key), ...opts }),
-    createCourier: useMutation({ mutationFn: (v: CreateCourierInput) => gateEndpoints.createCourier(api, v), ...opts }),
-    courierEntry: useMutation({ mutationFn: (v: { id: string; key: string }) => gateEndpoints.courierEntry(api, v.id, v.key), ...opts }),
-    courierExit: useMutation({ mutationFn: (v: { id: string; key: string }) => gateEndpoints.courierExit(api, v.id, v.key), ...opts }),
-    cancelCourier: useMutation({ mutationFn: (v: { id: string; version: number }) => gateEndpoints.cancelCourier(api, v.id, v.version), ...opts }),
-    manualEntry: useMutation({ mutationFn: (v: ManualEntryInput) => gateEndpoints.manualEntry(api, v), ...opts }),
+    revokePass: useMutation({ mutationFn: (v: { id: string; version: number }) => portalGateApi.revokePass(api, v.id, v.version), ...opts }),
+    respondCourier: useMutation({
+      mutationFn: (v: { id: string; version: number; decision: 'approve' | 'decline' }) => portalGateApi.respondCourier(api, v.id, { version: v.version, decision: v.decision }),
+      ...opts,
+    }),
+    createVehicle: useMutation({ mutationFn: (v: CreateVehicleInput) => portalGateApi.createVehicle(api, v), ...opts }),
+    updateVehicle: useMutation({ mutationFn: (v: { id: string; input: UpdateVehicleInput }) => portalGateApi.updateVehicle(api, v.id, v.input), ...opts }),
   };
 }

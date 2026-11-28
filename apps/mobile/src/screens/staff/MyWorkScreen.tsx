@@ -14,7 +14,8 @@ import { useAuth } from '@/context/AuthProvider';
 import { useSiteLabels, useStaffTasks, useStaffTickets, useTaskActions, useTicketActions, workKeys } from '@/hooks/useWork';
 import { radii, space, withAlpha } from '@/theme/tokens';
 import { useTheme } from '@/theme/useTheme';
-import { PriorityBadge, SlaBadge, TaskStatusBadge, whereText } from './WorkUi';
+import { PriorityBadge, SlaBadge, TaskStatusBadge } from '@/components/tickets/TicketBadges';
+import { whereText } from './WorkUi';
 
 type Tab = 'today' | 'week' | 'pool';
 

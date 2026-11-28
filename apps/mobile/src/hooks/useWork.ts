@@ -6,7 +6,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useMemo } from 'react';
 import { useAuth } from '@/context/AuthProvider';
 import { type TaskListQuery, type TicketListQuery, workEndpoints } from '@/lib/api/workEndpoints';
-import { type LocalPhoto, type UploadDeps, uploadPhotos } from '@/lib/photos';
+import { type PreparedPhoto, putToSignedUrl, uploadPhotos } from '@/lib/photos';
 import { useServices } from '@/services';
 
 /*
@@ -83,19 +83,18 @@ export function useSiteLabels() {
   }, [units.data, blocks.data]);
 }
 
-/** Talep / bakim fotografi yukleyicisi (imzali link + PUT). */
+/**
+ * Talep / bakim fotografi yukleyicisi: `upload-url` (tur + boyut) ve imzali linke PUT (lib/photos.ts;
+ * ayni fotograf yeniden gonderimde tekrar yuklenmez). Demo modunda PUT sahte API'ye gider (rawFetch).
+ */
 function usePhotoUpload(kind: 'ticket' | 'task') {
   const { api, rawFetch } = useStaff();
-  return (photos: readonly LocalPhoto[]) => {
-    const deps: UploadDeps = {
-      put: rawFetch,
-      request: async (input) => {
-        const r = kind === 'ticket' ? await workEndpoints.ticketPhotoUpload(api, input) : await workEndpoints.taskPhotoUpload(api, input);
-        return { id: r.uploadId, uploadUrl: r.uploadUrl, headers: r.headers };
-      },
-    };
-    return uploadPhotos(photos, deps);
-  };
+  return (photos: readonly PreparedPhoto[]) =>
+    uploadPhotos(photos, async (p) => {
+      const input = { contentType: p.type, size: p.size };
+      const upload = kind === 'ticket' ? await workEndpoints.ticketPhotoUpload(api, input) : await workEndpoints.taskPhotoUpload(api, input);
+      return putToSignedUrl(upload, p.blob, rawFetch);
+    });
 }
 
 export function useTicketActions(id: string) {
@@ -106,14 +105,14 @@ export function useTicketActions(id: string) {
   return {
     claim: useMutation({ mutationFn: (version: number) => workEndpoints.assignTicket(api, id, { version, assigneeId: userId }), ...opts }),
     transition: useMutation({
-      mutationFn: async (v: { version: number; action: TransitionAction; note?: string; photos?: readonly LocalPhoto[] }) => {
+      mutationFn: async (v: { version: number; action: TransitionAction; note?: string; photos?: readonly PreparedPhoto[] }) => {
         const photos = v.photos?.length ? await upload(v.photos) : [];
         return workEndpoints.transitionTicket(api, id, { version: v.version, action: v.action, ...(v.note ? { note: v.note } : {}), ...(photos.length ? { photos } : {}) });
       },
       ...opts,
     }),
     comment: useMutation({
-      mutationFn: async (v: { body: string; visibility: 'public' | 'internal'; photos?: readonly LocalPhoto[] }) => {
+      mutationFn: async (v: { body: string; visibility: 'public' | 'internal'; photos?: readonly PreparedPhoto[] }) => {
         const photos = v.photos?.length ? await upload(v.photos) : [];
         return workEndpoints.commentTicket(api, id, { body: v.body, visibility: v.visibility, ...(photos.length ? { photos } : {}) });
       },
@@ -132,7 +131,7 @@ export function useTaskActions(id: string) {
     claim: useMutation({ mutationFn: (version: number) => workEndpoints.assignTask(api, id, { version, assigneeId: userId }), ...opts }),
     start: useMutation({ mutationFn: (version: number) => workEndpoints.startTask(api, id, version), ...opts }),
     complete: useMutation({
-      mutationFn: async (v: Omit<CompleteTaskInput, 'photos'> & { photos?: readonly LocalPhoto[] }) => {
+      mutationFn: async (v: Omit<CompleteTaskInput, 'photos'> & { photos?: readonly PreparedPhoto[] }) => {
         const photos = v.photos?.length ? await upload(v.photos) : [];
         return workEndpoints.completeTask(api, id, { version: v.version, checklistResults: v.checklistResults, ...(v.note ? { note: v.note } : {}), ...(photos.length ? { photos } : {}) });
       },
@@ -163,15 +162,12 @@ export function useSaveReading(periodId: string) {
   const { api, rawFetch, apt } = useStaff();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async (v: { meterId: string; endIndex: number; note?: string; photo?: LocalPhoto }) => {
+    mutationFn: async (v: { meterId: string; endIndex: number; note?: string; photo?: PreparedPhoto }) => {
       let photoKey: string | undefined;
       if (v.photo) {
-        const [key] = await uploadPhotos([v.photo], {
-          put: rawFetch,
-          request: async (input) => {
-            const r = await workEndpoints.readingPhotoUpload(api, periodId, v.meterId, input);
-            return { id: r.photoKey, uploadUrl: r.uploadUrl, headers: r.headers };
-          },
+        const [key] = await uploadPhotos([v.photo], async (p) => {
+          const r = await workEndpoints.readingPhotoUpload(api, periodId, v.meterId, { contentType: p.type, size: p.size });
+          return putToSignedUrl({ uploadId: r.photoKey, uploadUrl: r.uploadUrl, headers: r.headers }, p.blob, rawFetch);
         });
         photoKey = key;
       }

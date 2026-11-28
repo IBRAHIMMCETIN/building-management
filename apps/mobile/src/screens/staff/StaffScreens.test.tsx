@@ -11,12 +11,17 @@ const mockPush = jest.fn();
 jest.mock('expo-router', () => ({ useRouter: () => ({ push: mockPush }) }));
 
 const mockLaunchCamera = jest.fn();
+let mockCameraGranted = true;
 jest.mock('expo-image-picker', () => ({
-  requestCameraPermissionsAsync: async () => ({ granted: true, canAskAgain: true }),
-  requestMediaLibraryPermissionsAsync: async () => ({ granted: false, canAskAgain: false }),
+  requestCameraPermissionsAsync: async () => ({ granted: mockCameraGranted, canAskAgain: false }),
   launchCameraAsync: (...args: unknown[]) => mockLaunchCamera(...args),
   launchImageLibraryAsync: async () => ({ canceled: true, assets: null }),
 }));
+// Ortak foto hatti (lib/photos.ts): kucultme + JPEG; dosya boyutu sahte fetch'ten.
+jest.mock('expo-image-manipulator', () => {
+  const ctx: { resize: jest.Mock; renderAsync: jest.Mock } = { resize: jest.fn(() => ctx), renderAsync: jest.fn(async () => ({ saveAsync: jest.fn(async () => ({ uri: 'file:///after.jpg', width: 1600, height: 1200 })) })) };
+  return { ImageManipulator: { manipulate: jest.fn(() => ctx) }, SaveFormat: { JPEG: 'jpeg' } };
+});
 
 const STAFF = 'building_staff@dev.local';
 
@@ -61,6 +66,7 @@ const task = (id: string, over: Record<string, unknown> = {}) => ({
 const render = (ui: React.ReactElement, routes: Routes) => renderApp(ui, { email: STAFF, withUnit: false, routes: { 'GET /api/tickets/assignees': { items: [] }, ...routes } });
 
 beforeEach(() => {
+  mockCameraGranted = true;
   mockPush.mockReset();
   mockLaunchCamera.mockReset();
 });
@@ -92,7 +98,7 @@ describe('Talep ayrintisi', () => {
   const detail = (over: Record<string, unknown> = {}) => ({ ticket: ticket('1', { status: 'in_progress', actions: ['hold', 'resolve'], ...over }), events: [] });
 
   it('cozuldu: aciklama zorunlu; not ve kamera fotografi ile gonderilir', async () => {
-    mockLaunchCamera.mockResolvedValue({ canceled: false, assets: [{ uri: 'file:///after.jpg', mimeType: 'image/jpeg', fileSize: 2048 }] });
+    mockLaunchCamera.mockResolvedValue({ canceled: false, assets: [{ uri: 'file:///raw.heic', width: 4032, height: 3024 }] });
     const fetchSpy = jest.spyOn(globalThis, 'fetch').mockResolvedValue({ blob: async () => ({ size: 2048 }) } as unknown as Response);
     const { calls } = await render(<StaffTicketScreen id="1" />, {
       'GET /api/tickets/1': detail(),
@@ -108,7 +114,7 @@ describe('Talep ayrintisi', () => {
     await fireEvent.changeText(screen.getByLabelText('Açıklama'), 'Conta değişti');
     // Ilk secici durum formunda (yorum kutusununki altta).
     await fireEvent.press(screen.getAllByRole('button', { name: 'Fotoğraf çek' })[0] as never);
-    expect(await screen.findByLabelText('Fotoğraf 1 kaldır')).toBeTruthy();
+    expect(await screen.findByLabelText('Eklenen fotoğraf 1: kaldır')).toBeTruthy();
     await fireEvent.press(screen.getByRole('button', { name: 'Çözüldü' }));
     await waitFor(() => expect(calls.find((c) => c.path === '/api/tickets/1/status')?.body).toEqual({ version: 1, action: 'resolve', note: 'Conta değişti', photos: ['up1_jpg'] }));
     expect(calls.find((c) => c.path === '/api/tickets/photos/upload-url')?.body).toEqual({ contentType: 'image/jpeg', size: 2048 });
@@ -116,12 +122,13 @@ describe('Talep ayrintisi', () => {
     fetchSpy.mockRestore();
   });
 
-  it('galeri izni kalici reddedildiyse aciklama gosterilir', async () => {
+  it('kamera izni reddedildiyse aciklama gosterilir, gonderim yapilmaz', async () => {
+    mockCameraGranted = false;
     await render(<StaffTicketScreen id="1" />, { 'GET /api/tickets/1': detail() });
     await fireEvent.press(await screen.findByRole('button', { name: 'Beklet' }));
-    await fireEvent.press(screen.getAllByRole('button', { name: 'Galeriden seç' })[0] as never);
-    expect(await screen.findByText(/fotoğraflara erişim izni gerekiyor/)).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Ayarları aç' })).toBeTruthy();
+    await fireEvent.press(screen.getAllByRole('button', { name: 'Fotoğraf çek' })[0] as never);
+    expect(await screen.findByText(/^Kamera izni verilmedi/)).toBeTruthy();
+    expect(screen.queryByLabelText('Eklenen fotoğraf 1: kaldır')).toBeNull();
   });
 
   it('havuzdaki talep ustlenilir; ic not gonderilir; tahmin kurus olarak kaydedilir', async () => {

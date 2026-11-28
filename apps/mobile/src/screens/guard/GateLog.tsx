@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 import { DoorOpen, Plus } from '@/components/icons';
 import { Alert, AppText, Button, Card, ChipGroup, EmptyState, LoadingBlock } from '@/components/ui';
-import { useGateLog } from '@/hooks/useGate';
+import { useGateLog } from '@/hooks/useGateDesk';
 import { space } from '@/theme/tokens';
 import { LogRow } from './GateUi';
 

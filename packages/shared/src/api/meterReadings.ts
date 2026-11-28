@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { ApiError } from './errors';
+import { METER_KINDS } from './meters';
 
 /*
  * Sayac okuma girisi (yonetici + bina gorevlisi; apps/api/src/modules/meters/readings.ts, web
@@ -8,14 +9,8 @@ import { ApiError } from './errors';
  * faturalar) gorevli ekraninda kullanilmadigi icin gevsek (`loose`) dogrulanir.
  */
 
-export const METER_KINDS = ['heat_allocator', 'heat_meter', 'hot_water', 'cold_water'] as const;
-export type MeterKind = (typeof METER_KINDS)[number];
-export const METER_KIND_LABELS: Record<MeterKind, string> = {
-  heat_allocator: 'Isı pay ölçer',
-  heat_meter: 'Kalorimetre',
-  hot_water: 'Sıcak su sayacı',
-  cold_water: 'Soğuk su sayacı',
-};
+// Sayac turleri ve etiketleri tek kaynaktan (sakin tuketim ekranlariyla ortak).
+export { METER_KINDS, METER_KIND_LABELS, type MeterKind } from './meters';
 
 export type ReadingStatus = 'ok' | 'missing' | 'error' | 'auto';
 export const READING_STATUS_META: Record<ReadingStatus, { label: string; tone: 'success' | 'accent' | 'warning' | 'danger' }> = {

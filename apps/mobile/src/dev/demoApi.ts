@@ -2,6 +2,9 @@ import type { NotificationPreferences } from '@bm/shared/api/notificationPrefere
 import { mockContextsFor } from '@bm/shared/auth/mockScenarios';
 import { type SessionClaims, decodeClaims } from '@bm/shared/auth/session';
 import { createGateDemo } from './demo/gate';
+import { createGateDeskDemo } from './demo/gateDesk';
+import { createReservationsDemo } from './demo/reservations';
+import { createTicketsDemo } from './demo/tickets';
 import { DEMO_UPLOAD_PREFIX } from './demo/types';
 import { createWorkDemo } from './demo/work';
 import { createAssembliesDemo } from './demoAssemblies';
@@ -11,7 +14,8 @@ import { createTendersDemo } from './demoTenders';
 
 /*
  * DEMO veri (EXPO_PUBLIC_API_MODE=demo, yalnizca mock kimlikle): API calismadan web onizlemesinde
- * ekranlar gorulebilsin diye M1 uclarinin ornek yanitlari. Gercek veri DEGILDIR; uygulama ust
+ * ekranlar gorulebilsin diye ornek yanitlar (M1 uclari burada; talepler, kapi, rezervasyon ve
+ * sonraki ozellikler src/dev/demo/ altinda ozellik basina ayri dosyada). Gercek veri DEGILDIR; uygulama ust
  * cubugunda "Demo verisi" etiketi gorunur. Yanitlar API sozlesmesiyle ayni bicimdedir (zod
  * semalari @bm/shared'den dogrular).
  */
@@ -113,25 +117,6 @@ function announcements(now: Date) {
   };
 }
 
-function ticket(id: string, number: string, title: string, status: string, createdDaysAgo: number, now: Date, actions: string[] = []) {
-  return {
-    ticketId: id,
-    number,
-    title,
-    description: title,
-    category: 'plumbing',
-    priority: 'normal',
-    location: { kind: 'unit', unitId: 'u-demo-7' },
-    status,
-    source: 'portal',
-    createdAt: new Date(now.getTime() - createdDaysAgo * day).toISOString(),
-    dueAt: new Date(now.getTime() + 2 * day).toISOString(),
-    assigned: status !== 'open',
-    actions,
-    version: 1,
-  };
-}
-
 function quote(now: Date) {
   return {
     unitId: 'u-demo-7',
@@ -147,7 +132,7 @@ function quote(now: Date) {
 
 export type DemoFetchOptions = { now?: () => Date };
 
-/** Alan bazli demo yanitlayici (ayri dosyalar: demoPolls.ts ...): ucu tanimiyorsa undefined. */
+/** Alan bazli demo yanitlayici (ayri dosyalar: demo/tickets.ts, demoPolls.ts ...): ucu tanimiyorsa undefined. */
 export type DemoRequest = { method: string; path: string; query: Record<string, string>; body: unknown; now: Date; claims: SessionClaims };
 export type DemoReply = { status: number; body?: unknown };
 export type DemoHandler = (req: DemoRequest) => DemoReply | undefined;
@@ -155,8 +140,19 @@ export type DemoHandler = (req: DemoRequest) => DemoReply | undefined;
 /** `fetch` yerine gecer: M1 uclari burada, sonraki alanlar kendi dosyalarinda (`domains`); digerleri 404. */
 export function createDemoFetch({ now = () => new Date() }: DemoFetchOptions = {}): typeof fetch {
   let prefs: NotificationPreferences = { email: { enabled: true }, push: { enabled: true } };
-  // Alan bazli isleyiciler: sakin (M2b) ve saha rolleri (M3: src/dev/demo/gate.ts, work.ts).
-  const domains: DemoHandler[] = [createPollsDemo(), createAssembliesDemo(), createConsumptionDemo(), createTendersDemo(), createGateDemo(), createWorkDemo()];
+  const start = now();
+  const domains: DemoHandler[] = [
+    createTicketsDemo(start),
+    createGateDemo(start),
+    createReservationsDemo(start),
+    createPollsDemo(),
+    createAssembliesDemo(),
+    createConsumptionDemo(),
+    createTendersDemo(),
+    // Saha rolleri (M3): guvenlik kapisi ve bina gorevlisi.
+    createGateDeskDemo(),
+    createWorkDemo(),
+  ];
 
   return (async (input: string | URL | Request, init?: RequestInit) => {
     const raw = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
@@ -205,13 +201,6 @@ export function createDemoFetch({ now = () => new Date() }: DemoFetchOptions = {
         return respond(200, announcements(t));
       case '/api/portal/payments/quote':
         return respond(200, quote(t));
-      case '/api/portal/tickets': {
-        const open = new URLSearchParamsLite(qs).get('status')?.includes('open') ?? true;
-        const items = open
-          ? [ticket('tk-2', 'T-0042', 'Banyo lavabosu su kaçırıyor', 'resolved', 3, t, ['confirm', 'reopen']), ticket('tk-3', 'T-0045', 'Kombi basıncı düşüyor', 'assigned', 1, t)]
-          : [];
-        return respond(200, { items, total: items.length });
-      }
     }
     if (path.startsWith('/api/documents/my-receipts/')) {
       return respond(404, { error: 'not_found', message: 'Demo modunda makbuz PDF’i yok; gerçek API’de makbuz burada açılır.' });

@@ -1,6 +1,6 @@
 import { errorMessage } from '@bm/shared/api/errors';
 import type { Ticket } from '@bm/shared/api/tickets';
-import type { TicketEvent } from '@bm/shared/api/work';
+import type { TicketEvent } from '@bm/shared/api/tickets';
 import { formatDateTime } from '@bm/shared/dates';
 import { ACTION_LABELS, CATEGORY_LABELS, EVENT_LABELS, STATUS_LABELS, TRANSITIONS, type TransitionAction, noteRequired } from '@bm/shared/tickets/model';
 import { useState } from 'react';
@@ -9,11 +9,13 @@ import { Clock, ListChecks, Send, UserCheck, Wrench } from '@/components/icons';
 import { Alert, AppText, Button, Card, CardTitle, ChipGroup, LoadingBlock, Screen, TextField } from '@/components/ui';
 import { useAssigneeNames, useSiteLabels, useStaffTicket, useTicketActions } from '@/hooks/useWork';
 import { workEndpoints } from '@/lib/api/workEndpoints';
-import type { LocalPhoto } from '@/lib/photos';
+import { PhotoPicker } from '@/components/tickets/PhotoPicker';
+import type { PreparedPhoto } from '@/lib/photos';
 import { useServices } from '@/services';
 import { radii, space } from '@/theme/tokens';
 import { useTheme } from '@/theme/useTheme';
-import { EstimateCard, InfoRow, PhotoLinks, PhotoPicker, PriorityBadge, SlaBadge, TicketStatusBadge, TitleIcon, whereText } from './WorkUi';
+import { PriorityBadge, SlaBadge, TicketStatusBadge } from '@/components/tickets/TicketBadges';
+import { EstimateCard, InfoRow, PhotoLinks, TitleIcon, whereText } from './WorkUi';
 
 const isTransition = (a: string): a is TransitionAction => (TRANSITIONS as readonly string[]).includes(a);
 /** Fotograf eklenebilen gecisler (web TransitionDialog). */
@@ -138,7 +140,7 @@ function TicketDetail({ ticket, events, onRefresh }: { ticket: Ticket; events: T
 function TransitionForm({ ticket, action, onClose }: { ticket: Ticket; action: TransitionAction; onClose: () => void }) {
   const act = useTicketActions(ticket.ticketId);
   const [note, setNote] = useState('');
-  const [photos, setPhotos] = useState<LocalPhoto[]>([]);
+  const [photos, setPhotos] = useState<PreparedPhoto[]>([]);
   const [noteError, setNoteError] = useState<string>();
   const [error, setError] = useState<string>();
   const required = noteRequired(action, false);
@@ -180,7 +182,7 @@ function CommentBox({ ticket }: { ticket: Ticket }) {
   const act = useTicketActions(ticket.ticketId);
   const [body, setBody] = useState('');
   const [visibility, setVisibility] = useState<'public' | 'internal'>('internal');
-  const [photos, setPhotos] = useState<LocalPhoto[]>([]);
+  const [photos, setPhotos] = useState<PreparedPhoto[]>([]);
   const busy = act.comment.isPending;
 
   const submit = () => {

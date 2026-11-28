@@ -10,11 +10,13 @@ import { Alert, AppText, Button, Card, CardTitle, ChipGroup, LoadingBlock, Scree
 import { useAssigneeNames, useStaffTask, useTaskActions } from '@/hooks/useWork';
 import { workEndpoints } from '@/lib/api/workEndpoints';
 import { useIdempotencyKey } from '@/lib/idempotency';
-import type { LocalPhoto } from '@/lib/photos';
+import { PhotoPicker } from '@/components/tickets/PhotoPicker';
+import type { PreparedPhoto } from '@/lib/photos';
 import { useServices } from '@/services';
 import { radii, space } from '@/theme/tokens';
 import { useTheme } from '@/theme/useTheme';
-import { EstimateCard, InfoRow, PhotoLinks, PhotoPicker, TaskStatusBadge, TitleIcon } from './WorkUi';
+import { TaskStatusBadge } from '@/components/tickets/TicketBadges';
+import { EstimateCard, InfoRow, PhotoLinks, TitleIcon } from './WorkUi';
 
 type Mode = 'complete' | 'skip' | 'ticket' | null;
 
@@ -195,7 +197,7 @@ function CompleteForm({ task, onDone, onCancel }: { task: MaintenanceTask; onDon
   const act = useTaskActions(task.taskId);
   const [results, setResults] = useState<ChecklistAnswer[]>(task.checklist.map((c) => ({ id: c.id, ok: null, note: '' })));
   const [note, setNote] = useState('');
-  const [photos, setPhotos] = useState<LocalPhoto[]>([]);
+  const [photos, setPhotos] = useState<PreparedPhoto[]>([]);
   const [error, setError] = useState<string | null>(null);
   const busy = act.complete.isPending;
   const set = (id: string, patch: Partial<ChecklistAnswer>) => setResults((rs) => rs.map((r) => (r.id === id ? { ...r, ...patch } : r)));

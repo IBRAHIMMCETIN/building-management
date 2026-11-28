@@ -1,84 +1,94 @@
-import { ApiError } from '@bm/shared/api/errors';
-import { MAX_PHOTO_BYTES, PHOTO_CONTENT_TYPES } from '@bm/shared/api/work';
+import { ApiError, errorMessage } from '@bm/shared/api/errors';
+import { MAX_PHOTOS_PER_EVENT, type PhotoUpload, photoError } from '@bm/shared/api/portalTickets';
+import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
 import * as ImagePicker from 'expo-image-picker';
 
 /*
- * Fotograf kaniti (ariza, bakim, sayac okumasi): kamera veya galeriden secilir, API'den alinan
- * kisa omurlu imzali S3 linkine dogrudan PUT edilir (dosya API'den gecmez; web: putPhoto).
- * Secilen goruntu JPEG'e sikistirilir (iOS HEIC de JPEG'e doner); en fazla 10 MB.
+ * Talep fotograflari: kamera veya galeri (expo-image-picker), yuklemeden once kucultme + JPEG
+ * sikistirma (expo-image-manipulator; uzun kenar en fazla 1920 px, kalite 0.7) ve API siniri
+ * kontrolu (JPEG/PNG/WEBP/HEIC, 10 MB; olay basina 6). Dosya API'den gecmez: `upload-url` ile alinan
+ * imzali linke PUT edilir (web: components/tickets/PhotoPicker.tsx + lib/api/tickets.ts putPhoto).
  */
 
-export type LocalPhoto = { uri: string; mimeType: string; fileSize?: number };
+export const MAX_PHOTOS = MAX_PHOTOS_PER_EVENT;
+const MAX_EDGE = 1920;
+const QUALITY = 0.7;
 
-export type PickResult = { kind: 'picked'; photo: LocalPhoto } | { kind: 'cancelled' } | { kind: 'denied'; canAskAgain: boolean };
+export type PreparedPhoto = { uri: string; width: number; height: number; type: string; size: number; blob: Blob };
 
-const EXT_TYPES: Record<string, string> = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', heic: 'image/heic' };
+type Fetch = typeof fetch;
+type Asset = { uri: string; width: number; height: number };
 
-/** Seciciden gelen turu API'nin kabul ettigi ture cevirir (`image/jpg` -> `image/jpeg`, uzantidan tahmin). */
-export function photoContentType(asset: { mimeType?: string | null; uri: string }): string {
-  const raw = (asset.mimeType ?? '').toLowerCase();
-  if (raw === 'image/jpg') return 'image/jpeg';
-  if (raw) return raw;
-  const ext = /\.([a-z0-9]+)(?:$|\?)/i.exec(asset.uri)?.[1]?.toLowerCase() ?? '';
-  return EXT_TYPES[ext] ?? 'image/jpeg';
-}
-
-/** Gonderimden once dosya kontrolu: hata metni veya null. */
-export function photoError(photo: { mimeType: string; fileSize?: number }): string | null {
-  if (!(PHOTO_CONTENT_TYPES as readonly string[]).includes(photo.mimeType)) return 'Desteklenmeyen dosya türü. İzin verilenler: JPEG, PNG, WEBP, HEIC';
-  if (photo.fileSize !== undefined && photo.fileSize > MAX_PHOTO_BYTES) return 'Fotoğraf en fazla 10 MB olabilir';
-  return null;
-}
-
-/** Kamera veya galeri; izin reddinde `denied` (ayarlardan acilmasi gerekiyorsa canAskAgain false). */
-export async function pickPhoto(source: 'camera' | 'library'): Promise<PickResult> {
-  const perm = source === 'camera' ? await ImagePicker.requestCameraPermissionsAsync() : await ImagePicker.requestMediaLibraryPermissionsAsync();
-  if (!perm.granted) return { kind: 'denied', canAskAgain: perm.canAskAgain };
-  const options: ImagePicker.ImagePickerOptions = { mediaTypes: ['images'], quality: 0.6, exif: false, allowsMultipleSelection: false };
-  const result = source === 'camera' ? await ImagePicker.launchCameraAsync(options) : await ImagePicker.launchImageLibraryAsync(options);
-  const asset = result.canceled ? undefined : result.assets[0];
-  if (!asset) return { kind: 'cancelled' };
-  return { kind: 'picked', photo: { uri: asset.uri, mimeType: photoContentType(asset), ...(asset.fileSize ? { fileSize: asset.fileSize } : {}) } };
-}
-
-export type UploadTarget = { id: string; uploadUrl: string; headers: Record<string, string> };
-
-export type UploadDeps = {
-  /** API'den imzali link ister (dosya turu + boyut). */
-  request: (input: { contentType: string; size: number }) => Promise<UploadTarget>;
-  /** Imzali linke PUT (demo modunda sahte API). */
-  put: typeof fetch;
-  /** Yerel dosyayi okur (test icin degistirilebilir). */
-  read?: (uri: string) => Promise<Blob>;
-};
-
-const readLocal = async (uri: string) => (await fetch(uri)).blob();
-
-/** Tek fotografi yukler; API'nin verdigi kimligi (uploadId / photoKey) dondurur. */
-export async function uploadPhoto(photo: LocalPhoto, deps: UploadDeps): Promise<string> {
-  const invalid = photoError(photo);
-  if (invalid) throw new ApiError(422, { error: 'unprocessable', message: invalid });
-  let blob: Blob;
-  try {
-    blob = await (deps.read ?? readLocal)(photo.uri);
-  } catch {
-    throw new ApiError(0, { error: 'upload_failed', message: 'Fotoğraf okunamadı. Yeniden çekip tekrar deneyin.' });
+/** Kullaniciya gosterilecek fotograf hatasi (izin, tur, boyut). */
+export class PhotoError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'PhotoError';
   }
-  if (blob.size > MAX_PHOTO_BYTES) throw new ApiError(422, { error: 'unprocessable', message: 'Fotoğraf en fazla 10 MB olabilir' });
-  const target = await deps.request({ contentType: photo.mimeType, size: blob.size });
+}
+
+/** Fotograf / yukleme hatasinin Turkce metni. */
+export const photoErrorMessage = (err: unknown) => (err instanceof PhotoError ? err.message : errorMessage(err));
+
+/** Secilen gorseli kucultup JPEG olarak kaydeder; boyutu olcer ve API kurallarina gore dogrular. */
+export async function preparePhoto(asset: Asset, fetchImpl: Fetch = fetch): Promise<PreparedPhoto> {
+  let out: { uri: string; width: number; height: number };
+  try {
+    const ctx = ImageManipulator.manipulate(asset.uri);
+    if (Math.max(asset.width, asset.height) > MAX_EDGE) ctx.resize(asset.width >= asset.height ? { width: MAX_EDGE } : { height: MAX_EDGE });
+    const image = await ctx.renderAsync();
+    out = await image.saveAsync({ compress: QUALITY, format: SaveFormat.JPEG });
+  } catch {
+    throw new PhotoError('Fotoğraf hazırlanamadı. Başka bir fotoğraf deneyin.');
+  }
+  const blob = await (await fetchImpl(out.uri)).blob();
+  const type = 'image/jpeg';
+  const problem = photoError({ type, size: blob.size });
+  if (problem) throw new PhotoError(problem);
+  return { uri: out.uri, width: out.width, height: out.height, type, size: blob.size, blob };
+}
+
+/** Galeriden en fazla `room` fotograf (iptalde bos liste). Secici izin istemez (sistem secicisi). */
+export async function pickFromLibrary(room: number, fetchImpl?: Fetch): Promise<PreparedPhoto[]> {
+  const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], allowsMultipleSelection: room > 1, selectionLimit: room, quality: 1, exif: false });
+  if (result.canceled) return [];
+  const out: PreparedPhoto[] = [];
+  for (const asset of result.assets.slice(0, room)) out.push(await preparePhoto(asset, fetchImpl));
+  return out;
+}
+
+/** Kamerayla tek fotograf; izin reddinde aciklayici hata. */
+export async function takePhoto(fetchImpl?: Fetch): Promise<PreparedPhoto | null> {
+  const permission = await ImagePicker.requestCameraPermissionsAsync();
+  if (!permission.granted) throw new PhotoError('Kamera izni verilmedi. Ayarlar’dan izin verebilir veya galeriden seçebilirsiniz.');
+  const result = await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 1, exif: false });
+  if (result.canceled) return null;
+  const [asset] = result.assets;
+  return asset ? preparePhoto(asset, fetchImpl) : null;
+}
+
+/** Imzali S3 linkine dogrudan PUT (Authorization yok; basliklar API'nin verdikleri). */
+export async function putToSignedUrl(upload: PhotoUpload, body: Blob, fetchImpl: Fetch = fetch): Promise<string> {
   let res: Response;
   try {
-    res = await deps.put(target.uploadUrl, { method: 'PUT', headers: target.headers, body: blob });
+    res = await fetchImpl(upload.uploadUrl, { method: 'PUT', headers: upload.headers, body });
   } catch {
     throw new ApiError(0, { error: 'upload_failed', message: 'Fotoğraf yüklenemedi: bağlantı hatası.' });
   }
   if (!res.ok) throw new ApiError(res.status, { error: 'upload_failed', message: `Fotoğraf yüklenemedi (${res.status}).` });
-  return target.id;
+  return upload.uploadId;
 }
 
-/** Sirayla yukler (zayif saha baglantisinda paralel yukleme hepsini bozar). */
-export async function uploadPhotos(photos: readonly LocalPhoto[], deps: UploadDeps): Promise<string[]> {
+/** Ayni fotograf tekrar gonderimde (ag hatasi sonrasi) yeniden yuklenmez. */
+const uploaded = new WeakMap<PreparedPhoto, string>();
+
+/** Fotograflari sirayla yukler; yukleme kimliklerini dondurur. */
+export async function uploadPhotos(photos: readonly PreparedPhoto[], upload: (p: PreparedPhoto) => Promise<string>): Promise<string[]> {
   const ids: string[] = [];
-  for (const p of photos) ids.push(await uploadPhoto(p, deps));
+  for (const p of photos) {
+    const id = uploaded.get(p) ?? (await upload(p));
+    uploaded.set(p, id);
+    ids.push(id);
+  }
   return ids;
 }

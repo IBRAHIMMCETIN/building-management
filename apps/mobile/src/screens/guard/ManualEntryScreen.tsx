@@ -3,7 +3,7 @@ import { formatPlate, normalizePlate } from '@bm/shared/gate/plate';
 import { useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 import { Alert, AppText, Button, Card, ChipGroup, Screen, TextField } from '@/components/ui';
-import { useDeskActions } from '@/hooks/useGate';
+import { useDeskActions } from '@/hooks/useGateDesk';
 import { useIdempotencyKey } from '@/lib/idempotency';
 import { space } from '@/theme/tokens';
 import { GateUnitSelect } from './GateUi';
