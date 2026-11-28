@@ -232,6 +232,14 @@ run "prod_plan" {
     error_message = "SES geri bildirim topic'i yigin adiyla olmali (dagitim politikasi <proje>* kapsami)"
   }
   assert {
+    condition     = aws_lambda_function_event_invoke_config.notification_worker.maximum_retry_attempts == 2 && aws_sqs_queue.ses_feedback_dlq.name == "building-management-ses-feedback-dlq"
+    error_message = "SES geri bildirim asenkron cagrisi basarisizlikta DLQ'ya dusmeli"
+  }
+  assert {
+    condition     = contains(keys(aws_lambda_function.notification_worker.environment[0].variables), "SES_FEEDBACK_TOPIC_ARN")
+    error_message = "Bildirim worker'i SES geri bildirim topic'ini dogrulamak icin SES_FEEDBACK_TOPIC_ARN almali"
+  }
+  assert {
     condition     = aws_sqs_queue.notification.sqs_managed_sse_enabled && aws_sqs_queue.notification_dlq.sqs_managed_sse_enabled
     error_message = "Kuyruklar SSE-SQS ile sifrelenmeli"
   }

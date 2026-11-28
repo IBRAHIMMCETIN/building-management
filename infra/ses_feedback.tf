@@ -7,6 +7,9 @@
 # kanali engelli aliciya gondermez. Platform yoneticisi `/admin/email-suppressions` ekranindan
 # engeli kaldirir (denetimli).
 #
+# Worker yalnizca `SES_FEEDBACK_TOPIC_ARN` (bu topic) kayitlarini isler; asenkron cagri hatasi 2 denemeden
+# sonra `<yigin>-ses-feedback-dlq` kuyruguna duser (alarm).
+#
 # Bu dosya YALNIZCA topic, topic politikasi (SES'in yayinlamasi, ayni hesap) ve aboneligi kurar;
 # SES kimliginin bildirim ayari (bounce/complaint -> bu topic) SES canliya alininca ayrica yapilir
 # (SES kimligi bu yiginda yonetilmez; dagitim politikasinda ses:SetIdentityNotificationTopic yok).
@@ -31,13 +34,61 @@ data "aws_iam_policy_document" "ses_feedback_topic" {
 
     resources = [aws_sns_topic.ses_feedback.arn]
 
-    # Karisik vekil korumasi: yalnizca bu hesabin SES kimlikleri.
+    # Karisik vekil korumasi: yalnizca bu hesabin, bu bolgedeki SES kimlikleri / yapilandirma setleri.
     condition {
       test     = "StringEquals"
       variable = "AWS:SourceAccount"
       values   = [data.aws_caller_identity.current.account_id]
     }
+
+    condition {
+      test     = "ArnLike"
+      variable = "AWS:SourceArn"
+      values = [
+        "arn:${local.partition}:ses:${local.region}:${data.aws_caller_identity.current.account_id}:identity/*",
+        "arn:${local.partition}:ses:${local.region}:${data.aws_caller_identity.current.account_id}:configuration-set/*",
+      ]
+    }
   }
+}
+
+# Asenkron (SNS -> Lambda) cagrisi 2 denemeden sonra da basarisizsa olay kaybolmasin: DLQ + alarm.
+resource "aws_sqs_queue" "ses_feedback_dlq" {
+  name                      = "${local.name}-ses-feedback-dlq"
+  message_retention_seconds = 1209600 # 14 gun: incelemek ve yeniden islemek icin
+  sqs_managed_sse_enabled   = true
+}
+
+# Yalnizca asenkron cagrilar (SES geri bildirim SNS aboneligi) icin gecerli; SQS olay kaynagi
+# eslemesi senkron cagirir ve bu ayardan etkilenmez.
+resource "aws_lambda_function_event_invoke_config" "notification_worker" {
+  function_name          = aws_lambda_function.notification_worker.function_name
+  maximum_retry_attempts = 2
+
+  destination_config {
+    on_failure {
+      destination = aws_sqs_queue.ses_feedback_dlq.arn
+    }
+  }
+
+  # Hedefe yazma yetkisi rol politikasinda (worker.tf `SesFeedbackDlq`).
+  depends_on = [aws_iam_role_policy.notification_worker]
+}
+
+resource "aws_cloudwatch_metric_alarm" "ses_feedback_dlq" {
+  alarm_name          = "${local.name}-ses-feedback-dlq-not-empty"
+  alarm_description   = "SES geri donus / sikayet geri bildirimi islenemedi (e-posta engeli yazilamadi)."
+  namespace           = "AWS/SQS"
+  metric_name         = "ApproximateNumberOfMessagesVisible"
+  dimensions          = { QueueName = aws_sqs_queue.ses_feedback_dlq.name }
+  statistic           = "Maximum"
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = 0
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
 }
 
 resource "aws_sns_topic_policy" "ses_feedback" {
