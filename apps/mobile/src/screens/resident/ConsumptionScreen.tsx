@@ -293,7 +293,6 @@ function PeriodCard({ period: p, loading, onPdf }: { period: PortalPeriod; loadi
   );
 }
 
-
 const styles = StyleSheet.create({
   flex: { flex: 1 },
   gap1: { gap: space(1) },

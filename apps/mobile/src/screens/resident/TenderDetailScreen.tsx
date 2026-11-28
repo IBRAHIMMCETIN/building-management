@@ -154,7 +154,7 @@ function Quotes({ tender: t }: { tender: Tender }) {
           {columns.map(({ quote: q, row: r }) => (
             <View
               key={q.quoteId}
-              style={[styles.quote, r.isLowest ? { borderColor: withAlpha(colors.success, 0.5), backgroundColor: withAlpha(colors.success, 0.05) } : { borderColor: colors.border }]}
+              style={[styles.quote, r.isLowest ? { borderColor: withAlpha(colors.success, 0.3), backgroundColor: withAlpha(colors.success, 0.05) } : { borderColor: colors.border }]}
             >
               <View style={styles.quoteHead}>
                 <AppText weight="semibold" accessibilityRole="header">

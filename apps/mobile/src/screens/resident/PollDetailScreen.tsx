@@ -11,6 +11,11 @@ import { useMyPoll, useVote } from '@/hooks/usePolls';
 import { MIN_TOUCH, radii, space, withAlpha } from '@/theme/tokens';
 import { useTheme } from '@/theme/useTheme';
 
+/** Onay adiminin metinleri (kutu ve ekran okuyucu duyurusu ayni cumleyi kullanir). */
+const confirmText = (label: string, changing: boolean) => (changing ? `Oyunuz “${label}” olarak değiştirilecek.` : `“${label}” seçeneğine oy vereceksiniz.`);
+const confirmLabel = (changing: boolean) => (changing ? 'Değişikliği onayla' : 'Oyu onayla');
+const LAST_VOTE_NOTE = 'Oylama bitene kadar verilen son oy geçerlidir; isterseniz sonra değiştirebilirsiniz.';
+
 /** Oylama sona erdi / henuz baslamadi (API `poll_closed`, 409): ekran guncel durumu yeniden ceker. */
 const isPollClosed = (err: unknown) => err instanceof ApiError && err.status === 409 && err.code === 'poll_closed';
 
@@ -139,13 +144,13 @@ function Detail({ poll: p }: { poll: PortalPoll }) {
             {confirming && chosen ? (
               <View style={[styles.confirm, { borderColor: withAlpha(colors.accent, 0.3), backgroundColor: withAlpha(colors.accent, 0.05) }]} accessibilityLiveRegion="polite">
                 <AppText variant="small" weight="semibold">
-                  {changing ? `Oyunuz “${chosen.label}” olarak değiştirilecek.` : `“${chosen.label}” seçeneğine oy vereceksiniz.`}
+                  {confirmText(chosen.label, changing)}
                 </AppText>
                 <AppText variant="small" tone="secondary">
-                  Oylama bitene kadar verilen son oy geçerlidir; isterseniz sonra değiştirebilirsiniz.
+                  {LAST_VOTE_NOTE}
                 </AppText>
                 <View style={styles.actions}>
-                  <Button label={changing ? 'Değişikliği onayla' : 'Oyu onayla'} loading={vote.isPending} onPress={send} />
+                  <Button label={confirmLabel(changing)} loading={vote.isPending} onPress={send} />
                   <Button variant="secondary" label="Vazgeç" disabled={vote.isPending} onPress={() => setConfirming(false)} />
                 </View>
               </View>
@@ -156,8 +161,8 @@ function Detail({ poll: p }: { poll: PortalPoll }) {
                 onPress={() => {
                   vote.reset();
                   setConfirming(true);
-                  // iOS canli bolgeyi okumaz: onay adimi ekran okuyucuya ayrica duyurulur.
-                  if (chosen) AccessibilityInfo.announceForAccessibility(`${chosen.label} seçildi. Onaylamak için Oyu onayla düğmesine dokunun.`);
+                  // iOS canli bolgeyi okumaz: onay kutusunun metni ve dugmesi ekran okuyucuya ayrica duyurulur.
+                  if (chosen) AccessibilityInfo.announceForAccessibility(`${confirmText(chosen.label, changing)} ${LAST_VOTE_NOTE} ${confirmLabel(changing)} düğmesiyle onaylayın.`);
                 }}
               />
             )}
@@ -223,7 +228,7 @@ const styles = StyleSheet.create({
   },
   radio: { width: 20, height: 20, borderRadius: radii.full, borderWidth: 2, alignItems: 'center', justifyContent: 'center' },
   dot: { width: 10, height: 10, borderRadius: radii.full },
-  confirm: { gap: space(2), borderRadius: radii.md, borderWidth: StyleSheet.hairlineWidth * 2, padding: space(3) },
+  confirm: { gap: space(2), borderRadius: radii.lg, borderWidth: StyleSheet.hairlineWidth * 2, paddingHorizontal: space(3), paddingVertical: space(2.5) },
   actions: { flexDirection: 'row', flexWrap: 'wrap', gap: space(2) },
   rules: { gap: space(1.5) },
 });

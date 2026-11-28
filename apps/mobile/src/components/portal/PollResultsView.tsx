@@ -84,7 +84,6 @@ export function PollResultsView({ results: r, highlightOptionId }: Props) {
   );
 }
 
-
 const styles = StyleSheet.create({
   root: { gap: space(4) },
   stats: { flexDirection: 'row', flexWrap: 'wrap', gap: space(3) },
