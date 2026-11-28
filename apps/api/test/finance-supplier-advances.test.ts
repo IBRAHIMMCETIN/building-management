@@ -252,8 +252,9 @@ describe('raporlar', () => {
   });
 
   it('saf: hedefe yerlesmeyen mahsup kalani (iptal edilen fatura) FIFO havuzuna girer', () => {
-    const tx = (id: string, kind: Transaction['kind'], date: string, lines: Transaction['lines'], extra: Partial<Transaction> = {}): Transaction =>
-      ({ PK: 'p', SK: 's', entityType: 'TRANSACTION', transactionId: id, siteId: 'apt-1', kind, date, description: id, lines, totalAmount: lines[0]!.amount, createdAt: `${date}T00:00:00Z`, createdBy: 'u', ...extra }) as Transaction;
+    type L = { accountId: string; side: 'debit' | 'credit'; amount: number };
+    const tx = (id: string, kind: Transaction['kind'], date: string, lines: L[], extra: Partial<Transaction> = {}): Transaction =>
+      ({ PK: 'p', SK: 's', entityType: 'TRANSACTION', transactionId: id, siteId: 'apt-1', kind, date, description: id, lines, totalAmount: lines[0]!.amount, createdAt: `${date}T00:00:00Z`, createdBy: 'u', ...extra }) as unknown as Transaction;
     const txs = [
       tx('inv1', 'expense', '2026-10-01', [{ accountId: 'exp', side: 'debit', amount: 100 }, { accountId: SUP, side: 'credit', amount: 100 }]),
       tx('inv2', 'expense', '2026-10-02', [{ accountId: 'exp', side: 'debit', amount: 100 }, { accountId: SUP, side: 'credit', amount: 100 }]),
