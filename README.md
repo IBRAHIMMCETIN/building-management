@@ -253,7 +253,7 @@ Diğer listesinden (`src/lib/nav.ts` → `route`) ve bildirim bağlantılarında
 
 ### Mobil tamamlama (derleme profilleri, uygulama kilidi, iPad, çevrimdışı)
 
-- **Derleme profilleri (EAS; hesap gerektirmeden hazır):** `expo-dev-client` (SDK 58) ve `apps/mobile/eas.json`: `development` (geliştirme istemcisi, dahili dağıtım, Android APK; iOS simülatörü için `development-simulator`), `preview` (dahili APK / IPA, EAS `preview` ortamı = staging değerleri, `EXPO_PUBLIC_AUTH_MODE=cognito`), `production` (mağaza: AAB / IPA, EAS `production` ortamı, derleme numarası uzaktan artar: `appVersionSource: remote` + `autoIncrement`). Node sürümü CI ile aynı (24.22.2). `app.json` sabit değerleri (izin metinleri, eklentiler, ikonlar) taşır; `app.config.ts` derleme profiline göre değişenleri ortamdan okur, ortam boşsa bugünkü değerler kalır:
+- **Derleme profilleri (EAS; hesap gerektirmeden hazır):** `expo-dev-client` (SDK 58) ve `apps/mobile/eas.json`: `development` (geliştirme istemcisi, dahili dağıtım, Android APK; iOS simülatörü için `development-simulator`), `preview` (dahili APK / IPA, EAS `preview` ortamı = staging değerleri, `EXPO_PUBLIC_AUTH_MODE=cognito`), `production` (mağaza: AAB / IPA, EAS `production` ortamı, derleme numarası uzaktan artar: `appVersionSource: remote` + `autoIncrement`). Node sürümü sabitlenmez: EAS'ın SDK 58 derleme imajının varsayılanı kullanılır. `app.json` sabit değerleri (izin metinleri, eklentiler, ikonlar) taşır; `app.config.ts` derleme profiline göre değişenleri ortamdan okur, ortam boşsa bugünkü değerler kalır:
 
 | Değişken | Açıklama |
 | --- | --- |
@@ -261,7 +261,7 @@ Diğer listesinden (`src/lib/nav.ts` → `route`) ve bildirim bağlantılarında
 | `APP_BUNDLE_ID` / `APP_PACKAGE` | iOS paket kimliği / Android paket adı kökü (varsayılan `app.json`: `com.yonesist.app`) |
 | `EAS_PROJECT_ID` | `eas init` çıktısı (push kaydı için; gizli değil). Yoksa `app.json` → `expo.extra.eas.projectId` |
 | `EXPO_OWNER` | Expo hesabı / kuruluş (isteğe bağlı) |
-| `GOOGLE_SERVICES_JSON` | Android FCM dosyasının yolu (EAS dosya ortam değişkeni; repoya girmez) → `android.googleServicesFile` |
+| `GOOGLE_SERVICES_JSON` / `_DEV` / `_PREVIEW` | Android FCM dosyasının yolu (EAS dosya ortam değişkeni; repoya girmez) → `android.googleServicesFile`; varyanta özel dosya yoksa `GOOGLE_SERVICES_JSON`. Her paket adı (`com.yonesist.app`, `.dev`, `.preview`) Firebase'de ayrı Android istemcisi ve EAS'ta ayrı push kimlik bilgisi (FCM V1; iOS'ta her paket kimliği için APNs) ister |
 
 API / Cognito / web adresleri `EXPO_PUBLIC_*` olarak EAS ortamlarında tutulur (`preview`: staging, `production`: prod); repoda ve `eas.json`'da gizli bilgi yok (profiller yalnızca `APP_VARIANT` ve kimlik / API modunu verir). **Sahip (sonra):** `npx eas-cli login` → `cd apps/mobile && npx eas-cli init` (dinamik yapılandırma olduğundan CLI kimliği kendisi yazamaz: `app.json` → `expo.extra.eas.projectId`'ye yazılır veya `EAS_PROJECT_ID` verilir) → `npx eas-cli env:create --environment preview|production` ile `EXPO_PUBLIC_API_URL`, `EXPO_PUBLIC_COGNITO_*`, `EXPO_PUBLIC_WEB_URL` → `npx eas-cli build --profile development|preview|production`. Yerelde denetim: `APP_VARIANT=preview npx expo config --type public`.
 

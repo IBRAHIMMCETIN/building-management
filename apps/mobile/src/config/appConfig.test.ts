@@ -48,6 +48,14 @@ describe('app.config.ts', () => {
     expect(c.android?.googleServicesFile).toBe('/tmp/google-services.json');
   });
 
+  it('FCM dosyasi varyanta ozel (her paket adinin kendi Firebase istemcisi); yoksa ortak dosya', () => {
+    const env = { GOOGLE_SERVICES_JSON: '/eas/prod.json', GOOGLE_SERVICES_JSON_DEV: '/eas/dev.json', GOOGLE_SERVICES_JSON_PREVIEW: '/eas/preview.json' };
+    expect(buildConfig(base, { ...env, APP_VARIANT: 'development' }).android?.googleServicesFile).toBe('/eas/dev.json');
+    expect(buildConfig(base, { ...env, APP_VARIANT: 'preview' }).android?.googleServicesFile).toBe('/eas/preview.json');
+    expect(buildConfig(base, env).android?.googleServicesFile).toBe('/eas/prod.json');
+    expect(buildConfig(base, { APP_VARIANT: 'preview', GOOGLE_SERVICES_JSON: '/eas/all.json' }).android?.googleServicesFile).toBe('/eas/all.json');
+  });
+
   it('app.json extra.eas.projectId korunur (eas init elle yazildiysa)', () => {
     const c = buildConfig({ ...base, extra: { eas: { projectId: 'from-app-json' } } }, {});
     expect(c.extra?.eas).toEqual({ projectId: 'from-app-json' });

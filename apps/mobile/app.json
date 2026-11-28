@@ -21,7 +21,9 @@
         "foregroundImage": "./assets/mark.png",
         "backgroundColor": "#ffffff"
       },
-      "blockedPermissions": ["android.permission.RECORD_AUDIO"]
+      "blockedPermissions": [
+        "android.permission.RECORD_AUDIO"
+      ]
     },
     "web": {
       "bundler": "metro",
@@ -37,14 +39,6 @@
         "expo-local-authentication",
         {
           "faceIDPermission": "Uygulama kilidini açmak için Face ID kullanılır (Hesabım'dan açılıp kapatılır)."
-        }
-      ],
-      [
-        "expo-image-picker",
-        {
-          "photosPermission": "Arıza / talep bildirirken fotoğraf eklemek için fotoğraflarınıza erişim gerekir.",
-          "cameraPermission": "Arıza / talep bildirirken fotoğraf çekmek için kamera erişimi gerekir.",
-          "microphonePermission": false
         }
       ],
       [
