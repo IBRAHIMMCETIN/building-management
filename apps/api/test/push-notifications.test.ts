@@ -280,6 +280,7 @@ describe('push kanali', () => {
     const SAMPLE: Record<NotificationCategory, NotificationTemplate> = {
       finance: 'payment_received', announcements: 'announcement_published', tickets: 'ticket_comment', gate: 'gate_guest_entered',
       reservations: 'reservation_approved', polls: 'poll_published', assemblies: 'assembly_called', tenders: 'tender_decided',
+      billing: 'billing_invoice_issued',
     };
     for (const category of NOTIFICATION_CATEGORIES) {
       const c = channel({ prefs: { u: { [category]: false } } });

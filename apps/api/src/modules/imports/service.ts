@@ -11,6 +11,7 @@ import { FinanceError, type FinanceService, SYSTEM_ACCOUNTS } from '../finance/s
 import { type MembershipService, createMembershipService } from '../memberships/service.js';
 import { type PersonRepository, personRepository } from '../residents/repository.js';
 import { ResidentsError, type ResidentsService } from '../residents/service.js';
+import { EntitlementError } from '../subscriptions/entitlements.js';
 import {
   type BalanceRow,
   type BalanceRowInput,
@@ -121,7 +122,8 @@ const emptyCounts = (): ImportCounts => ({
 
 /** Satir hatasi olarak kaydedilecek (kalici) is kurali hatalari; digerleri tekrar denenir. */
 function businessMessage(err: unknown): string | undefined {
-  if (err instanceof ValidationError || err instanceof CoreError || err instanceof FinanceError) return err.message;
+  // Abonelik bolum limiti: satir hatasi (plan yukseltilmeden tekrar denemek sonucu degistirmez).
+  if (err instanceof ValidationError || err instanceof CoreError || err instanceof FinanceError || err instanceof EntitlementError) return err.message;
   if (err instanceof ResidentsError && err.code === 'invalid_email') return err.message;
   return undefined;
 }

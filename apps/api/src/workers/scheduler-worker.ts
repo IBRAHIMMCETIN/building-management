@@ -33,6 +33,7 @@ import { type BulkJobService, createBulkJobService } from '../modules/bulkjobs/s
 import { createDynamoDeviceRepository } from '../modules/notifications/devices.js';
 import { expoClientFromEnv, pushChannelMode } from '../modules/notifications/push.js';
 import { type ReceiptCheckResult, checkPushReceipts, createDynamoReceiptStore } from '../modules/notifications/push-receipts.js';
+import { type SubscriptionService, createSubscriptionService } from '../modules/subscriptions/service.js';
 
 /**
  * Zamanlanmis gorev worker'i (SQS tuketicisi).
@@ -75,6 +76,10 @@ import { type ReceiptCheckResult, checkPushReceipts, createDynamoReceiptStore } 
  *                  yonetime: her gun 30 gun icinde dolacak / son 30 gunde dolmus, pazartesi uzun
  *                  suredir dolmus sozlesme ve kontroller de) yayinlar.
  *                  Olay kimligi gun bazli deterministiktir (tekrar teslimde bildirim bir kez).
+ *   subscriptions  her gun 06:15 (Abonelik): abonelik durum makinesi - deneme bitis bildirimleri
+ *                  (7 / 1 gun), deneme sonu ilk donem, donem faturasi, vade gecince `past_due`, ek
+ *                  sure (`graceDays`) dolunca `suspended`, odeme gelince yeniden acilma. Aboneligi
+ *                  olmayan (legacy) site `skipped: legacy`. Gun tekrari degisiklik uretmez.
  *   outbox_sweep   5 dakikada bir: esikten (varsayilan 2 dk) eski, hala bekleyen outbox
  *                  kayitlarini relay cekirdegiyle yeniden yayinlar (apartman dongusu yok; tek tur).
  *   push_receipts  saatte bir (:20): mobil bildirimlerin Expo makbuzlari; kapanisindan 15 dk gecmis
@@ -117,6 +122,7 @@ export const JOBS = [
   'maintenance_tasks',
   'ticket_maintenance',
   'push_receipts',
+  'subscriptions',
 ] as const;
 export type Job = (typeof JOBS)[number];
 
@@ -215,6 +221,8 @@ export type SchedulerDeps = {
   equipment: Pick<EquipmentService, 'digestItems'>;
   /** Y1: suresi dolup hic oy almamis oylamalarin oy listesini sistem olarak dondurur (`maintenance_tasks`). */
   polls: Pick<PollService, 'freezeEnded'>;
+  /** Abonelik: durum makinesi (`subscriptions`), platform ayari ve salt okunur kontrolu. */
+  subscriptions: Pick<SubscriptionService, 'runDaily' | 'getSettings' | 'isReadOnly'>;
   /** Guvenlik kapisi: tasinanlarin gecis / araclarini pasife alir (`maintenance_tasks`; `MEMBERSHIP_ENDED` aninda). */
   gate: Pick<GateDepartures, 'sweep'> & Partial<Pick<GateDepartures, 'releaseNow'>>;
   /** null: online odeme kapali. Verilmezse ortam degiskenlerinden kurulur (ilk kullanimda). */
@@ -243,7 +251,18 @@ export type SchedulerDeps = {
 };
 
 /** Site basina fan-out yapilan isler (tur mesaji apartmentId tasimaz). */
-export const FANOUT_JOBS: readonly Job[] = ['ledger_audit'];
+export const FANOUT_JOBS: readonly Job[] = ['ledger_audit', 'subscriptions'];
+
+/**
+ * Abonelik: salt okunur (askida / sona ermis) sitede ATLANAN sakine donuk isler: gecikme tazminati ve
+ * hatirlatma (yonetim cevap veremezken sakin cezalandirilmasin). Aylik aidat bilerek SURER: binanin
+ * kendi defteridir, sakin odemeleri (portal + elle tahsilat) acik kalir; atlamak sonradan tamamlanmasi
+ * gereken bosluk birakirdi.
+ */
+export const READ_ONLY_SKIP_JOBS: readonly Job[] = ['late_fees', 'dues_reminders'];
+
+type BillingFlags = { enabled: boolean; automation: boolean };
+const BILLING_OFF: BillingFlags = { enabled: false, automation: false };
 
 const errorText = (err: unknown) => (err instanceof Error ? `${err.name}: ${err.message}` : 'unknown');
 
@@ -257,6 +276,7 @@ export function createSchedulerWorker(overrides: Partial<SchedulerDeps> = {}) {
     equipment?: SchedulerDeps['equipment'];
     polls?: SchedulerDeps['polls'];
     gate?: SchedulerDeps['gate'];
+    subscriptions?: SchedulerDeps['subscriptions'];
     payments?: SchedulerDeps['payments'];
     payouts?: SchedulerDeps['payouts'];
     invoices?: SchedulerDeps['invoices'];
@@ -293,6 +313,8 @@ export function createSchedulerWorker(overrides: Partial<SchedulerDeps> = {}) {
   const equipment = () => (lazy.equipment ??= overrides.equipment ?? createEquipmentService({ now, store: undefined }));
   const polls = () => (lazy.polls ??= overrides.polls ?? createPollService({ now, portal: createPortalService({ now }) }));
   const gate = () => (lazy.gate ??= overrides.gate ?? createGateDepartures({ repo: gateRepository, memberships: membershipRepository, now, metrics: metrics(), log }));
+  // Zamanlayicida PDF deposu gerekmez (PDF indirmede API uretir).
+  const subscriptions = () => (lazy.subscriptions ??= overrides.subscriptions ?? createSubscriptionService({ now, store: undefined }));
   /** Odeme servisleri tek yapilandirmadan, ilk kullanimda kurulur. */
   function paymentServices() {
     if (lazy.payments !== undefined && lazy.payouts !== undefined && lazy.invoices !== undefined) return;
@@ -477,19 +499,33 @@ export function createSchedulerWorker(overrides: Partial<SchedulerDeps> = {}) {
     return outcome;
   }
 
+  /** Platform abonelik ayari; okunamazsa KAPALI (abonelik hicbir isi engellemez, is erken biter). */
+  async function billingFlags(): Promise<BillingFlags> {
+    try {
+      const s = await subscriptions().getSettings();
+      return { enabled: s.enabled === true, automation: s.automation === true };
+    } catch (err) {
+      log.error(JSON.stringify({ level: 'error', msg: 'billing_settings_read_failed', error: errorText(err) }));
+      return BILLING_OFF;
+    }
+  }
+
   const fanout = (): JobFanout | null => (lazyOps.fanout !== undefined ? lazyOps.fanout : (lazyOps.fanout = overrides.fanout !== undefined ? overrides.fanout : loadJobFanoutFromEnv()));
 
   /** Tur mesaji: her site icin ayri mesaj; site kimlikleri tek sorguyla (site dizini). */
   async function runFanout(message: JobMessage, queue: JobFanout): Promise<SiteOutcome[]> {
     const ids = await core.listSiteIds();
     const { queued } = await queue.enqueue(ids.map((apartmentId) => ({ job: message.job, scheduledTime: message.scheduledTime, apartmentId })));
-    metrics().emit({ LedgerAuditFanout: queued }, { msg: 'ledger_audit_fanout', job: message.job });
+    if (message.job === 'ledger_audit') metrics().emit({ LedgerAuditFanout: queued }, { msg: 'ledger_audit_fanout', job: message.job });
     const outcomes: SiteOutcome[] = [{ apartmentId: '_fanout', status: 'done', detail: { job: message.job, queued } }];
     if (message.job === 'ledger_audit') outcomes.push(await runPlatformChain());
     return outcomes;
   }
 
-  async function runForSite(job: Job, apartmentId: string, day: IsoDate): Promise<SiteOutcome> {
+  async function runForSite(job: Job, apartmentId: string, day: IsoDate, billing: BillingFlags = BILLING_OFF): Promise<SiteOutcome> {
+    if (READ_ONLY_SKIP_JOBS.includes(job) && billing.enabled && (await subscriptions().isReadOnly(apartmentId, billing))) {
+      return { apartmentId, status: 'skipped', reason: 'read_only' };
+    }
     const site = await core.getSite(apartmentId);
     // Denetim pasif sitelerde de calisir (defter kapanmis olsa da tutarli kalmali).
     if (job === 'ledger_audit') return site ? runAuditTimed(apartmentId) : { apartmentId, status: 'skipped', reason: 'site_missing' };
@@ -626,6 +662,12 @@ export function createSchedulerWorker(overrides: Partial<SchedulerDeps> = {}) {
         };
       }
 
+      case 'subscriptions': {
+        const r = await subscriptions().runDaily(apartmentId, day, undefined, { settings: billing });
+        if (r.status === 'skipped') return { apartmentId, status: 'skipped', reason: r.reason };
+        return { apartmentId, status: 'done', detail: { date: day, ...r } };
+      }
+
       // Apartman dongusu disinda islenir (runJob); ledger_audit yukarida ayrilir.
       case 'outbox_sweep':
       case 'payout_returns':
@@ -639,6 +681,12 @@ export function createSchedulerWorker(overrides: Partial<SchedulerDeps> = {}) {
     if (message.job === 'payout_returns') return [await runPayoutReturns()];
     if (message.job === 'push_receipts') return [await runPushReceipts()];
     const day = istanbulDate(message.scheduledTime);
+    // Abonelik ayari tur basinda BIR kez (kapaliyken / okunamazken abonelik okunmaz, is erken biter).
+    const billing = message.job === 'subscriptions' || READ_ONLY_SKIP_JOBS.includes(message.job) ? await billingFlags() : BILLING_OFF;
+    if (message.job === 'subscriptions') {
+      if (!billing.enabled) return [{ apartmentId: '_subscriptions', status: 'skipped', reason: 'billing_disabled' }];
+      if (!billing.automation) return [{ apartmentId: '_subscriptions', status: 'skipped', reason: 'automation_off' }];
+    }
     // Adim 2-2: tur mesaji site basina mesajlara bolunur (kuyruk yoksa asagidaki sirali yol).
     const queue = !message.apartmentId && FANOUT_JOBS.includes(message.job) ? fanout() : null;
     if (queue) return runFanout(message, queue);
@@ -646,7 +694,7 @@ export function createSchedulerWorker(overrides: Partial<SchedulerDeps> = {}) {
     const outcomes: SiteOutcome[] = [];
     for (const apartmentId of ids) {
       try {
-        outcomes.push(await runForSite(message.job, apartmentId, day));
+        outcomes.push(await runForSite(message.job, apartmentId, day, billing));
       } catch (err) {
         outcomes.push({ apartmentId, status: 'failed', error: err instanceof Error ? `${err.name}: ${err.message}` : 'unknown' });
       }

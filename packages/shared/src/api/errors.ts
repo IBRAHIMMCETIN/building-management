@@ -36,6 +36,14 @@ export class ApiError extends Error {
   get isMfaRequired() {
     return this.status === 403 && this.code === 'MFA_REQUIRED';
   }
+
+  /**
+   * Abonelik askida / sona ermis: apartman salt okunur (`423 subscription_read_only`). Mesaj
+   * sunucudan Turkce gelir; ekranlar ayrica bir sey yapmadan gosterebilir.
+   */
+  get isReadOnly() {
+    return this.status === 423 && this.code === 'subscription_read_only';
+  }
 }
 
 /** Ag hatasi, zaman asimi vb. (sunucudan yanit hic gelmedi). */
@@ -58,6 +66,7 @@ function defaultMessage(status: number): string {
   if (status === 401) return 'Oturum doğrulanamadı.';
   if (status === 403) return 'Bu işlem için yetkiniz yok.';
   if (status === 404) return 'Kayıt bulunamadı.';
+  if (status === 423) return 'Hesap şu anda salt okunur; bu işlem yapılamaz.';
   if (status === 429) return 'Çok fazla istek gönderildi, biraz sonra tekrar deneyin.';
   if (status >= 500) return 'Sunucuda beklenmeyen bir hata oluştu.';
   return `İstek başarısız (${status}).`;

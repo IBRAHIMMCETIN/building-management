@@ -43,6 +43,9 @@ const PlatformApartmentsPage = lazyPage(() => import('@/pages/platform/apartment
 const PlatformInvoicesPage = lazyPage(() => import('@/pages/platform/payments/PlatformInvoicesPage'), 'PlatformInvoicesPage');
 const PlatformPaymentsPage = lazyPage(() => import('@/pages/platform/payments/PlatformPaymentsPage'), 'PlatformPaymentsPage');
 const PlatformPayoutsPage = lazyPage(() => import('@/pages/platform/payments/PlatformPayoutsPage'), 'PlatformPayoutsPage');
+const PlatformPlansPage = lazyPage(() => import('@/pages/platform/billing/PlatformPlansPage'), 'PlatformPlansPage');
+const PlatformSubscriptionsPage = lazyPage(() => import('@/pages/platform/billing/PlatformSubscriptionsPage'), 'PlatformSubscriptionsPage');
+const PlatformSubscriptionInvoicesPage = lazyPage(() => import('@/pages/platform/billing/PlatformSubscriptionInvoicesPage'), 'PlatformSubscriptionInvoicesPage');
 const ResidentAnnouncementsPage = lazyPage(() => import('@/pages/resident/AnnouncementsPage'), 'ResidentAnnouncementsPage');
 const MyPollsPage = lazyPage(() => import('@/pages/resident/polls/MyPollsPage'), 'MyPollsPage');
 const MyPollDetailPage = lazyPage(() => import('@/pages/resident/polls/MyPollDetailPage'), 'MyPollDetailPage');
@@ -178,6 +181,9 @@ export const router = createBrowserRouter([
                   { path: 'payments', element: <PlatformPaymentsPage /> },
                   { path: 'payments/transfers', element: <PlatformPayoutsPage /> },
                   { path: 'payments/invoices', element: <PlatformInvoicesPage /> },
+                  { path: 'billing/subscriptions', element: <PlatformSubscriptionsPage /> },
+                  { path: 'billing/plans', element: <PlatformPlansPage /> },
+                  { path: 'billing/invoices', element: <PlatformSubscriptionInvoicesPage /> },
                   { path: 'users', element: <PlatformUsersPage /> },
                   { path: 'email-suppressions', element: <PlatformEmailSuppressionsPage /> },
                 ],

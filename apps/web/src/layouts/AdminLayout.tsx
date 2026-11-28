@@ -5,13 +5,14 @@ import { BrandMark } from '@/components/BrandMark';
 import { ContextSwitchDialog, useCanSwitchContext } from '@/components/context/ContextSwitcher';
 import { MfaGraceBanner } from '@/components/MfaGraceBanner';
 import { SupportBanner } from '@/components/support/SupportBanner';
+import { SubscriptionBanner } from '@/components/subscription/SubscriptionBanner';
 import { Button, Dialog } from '@/components/ui';
 import { useActiveApartmentName } from '@/hooks/useActiveContextLabel';
 import { useAuth } from '@/hooks/useAuth';
 import { usePortfolioAccess } from '@/hooks/usePortfolio';
 import { SiteFeaturesProvider, useSiteFeatures } from '@/context/SiteFeaturesContext';
 import { ROLE_LABELS } from '@/types/roles';
-import { navItemsFor, panelTitleFor } from './adminNav';
+import { navFeatureCheck, navItemsFor, panelTitleFor } from './adminNav';
 import { cn } from '@/lib/cn';
 import { UserMenu } from './UserMenu';
 import { PageSuspense } from '@/router/lazyPage';
@@ -20,8 +21,8 @@ import { PageSuspense } from '@/router/lazyPage';
 function AdminNav({ onNavigate }: { onNavigate?: () => void }) {
   const { user } = useAuth();
   const { showInNav } = usePortfolioAccess();
-  const { isEnabled } = useSiteFeatures();
-  const items = navItemsFor(user?.role, showInNav, isEnabled);
+  const { status, isEnabled } = useSiteFeatures();
+  const items = navItemsFor(user?.role, showInNav, navFeatureCheck(status, isEnabled));
   return (
     <nav aria-label="Yönetim menüsü" className="flex flex-col gap-1">
       {items.map(({ to, label, icon: Icon, end }) => (
@@ -128,6 +129,7 @@ function AdminShell() {
         </header>
         <SupportBanner />
         <MfaGraceBanner />
+        <SubscriptionBanner />
         <main className="mx-auto w-full min-w-0 max-w-page flex-1 px-4 py-8 md:px-8">
           <PageSuspense>
             <Outlet />

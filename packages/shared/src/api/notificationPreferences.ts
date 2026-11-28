@@ -11,6 +11,14 @@ import { z } from 'zod';
 export const NOTIFICATION_CATEGORIES = ['finance', 'announcements', 'tickets', 'gate', 'reservations', 'polls', 'assemblies', 'tenders'] as const;
 export type NotificationCategory = (typeof NOTIFICATION_CATEGORIES)[number];
 
+/**
+ * Yalnizca yonetim rollerine (yonetici, yonetim firmasi) giden kategoriler: abonelik / lisans
+ * bildirimleri. Sakin ve saha ekranlari (mobil dahil) `NOTIFICATION_CATEGORIES` listesini gosterir.
+ */
+export const MANAGEMENT_NOTIFICATION_CATEGORIES = ['billing'] as const;
+export type ManagementNotificationCategory = (typeof MANAGEMENT_NOTIFICATION_CATEGORIES)[number];
+export type AnyNotificationCategory = NotificationCategory | ManagementNotificationCategory;
+
 const optionalFlag = z.boolean().optional();
 
 const channelSchema = z.object({
@@ -23,6 +31,7 @@ const channelSchema = z.object({
   polls: optionalFlag,
   assemblies: optionalFlag,
   tenders: optionalFlag,
+  billing: optionalFlag,
 });
 
 /** Kanallar: e-posta ve mobil bildirim (Expo push). Birbirinden bagimsiz; ayni kategoriler. */
@@ -35,7 +44,7 @@ export const notificationPreferencesSchema = z.object({
   updatedAt: z.string().optional(),
 });
 export type NotificationPreferences = z.infer<typeof notificationPreferencesSchema>;
-export type ChannelPreferencesInput = { enabled?: boolean } & Partial<Record<NotificationCategory, boolean>>;
+export type ChannelPreferencesInput = { enabled?: boolean } & Partial<Record<AnyNotificationCategory, boolean>>;
 /** PUT govdesi: yalnizca degisen alan (en az bir alan; `email` ve/veya `push`). */
 export type NotificationPreferencesInput = { email?: ChannelPreferencesInput; push?: ChannelPreferencesInput };
 
@@ -43,14 +52,14 @@ export type NotificationPreferencesInput = { email?: ChannelPreferencesInput; pu
 export const channelEnabled = (p: NotificationPreferences, channel: NotificationChannel = 'email') => p[channel]?.enabled !== false;
 
 /** Kategori bildirimleri (varsayilan e-posta): kayitli tercih yoksa acik. */
-export const categoryEnabled = (p: NotificationPreferences, category: NotificationCategory, channel: NotificationChannel = 'email') =>
+export const categoryEnabled = (p: NotificationPreferences, category: AnyNotificationCategory, channel: NotificationChannel = 'email') =>
   p[channel]?.[category] !== false;
 
 /** Ariza e-postalari: kayitli tercih yoksa acik. */
 export const ticketEmailsEnabled = (p: NotificationPreferences) => categoryEnabled(p, 'tickets');
 
 /** Hesabim ekranindaki kategori satirlari (Turkce etiket + aciklama). */
-export const NOTIFICATION_CATEGORY_META: Record<NotificationCategory, { label: string; description: string }> = {
+export const NOTIFICATION_CATEGORY_META: Record<AnyNotificationCategory, { label: string; description: string }> = {
   finance: { label: 'Aidat ve tahsilat', description: 'Tahakkuk, toplu aidat özeti, tahsilat makbuzu, gecikme tazminatı ve ödeme hatırlatmaları.' },
   announcements: { label: 'Duyurular', description: 'Yönetimin yayınladığı duyurular.' },
   tickets: { label: 'Arıza ve talepler', description: 'Arıza / talep açılması, atanması, çözülmesi ve yorum bildirimleri ile günlük operasyon özeti.' },
@@ -62,4 +71,5 @@ export const NOTIFICATION_CATEGORY_META: Record<NotificationCategory, { label: s
     description: 'Kat malikleri kurulu toplantı çağrıları (kat maliklerine). Bilgilendirme amaçlıdır; yasal çağrı yönetiminizce ayrıca yapılır.',
   },
   tenders: { label: 'İhale ve teklifler', description: 'Yönetimin teklifleri sakinlerle paylaşması, ihalenin karara bağlanması veya iptali ve ihaleye yazdığınız soruların yanıtlanması.' },
+  billing: { label: 'Abonelik ve faturalar', description: 'Deneme süresinin bitmesi, abonelik faturası, geciken ödeme, askıya alma ve yeniden açılma. Yalnızca yönetime gönderilir.' },
 };
