@@ -299,7 +299,8 @@ run "prod_plan" {
     condition     = aws_apigatewayv2_route.cors_preflight.route_key == "OPTIONS /api/{proxy+}" && aws_apigatewayv2_route.cors_preflight.authorization_type == "NONE"
     error_message = "CORS preflight (OPTIONS) kimliksiz olmali; aksi halde tarayici istekleri 401 ile engellenir"
   }
-  # Tanitim sayfasi demo formu: tek kimliksiz yazma rotasi, yalnizca POST, en siki rota siniri.
+  # Tanitim sayfasi demo formu: tek kimliksiz yazma rotasi, yalnizca POST; rota kovasi platform geneli
+  # oldugundan mesru kullanimi kesmeyecek bir sinir (istemci basina sinir uygulamada).
   assert {
     condition = (
       toset([for r in aws_apigatewayv2_route.public_form : r.route_key]) == toset(["POST /api/public/demo-requests"]) &&
@@ -310,9 +311,31 @@ run "prod_plan" {
   assert {
     condition = anytrue([
       for rs in aws_apigatewayv2_stage.default.route_settings :
-      rs.route_key == "POST /api/public/demo-requests" && rs.throttling_rate_limit == 1 && rs.throttling_burst_limit == 5
+      rs.route_key == "POST /api/public/demo-requests" && rs.throttling_rate_limit == 10 && rs.throttling_burst_limit == 20
     ])
-    error_message = "Demo talep rotasi 1/sn, burst 5 ile sinirlanmali"
+    error_message = "Demo talep rotasi 10/sn, burst 20 ile sinirlanmali"
+  }
+  # IP HMAC anahtari: yalnizca GenerateMac (HMAC_SHA_256), API ortaminda; supheli hacim alarmi.
+  assert {
+    condition = (
+      aws_kms_key.demo_ip_hmac.customer_master_key_spec == "HMAC_256" &&
+      aws_kms_key.demo_ip_hmac.key_usage == "GENERATE_VERIFY_MAC" &&
+      contains(keys(aws_lambda_function.api.environment[0].variables), "DEMO_IP_MAC_KEY_ID")
+    )
+    error_message = "Demo formu IP HMAC anahtari HMAC_256 olmali ve API'ye DEMO_IP_MAC_KEY_ID olarak verilmeli"
+  }
+  assert {
+    condition = (
+      [for st in data.aws_iam_policy_document.api.statement : {
+        actions = toset(st.actions)
+        ctx     = [for c in st.condition : "${c.test}|${c.variable}|${join(",", c.values)}"]
+      } if st.sid == "DemoIpMac"] == [{ actions = toset(["kms:GenerateMac"]), ctx = ["StringEquals|kms:MacAlgorithm|HMAC_SHA_256"] }]
+    )
+    error_message = "API Lambda demo IP anahtariyla yalnizca HMAC_SHA_256 ile kms:GenerateMac yapabilmeli"
+  }
+  assert {
+    condition     = aws_cloudwatch_metric_alarm.demo_request_suspect.metric_name == "DemoRequestSuspect" && contains(aws_cloudwatch_metric_alarm.demo_request_suspect.alarm_actions, aws_sns_topic.alerts.arn)
+    error_message = "Supheli demo talebi hacmi alarm uretmeli"
   }
   assert {
     condition     = aws_apigatewayv2_integration.api.payload_format_version == "2.0"
@@ -993,7 +1016,7 @@ run "bank_iban_hmac" {
         actions   = toset(st.actions)
         resources = toset(st.resources)
         ctx       = [for c in st.condition : "${c.test}|${c.variable}|${join(",", c.values)}"]
-      } if anytrue([for a in st.actions : startswith(a, "kms:")])] ==
+      } if st.sid != "DemoIpMac" && anytrue([for a in st.actions : startswith(a, "kms:")])] ==
       [{
         sid       = "BankIbanMac"
         actions   = toset(["kms:GenerateMac"])
@@ -1073,8 +1096,9 @@ run "payments_disabled_by_default" {
       length(aws_kms_key.payee) == 0 && length(aws_kms_alias.payee) == 0 && output.payee_kms_key_arn == null &&
       !contains(keys(aws_scheduler_schedule.jobs), "payout_returns") && !contains(keys(aws_scheduler_schedule.jobs), "platform_invoices") &&
       length(aws_cloudwatch_metric_alarm.payout_returned) == 0 && length(aws_cloudwatch_metric_alarm.payout_failed) == 0 &&
-      # Odemeden bagimsiz tek KMS yetkisi: banka ekstresi IBAN HMAC'i (Faz B1, bank_iban_hmac testi).
-      length([for a in flatten([for st in data.aws_iam_policy_document.api.statement : st.actions if st.sid != "BankIbanMac"]) : a if startswith(a, "kms:")]) == 0
+      # Odemeden bagimsiz KMS yetkileri: banka ekstresi IBAN HMAC'i (Faz B1, bank_iban_hmac testi) ve
+      # tanitim sayfasi demo formu IP HMAC'i (prod_plan testi).
+      length([for a in flatten([for st in data.aws_iam_policy_document.api.statement : st.actions if st.sid != "BankIbanMac" && st.sid != "DemoIpMac"]) : a if startswith(a, "kms:")]) == 0
     )
     error_message = "Odeme kapaliyken alici anahtari, aktarim/fatura isleri ve alarmlari olusmamali"
   }
@@ -1233,8 +1257,8 @@ run "payments_iyzico" {
   # Yetki ayrimi: API yalnizca sifreler, worker yalnizca cozer; ikisi de payment-payee baglamina kosullu.
   assert {
     condition = (
-      # BankIbanMac (Faz B1) ayri anahtar ve ayri testte (bank_iban_hmac) dogrulanir.
-      [for st in data.aws_iam_policy_document.api.statement : { sid = st.sid, actions = toset(st.actions), ctx = [for c in st.condition : "${c.test}|${c.variable}|${join(",", c.values)}"] } if st.sid != "BankIbanMac" && anytrue([for a in st.actions : startswith(a, "kms:")])] ==
+      # BankIbanMac (Faz B1) ve DemoIpMac (tanitim sayfasi) ayri anahtarlar, ayri testlerde dogrulanir.
+      [for st in data.aws_iam_policy_document.api.statement : { sid = st.sid, actions = toset(st.actions), ctx = [for c in st.condition : "${c.test}|${c.variable}|${join(",", c.values)}"] } if st.sid != "BankIbanMac" && st.sid != "DemoIpMac" && anytrue([for a in st.actions : startswith(a, "kms:")])] ==
       [{ sid = "EncryptPaymentPayee", actions = toset(["kms:Encrypt"]), ctx = ["StringEquals|kms:EncryptionContext:purpose|payment-payee"] }]
     )
     error_message = "API Lambda alici anahtariyla yalnizca kms:Encrypt (payment-payee baglami) yapabilmeli"

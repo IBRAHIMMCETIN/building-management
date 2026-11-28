@@ -489,13 +489,13 @@ variable "payments_callback_rate_limit" {
 
 variable "public_form_route_rate_limit" {
   type        = number
-  default     = 1
-  description = "Tanitim sayfasi demo talep formu (POST /api/public/demo-requests, kimliksiz) icin saniyede ortalama istek; platform geneli rota kovasi. Istemci basina sinir uygulamadadir (IP basina saatte 5)."
+  default     = 10
+  description = "Tanitim sayfasi demo talep formu (POST /api/public/demo-requests, kimliksiz) icin saniyede ortalama istek. Platform geneli TEK rota kovasidir: dusuk tutulursa tek bir istemci formu herkese kapatabilir. Istemci basina sinir uygulamadadir (IP basina saatte 5, ag basina saatte 20)."
 }
 
 variable "public_form_route_burst_limit" {
   type        = number
-  default     = 5
+  default     = 20
   description = "Demo talep formu rotasinin anlik (burst) siniri."
 }
 

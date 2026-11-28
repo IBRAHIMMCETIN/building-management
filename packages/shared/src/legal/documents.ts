@@ -62,7 +62,7 @@ export const KVKK_NOTICE: LegalDocument = {
   key: 'kvkk',
   path: '/kvkk',
   title: 'KVKK Aydınlatma Metni',
-  version: '2026-11-28-taslak-1',
+  version: '2026-11-28-taslak-2',
   updatedAt: '2026-11-28',
   status: 'draft',
   summary:
@@ -85,7 +85,7 @@ export const KVKK_NOTICE: LegalDocument = {
         'Güvenlik kapısı: misafir adı, araç plakası, kurye ve ziyaretçi giriş-çıkış kayıtları.',
         'Yönetişim: anket ve oylama katılımı, genel kurul hazirun ve vekâlet bilgisi.',
         'İşlem güvenliği: oturum bilgileri, iki adımlı doğrulama durumu, kısaltılmış IP adresi (IPv4 için son bölüm sıfırlanır) ve tarayıcı bilgisi içeren denetim kayıtları.',
-        'Demo talep formu: ad soyad, e-posta, telefon (isteğe bağlı), site veya firma adı, bağımsız bölüm sayısı aralığı, mesajınız ve kısaltılmış IP adresi.',
+        'Demo talep formu: ad soyad, e-posta, telefon (isteğe bağlı), site veya firma adı, bağımsız bölüm sayısı aralığı, mesajınız ve kısaltılmış IP adresi (IPv4 için son bölüm sıfırlanır). Tarayıcı bilgisi saklanmaz. Kötüye kullanımı önlemek için IP adresinin gizli anahtarla üretilmiş, geri döndürülemeyen bir özeti en fazla 2 saat, günlük toplam sayaç en fazla 25 saat tutulur.',
       ],
     },
     {
@@ -117,7 +117,7 @@ export const KVKK_NOTICE: LegalDocument = {
       items: [
         'Finansal kayıtlar ve makbuzlar: ilgili mevzuatın öngördüğü süre boyunca (en az 10 yıl).',
         'Denetim kayıtları: 10 yıl.',
-        'Demo talep formu kayıtları: talepten itibaren 2 yıl; sonra otomatik olarak silinir.',
+        'Demo talep formu kayıtları: talepten itibaren 2 yıl; sonra otomatik olarak silinir. Silme talebinizde kişisel alanlar hemen kaldırılır.',
         'Diğer kayıtlar: işleme amacının gerektirdiği süre; süre dolunca silinir, yok edilir veya anonim hâle getirilir.',
       ],
     },
@@ -138,7 +138,7 @@ export const PRIVACY_POLICY: LegalDocument = {
   key: 'privacy',
   path: '/gizlilik',
   title: 'Gizlilik Politikası',
-  version: '2026-11-28-taslak-2',
+  version: '2026-11-28-taslak-3',
   updatedAt: '2026-11-28',
   status: 'draft',
   summary: 'YÖNESİST web sitesinde, web uygulamasında ve yayımlandığında mobil uygulamasında verilerinizin nasıl korunduğu ve kullanıldığı.',
@@ -169,7 +169,7 @@ export const PRIVACY_POLICY: LegalDocument = {
     {
       heading: 'Veri en aza indirme',
       paragraphs: [
-        'Kayıtlarda IP adresi kısaltılarak tutulur. Banka ekstresindeki karşı taraf IBAN’ı düz metin olarak saklanmaz. Borçlu kişilerin adları herkese açık bir listede gösterilmez; sakinler başka sakinlerin borcunu, oyunu veya kişisel bilgisini göremez.',
+        'Kayıtlarda IP adresi kısaltılarak tutulur; deneme sınırı için yalnızca gizli anahtarlı, geri döndürülemeyen özeti birkaç saat tutulur. Banka ekstresindeki karşı taraf IBAN’ı düz metin olarak saklanmaz. Borçlu kişilerin adları herkese açık bir listede gösterilmez; sakinler başka sakinlerin borcunu, oyunu veya kişisel bilgisini göremez.',
       ],
     },
     {
@@ -259,3 +259,10 @@ export const LEGAL_DOCUMENTS: Readonly<Record<LegalDocumentKey, LegalDocument>> 
 };
 
 export const LEGAL_DOCUMENT_ORDER: readonly LegalDocumentKey[] = ['kvkk', 'privacy', 'terms'];
+
+/**
+ * Demo formunun KVKK onayinda kabul edilen aydinlatma metni surumleri (API `KVKK_VERSIONS` ile ayni;
+ * apps/api/test/demo-requests-parity.test.ts). Metin degisince yeni surum eklenir; yayinlanmis eski
+ * surum, acik kalmis sekmelerden gelen talepler icin bir sure listede kalabilir.
+ */
+export const KVKK_ACCEPTED_VERSIONS: readonly string[] = [KVKK_NOTICE.version];

@@ -164,6 +164,17 @@ data "aws_iam_policy_document" "api" {
       values   = ["HMAC_SHA_256"]
     }
   }
+  # Tanitim sayfasi demo formu (public_site.tf): deneme sayaci IP HMAC'i; yalnizca GenerateMac.
+  statement {
+    sid       = "DemoIpMac"
+    actions   = ["kms:GenerateMac"]
+    resources = [aws_kms_key.demo_ip_hmac.arn]
+    condition {
+      test     = "StringEquals"
+      variable = "kms:MacAlgorithm"
+      values   = ["HMAC_SHA_256"]
+    }
+  }
 
   # P4: aktarim alicisini SIFRELEME (Decrypt yok); yalnizca payment-payee baglamiyla.
   dynamic "statement" {
@@ -221,6 +232,8 @@ resource "aws_lambda_function" "api" {
       METRICS_STACK = local.name
       # Faz B1: banka ekstresi karsi taraf IBAN HMAC anahtari (bank.tf).
       BANK_IBAN_MAC_KEY_ID = aws_kms_key.bank_iban_hmac.arn
+      # Tanitim sayfasi demo formu deneme sayaci IP HMAC anahtari (public_site.tf).
+      DEMO_IP_MAC_KEY_ID = aws_kms_key.demo_ip_hmac.arn
       # Buyuk toplu tahakkuk / sayac onayi arka plan isi (bulk_jobs.tf).
       BULK_JOBS_QUEUE_URL = aws_sqs_queue.bulk_jobs.url
     }, local.payments_env)
