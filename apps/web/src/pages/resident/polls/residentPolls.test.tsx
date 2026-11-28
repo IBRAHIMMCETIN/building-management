@@ -87,6 +87,13 @@ describe('sakin oylama ayrintisi', () => {
     expect(container.textContent).toContain('Ara sonuçlar dairenizin oyu kullanıldıktan sonra görünür');
   });
 
+  it('oy sonrasi sonuc gorulebilir ama yanit sonucu tasimiyorsa "yukleniyor" (bitince aciklanir degil)', async () => {
+    detail = poll({ secret: false, resultsVisibleBeforeClose: true, resultsAvailable: true, myVote: { castByMe: true, optionId: 'o1' } });
+    await render();
+    expect(container.textContent).toContain('Sonuçlar yükleniyor…');
+    expect(container.textContent).not.toContain('Sonuçlar oylama bitince açıklanır');
+  });
+
   it('oy hakki yoksa neden gosterilir, form yok', async () => {
     detail = poll({ eligible: false, canVote: false, ineligibleReason: 'Oy listesi tarihinde (2026-11-10) bu bölümün malikleri arasında kayıtlı değilsiniz' });
     await render();

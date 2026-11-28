@@ -1,3 +1,4 @@
+import { type PortalPoll, mergeVoteResponse } from '@bm/shared/api/polls';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { pollsApi } from '@/lib/api/polls';
 import { portalKeys, retry, useScope } from './usePortal';
@@ -34,15 +35,16 @@ export function useMyPoll(id: string) {
 }
 
 /**
- * Oy verme / degistirme (web ile ayni: iyimser guncelleme YOK). Basarida yanit ayrintiya yazilir;
- * her durumda (409 "oylama sona erdi" dahil) liste ve ayrinti yeniden cekilir, ekran guncel durumu gosterir.
+ * Oy verme / degistirme (web ile ayni: iyimser guncelleme YOK). Basarida yanit ayrintiya yazilir
+ * (yanitta sonuc yok: onceki sonuc korunur); her durumda (409 "oylama sona erdi" dahil) liste ve
+ * ayrinti yeniden cekilir, ekran guncel durumu gosterir.
  */
 export function useVote(id: string) {
   const { api, apt, userId, unitId } = useScope();
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (optionId: string) => pollsApi.vote(api, id, unitId, optionId),
-    onSuccess: (poll) => queryClient.setQueryData(portalPollKeys.detail(apt, userId, id, unitId), poll),
+    onSuccess: (poll) => queryClient.setQueryData<PortalPoll>(portalPollKeys.detail(apt, userId, id, unitId), (prev) => mergeVoteResponse(poll, prev)),
     onSettled: () => queryClient.invalidateQueries({ queryKey: portalPollKeys.all(apt, userId) }),
   });
 }

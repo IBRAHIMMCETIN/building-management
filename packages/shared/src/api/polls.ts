@@ -234,3 +234,13 @@ export function myVoteText(p: Pick<PortalPoll, 'myVote' | 'options' | 'secret'>)
   if (p.myVote.castByMe) return label ? `Oyunuz: ${label}` : 'Oyunuz kaydedildi';
   return label ? `Dairenizin oyu başka bir paydaş tarafından kullanıldı: ${label}` : 'Dairenizin oyu başka bir paydaş tarafından kullanıldı.';
 }
+
+/**
+ * Oy yanitini onbellekteki ayrintiyla birlestirir. API oy yanitinda sonucu hesaplamaz (yalnizca
+ * ayrinti ucu `results` doner): sonuc gorulebiliyorsa onceki sonuc yeniden cekim gelene kadar
+ * korunur; ekran "sonuclar bitince aciklanir" metnine dusmez.
+ */
+export function mergeVoteResponse(next: PortalPoll, prev: PortalPoll | undefined): PortalPoll {
+  if (next.results || !next.resultsAvailable || !prev?.results) return next;
+  return { ...next, results: prev.results };
+}

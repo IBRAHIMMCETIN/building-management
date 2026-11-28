@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { usePortalUnit } from '@/context/PortalUnitContext';
 import { ApiError } from '@/lib/api/errors';
-import { type CreatePollInput, type PollPhaseFilter, type UpdatePollInput, pollsApi } from '@/lib/api/polls';
+import { type CreatePollInput, type PollPhaseFilter, type PortalPoll, type UpdatePollInput, mergeVoteResponse, pollsApi } from '@/lib/api/polls';
 import type { Role } from '@/types/roles';
 import { useAuth } from './useAuth';
 import { portalKeys } from './usePortal';
@@ -137,7 +137,8 @@ export function useVote(id: string) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (optionId: string) => pollsApi.vote(id, unitId, optionId),
-    onSuccess: (poll) => queryClient.setQueryData(portalPollKeys.detail(apt, userId, id, unitId), poll),
+    // Oy yanitinda sonuc yok: onceki sonuc yeniden cekim gelene kadar korunur.
+    onSuccess: (poll) => queryClient.setQueryData<PortalPoll>(portalPollKeys.detail(apt, userId, id, unitId), (prev) => mergeVoteResponse(poll, prev)),
     onSettled: () => queryClient.invalidateQueries({ queryKey: portalPollKeys.all(apt, userId) }),
   });
 }
