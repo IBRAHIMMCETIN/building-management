@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 /**
- * GET|PUT /api/me/notification-preferences (kayit yoksa varsayilan: e-posta acik). Rol claim'i gerektirmez.
+ * GET|PUT /api/me/notification-preferences (kayit yoksa varsayilan: e-posta ve mobil bildirim acik). Rol claim'i gerektirmez.
  * Kategori bazli e-posta (API ile ayni kimlikler: apps/api/src/modules/notifications/categories.ts):
  * yalnizca acikca secilen kategori doner, verilmeyen ACIK sayilir; ana anahtar kapaliysa hicbiri gitmez.
  * PUT yalnizca DEGISEN alani gonderir (ana anahtar dahil istege bagli): sunucu okumadan yalnizca o
@@ -13,26 +13,38 @@ export type NotificationCategory = (typeof NOTIFICATION_CATEGORIES)[number];
 
 const optionalFlag = z.boolean().optional();
 
+const channelSchema = z.object({
+  enabled: z.boolean(),
+  finance: optionalFlag,
+  announcements: optionalFlag,
+  tickets: optionalFlag,
+  gate: optionalFlag,
+  reservations: optionalFlag,
+  polls: optionalFlag,
+  assemblies: optionalFlag,
+  tenders: optionalFlag,
+});
+
+/** Kanallar: e-posta ve mobil bildirim (Expo push). Birbirinden bagimsiz; ayni kategoriler. */
+export type NotificationChannel = 'email' | 'push';
+
 export const notificationPreferencesSchema = z.object({
-  email: z.object({
-    enabled: z.boolean(),
-    finance: optionalFlag,
-    announcements: optionalFlag,
-    tickets: optionalFlag,
-    gate: optionalFlag,
-    reservations: optionalFlag,
-    polls: optionalFlag,
-    assemblies: optionalFlag,
-    tenders: optionalFlag,
-  }),
+  email: channelSchema,
+  /** Mobil bildirim tercihi (push altyapisindan once yazilmis API yanitinda yok: varsayilan acik). */
+  push: channelSchema.optional(),
   updatedAt: z.string().optional(),
 });
 export type NotificationPreferences = z.infer<typeof notificationPreferencesSchema>;
-/** PUT govdesi: yalnizca degisen alan (en az bir alan). */
-export type NotificationPreferencesInput = { email: { enabled?: boolean } & Partial<Record<NotificationCategory, boolean>> };
+export type ChannelPreferencesInput = { enabled?: boolean } & Partial<Record<NotificationCategory, boolean>>;
+/** PUT govdesi: yalnizca degisen alan (en az bir alan; `email` ve/veya `push`). */
+export type NotificationPreferencesInput = { email?: ChannelPreferencesInput; push?: ChannelPreferencesInput };
 
-/** Kategori e-postalari: kayitli tercih yoksa acik. */
-export const categoryEnabled = (p: NotificationPreferences, category: NotificationCategory) => p.email[category] !== false;
+/** Kanalin ana anahtari: kayitli tercih yoksa acik. */
+export const channelEnabled = (p: NotificationPreferences, channel: NotificationChannel = 'email') => p[channel]?.enabled !== false;
+
+/** Kategori bildirimleri (varsayilan e-posta): kayitli tercih yoksa acik. */
+export const categoryEnabled = (p: NotificationPreferences, category: NotificationCategory, channel: NotificationChannel = 'email') =>
+  p[channel]?.[category] !== false;
 
 /** Ariza e-postalari: kayitli tercih yoksa acik. */
 export const ticketEmailsEnabled = (p: NotificationPreferences) => categoryEnabled(p, 'tickets');

@@ -10,6 +10,21 @@ import { type ActiveContext, type AuthAdapter, type AuthSession, type SignInStep
 
 export type SessionState = { status: 'initializing'; session: null } | { status: 'ready'; session: AuthSession | null };
 
+/**
+ * Oturum yasam dongusu kancalari (push fazi icin: README "Mobil bildirim" sozlesmesi).
+ *  - `afterSignIn`: kullanici giris yaptiktan sonra (uygulama acilisinda geri yuklemede DEGIL);
+ *    ornek: POST /api/me/devices. Girisi bekletmez, hatasi girisi bozmaz.
+ *  - `beforeSignOut`: cikista, oturum ve token hala gecerliyken; ornek: DELETE /api/me/devices/:id.
+ *    En fazla `hookTimeoutMs` (varsayilan 3 sn) beklenir, hatasi cikisi engellemez. 401 ile dusen oturumda cagrilmaz
+ *    (token gecersiz; cihaz kaydi sunucuda sahiplik / TTL kurallariyla temizlenir).
+ */
+export type SessionHooks = {
+  afterSignIn?: (session: AuthSession) => void | Promise<void>;
+  beforeSignOut?: (session: AuthSession) => void | Promise<void>;
+};
+
+export const HOOK_TIMEOUT_MS = 3000;
+
 type Listener = () => void;
 
 export class SessionManager {
@@ -18,11 +33,14 @@ export class SessionManager {
   private expiredNotice: 'unauthorized' | null = null;
   /** Ayni anda gelen 401'ler tek bir yenileme cagrisini paylasir (single-flight). */
   private refreshing: Promise<AuthSession> | null = null;
+  private hooks: SessionHooks = {};
   readonly ready: Promise<void>;
 
   constructor(
     private readonly adapter: AuthAdapter,
     private readonly tokenUse: TokenUse,
+    /** Cikis kancasinin en fazla bekleme suresi (testlerde kisaltilir). */
+    private readonly hookTimeoutMs = HOOK_TIMEOUT_MS,
   ) {
     // Uygulama acilisinda saklanan oturum bir kez geri yuklenir.
     this.ready = adapter
@@ -48,8 +66,17 @@ export class SessionManager {
     this.setState({ status: 'ready', session });
   }
 
+  /** Yasam dongusu kancalarini baglar (oncekilerin yerine gecer). */
+  setHooks(hooks: SessionHooks): void {
+    this.hooks = hooks;
+  }
+
   private applyStep(step: SignInStep): SignInStep {
-    if (step.type === 'done') this.set(step.session);
+    if (step.type === 'done') {
+      this.set(step.session);
+      const hook = this.hooks.afterSignIn;
+      if (hook) void Promise.resolve().then(() => hook(step.session)).catch(() => undefined);
+    }
     return step;
   }
 
@@ -76,6 +103,20 @@ export class SessionManager {
 
   async signOut(): Promise<void> {
     const current = this.state.session;
+    const hook = this.hooks.beforeSignOut;
+    if (current && hook) {
+      // Oturum henuz kapanmadi: kanca API'yi gecerli token'la cagirabilir. Sure / hata cikisi engellemez.
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([
+        Promise.resolve()
+          .then(() => hook(current))
+          .catch(() => undefined),
+        new Promise((r) => {
+          timer = setTimeout(r, this.hookTimeoutMs);
+        }),
+      ]);
+      clearTimeout(timer);
+    }
     this.set(null);
     await this.adapter.signOut(current);
   }

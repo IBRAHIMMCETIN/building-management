@@ -2,18 +2,20 @@ import { fireEvent, screen, waitFor } from '@testing-library/react-native';
 import { NOTIFICATION_CATEGORIES, NOTIFICATION_CATEGORY_META } from '@bm/shared/api/notificationPreferences';
 import { renderApp } from '@/test/renderApp';
 import { AccountScreen } from './AccountScreen';
+import { NotificationPreferencesCard } from './NotificationPreferencesCard';
 
 const mockPush = jest.fn();
 jest.mock('expo-router', () => ({ useRouter: () => ({ push: mockPush }) }));
 
-type Prefs = { email: Record<string, boolean> };
+type Prefs = { email: Record<string, boolean>; push?: Record<string, boolean> };
 
 function prefsApi(initial: Prefs) {
   let state = initial;
   return {
     'GET /api/me/notification-preferences': () => state,
     'PUT /api/me/notification-preferences': ({ body }: { body: unknown }) => {
-      state = { email: { ...state.email, ...(body as Prefs).email } };
+      const b = body as Partial<Prefs>;
+      state = { email: { ...state.email, ...b.email }, ...(state.push || b.push ? { push: { enabled: true, ...state.push, ...b.push } } : {}) };
       return state;
     },
   };
@@ -73,5 +75,30 @@ describe('Hesabım', () => {
     const { services } = await renderApp(<AccountScreen />, { routes: prefsApi({ email: { enabled: true } }) });
     await fireEvent.press(screen.getByRole('button', { name: 'Çıkış yap' }));
     await waitFor(() => expect(services.session.getSession()).toBeNull());
+  });
+
+  it('M1: API push tercihini dondurse de yalnizca e-posta anahtarlari gosterilir', async () => {
+    await renderApp(<AccountScreen />, { routes: prefsApi({ email: { enabled: true }, push: { enabled: false } }) });
+    expect(await screen.findByRole('switch', { name: 'E-posta bildirimleri' })).toBeTruthy();
+    expect(screen.queryByRole('switch', { name: 'Mobil bildirimler' })).toBeNull();
+  });
+});
+
+describe('Mobil bildirim tercihleri (push fazi icin hazir kanal)', () => {
+  it('push kanali yalnizca push alanini gonderir; e-posta tercihine dokunmaz', async () => {
+    const { calls } = await renderApp(<NotificationPreferencesCard channel="push" />, {
+      routes: prefsApi({ email: { enabled: false }, push: { enabled: true, gate: false } }),
+    });
+    expect((await screen.findByRole('switch', { name: 'Mobil bildirimler' })).props.value).toBe(true);
+    expect(switchFor('Ziyaretçi ve kurye').props.value).toBe(false);
+    await fireEvent(switchFor('Aidat ve tahsilat'), 'valueChange', false);
+    expect(await screen.findByText('Tercihiniz kaydedildi.')).toBeTruthy();
+    expect(calls.find((c) => c.method === 'PUT')?.body).toEqual({ push: { finance: false } });
+  });
+
+  it('push tercihi olmayan (eski) yanit: varsayilan acik', async () => {
+    await renderApp(<NotificationPreferencesCard channel="push" />, { routes: prefsApi({ email: { enabled: false } }) });
+    expect((await screen.findByRole('switch', { name: 'Mobil bildirimler' })).props.value).toBe(true);
+    expect(switchFor('Duyurular').props.value).toBe(true);
   });
 });

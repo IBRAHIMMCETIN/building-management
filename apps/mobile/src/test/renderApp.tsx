@@ -80,7 +80,7 @@ export async function renderApp(ui: ReactElement, { email = 'resident@dev.local'
   await services.session.ready;
   if (email) await services.session.signIn({ email, password: 'Mock123456' });
   // Ekran sorgulari kendi tekrar kuralini verir (5xx 2 kez); testte beklemesiz tekrarlanir.
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, retryDelay: 0, gcTime: Infinity }, mutations: { retry: false } } });
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, retryDelay: 0, gcTime: Infinity }, mutations: { retry: false, gcTime: Infinity } } });
   const tree = withUnit ? <PortalUnitProvider>{ui}</PortalUnitProvider> : ui;
   const utils = await render(
     <SafeAreaProvider initialMetrics={{ frame: { x: 0, y: 0, width: 390, height: 844 }, insets: { top: 0, left: 0, right: 0, bottom: 0 } }}>

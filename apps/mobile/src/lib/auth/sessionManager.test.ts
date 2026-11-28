@@ -115,6 +115,42 @@ describe('SessionManager + mock adapter (web mockAdapter ile ayni senaryolar)', 
     expect(refresh).toHaveBeenCalledTimes(1);
   });
 
+  it('yasam dongusu kancalari: giristen sonra ve cikistan once (token hala gecerli)', async () => {
+    const { manager } = setup();
+    await manager.ready;
+    const events: string[] = [];
+    manager.setHooks({
+      afterSignIn: (s) => void events.push(`giris:${s.claims.email}`),
+      beforeSignOut: async () => {
+        events.push(`cikis:${(await manager.getApiToken()) ? 'token-var' : 'token-yok'}`);
+      },
+    });
+    await manager.signIn({ email: 'resident@dev.local', password: 'x' });
+    await new Promise((r) => setTimeout(r, 0));
+    await manager.signOut();
+    expect(events).toEqual(['giris:resident@dev.local', 'cikis:token-var']);
+    expect(manager.getSession()).toBeNull();
+  });
+
+  it('kanca hatasi / gecikmesi giris ve cikisi engellemez; geri yuklemede kanca calismaz', async () => {
+    const storage = memoryStorage();
+    // Cikis kancasi hic bitmez: en fazla 20 ms beklenir.
+    const first = new SessionManager(createMockAuthAdapter({ storage, delayMs: 0 }), 'id', 20);
+    first.setHooks({ afterSignIn: () => Promise.reject(new Error('ag')), beforeSignOut: () => new Promise(() => undefined) });
+    await first.ready;
+    expect((await first.signIn({ email: 'resident@dev.local', password: 'x' })).type).toBe('done');
+
+    const afterSignIn = jest.fn();
+    const restored = new SessionManager(createMockAuthAdapter({ storage, delayMs: 0 }), 'id');
+    restored.setHooks({ afterSignIn });
+    await restored.ready;
+    expect(restored.getSession()).not.toBeNull();
+    expect(afterSignIn).not.toHaveBeenCalled();
+
+    await first.signOut();
+    expect(first.getSession()).toBeNull();
+  });
+
   it('abone durum degisikliklerini alir', async () => {
     const { manager } = setup();
     const listener = jest.fn();

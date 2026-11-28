@@ -139,7 +139,7 @@ export type DemoFetchOptions = { now?: () => Date };
 
 /** `fetch` yerine gecer: yalnizca M1 uclarini yanitlar, digerleri 404. */
 export function createDemoFetch({ now = () => new Date() }: DemoFetchOptions = {}): typeof fetch {
-  let prefs: NotificationPreferences = { email: { enabled: true } };
+  let prefs: NotificationPreferences = { email: { enabled: true }, push: { enabled: true } };
 
   return (async (input: string | URL | Request, init?: RequestInit) => {
     const raw = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
@@ -159,8 +159,8 @@ export function createDemoFetch({ now = () => new Date() }: DemoFetchOptions = {
     }
     if (path === '/api/me/notification-preferences') {
       if (method === 'PUT') {
-        const body = JSON.parse(String(init?.body ?? '{}')) as { email?: Record<string, boolean> };
-        prefs = { email: { ...prefs.email, ...body.email }, updatedAt: t.toISOString() };
+        const body = JSON.parse(String(init?.body ?? '{}')) as { email?: Record<string, boolean>; push?: Record<string, boolean> };
+        prefs = { email: { ...prefs.email, ...body.email }, push: { enabled: true, ...prefs.push, ...body.push }, updatedAt: t.toISOString() };
       }
       return respond(200, prefs);
     }
