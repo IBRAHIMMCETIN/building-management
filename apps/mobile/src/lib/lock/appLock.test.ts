@@ -114,6 +114,7 @@ describe('AppLockService', () => {
     const { lock, bio, storage } = setup({ stored: { [lockStorageKey('u1')]: on() } });
     await lock.onRestored('u1');
     bio.state.results.push({ ok: false, error: 'not_enrolled' });
+    bio.state.enrolled = false;
     expect(await lock.unlock()).toBe(true);
     expect(lock.getState().status).toBe('unlocked');
     expect(JSON.parse(storage.data.get(lockStorageKey('u1')) ?? '{}').enabled).toBe(false);
@@ -178,5 +179,138 @@ describe('AppLockService', () => {
     expect(lock.getState().settings).toEqual({ enabled: false, timeoutMinutes: 5 });
     await lock.onSignedIn('u2');
     expect(lock.getState().settings).toEqual({ enabled: true, timeoutMinutes: 5 });
+  });
+});
+
+describe('AppLockService: istem dongusu, gizlilik ortusu, hatalar', () => {
+  it('vazgecildikten sonra istemin kendi inactive -> active gecisi yeni istem acmaz', async () => {
+    const { lock, bio, advance } = setup({ stored: { [lockStorageKey('u1')]: on() } });
+    await lock.onRestored('u1');
+    bio.state.results.push({ ok: false, error: 'user_cancel' });
+    await lock.unlock();
+    lock.onAppState('inactive');
+    lock.onAppState('active');
+    // Android: cihaz sifresi ekrani uygulamayi arka plana alir; istem bittikten hemen sonra donus.
+    lock.onAppState('background');
+    advance(300);
+    lock.onAppState('active');
+    await flush();
+    expect(bio.state.prompts).toHaveLength(1);
+    expect(lock.getState()).toMatchObject({ status: 'locked', error: expect.stringContaining('iptal edildi') });
+  });
+
+  it('kilitliyken gercek arka plan -> on plan gecisi (1 sn sonra) istemi yeniden acar', async () => {
+    const { lock, bio, advance } = setup({ stored: { [lockStorageKey('u1')]: on() } });
+    await lock.onRestored('u1');
+    bio.state.results.push({ ok: false, error: 'user_cancel' });
+    await lock.unlock();
+    lock.onAppState('background');
+    advance(60_000);
+    lock.onAppState('active');
+    await flush();
+    expect(bio.state.prompts).toHaveLength(2);
+    expect(lock.getState().status).toBe('unlocked');
+  });
+
+  it('gizlilik ortusu: kilit aciksa inactive / background ortulur, kisa donuste kalkar; kilit kapaliysa ortu yok', async () => {
+    const { lock, advance } = setup({ stored: { [lockStorageKey('u1')]: on(5) } });
+    await lock.onSignedIn('u1');
+    lock.onAppState('inactive');
+    expect(lock.getState().covered).toBe(true);
+    lock.onAppState('background');
+    advance(MIN);
+    lock.onAppState('active');
+    expect(lock.getState()).toMatchObject({ covered: false, status: 'unlocked' });
+
+    const off = setup();
+    await off.lock.onSignedIn('u2');
+    off.lock.onAppState('inactive');
+    expect(off.lock.getState().covered).toBe(false);
+  });
+
+  it('gizlilik ortusu kilit karari verilene kadar kalir (sure dolunca kilit)', async () => {
+    const { lock, bio, advance } = setup({ stored: { [lockStorageKey('u1')]: on(1) } });
+    await lock.onSignedIn('u1');
+    let release: () => void = () => undefined;
+    const status = bio.status;
+    bio.status = () => new Promise((r) => (release = () => void status().then(r)));
+    lock.onAppState('background');
+    advance(2 * MIN);
+    lock.onAppState('active');
+    expect(lock.getState()).toMatchObject({ status: 'checking', covered: true });
+    release();
+    await flush();
+    await flush();
+    expect(lock.getState()).toMatchObject({ status: 'locked', covered: false });
+  });
+
+  it('istem sirasinda (Hesabım acma) ortu acilmaz', async () => {
+    const { lock, bio } = setup({ stored: { [lockStorageKey('u1')]: on() } });
+    await lock.onSignedIn('u1');
+    let resolve: (v: { ok: true }) => void = () => undefined;
+    bio.authenticate = () => new Promise((r) => (resolve = r));
+    await lock.setEnabled(false);
+    const enabling = lock.setEnabled(true);
+    await flush();
+    lock.onAppState('inactive');
+    expect(lock.getState().covered).toBe(false);
+    resolve({ ok: true });
+    await enabling;
+  });
+
+  it('saat geri alindiysa (negatif sure) suresi dolmus sayilir', async () => {
+    const { lock, advance } = setup({ stored: { [lockStorageKey('u1')]: on(15) } });
+    await lock.onSignedIn('u1');
+    lock.onAppState('background');
+    advance(-10 * MIN);
+    lock.onAppState('active');
+    await flush();
+    expect(lock.getState().status).toBe('locked');
+  });
+
+  it('cihaz durumu okunamazsa kilit acik kalir ve kapatilmaz (cihaz sifresiyle acilir)', async () => {
+    const { lock, storage, onAutoDisabled } = setup({ stored: { [lockStorageKey('u1')]: on() }, bio: { hardware: false, enrolled: false, error: true } });
+    await lock.onRestored('u1');
+    expect(lock.getState().status).toBe('locked');
+    expect(onAutoDisabled).not.toHaveBeenCalled();
+    expect(JSON.parse(storage.data.get(lockStorageKey('u1')) ?? '{}').enabled).toBe(true);
+    await lock.refreshBiometric();
+    expect(lock.getState().settings.enabled).toBe(true);
+  });
+
+  it('gecici istem hatasi (unknown / not_available ama cihaz durumu tamam) kilidi kapatmaz', async () => {
+    const { lock, bio, storage } = setup({ stored: { [lockStorageKey('u1')]: on() } });
+    await lock.onRestored('u1');
+    bio.state.results.push({ ok: false, error: 'unknown' }, { ok: false, error: 'not_available' });
+    expect(await lock.unlock()).toBe(false);
+    expect(await lock.unlock()).toBe(false);
+    expect(lock.getState()).toMatchObject({ status: 'locked', error: expect.stringContaining('cihaz şifrenizi') });
+    expect(JSON.parse(storage.data.get(lockStorageKey('u1')) ?? '{}').enabled).toBe(true);
+  });
+
+  it('guvenli depo okunamazsa: "acik" isareti varsa kilitli (fail locked), yoksa kilitsiz', async () => {
+    const failing: LockStorage = { get: async () => Promise.reject(new Error('keychain')), set: async () => undefined };
+    const marker = memory({ [lockStorageKey('u1')]: '1' });
+    const locked = new AppLockService({ biometrics: fakeBiometrics(), storage: failing, marker });
+    await locked.onRestored('u1');
+    expect(locked.getState().status).toBe('locked');
+
+    const unknown = new AppLockService({ biometrics: fakeBiometrics(), storage: failing, marker: memory() });
+    await unknown.onRestored('u1');
+    expect(unknown.getState().status).toBe('unlocked');
+  });
+
+  it('asil kayit kaybolsa da "acik" isareti kilidi acik tutar; kapatma ikisini de siler', async () => {
+    const storage = memory();
+    const marker = memory({ [lockStorageKey('u1')]: '1' });
+    const lock = new AppLockService({ biometrics: fakeBiometrics(), storage, marker });
+    await lock.onRestored('u1');
+    expect(lock.getState().status).toBe('locked');
+    await lock.unlock();
+    await lock.setEnabled(false);
+    expect(marker.data.size).toBe(0);
+    expect(JSON.parse(storage.data.get(lockStorageKey('u1')) ?? '{}').enabled).toBe(false);
+    await lock.setEnabled(true);
+    expect(marker.data.get(lockStorageKey('u1'))).toBe('1');
   });
 });

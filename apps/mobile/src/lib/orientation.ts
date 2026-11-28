@@ -10,6 +10,12 @@ import { Platform } from 'react-native';
  * (`ios.supportsTablet: true`, coklu gorev: iPad'de iOS yon kilidini zaten uygulamaz; bolunmus ekranda dar
  * pencere telefon yerlesimini kullanir).
  */
+/**
+ * RN Modal iOS'ta varsayilan olarak yalnizca dikey destekler: iPad yatayda acilan pencere uygulamayi
+ * dondururdu. Tum pencereler (Sheet, daire secici, kilit) iki yonu de destekler; telefon zaten dikey kilitli.
+ */
+export const MODAL_ORIENTATIONS: ('portrait' | 'landscape')[] = ['portrait', 'landscape'];
+
 export async function applyOrientationPolicy(): Promise<void> {
   if (Platform.OS === 'web') return;
   try {

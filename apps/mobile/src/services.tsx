@@ -48,8 +48,16 @@ export type ServiceOverrides = {
   /** Push cihaz kaydinin deposu (varsayilan: guvenli depo). */
   pushStorage?: KeyValueStorage;
   biometrics?: BiometricAdapter;
-  /** Kilit tercihinin deposu (varsayilan: AsyncStorage tercihleri; gizli degil). */
+  /** Kilit tercihinin asil deposu (varsayilan: guvenli depo, Keychain / Keystore). */
   lockStorage?: LockStorage;
+  /** Gizli olmayan "kilit acik" isareti (varsayilan: AsyncStorage tercihleri). */
+  lockMarker?: LockStorage;
+};
+
+/** Guvenli depoyu kilit deposuna uyarlar (okuma hatasi firlatilir: "kayit yok" sayilmaz). */
+const secureLockStorage: LockStorage = {
+  get: (key) => secureStorage.getItem(key),
+  set: (key, value) => (value === null ? secureStorage.removeItem(key) : secureStorage.setItem(key, value)),
 };
 
 /**
@@ -118,7 +126,8 @@ export function createServices(env: AppEnv, overrides: ServiceOverrides = {}): S
   const notices = createNoticeStore();
   const lock = new AppLockService({
     biometrics: overrides.biometrics ?? defaultBiometrics,
-    storage: overrides.lockStorage ?? preferences,
+    storage: overrides.lockStorage ?? secureLockStorage,
+    marker: overrides.lockMarker ?? preferences,
     onAutoDisabled: () => notices.show(AUTO_DISABLED_MESSAGE, 'warning'),
   });
   // Kilit: soguk acilista geri yuklenen oturum kilitli baslayabilir; etkilesimli giris kilitsiz; cikis temizler.

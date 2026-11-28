@@ -35,7 +35,9 @@ export function AppLockCard() {
   const { enabled, timeoutMinutes } = state.settings;
   const hint = !bio
     ? null
-    : !bio.hardware
+    : bio.error
+      ? 'Cihazın Face ID / parmak izi durumu şu an okunamadı. Biraz sonra tekrar deneyin.'
+      : !bio.hardware
       ? 'Bu cihazda Face ID / parmak izi doğrulaması yok.'
       : !bio.enrolled
         ? 'Cihazda kayıtlı Face ID / parmak izi yok. Önce cihaz ayarlarından ekleyin.'

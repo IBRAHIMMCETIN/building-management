@@ -6,6 +6,8 @@ export type BiometricStatus = {
   enrolled: boolean;
   /** Kayitli turlerden ilki (etiket icin): yuz, parmak izi, iris. */
   kind: 'face' | 'fingerprint' | 'iris' | null;
+  /** Durum okunamadi (gecici hata): "kayitli biyometri yok" SAYILMAZ, kilit kapatilmaz. */
+  error?: boolean;
 };
 
 export type BiometricResult = { ok: true } | { ok: false; error: string };

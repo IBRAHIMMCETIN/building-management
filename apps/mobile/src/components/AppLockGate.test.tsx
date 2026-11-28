@@ -9,6 +9,7 @@ import { ServicesProvider, createServices } from '@/services';
 import { type FakeBiometrics, fakeBiometrics } from '@/test/biometrics';
 import { TEST_ENV, memoryStorage, mockApi } from '@/test/renderApp';
 import { AppLockGate } from './AppLockGate';
+import { Sheet } from './portal/Sheet';
 
 /*
  * Kilit ekrani gercek servislerle: mock kimlik (kalici depo -> soguk acilista geri yukleme), sahte
@@ -48,6 +49,7 @@ async function coldStart({ enabled = true, bio = fakeBiometrics(), now }: { enab
     pushStorage: memoryStorage(),
     biometrics: bio,
     lockStorage: storage,
+    lockMarker: lockStore(),
   });
   if (now) Object.assign(services.lock, { now });
   await services.session.ready;
@@ -58,6 +60,9 @@ async function coldStart({ enabled = true, bio = fakeBiometrics(), now }: { enab
         <QueryClientProvider client={queryClient}>
           <AuthProvider>
             <Text>Uygulama içeriği</Text>
+            <Sheet open title="Açık pencere" onClose={() => undefined}>
+              <Text>Pencere içeriği</Text>
+            </Sheet>
             <AppLockGate />
           </AuthProvider>
         </QueryClientProvider>
@@ -134,5 +139,49 @@ describe('Uygulama kilidi', () => {
     await waitFor(() => expect(services.notices.get()?.message).toMatch(/uygulama kilidi kapatıldı/));
     expect(screen.queryByRole('header', { name: 'Uygulama kilitli' })).toBeNull();
     expect(JSON.parse(storage.data.get(lockStorageKey(sub)) ?? '{}').enabled).toBe(false);
+  });
+
+  it('vazgecildikten sonra inactive -> active yeni istem acmaz; "Kilidi aç" bekler', async () => {
+    const bio = fakeBiometrics();
+    bio.state.results.push({ ok: false, error: 'user_cancel' });
+    await coldStart({ bio });
+    expect(await screen.findByText(/Doğrulama iptal edildi/)).toBeTruthy();
+    await emitAppState('inactive');
+    await emitAppState('active');
+    await act(async () => undefined);
+    expect(bio.state.prompts).toHaveLength(1);
+    expect(screen.getByRole('button', { name: 'Kilidi aç' })).toBeTruthy();
+  });
+
+  it('kilitliyken diger pencereler (Sheet) gizli; kilit acilinca geri gelir', async () => {
+    const bio = fakeBiometrics();
+    bio.state.results.push({ ok: false, error: 'user_cancel' });
+    await coldStart({ bio });
+    await screen.findByText(/Doğrulama iptal edildi/);
+    expect(screen.queryByText('Pencere içeriği')).toBeNull();
+    await fireEvent.press(screen.getByRole('button', { name: 'Kilidi aç' }));
+    expect(await screen.findByText('Pencere içeriği')).toBeTruthy();
+  });
+
+  it('gizlilik ortusu: kilit aciksa inactive / background icerigi logoyla orter, kisa donuste kalkar', async () => {
+    let now = 1_000_000;
+    await coldStart({ now: () => now });
+    await waitFor(() => expect(screen.queryByRole('header', { name: 'Uygulama kilitli' })).toBeNull());
+    expect(screen.getByText('Pencere içeriği')).toBeTruthy();
+    await emitAppState('inactive');
+    expect(screen.getByLabelText('YÖNESİST')).toBeTruthy();
+    expect(screen.queryByText('Pencere içeriği')).toBeNull();
+    await emitAppState('background');
+    now += 30_000;
+    await emitAppState('active');
+    expect(screen.queryByLabelText('YÖNESİST')).toBeNull();
+    expect(screen.getByText('Pencere içeriği')).toBeTruthy();
+  });
+
+  it('kilit kapaliysa ortu yok', async () => {
+    await coldStart({ enabled: false });
+    await waitFor(() => expect(screen.getByText('Pencere içeriği')).toBeTruthy());
+    await emitAppState('inactive');
+    expect(screen.queryByLabelText('YÖNESİST')).toBeNull();
   });
 });

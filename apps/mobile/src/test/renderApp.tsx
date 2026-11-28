@@ -104,6 +104,7 @@ export async function renderApp(ui: ReactElement, { email = 'resident@dev.local'
       pushStorage: memoryStorage(),
       // Kilit tercihi test basina bellekte (AsyncStorage sahtesi testler arasinda paylasilir).
       lockStorage: { get: async (k) => lockData.get(k) ?? null, set: async (k, v) => void (v === null ? lockData.delete(k) : lockData.set(k, v)) },
+      lockMarker: { get: async (k) => lockData.get(`m:${k}`) ?? null, set: async (k, v) => void (v === null ? lockData.delete(`m:${k}`) : lockData.set(`m:${k}`, v)) },
       ...(notifications ? { notifications } : {}),
       ...(biometrics ? { biometrics } : {}),
     },

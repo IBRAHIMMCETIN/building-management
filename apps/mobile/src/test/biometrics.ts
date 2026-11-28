@@ -15,7 +15,7 @@ export function fakeBiometrics(initial: Partial<BiometricStatus> = {}): FakeBiom
   const state = { hardware: true, enrolled: true, kind: 'face' as BiometricStatus['kind'], ...initial, results: [] as BiometricResult[], prompts: [] as string[] };
   return {
     state,
-    status: async () => ({ hardware: state.hardware, enrolled: state.enrolled, kind: state.kind }),
+    status: async () => ({ hardware: state.hardware, enrolled: state.enrolled, kind: state.kind, ...(state.error ? { error: true } : {}) }),
     authenticate: async (prompt) => {
       state.prompts.push(prompt);
       return state.results.shift() ?? { ok: true };

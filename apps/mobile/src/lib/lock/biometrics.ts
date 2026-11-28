@@ -1,12 +1,13 @@
 import * as LocalAuthentication from 'expo-local-authentication';
 import type { BiometricAdapter, BiometricStatus } from './types';
 
-const NONE: BiometricStatus = { hardware: false, enrolled: false, kind: null };
+/** Durum okunamadi: "kayitli biyometri yok" ile karistirilmaz (kilit kapatilmaz, cihaz sifresi kalir). */
+const UNKNOWN: BiometricStatus = { hardware: false, enrolled: false, kind: null, error: true };
 
 /**
  * expo-local-authentication: iOS Face ID / Touch ID, Android BiometricPrompt. Cihaz sifresine dusus
  * acik (`disableDeviceFallback: false`): biyometri birkac kez tutmazsa sistem cihaz sifresini sorar.
- * Hata veya desteklenmeyen ortamda "yok" doner (kilit acilmaz / kendiliginden kapanir).
+ * Modul hatasinda durum `error: true` doner; kilit karari bunu "yok" saymaz.
  */
 export const biometrics: BiometricAdapter = {
   async status() {
@@ -20,7 +21,7 @@ export const biometrics: BiometricAdapter = {
       const kind = types.includes(T.FACIAL_RECOGNITION) ? 'face' : types.includes(T.FINGERPRINT) ? 'fingerprint' : types.includes(T.IRIS) ? 'iris' : null;
       return { hardware, enrolled, kind };
     } catch {
-      return NONE;
+      return UNKNOWN;
     }
   },
   async authenticate(promptMessage) {
