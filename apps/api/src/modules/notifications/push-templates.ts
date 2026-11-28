@@ -18,6 +18,7 @@ import { formatDate, formatDateTime, formatPeriod, formatTL, ticketStatusText } 
  *   /rezervasyonlar             ortak alan rezervasyonu
  *   /genel-kurul/<assemblyId>   kat malikleri kurulu cagrisi
  *   /ihaleler/<tenderId>        ihale
+ *   /abonelik                   abonelik (yalnizca yonetim rolleri; mobilde yonetim paneli ekrani)
  *
  * Android bildirim kanallari (uygulama acilista olusturmali; olmayan kanaldaki bildirim gosterilmez):
  *   `default` (Genel bildirimler) ve `gate` (Kapı ve kurye, yuksek onem).
@@ -144,6 +145,17 @@ function spec(n: Notification, now: Date): Spec | undefined {
       return { title: 'İhale iptal edildi', body: str(d.title), path: withId('/ihaleler', d.tenderId) };
     case 'tender_replied':
       return { title: 'Sorunuz yanıtlandı', body: str(d.title), path: withId('/ihaleler', d.tenderId) };
+    // Abonelik (yonetim rolleri): mobilde yonetim paneli ekranina duser (bilinmeyen kok yol).
+    case 'billing_trial_ending':
+      return { title: 'Deneme süreniz bitiyor', body: `Deneme ${formatDate(d.trialEndsAt)} tarihinde bitiyor.`, path: '/abonelik' };
+    case 'billing_invoice_issued':
+      return { title: 'Abonelik faturası kesildi', body: `${formatTL(num(d.totalKurus))}, son ödeme ${formatDate(d.dueDate)}`, path: '/abonelik' };
+    case 'billing_past_due':
+      return { title: 'Abonelik ödemeniz gecikti', body: `Ödeme alınmazsa ${formatDate(d.suspendOn)} tarihinde salt okunur moda geçilir.`, path: '/abonelik' };
+    case 'billing_suspended':
+      return { title: 'Aboneliğiniz askıya alındı', body: 'Hesabınız salt okunur modda.', path: '/abonelik' };
+    case 'billing_reactivated':
+      return { title: 'Aboneliğiniz yeniden açıldı', body: 'Salt okunur mod kaldırıldı.', path: '/abonelik' };
     default:
       return undefined;
   }

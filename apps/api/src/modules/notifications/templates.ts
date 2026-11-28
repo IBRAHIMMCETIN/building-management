@@ -316,8 +316,92 @@ function spec(n: Notification, ctx: EmailContext): Spec | undefined {
     case 'tender_cancelled':
     case 'tender_replied':
       return tenderSpec(n);
+    case 'billing_trial_ending':
+    case 'billing_invoice_issued':
+    case 'billing_past_due':
+    case 'billing_suspended':
+    case 'billing_reactivated':
+      return billingSpec(n);
     default:
       return undefined;
+  }
+}
+
+/** Abonelik (yonetici + yonetim firmasi): CTA yonetim panelindeki Ayarlar > Abonelik. */
+function billingSpec(n: Notification): Spec {
+  const d = n.data;
+  const cta = { label: 'Aboneliği görüntüle', path: '../admin/settings' };
+  switch (n.template) {
+    case 'billing_trial_ending': {
+      const left = num(d.daysLeft);
+      const when = left <= 0 ? 'bugün' : left === 1 ? 'yarın' : `${left} gün sonra`;
+      return {
+        subject: `Deneme süreniz ${when} bitiyor`,
+        heading: 'Deneme süreniz bitiyor',
+        preheader: `${str(d.planName)} planı denemesi ${formatDate(d.trialEndsAt)} tarihinde sona eriyor.`,
+        blocks: [
+          { kind: 'p', text: `YÖNESİST deneme süreniz ${formatDate(d.trialEndsAt)} tarihinde (${when}) bitiyor. Deneme bitince ${str(d.planName)} planının ilk dönem faturası kesilir.` },
+          { kind: 'rows', rows: [['Plan', str(d.planName)], ['Deneme bitişi', formatDate(d.trialEndsAt)]] },
+        ],
+        cta,
+      };
+    }
+    case 'billing_invoice_issued':
+      return {
+        subject: `Abonelik faturası: ${str(d.invoiceNumber)}`,
+        heading: 'Abonelik faturanız kesildi',
+        preheader: `${formatTL(num(d.totalKurus))}, son ödeme ${formatDate(d.dueDate)}.`,
+        blocks: [
+          { kind: 'p', text: 'YÖNESİST kullanım bedeli faturanız kesildi. Faturayı Ayarlar > Abonelik ekranından PDF olarak indirebilirsiniz.' },
+          {
+            kind: 'rows',
+            rows: [
+              ['Fatura no', str(d.invoiceNumber)],
+              ['Dönem', `${formatDate(d.periodStart)} - ${formatDate(d.periodEnd)}`],
+              ['Tutar (KDV dahil)', formatTL(num(d.totalKurus))],
+              ['Son ödeme tarihi', formatDate(d.dueDate)],
+            ],
+          },
+        ],
+        cta,
+      };
+    case 'billing_past_due':
+      return {
+        subject: 'Abonelik ödemeniz gecikti',
+        heading: 'Abonelik ödemeniz gecikti',
+        preheader: `Ödeme yapılmazsa hesabınız ${formatDate(d.suspendOn)} tarihinde salt okunur olur.`,
+        blocks: [
+          { kind: 'p', text: `Son ödeme tarihi geçmiş ${num(d.invoiceCount)} faturanız var. Ödeme ${formatDate(d.suspendOn)} tarihine kadar alınmazsa hesabınız salt okunur moda geçer.` },
+          { kind: 'rows', rows: [['Geciken tutar (KDV dahil)', formatTL(num(d.overdueTotalKurus))], ['Salt okunur olacağı gün', formatDate(d.suspendOn)]] },
+          { kind: 'note', text: 'Sakinlerin aidat ödemeleri ve kayıtların görüntülenmesi bu süreden etkilenmez.' },
+        ],
+        cta,
+      };
+    case 'billing_suspended':
+      return {
+        subject: 'Aboneliğiniz askıya alındı',
+        heading: 'Aboneliğiniz askıya alındı',
+        preheader: 'Hesabınız salt okunur modda.',
+        blocks: [
+          {
+            kind: 'p',
+            text:
+              d.reason === 'manual'
+                ? `Aboneliğiniz ${formatDate(d.suspendedAt)} tarihinde platform ekibi tarafından askıya alındı. Hesabınız salt okunur modda.`
+                : `Geciken abonelik ödemesi nedeniyle aboneliğiniz ${formatDate(d.suspendedAt)} tarihinde askıya alındı. Hesabınız salt okunur modda; ödeme alınınca kendiliğinden açılır.`,
+          },
+          { kind: 'note', text: 'Kayıtları görüntüleyebilir ve dışa aktarabilirsiniz; sakinlerin aidat ödemeleri alınmaya devam eder.' },
+        ],
+        cta,
+      };
+    default:
+      return {
+        subject: 'Aboneliğiniz yeniden açıldı',
+        heading: 'Aboneliğiniz yeniden açıldı',
+        preheader: 'Tüm işlemleri yeniden yapabilirsiniz.',
+        blocks: [{ kind: 'p', text: `Aboneliğiniz ${formatDate(d.reactivatedOn)} tarihinde yeniden açıldı. Salt okunur mod kaldırıldı.` }],
+        cta,
+      };
   }
 }
 

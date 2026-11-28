@@ -205,8 +205,9 @@ run "prod_plan" {
       "RESERVATION_APPROVED", "RESERVATION_REJECTED", "RESERVATION_CANCELLED",
       "ASSEMBLY_CALLED",
       "TENDER_PUBLISHED", "TENDER_DECIDED", "TENDER_CANCELLED", "TENDER_REPLIED",
+      "SUBSCRIPTION_TRIAL_ENDING", "SUBSCRIPTION_INVOICE_ISSUED", "SUBSCRIPTION_PAST_DUE", "SUBSCRIPTION_SUSPENDED", "SUBSCRIPTION_REACTIVATED",
     ]
-    error_message = "Bildirim kuyrugu worker'in isledigi tum olay turlerine abone olmali (ariza/talep, gunluk operasyon ozeti ve oylama yayini dahil)"
+    error_message = "Bildirim kuyrugu worker'in isledigi tum olay turlerine abone olmali (ariza/talep, gunluk operasyon ozeti, oylama yayini ve abonelik dahil)"
   }
   assert {
     condition     = aws_sns_topic_subscription.notification.raw_message_delivery
@@ -444,6 +445,14 @@ run "prod_plan" {
       jsondecode(aws_scheduler_schedule.jobs["ticket_maintenance"].target[0].input).job == "ticket_maintenance"
     )
     error_message = "ticket_maintenance her gun 07:30 (Istanbul) calismali (O1-3 otomatik kapanis ve gunluk ozet)"
+  }
+  assert {
+    condition = (
+      aws_scheduler_schedule.jobs["subscriptions"].schedule_expression == "cron(15 6 * * ? *)" &&
+      aws_scheduler_schedule.jobs["subscriptions"].schedule_expression_timezone == "Europe/Istanbul" &&
+      jsondecode(aws_scheduler_schedule.jobs["subscriptions"].target[0].input).job == "subscriptions"
+    )
+    error_message = "subscriptions her gun 06:15 (Istanbul) calismali (abonelik durum makinesi)"
   }
   assert {
     condition = (

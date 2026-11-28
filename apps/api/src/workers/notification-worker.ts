@@ -20,6 +20,9 @@ import { type AssemblyCallSnapshot, assemblyCallRecipients, isAssemblyEvent, mee
 import { type AssemblyRepository, assemblyRepository } from '../modules/assemblies/repository.js';
 import { type TenderSnapshot, isTenderEvent, tenderRecipients } from '../modules/tenders/notifications.js';
 import { type TenderRepository, tenderRepository } from '../modules/tenders/repository.js';
+import { billingRecipients, isBillingEvent } from '../modules/subscriptions/notifications.js';
+import { entitlementOf } from '../modules/subscriptions/entitlements.js';
+import { subscriptionRepository } from '../modules/subscriptions/repository.js';
 
 export type { DeliveryResult, Notification, NotificationTemplate, Notifier } from '../modules/notifications/notifier.js';
 export { createLogNotifier } from '../modules/notifications/notifier.js';
@@ -51,6 +54,8 @@ export { createLogNotifier } from '../modules/notifications/notifier.js';
  *       TENDER_PUBLISHED / _DECIDED / _CANCELLED -> apartmanin guncel uyeleri; ihalenin guncel durumu
  *                                 olayla uyusmuyorsa kimse. TENDER_REPLIED -> yanitlanan acik sorularin
  *                                 yazarlari (hala uyeyse) (modules/tenders/notifications.ts)
+ *       SUBSCRIPTION_*         -> apartmanin guncel yoneticileri + yonetim firmasi (abonelik / lisans;
+ *                                 tercih kategorisi `billing`; modules/subscriptions/notifications.ts)
  *  4. Her aliciya `Notifier` ile bildirim gonderilir: NOTIFICATION_CHANNEL=log (yapilandirilmis
  *     log) veya ses (e-posta; tercih, adres ve alici bazli tekrar korumasi kanal icinde, bkz.
  *     modules/notifications/email.ts). SMS / WhatsApp ayni arayuzle eklenecek.
@@ -198,6 +203,9 @@ export function buildNotifications(
       template: r.template,
       data: r.data,
     }));
+  }
+  if (isBillingEvent(event)) {
+    return billingRecipients(event, roles, day).map((r) => ({ eventId: event.eventId, apartmentId: event.apartmentId, userId: r.userId, template: r.template, data: r.data }));
   }
   if (isTicketEvent(event)) {
     return ticketRecipients(event, memberships, roles, day).map((r) => ({
@@ -355,6 +363,8 @@ export type WorkerDeps = {
   notifier: Notifier;
   /** Mobil bildirim kanali; null: kapali (PUSH_CHANNEL=off). */
   push: PushChannel | null;
+  /** Abonelik: apartmanin planinda mobil bildirim var mi (aboneligi olmayan / legacy: var). */
+  pushAllowed: (apartmentId: string) => Promise<boolean>;
   /** Olay daha once islendi mi? */
   isProcessed: (apartmentId: string, eventId: string) => Promise<boolean>;
   markProcessed: (apartmentId: string, eventId: string, info: { type: EventType; recipients: number }) => Promise<void>;
@@ -379,6 +389,9 @@ export function createNotificationWorker(overrides: Partial<WorkerDeps> = {}) {
     tenders: tenderRepository,
     notifier: overrides.notifier ?? createNotifierFromEnv(),
     push: overrides.push !== undefined ? overrides.push : createPushChannelFromEnv(process.env, { now }),
+    // Veri deposu yapilandirilmamissa (yalnizca test) legacy; okuma hatasi olayi yeniden denetir.
+    pushAllowed: async (apartmentId) =>
+      !process.env.DYNAMODB_TABLE_NAME || entitlementOf(await subscriptionRepository.peekSubscription(apartmentId)).features.mobile_push,
     isProcessed: async (apt, id) => Boolean(await getTenantItem(processedKey(apt, id))),
     markProcessed: async (apt, id, info) => {
       try {
@@ -473,7 +486,7 @@ export function createNotificationWorker(overrides: Partial<WorkerDeps> = {}) {
         ? new Map((await deps.core.listUnits(event.apartmentId)).map((u) => [u.unitId, u.blockId]))
         : new Map<string, string>();
 
-    const roles = isTicketEvent(event) || event.type === 'OPERATIONS_DIGEST' ? await deps.roles.list(event.apartmentId) : [];
+    const roles = isTicketEvent(event) || event.type === 'OPERATIONS_DIGEST' || isBillingEvent(event) ? await deps.roles.list(event.apartmentId) : [];
     const records = await recordsFor(event);
     // Yonetim iptalinin hemen ardindaki ucret iadesi henuz yazilmadiysa sonucu beklenir (sinirli).
     if (refundSettling(event, records.booking, deps.now())) throw new DeferredEventError('Ucret iadesi sonucu bekleniyor');
@@ -496,7 +509,8 @@ export function createNotificationWorker(overrides: Partial<WorkerDeps> = {}) {
     // Push ayri saglayici: e-posta hatasi (or. SES kisitlamasi) push'u geciktirmez. Iki kanal da
     // gonderdiklerini kaydettigi icin yeniden denemede yalnizca kalanlar gider.
     let push: PushOutcome | undefined;
-    if (deps.push && notifications.length > 0) {
+    // Abonelik plani mobil bildirimi kapsamiyorsa push gonderilmez (e-posta etkilenmez).
+    if (deps.push && notifications.length > 0 && (await deps.pushAllowed(event.apartmentId))) {
       try {
         push = await deps.push.deliver(event.apartmentId, event.eventId, notifications);
       } catch (err) {

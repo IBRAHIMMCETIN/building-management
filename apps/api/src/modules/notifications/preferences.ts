@@ -64,6 +64,7 @@ export const CATEGORY_ATTRIBUTES: Record<NotificationCategory, string> = {
   polls: 'emailPolls',
   assemblies: 'emailAssemblies',
   tenders: 'emailTenders',
+  billing: 'emailBilling',
 };
 
 /** Push kategori -> kayit ozniteligi. */
@@ -76,6 +77,7 @@ export const PUSH_CATEGORY_ATTRIBUTES: Record<NotificationCategory, string> = {
   polls: 'pushPolls',
   assemblies: 'pushAssemblies',
   tenders: 'pushTenders',
+  billing: 'pushBilling',
 };
 
 /** Yalnizca bilinen kategoriler, yalnizca boolean degerler (sira sabit). */

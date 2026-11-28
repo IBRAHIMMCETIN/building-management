@@ -55,6 +55,11 @@ locals {
       cron        = "cron(30 7 * * ? *)"
       description = "Her gun 07:30 - onaylanmayan cozulmus talepleri kapat, SLA ve bakim ozetini gonder"
     }
+    # Abonelik / lisans: deneme bitisi, donem faturasi, gecikme -> ek sure -> askiya alma (idempotent).
+    subscriptions = {
+      cron        = "cron(15 6 * * ? *)"
+      description = "Her gun 06:15 - abonelik durum makinesi: deneme bitisi, donem faturasi, gecikme ve askiya alma"
+    }
   }
 
   # Mobil bildirim (push_channel = expo): Expo push makbuzlari; olu cihazlar (DeviceNotRegistered)

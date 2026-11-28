@@ -35,6 +35,12 @@ export type NotificationTemplate =
   | 'tender_decided'
   | 'tender_cancelled'
   | 'tender_replied'
+  /** Abonelik / lisans (yonetici + yonetim firmasi): deneme bitisi, fatura, gecikme, askiya alma, yeniden acilma. */
+  | 'billing_trial_ending'
+  | 'billing_invoice_issued'
+  | 'billing_past_due'
+  | 'billing_suspended'
+  | 'billing_reactivated'
   | `dues_reminder_${'upcoming' | 'overdue_1' | 'overdue_7' | 'plan_default'}`;
 
 /** Ozet bildirimlerdeki kalem satiri (kisisel veri yok). */
