@@ -48,14 +48,30 @@ describe('Rezervasyon: tarih ve saat', () => {
     expect(typeof body.idempotencyKey).toBe('string');
   });
 
-  it('dilim dolmussa API mesaji gosterilir ve musaitlik yenilenir', async () => {
+  it('dilim dolmussa (409): musaitlik yenilenir, dolan dilim birakilir, hata kalir; yeni dilim secilince temizlenir', async () => {
+    let taken = false;
     const { calls } = await renderApp(<FacilityBookingScreen facilityId="f1" />, {
-      routes: routes({ 'POST /api/portal/reservations/bookings': { status: 409, body: { error: 'slot_taken', message: 'Seçilen saat artık müsait değil.' } } }),
+      routes: routes({
+        'GET /api/portal/reservations/facilities/f1/availability': ({ query }: { query: Record<string, string> }) =>
+          availability(query.date ?? '', taken ? ['past', 'free', 'busy', 'busy'] : ['past', 'free', 'free', 'busy']),
+        'POST /api/portal/reservations/bookings': () => {
+          taken = true;
+          return { status: 409, body: { error: 'slot_taken', message: 'Seçilen saat artık müsait değil.' } };
+        },
+      }),
     });
     await fireEvent.press(await screen.findByRole('button', { name: '11:00, Boş' }));
     await fireEvent.press(screen.getByRole('button', { name: 'Rezervasyon talebi gönder' }));
     expect(await screen.findByText('Seçilen saat artık müsait değil.')).toBeTruthy();
-    await waitFor(() => expect(calls.filter((c) => c.path.endsWith('/availability')).length).toBeGreaterThanOrEqual(2));
+    // Yenilenen musaitlikte 11:00 dolu: secim birakilir, kart kalkar, hata ekranda kalir.
+    expect(await screen.findByRole('button', { name: '11:00, Dolu' })).toBeTruthy();
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Rezervasyon talebi gönder' })).toBeNull());
+    expect(screen.getByText('Seçilen saat artık müsait değil.')).toBeTruthy();
+    expect(calls.filter((c) => c.path.endsWith('/availability')).length).toBeGreaterThanOrEqual(2);
+    // Yeni dilim: eski hata temizlenir.
+    await fireEvent.press(screen.getByRole('button', { name: '10:00, Boş' }));
+    expect(screen.queryByText('Seçilen saat artık müsait değil.')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Rezervasyon talebi gönder' })).toBeTruthy();
     expect(mockRouter.dismissTo).not.toHaveBeenCalled();
   });
 

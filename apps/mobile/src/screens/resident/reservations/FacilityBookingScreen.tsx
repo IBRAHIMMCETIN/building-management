@@ -69,10 +69,12 @@ function SlotPicker({ facility, units, today }: { facility: PortalFacility; unit
   const lastDate = addDays(today, facility.advanceDays);
   const [refreshing, setRefreshing] = useState(false);
 
+  const { reset: resetCreate } = create;
   useEffect(() => {
     setStartIndex(undefined);
     setMinutes(undefined);
-  }, [date]);
+    resetCreate();
+  }, [date, resetCreate]);
 
   const slots = day.data?.slots ?? [];
   const durations = useMemo(
@@ -81,6 +83,14 @@ function SlotPicker({ facility, units, today }: { facility: PortalFacility; unit
   );
   const start = startIndex === undefined ? undefined : slots[startIndex];
   const chosenMinutes = minutes ?? durations[0];
+
+  // Secilen dilim bu arada doldu (409 sonrasi musaitlik yenilendi): secim birakilir, hata ekranda kalir.
+  useEffect(() => {
+    if (startIndex !== undefined && day.data && durations.length === 0) {
+      setStartIndex(undefined);
+      setMinutes(undefined);
+    }
+  }, [startIndex, day.data, durations.length]);
 
   // Her yeni secim yeni bir istektir: anahtar yenilenir. Ayni secimin tekrar gonderimi ayni anahtari kullanir.
   useEffect(() => {
@@ -181,6 +191,7 @@ function SlotPicker({ facility, units, today }: { facility: PortalFacility; unit
                   onPress={() => {
                     setStartIndex(i);
                     setMinutes(undefined);
+                    create.reset();
                   }}
                   style={({ pressed }) => [
                     styles.slot,
@@ -203,6 +214,9 @@ function SlotPicker({ facility, units, today }: { facility: PortalFacility; unit
           </View>
         )}
       </View>
+
+      {/* Kartin disinda: dolan dilimde secim birakilinca da gorunur; yeni dilim secilince temizlenir. */}
+      {create.isError && <Alert tone="danger">{errorMessage(create.error)}</Alert>}
 
       {start && chosenMinutes && (
         <Card>
@@ -227,7 +241,6 @@ function SlotPicker({ facility, units, today }: { facility: PortalFacility; unit
                 (facility.cancelNoticeHours ? ` Başlangıçtan en geç ${facility.cancelNoticeHours} saat önce iptal edebilirsiniz.` : '')}
             </AppText>
           </View>
-          {create.isError && <Alert tone="danger">{errorMessage(create.error)}</Alert>}
           <Button icon={CalendarCheck} block loading={create.isPending} label={facility.requiresApproval ? 'Rezervasyon talebi gönder' : 'Rezervasyonu onayla'} onPress={() => void submit()} />
         </Card>
       )}

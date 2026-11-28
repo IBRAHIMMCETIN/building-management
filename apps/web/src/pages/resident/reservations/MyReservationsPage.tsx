@@ -110,10 +110,12 @@ function SlotPicker({ facility, units, today, onBack, onDone }: PickerProps) {
   const create = useCreateBooking();
   const lastDate = addDays(today, facility.advanceDays);
 
+  const { reset: resetCreate } = create;
   useEffect(() => {
     setStartIndex(undefined);
     setMinutes(undefined);
-  }, [date]);
+    resetCreate();
+  }, [date, resetCreate]);
 
   const slots = day.data?.slots ?? [];
   const durations = useMemo(
@@ -122,6 +124,14 @@ function SlotPicker({ facility, units, today, onBack, onDone }: PickerProps) {
   );
   const start = startIndex === undefined ? undefined : slots[startIndex];
   const chosenMinutes = minutes ?? durations[0];
+
+  // Secilen dilim bu arada doldu (409 sonrasi musaitlik yenilendi): secim birakilir, hata ekranda kalir.
+  useEffect(() => {
+    if (startIndex !== undefined && day.data && durations.length === 0) {
+      setStartIndex(undefined);
+      setMinutes(undefined);
+    }
+  }, [startIndex, day.data, durations.length]);
   const party = partySize.trim() ? Number(partySize) : undefined;
 
   // Her yeni secim (daire, tarih, dilim, sure, kisi sayisi, not) yeni bir istektir: anahtar yenilenir.
@@ -198,6 +208,7 @@ function SlotPicker({ facility, units, today, onBack, onDone }: PickerProps) {
                     onClick={() => {
                       setStartIndex(i);
                       setMinutes(undefined);
+                      create.reset();
                     }}
                     className={cn(
                       'flex w-full flex-col items-center rounded-md border border-border-strong bg-surface px-2 py-2 text-small transition-colors',
@@ -216,6 +227,9 @@ function SlotPicker({ facility, units, today, onBack, onDone }: PickerProps) {
           </ul>
         )}
       </section>
+
+      {/* Kartin disinda: dolan dilimde secim birakilinca da gorunur; yeni dilim secilince temizlenir. */}
+      {create.isError && <Alert tone="danger">{errorMessage(create.error)}</Alert>}
 
       {start && chosenMinutes && (
         <Card className="flex flex-col gap-4">
@@ -246,7 +260,6 @@ function SlotPicker({ facility, units, today, onBack, onDone }: PickerProps) {
               {facility.cancelNoticeHours ? ` Başlangıçtan en geç ${facility.cancelNoticeHours} saat önce iptal edebilirsiniz.` : ''}
             </p>
           </div>
-          {create.isError && <Alert tone="danger">{errorMessage(create.error)}</Alert>}
           <Button loading={create.isPending} disabled={partyInvalid} onClick={() => void submit()}>
             <CalendarCheck className="size-4" aria-hidden="true" />
             {facility.requiresApproval ? 'Rezervasyon talebi gönder' : 'Rezervasyonu onayla'}
