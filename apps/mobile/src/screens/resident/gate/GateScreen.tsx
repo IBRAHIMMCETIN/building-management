@@ -19,11 +19,10 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import { Platform, StyleSheet, View } from 'react-native';
 import { Car, DoorOpen, LogIn, LogOut, Package, Plus, QrCode as QrIcon } from '@/components/icons';
-import { FilterChips } from '@/components/portal/FilterChips';
 import { PortalQueryState } from '@/components/portal/PortalQueryState';
 import { RefetchErrorBanner } from '@/components/portal/RefetchErrorBanner';
 import { Sheet } from '@/components/portal/Sheet';
-import { Alert, AppText, Badge, Button, Card, CardTitle, EmptyState, LoadingBlock, Screen, TextField } from '@/components/ui';
+import { Alert, AppText, Badge, Button, Card, CardTitle, ChipGroup, EmptyState, LoadingBlock, Screen, TextField } from '@/components/ui';
 import { useAuth } from '@/context/AuthProvider';
 import { gateKeys, useGateLog, useMyCouriers, useMyGate, useMyGateActions, useMyPasses, useMyVehicles, usePassIssuing } from '@/hooks/useGate';
 import { radii, space, withAlpha } from '@/theme/tokens';
@@ -84,7 +83,8 @@ export function GateScreen() {
       ) : (
         <>
           <WaitingCouriers />
-          <FilterChips
+          <ChipGroup
+            size="compact"
             label="Ziyaretçi bölümü"
             value={tab}
             onChange={setTab}
@@ -380,7 +380,7 @@ function UnitChips({ units, value, onChange }: { units: GateUnit[]; value: strin
       <AppText variant="small" weight="medium">
         Daire
       </AppText>
-      <FilterChips label="Daire" value={value} onChange={onChange} options={units.map((u) => ({ value: u.unitId, label: u.label }))} />
+      <ChipGroup size="compact" label="Daire" value={value} onChange={onChange} options={units.map((u) => ({ value: u.unitId, label: u.label }))} />
     </View>
   );
 }

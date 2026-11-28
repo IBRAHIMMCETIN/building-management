@@ -5,8 +5,7 @@ import { useEffect, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 import { Check, Circle } from '@/components/icons';
 import { DateField } from '@/components/portal/DateField';
-import { FilterChips } from '@/components/portal/FilterChips';
-import { Alert, AppText, Button, ListRow, TextField } from '@/components/ui';
+import { Alert, AppText, Button, ChipGroup, ListRow, TextField } from '@/components/ui';
 import { useIdempotencyKey } from '@/lib/idempotency';
 import { space } from '@/theme/tokens';
 import { useTheme } from '@/theme/useTheme';
@@ -75,7 +74,7 @@ export function NewPassForm({ units, limits, create, onCancel }: Props) {
           <AppText variant="small" weight="medium">
             Daire
           </AppText>
-          <FilterChips label="Daire" value={unitId} onChange={setUnitId} options={units.map((u) => ({ value: u.unitId, label: u.label }))} />
+          <ChipGroup size="compact" label="Daire" value={unitId} onChange={setUnitId} options={units.map((u) => ({ value: u.unitId, label: u.label }))} />
         </View>
       )}
       <View style={styles.group}>
