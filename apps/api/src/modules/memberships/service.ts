@@ -327,6 +327,8 @@ export function createMembershipService(overrides: Partial<MembershipServiceDeps
       updatedBy: ctx.userId,
       version: current.version + 1,
     };
+    // Malik yeniden oturuyor: oturan malik kapamasinin kapi isareti (geri alma payi) artik gecersiz.
+    if (next.residesInUnit) delete next.residencyEndedByClosureId;
     assertShape(next);
     const shareChanged =
       (current.ownershipShare?.numerator ?? 0) !== (next.ownershipShare?.numerator ?? 0) ||

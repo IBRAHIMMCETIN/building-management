@@ -290,8 +290,9 @@ export type TenderEventPayload = { tenderId: string };
 export type TenderRepliedPayload = { tenderId: string; commentId: string };
 
 /**
- * Kapi devami: bir uyelik bugun itibariyla bolumde oturmayacak sekilde degisti (bitis tarihi gecmis,
- * iptal, oturan malik artik oturmuyor, cari kapama). Bildirim DEGILDIR: SNS aboneligiyle zamanlanmis
+ * Kapi devami: uyelik yazimi (PATCH / iptal) kullaniciyi bugun itibariyla bolumde oturmayan yapti
+ * (bitis tarihi gecmis, iptal, oturan malik artik oturmuyor). Cari kapama bu olayi yazmaz: geri alma
+ * payi nedeniyle karar gece taramasinindir. Bildirim DEGILDIR: SNS aboneligiyle zamanlanmis
  * gorev kuyruguna gider (infra/scheduler.tf `scheduler_event_types`) ve worker gece taramasinin
  * kuraliyla (`gate/departures.ts` `departureCandidates`) o kullanicinin o bolumdeki aktif gecis ve
  * araclarini hemen pasife alir. `eventId` = `MEMBERSHIP_ENDED:<userId>:<unitId>:<surum>`.
@@ -299,9 +300,8 @@ export type TenderRepliedPayload = { tenderId: string; commentId: string };
 export type MembershipEndedPayload = {
   userId: string;
   unitId: string;
-  source: 'membership' | 'closure';
+  source: 'membership';
   endDate?: IsoDate;
-  closureId?: string;
 };
 
 /**

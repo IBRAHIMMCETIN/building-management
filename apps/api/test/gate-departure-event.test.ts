@@ -1,7 +1,8 @@
 /**
  * Kapi devami: tasinma kaydedilince aninda pasife alma.
- *  - Uyelik PATCH / iptal ve cari kapama, kullanici bugun oturmuyorsa ayni yazimda `MEMBERSHIP_ENDED`
- *    outbox olayi yazar (bitis bugun / ileri tarihse yazmaz).
+ *  - Uyelik PATCH / iptal, kullanici bugun oturmuyorsa ayni yazimda `MEMBERSHIP_ENDED` outbox olayi
+ *    yazar (bitis bugun / ileri tarihse yazmaz). Cari kapama yazmaz: geri alma payi (oturan malik
+ *    kapamasi dahil, `residencyEndedByClosureId`) gece taramasinda uygulanir.
  *  - DynamoDB: uyelik + outbox + denetim tek TransactWriteItems; surum cakismasi 409.
  *  - Zamanlanmis gorev worker'i olayi alir ve `releaseNow`'i sistem aktoruyle calistirir; bozuk /
  *    bu kuyrukta islenmeyen olay hata (DLQ), is mesajlari eskisi gibi.
@@ -13,7 +14,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DataAccessError, resetDynamoCache } from '../src/config/dynamodb.js';
 import { type DomainEvent, buildEvent, createInMemoryEventPublisher } from '../src/events/publisher.js';
 import type { Unit } from '../src/modules/core/types.js';
-import { endsResidency } from '../src/modules/gate/departures.js';
+import { departureCandidates, endsResidency } from '../src/modules/gate/departures.js';
 import { type MembershipRepository, createMembershipRepository, membershipKeys } from '../src/modules/memberships/repository.js';
 import { createMembershipService } from '../src/modules/memberships/service.js';
 import type { UnitMembership } from '../src/modules/portal/types.js';
@@ -141,29 +142,40 @@ describe('MEMBERSHIP_ENDED: DynamoDB atomik yazim', () => {
   });
 });
 
-describe('MEMBERSHIP_ENDED: cari kapama', () => {
-  it('kapamayla biten uyelik icin kapama yazimiyla ayni batch\'te olay (karar worker\'da, geri alma payi korunur)', async () => {
+describe('cari kapama: geri alma payi (aninda olay yok)', () => {
+  const closeBody = (key: string, userIds: string[], extra: Record<string, unknown> = {}) => ({ idempotencyKey: key, party: 'occupant', moveOutDate: '2026-10-31', userIds, reason: 'Kiracı taşındı', ...extra });
+  const candidatesOn = (s: ReturnType<typeof cariWorld>, userId: string, day: string) => departureCandidates([s.memberOf(userId)], APT, day).map((c) => c.userId);
+
+  it('kiraci kapamasi: MEMBERSHIP_ENDED yazilmaz; gece taramasi payi bekler', async () => {
     const s = cariWorld();
     s.member('tenant-a', { relation: 'tenant', startDate: '2026-03-01' });
     await s.charge('k-oct', 1000, '2026-10-01', '2026-10-10');
     s.setNow('2026-11-05');
-    const r = await s.call('POST', '/api/finance/units/u1/closures', manager, {
-      idempotencyKey: 'close-ev-1',
-      party: 'occupant',
-      moveOutDate: '2026-10-31',
-      userIds: ['tenant-a'],
-      reason: 'Kiracı taşındı',
-    });
+    expect((await s.call('POST', '/api/finance/units/u1/closures', manager, closeBody('close-ev-1', ['tenant-a']))).status).toBe(201);
+    expect(s.fake.batches.at(-1)?.outbox ?? []).toEqual([]);
+    expect(candidatesOn(s, 'tenant-a', '2026-11-06')).toEqual([]);
+  });
+
+  it('oturan malik kapamasi ve hemen geri alma: isaret kapamayla yazilir, pay icinde aday degil; geri almada isaret kalkar, aday olmaz', async () => {
+    const s = cariWorld();
+    s.member('owner-a', { relation: 'owner', residesInUnit: true, startDate: '2025-01-01' });
+    await s.charge('k-oct', 1000, '2026-10-01', '2026-10-10');
+    s.setNow('2026-11-05');
+    const r = await s.call('POST', '/api/finance/units/u1/closures', manager, closeBody('close-ev-2', ['owner-a'], { debtTo: 'owner', reason: 'Malik daireyi kiraya verdi' }));
     expect(r.status).toBe(201);
-    const outbox = s.fake.batches.at(-1)?.outbox ?? [];
-    expect(outbox).toEqual([
-      expect.objectContaining({
-        eventId: 'MEMBERSHIP_ENDED:tenant-a:u1:2',
-        type: 'MEMBERSHIP_ENDED',
-        apartmentId: APT,
-        payload: { userId: 'tenant-a', unitId: 'u1', source: 'closure', closureId: r.json.closure.closureId, endDate: '2026-10-31' },
-      }),
-    ]);
+    const closureId = r.json.closure.closureId as string;
+    expect(s.memberOf('owner-a')).toMatchObject({ residesInUnit: false, residencyEndedByClosureId: closureId });
+    expect(s.fake.batches.at(-1)?.outbox ?? []).toEqual([]);
+    // Eskiden pay yoktu (isaretsiz): ertesi gun aday olurdu. Simdi pay icinde degil.
+    expect(candidatesOn(s, 'owner-a', '2026-11-06')).toEqual([]);
+    expect(candidatesOn(s, 'owner-a', '2026-11-09')).toEqual(['owner-a']);
+
+    // Hemen geri alma: oturma geri gelir, isaret kalkar; tarama hicbir zaman pasife almaz.
+    const rev = await s.call('POST', `/api/finance/closures/${closureId}/reverse`, manager, { reason: 'Yanlış kapama yapıldı' });
+    expect(rev.status).toBe(200);
+    expect(s.memberOf('owner-a').residesInUnit).toBe(true);
+    expect(s.memberOf('owner-a')).not.toHaveProperty('residencyEndedByClosureId');
+    expect(candidatesOn(s, 'owner-a', '2026-11-09')).toEqual([]);
   });
 });
 

@@ -20,7 +20,8 @@
  * (en fazla `CHUNK` kayit) `gate.departure_release` denetim kaydiyla ayni atomik islemdedir.
  * Kiraci izolasyonu: tum okuma / yazimlar verilen apartmanin bolumunde (`APT#<id>`).
  *
- * Cari kapamayla biten uyelik (`endedByClosureId`) kapama geri alinabildigi icin bitis gunu (veya
+ * Cari kapamayla biten (`endedByClosureId`) veya oturan malikin kapamasiyla oturmasi biten
+ * (`residencyEndedByClosureId`) uyelik, kapama geri alinabildigi icin bitis gunu (veya
  * kaydin degistigi gun, hangisi sonraysa) + `CLOSURE_GRACE_DAYS` gun gecene kadar aday degildir; bu
  * surede okuma anindaki kontrol gecisleri zaten reddeder. Tarama SONRASINDA geri alinan kapamada
  * iptal edilen gecisler ve pasife alinan araclar geri gelmez: sakin gecisi yeniden olusturur, arac
@@ -30,8 +31,9 @@
  * kimligi, kisi verisi yok) + `GateDepartureFailed` EMF metrigi (operations.tf alarmi); sonraki gun
  * aday hala geriye bakis penceresindeyse yeniden denenir.
  *
- * Aninda adim (`releaseNow`): uyeligi bugun itibariyla oturmayacak sekilde degistiren yazimlar
- * (uyelik PATCH / iptal, cari kapama) ayni atomik islemde `MEMBERSHIP_ENDED` outbox olayi yazar;
+ * Aninda adim (`releaseNow`): uyeligi bugun itibariyla oturmayacak sekilde degistiren uyelik
+ * yazimlari (PATCH / iptal) ayni atomik islemde `MEMBERSHIP_ENDED` outbox olayi yazar (cari kapama
+ * yazmaz: geri alma payi yuzunden karar her zaman gece taramasinindir);
  * olay SNS -> `scheduled-jobs` kuyrugu ile zamanlanmis gorev worker'ina gelir ve yalnizca o
  * kullanici + bolum icin GECE TARAMASININ KURALIYLA (`departureCandidates`, ayni gun ve geriye
  * bakis) `release` calisir. Sonuc taramanin yapacagiyla birebir aynidir, yalnizca erken: bitis
@@ -87,7 +89,8 @@ export function departureCandidates(memberships: readonly UnitMembership[], apar
     const recent = (m.endDate !== undefined && m.endDate >= since) || (typeof m.updatedAt === 'string' && m.updatedAt >= sinceTs);
     if (!recent) continue;
     // Cari kapama geri alinabilir: bitis (veya kaydin degistigi gun) + pay gecmeden dokunulmaz.
-    if (m.endedByClosureId) {
+    // Oturan malikin kapamasi (`residencyEndedByClosureId`: uyelik surer, artik oturmuyor) da ayni.
+    if (m.endedByClosureId || m.residencyEndedByClosureId) {
       const changed = typeof m.updatedAt === 'string' ? istanbulDay(new Date(m.updatedAt)) : '';
       const base = [m.endDate ?? '', changed].sort().at(-1) ?? '';
       if (!base || day <= addDays(base, CLOSURE_GRACE_DAYS)) continue;
@@ -99,7 +102,8 @@ export function departureCandidates(memberships: readonly UnitMembership[], apar
 
 export type GateDeparturesDeps = {
   repo: GateRepository;
-  memberships: Pick<MembershipRepository, 'list'>;
+  /** `get`: aninda adim yalnizca o uyelik kaydini okur (yoksa bolumun uyelikleri listelenir). */
+  memberships: Pick<MembershipRepository, 'list'> & Partial<Pick<MembershipRepository, 'get'>>;
   now: () => Date;
   /** EMF: GateDepartureFailed (operations.tf alarmi). */
   metrics?: MetricsEmitter;
@@ -235,12 +239,16 @@ export function createGateDepartures(deps: GateDeparturesDeps) {
    * gun. Hata firlatir (olay SQS'te yeniden denenir; gece taramasi da guvenlik agidir).
    */
   async function releaseNow(apartmentId: string, target: DepartureCandidate, day: IsoDate, actorId: string, trigger?: DepartureTrigger): Promise<ImmediateDeparture> {
-    const members = (await deps.memberships.list(apartmentId, { unitId: target.unitId })).filter((m) => m.apartmentId === apartmentId && m.unitId === target.unitId);
+    // Uyelik kullanici + bolum basina tek kayittir (`MEMBER#<user>#<unit>`): yalnizca o okunur.
+    const members = (
+      deps.memberships.get
+        ? [await deps.memberships.get(apartmentId, target.userId, target.unitId)].filter((m): m is UnitMembership => !!m)
+        : await deps.memberships.list(apartmentId, { unitId: target.unitId })
+    ).filter((m) => m.apartmentId === apartmentId && m.unitId === target.unitId && m.userId === target.userId);
     const candidate = departureCandidates(members, apartmentId, day).find((c) => c.userId === target.userId && c.unitId === target.unitId);
     if (!candidate) {
-      const mine = members.filter((m) => m.userId === target.userId);
-      if (mine.some((m) => residesOn(m, day))) return { status: 'skipped', reason: 'resides' };
-      if (mine.some((m) => m.endedByClosureId)) return { status: 'skipped', reason: 'closure_grace' };
+      if (members.some((m) => residesOn(m, day))) return { status: 'skipped', reason: 'resides' };
+      if (members.some((m) => m.endedByClosureId || m.residencyEndedByClosureId)) return { status: 'skipped', reason: 'closure_grace' };
       return { status: 'skipped', reason: 'not_departed' };
     }
     return { status: 'released', ...(await release(apartmentId, candidate, day, actorId, trigger)) };

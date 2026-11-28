@@ -27,8 +27,6 @@ import { type IsoDate, type IsoDateTime, type Kurus, type LiableParty, type Tabl
 import { ValidationError, asObject, assertId, isIsoDate, optString, reqEnum, reqString } from '../core/validation.js';
 import { type MembershipRepository, membershipGsi1, membershipRepository } from '../memberships/repository.js';
 import type { UnitMembership } from '../portal/types.js';
-import { type DomainEvent, buildEvent } from '../../events/publisher.js';
-import { endsResidency } from '../gate/departures.js';
 import { feeLedgerFor, unpostedLateFee } from './lateFee.js';
 import { coversDay } from './occupancy.js';
 import { type FinanceRepository, LedgerConflictError, type ReplaceRecord, accountTransactions, financeKeys, financeRepository } from './repository.js';
@@ -617,9 +615,6 @@ export function createClosureService(overrides: Partial<ClosureServiceDeps> & Pi
 
     const ts = stamp();
     const changes = leaving.map((m) => changeOf(m, party));
-    // Kapi devami: bugun oturmayacak uyelikler icin `MEMBERSHIP_ENDED` (worker gece taramasinin
-    // kuraliyla karar verir; kapamayla biten uyelikte geri alma payi orada korunur).
-    const departures: DomainEvent[] = [];
     const replaceRecords: ReplaceRecord[] = leaving.map((m) => {
       const change = changeOf(m, party);
       const next: UnitMembership = {
@@ -628,25 +623,11 @@ export function createClosureService(overrides: Partial<ClosureServiceDeps> & Pi
         // bile daire listesinde "aktif kiraci" olarak kalmaz). Kapama kimligi geri alma icin tutulur.
         ...(change.change === 'ended'
           ? { endDate: !m.endDate || m.endDate > D ? D : m.endDate, status: 'inactive' as const, endedByClosureId: closureId }
-          : { residesInUnit: false }),
+          : { residesInUnit: false, residencyEndedByClosureId: closureId }),
         updatedAt: ts,
         updatedBy: ctx.userId,
         version: m.version + 1,
       };
-      if (endsResidency(m, next, today())) {
-        departures.push(
-          buildEvent(
-            {
-              eventId: `MEMBERSHIP_ENDED:${next.userId}:${next.unitId}:${next.version}`,
-              type: 'MEMBERSHIP_ENDED',
-              apartmentId: ctx.apartmentId,
-              actorId: ctx.userId,
-              payload: { userId: next.userId, unitId: next.unitId, source: 'closure', closureId, ...(next.endDate ? { endDate: next.endDate } : {}) },
-            },
-            deps.now,
-          ),
-        );
-      }
       return { item: { ...next, ...membershipGsi1(next) }, expectedVersion: m.version, label: `membership:${m.userId}` };
     });
 
@@ -688,7 +669,6 @@ export function createClosureService(overrides: Partial<ClosureServiceDeps> & Pi
         newDocs: [closure],
         replaceRecords,
         accountPatches: { [sourceAccountId]: { closedThrough: D } },
-        ...(departures.length ? { outbox: departures } : {}),
         audit: {
           apartmentId: ctx.apartmentId,
           action: 'closure.create',
@@ -764,7 +744,8 @@ export function createClosureService(overrides: Partial<ClosureServiceDeps> & Pi
       } else {
         const resides = change.previousResidesInUnit ?? true;
         if (m.residesInUnit === resides) continue;
-        next = { ...m, residesInUnit: resides };
+        const { residencyEndedByClosureId: _r, ...kept } = m;
+        next = { ...kept, residesInUnit: resides };
       }
       next = { ...next, updatedAt: ts, updatedBy: userId, version: m.version + 1 };
       out.push({ item: { ...next, ...membershipGsi1(next) }, expectedVersion: m.version, label: `membership:${m.userId}` });
