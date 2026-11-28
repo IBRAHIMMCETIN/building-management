@@ -35,7 +35,7 @@ const all = Object.fromEntries(LICENSABLE_KEYS.map((k) => [k, true]));
 
 describe('Ayarlar > Abonelik', () => {
   it('abonelik oncesi (legacy): sinirsiz bilgisi, plan ve fatura yok', () => {
-    const el = render({ status: 'legacy', legacy: true, readOnly: false, features: all, limits: { maxUnits: null, maxStaffUsers: null }, usage: { units: 12, staffUsers: 2 }, invoices: [] });
+    const el = render({ enabled: true, status: 'legacy', legacy: true, readOnly: false, features: all, limits: { maxUnits: null, maxStaffUsers: null }, usage: { units: 12, staffUsers: 2 }, invoices: [] });
     expect(el.querySelector('h2')?.textContent).toContain('Abonelik');
     expect(el.textContent).toContain('tüm modüller açık');
     expect(el.querySelector('ul')).toBeNull();
@@ -43,6 +43,7 @@ describe('Ayarlar > Abonelik', () => {
 
   it('plan, durum, deneme / donem, kullanim / limit ve fatura PDF', () => {
     const el = render({
+      enabled: true,
       status: 'past_due',
       legacy: false,
       readOnly: false,
@@ -97,5 +98,12 @@ describe('Ayarlar > Abonelik', () => {
     state.error = new Error('x');
     const el = render();
     expect(el.textContent).toContain('Beklenmeyen bir hata oluştu.');
+  });
+
+  it('abonelik sistemi kapaliyken (varsayilan) kart hic cizilmez; yuklenirken de', () => {
+    expect(render().textContent).toBe('');
+    act(() => root?.unmount());
+    const off = render({ enabled: false, status: 'legacy', legacy: true, readOnly: false, features: all, limits: { maxUnits: null, maxStaffUsers: null }, usage: { units: 1, staffUsers: 1 }, invoices: [] });
+    expect(off.textContent).toBe('');
   });
 });

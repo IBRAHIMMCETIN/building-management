@@ -2,6 +2,7 @@ import { BellRing } from 'lucide-react';
 import { useId } from 'react';
 import { Alert, Card, CardTitle, Skeleton } from '@/components/ui';
 import { useAuth } from '@/hooks/useAuth';
+import { useSubscriptionStatus } from '@/hooks/useSubscriptions';
 import type { Role } from '@/types/roles';
 import { useNotificationPreferences, useSaveNotificationPreferences } from '@/hooks/useTeam';
 import { errorMessage } from '@/lib/api/errors';
@@ -29,9 +30,12 @@ export function NotificationPreferencesCard() {
   const save = useSaveNotificationPreferences();
   const id = useId();
   const { user } = useAuth();
+  const managing = !!user?.role && MANAGING_ROLES.includes(user.role);
+  // Abonelik bildirimleri satiri yalnizca abonelik sistemi platformda aciksa.
+  const billing = useSubscriptionStatus();
   const emailEnabled = prefs.data?.email.enabled ?? true;
   const categories: readonly AnyNotificationCategory[] =
-    user?.role && MANAGING_ROLES.includes(user.role) ? [...NOTIFICATION_CATEGORIES, ...MANAGEMENT_NOTIFICATION_CATEGORIES] : NOTIFICATION_CATEGORIES;
+    managing && billing.data?.enabled === true ? [...NOTIFICATION_CATEGORIES, ...MANAGEMENT_NOTIFICATION_CATEGORIES] : NOTIFICATION_CATEGORIES;
 
   return (
     <Card className="flex flex-col gap-3">

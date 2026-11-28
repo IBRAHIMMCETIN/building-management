@@ -2,7 +2,8 @@ import { ToggleRight } from 'lucide-react';
 import { RequestFeatureButton } from '@/components/features/FeatureDisabledNotice';
 import { Alert, Badge, Card, CardTitle, Skeleton } from '@/components/ui';
 import { useSiteFeatures } from '@/context/SiteFeaturesContext';
-import { PROFILE_LABELS } from '@/lib/features/catalog';
+import { useSubscriptionStatus } from '@/hooks/useSubscriptions';
+import { PROFILE_LABELS, isPlanModuleKey } from '@/lib/features/catalog';
 
 /**
  * Adim 1 - yoneticinin kendi sitesindeki ozellik durumu (salt okunur). Anahtarlari yalnizca platform
@@ -10,7 +11,10 @@ import { PROFILE_LABELS } from '@/lib/features/catalog';
  * (yakinda) ozellikler icin talep dugmesi gosterilmez.
  */
 export function SiteFeaturesCard() {
-  const { status, view, catalog } = useSiteFeatures();
+  const { status, view, catalog: all } = useSiteFeatures();
+  // Abonelik modul anahtarlari yalnizca abonelik sistemi aciksa listelenir.
+  const billing = useSubscriptionStatus();
+  const catalog = all.filter((def) => billing.data?.enabled === true || !isPlanModuleKey(def.key));
 
   return (
     <Card className="flex flex-col gap-4">

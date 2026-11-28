@@ -50,6 +50,12 @@ export const FEATURE_LABELS: Record<FeatureKey, string> = {
   'channels.push': 'Mobil bildirim (push)',
 };
 
+/**
+ * Abonelikle gelen yeni modul anahtarlari (`payments.online` disindaki licensable anahtarlar): abonelik
+ * sistemi kapaliyken ekranlarda listelenmez; menude yukleme / hata sirasinda da gorunur kalir.
+ */
+export const isPlanModuleKey = (k: FeatureKey) => k.startsWith('modules.') || k === 'channels.push';
+
 /** Abonelik planinin kisitlayabildigi anahtarlar (API: `licensable`). */
 export const LICENSABLE_KEYS: readonly FeatureKey[] = [
   'payments.online',

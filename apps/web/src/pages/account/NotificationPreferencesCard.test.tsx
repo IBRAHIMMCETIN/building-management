@@ -8,10 +8,11 @@ import { NotificationPreferencesCard } from './NotificationPreferencesCard';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-type State = { data?: NotificationPreferences; loadError?: Error; saving: boolean; saveError?: Error; mutate: ReturnType<typeof vi.fn>; role: string };
-const state: State = { saving: false, mutate: vi.fn(), role: 'resident' };
+type State = { data?: NotificationPreferences; loadError?: Error; saving: boolean; saveError?: Error; mutate: ReturnType<typeof vi.fn>; role: string; billing: boolean };
+const state: State = { saving: false, mutate: vi.fn(), role: 'resident', billing: true };
 
 vi.mock('@/hooks/useAuth', () => ({ useAuth: () => ({ user: { role: state.role } }) }));
+vi.mock('@/hooks/useSubscriptions', () => ({ useSubscriptionStatus: () => ({ data: { enabled: state.billing, status: 'legacy', legacy: true, readOnly: false } }) }));
 
 vi.mock('@/hooks/useTeam', () => ({
   useNotificationPreferences: () => ({ data: state.data, isPending: !state.data && !state.loadError, isError: !!state.loadError, error: state.loadError ?? null }),
@@ -22,7 +23,7 @@ let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => {
   act(() => root?.unmount());
   document.body.innerHTML = '';
-  Object.assign(state, { data: undefined, loadError: undefined, saving: false, saveError: undefined, mutate: vi.fn(), role: 'resident' });
+  Object.assign(state, { data: undefined, loadError: undefined, saving: false, saveError: undefined, mutate: vi.fn(), role: 'resident', billing: true });
 });
 
 function render(over: Partial<State>) {
@@ -99,6 +100,10 @@ describe('bildirim tercihleri karti', () => {
     expect(descriptionOf(billing)).toContain('Yalnızca yönetime gönderilir');
     act(() => billing?.click());
     expect(state.mutate).toHaveBeenCalledWith({ email: { billing: true } });
+  });
+
+  it('abonelik sistemi kapaliyken yoneticide de abonelik satiri yok', () => {
+    expect(render({ data: { email: { enabled: true } }, role: 'apartment_manager', billing: false }).box('billing')).toBeNull();
   });
 
   it('tercih okunamazsa hata gosterilir, anahtar cizilmez', () => {

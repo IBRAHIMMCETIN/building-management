@@ -1,5 +1,5 @@
 import { BadgeCheck, FileDown } from 'lucide-react';
-import { Alert, Badge, Button, Card, CardTitle, Skeleton } from '@/components/ui';
+import { Alert, Badge, Button, Card, CardTitle } from '@/components/ui';
 import { useOpenDocument } from '@/hooks/useOpenDocument';
 import { useMySubscription } from '@/hooks/useSubscriptions';
 import { errorMessage } from '@/lib/api/errors';
@@ -26,6 +26,9 @@ export function SubscriptionCard() {
   const q = useMySubscription();
   const docs = useOpenDocument();
   const v = q.data;
+  // Abonelik sistemi platformda kapaliyken (varsayilan) kart hic gosterilmez; durum bilinene kadar
+  // da cizilmez (kapali sistemde her ziyarette yer tutucu belirip kaybolmasin).
+  if (q.isPending || (v && v.enabled === false)) return null;
 
   return (
     <Card className="flex flex-col gap-4">
@@ -33,7 +36,6 @@ export function SubscriptionCard() {
         <BadgeCheck className="size-5 text-muted" aria-hidden="true" />
         Abonelik
       </CardTitle>
-      {q.isPending && <Skeleton className="h-24" />}
       {q.isError && <Alert tone="danger">{errorMessage(q.error)}</Alert>}
       {v?.legacy && (
         <p className="text-small text-muted">

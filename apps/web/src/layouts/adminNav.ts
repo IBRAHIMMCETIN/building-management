@@ -1,6 +1,6 @@
 import { ArrowLeftRight, BadgeCheck, Briefcase, Building, CalendarDays, ClipboardPen, Contact, CreditCard, DoorOpen, FileText, FileUp, Gauge, Landmark, Layers, LayoutDashboard, ListChecks, MailX, Megaphone, Receipt, Scale, ScrollText, Settings, ShieldCheck, Tag, UserCog, Users, Vote, Wallet, Wrench } from 'lucide-react';
 import type { ComponentType } from 'react';
-import type { FeatureKey } from '@/lib/features/catalog';
+import { type FeatureKey, isPlanModuleKey } from '@/lib/features/catalog';
 import { AUDIT_ROLES, EQUIPMENT_ROLES, GATE_ROLES, METER_READING_ROLES, METER_ROLES, MY_TASKS_ROLES, OFFICE_ROLES, PORTFOLIO_ROLES, type Role, SECURITY_ROLES, TEAM_ROLES, TICKET_ROLES, isPlatformRole } from '@/types/roles';
 
 export type NavItem = {
@@ -68,6 +68,14 @@ export const PLATFORM_NAV: readonly NavItem[] = [
  */
 export function navItemsFor(role: Role | undefined, portfolio = false, isEnabled: (key: FeatureKey) => boolean = () => true): readonly NavItem[] {
   return filterNav(isPlatformRole(role) ? PLATFORM_NAV : APARTMENT_NAV, role, isEnabled, portfolio);
+}
+
+/**
+ * Menu ozellik kontrolu: abonelik modul anahtarlari (`modules.*`) site ozellikleri yuklenirken veya
+ * okunamazken GORUNUR kalir (abonelik oncesi davranis); diger Adim 1 anahtarlari eskisi gibi gizli.
+ */
+export function navFeatureCheck(status: 'none' | 'loading' | 'ready' | 'error', isEnabled: (key: FeatureKey) => boolean): (key: FeatureKey) => boolean {
+  return (key) => (status !== 'ready' && isPlanModuleKey(key) ? true : isEnabled(key));
 }
 
 /**

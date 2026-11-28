@@ -111,9 +111,17 @@ export type BannerState =
 
 /** Denemenin son 7 gunu, gecikme ve salt okunur durumlar; digerlerinde bant yok. */
 export function bannerFor(s: SubscriptionStatusView | undefined): BannerState | null {
-  if (!s || s.legacy) return null;
+  if (!s || s.legacy || s.enabled === false) return null;
+  if (s.status === 'trial' && s.daysLeft !== undefined && s.daysLeft < 0) {
+    // Otomasyon kapaliyken deneme bitse de durum kendiliginden ilerlemez: gercek durum yazilir.
+    return {
+      tone: 'neutral',
+      title: 'Deneme süreniz doldu.',
+      text: s.automation ? 'İlk dönem bugün başlar ve faturası kesilir.' : 'İlk dönemi platform ekibi başlatacak; bu sürede tüm işlemler açık.',
+    };
+  }
   if (s.status === 'trial' && s.daysLeft !== undefined && s.daysLeft <= 7) {
-    const when = s.daysLeft <= 0 ? 'bugün' : s.daysLeft === 1 ? 'yarın' : `${s.daysLeft} gün sonra`;
+    const when = s.daysLeft === 0 ? 'bugün' : s.daysLeft === 1 ? 'yarın' : `${s.daysLeft} gün sonra`;
     return { tone: 'neutral', title: 'Deneme süreniz bitiyor:', text: `${when}${s.trialEndsAt ? ` (${formatDate(s.trialEndsAt)})` : ''}. Bitince ilk dönem faturası kesilir.` };
   }
   if (s.status === 'past_due') {

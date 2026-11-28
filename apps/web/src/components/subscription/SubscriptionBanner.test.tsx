@@ -46,6 +46,14 @@ describe('abonelik ust bandi', () => {
     expect(render(undefined).textContent).toBe('');
   });
 
+  it('sistem kapali: bant yok; deneme suresi dolmus (otomasyon kapali): "bugun" degil gercek durum', () => {
+    expect(render({ enabled: false, status: 'suspended', legacy: false, readOnly: true }).textContent).toBe('');
+    act(() => root?.unmount());
+    const expired = render({ enabled: true, automation: false, status: 'trial', legacy: false, readOnly: false, trialEndsAt: '2026-11-25', daysLeft: -3 });
+    expect(expired.textContent).toContain('Deneme süreniz doldu.');
+    expect(expired.textContent).not.toContain('bugün');
+  });
+
   it('deneme bitiyor (notr), gecikme (uyari), askida (salt okunur) ve baglanti', () => {
     const trial = render({ status: 'trial', legacy: false, readOnly: false, trialEndsAt: '2026-12-01', daysLeft: 3 });
     const box = trial.querySelector('[role="status"]');

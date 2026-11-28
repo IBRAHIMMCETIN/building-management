@@ -160,6 +160,9 @@ export type BillingSettingsInput = { version: number; enabled: boolean; automati
 // ----- Yonetici -----
 
 export const statusViewSchema = z.object({
+  /** Abonelik sistemi platformda acik mi (kapaliyken ekranlar abonelik ogelerini gostermez). */
+  enabled: z.boolean().optional(),
+  automation: z.boolean().optional(),
   status: z.enum(['legacy', ...SUBSCRIPTION_STATUSES]),
   legacy: z.boolean(),
   readOnly: z.boolean(),

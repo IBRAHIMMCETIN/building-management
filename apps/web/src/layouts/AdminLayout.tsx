@@ -12,7 +12,7 @@ import { useAuth } from '@/hooks/useAuth';
 import { usePortfolioAccess } from '@/hooks/usePortfolio';
 import { SiteFeaturesProvider, useSiteFeatures } from '@/context/SiteFeaturesContext';
 import { ROLE_LABELS } from '@/types/roles';
-import { navItemsFor, panelTitleFor } from './adminNav';
+import { navFeatureCheck, navItemsFor, panelTitleFor } from './adminNav';
 import { cn } from '@/lib/cn';
 import { UserMenu } from './UserMenu';
 import { PageSuspense } from '@/router/lazyPage';
@@ -21,8 +21,8 @@ import { PageSuspense } from '@/router/lazyPage';
 function AdminNav({ onNavigate }: { onNavigate?: () => void }) {
   const { user } = useAuth();
   const { showInNav } = usePortfolioAccess();
-  const { isEnabled } = useSiteFeatures();
-  const items = navItemsFor(user?.role, showInNav, isEnabled);
+  const { status, isEnabled } = useSiteFeatures();
+  const items = navItemsFor(user?.role, showInNav, navFeatureCheck(status, isEnabled));
   return (
     <nav aria-label="Yönetim menüsü" className="flex flex-col gap-1">
       {items.map(({ to, label, icon: Icon, end }) => (
