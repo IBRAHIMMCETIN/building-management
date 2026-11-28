@@ -268,6 +268,8 @@ function spec(n: Notification, ctx: EmailContext): Spec | undefined {
       return ticketSpec(n, ctx);
     case 'operations_digest':
       return digestSpec(n);
+    case 'bulk_job_summary':
+      return bulkJobSpec(n);
     // Guvenlik kapisi (portal 15 sn'de bir yenilemeye devam eder; e-posta ek kanaldir).
     case 'gate_courier_arrived': {
       const company = str(d.company);
@@ -646,6 +648,48 @@ function digestSpec(n: Notification): Spec {
       ...(sla.length > 25 || due.length > 25 || overdue.length > 25 || equipmentCount > 25 ? [{ kind: 'note', text: 'Listenin tamamı yönetim panelinde.' } as Block] : []),
     ],
     cta: { label: 'Arıza ve bakım ekranını aç', path: '../admin/tickets' },
+  };
+}
+
+/** Arka plan toplu isinin turu (e-posta ve push). */
+export const BULK_JOB_KIND_TEXT: Record<string, string> = {
+  dues_bulk: 'Toplu aidat tahakkuku',
+  meter_posting: 'Sayaç dönemi onayı (tahakkuk)',
+  meter_reversal: 'Sayaç dönemi geri alma',
+};
+
+/** Bildirim devami: toplu isin bitis ozeti (isi baslatan yonetici). */
+function bulkJobSpec(n: Notification): Spec {
+  const d = n.data;
+  const kind = BULK_JOB_KIND_TEXT[str(d.kind)] ?? 'Toplu işlem';
+  const label = str(d.label);
+  const title = label ? `${kind}: ${label}` : kind;
+  const fmt = (v: unknown) => num(v).toLocaleString('tr-TR');
+  const status = str(d.status);
+  const head =
+    status === 'failed'
+      ? { subject: `Toplu işlem tamamlanamadı - ${title}`, heading: 'Toplu işlem tamamlanamadı', text: `${title} işlemi tamamlanamadı. Yazılmış kalemler korunur; yönetim panelinden "Tekrar dene" ile kaldığı yerden devam edebilirsiniz.` }
+      : status === 'completed_with_errors'
+        ? { subject: `Toplu işlem hatalarla bitti - ${title}`, heading: 'Toplu işlem hatalarla bitti', text: `${title} işlemi bitti; bazı bölümler yazılamadı. Hatalı bölümleri yönetim panelinde görüp "Tekrar dene" ile yeniden deneyebilirsiniz.` }
+        : { subject: `Toplu işlem tamamlandı - ${title}`, heading: 'Toplu işlem tamamlandı', text: `${title} işlemi başarıyla tamamlandı.` };
+  const rows: [string, string][] = [
+    ['İşlem', kind],
+    ...(label ? [['Dönem / açıklama', label] as [string, string]] : []),
+    ['Toplam bölüm', fmt(d.total)],
+    ['Başarılı', fmt(d.succeeded)],
+    ['Hatalı', fmt(d.failed)],
+    ['Bu işlemle yeni yazılan', fmt(d.written)],
+  ];
+  return {
+    subject: head.subject,
+    heading: head.heading,
+    preheader: `${fmt(d.succeeded)} başarılı, ${fmt(d.failed)} hatalı`,
+    blocks: [
+      { kind: 'p', text: head.text },
+      { kind: 'rows', rows },
+      ...(status === 'failed' && str(d.errorMessage) ? [{ kind: 'note', text: `Hata: ${str(d.errorMessage)}` } as Block] : []),
+    ],
+    cta: { label: 'İşlemi görüntüle', path: `../${str(d.adminPath) || 'admin'}` },
   };
 }
 

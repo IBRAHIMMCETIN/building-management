@@ -1,5 +1,5 @@
 import { type OutboxStore, createDynamoOutboxStore } from '../events/outboxStore.js';
-import { type EventPublisher, buildEvent, createEventPublisherFromEnv } from '../events/publisher.js';
+import { type DomainEvent, type EventPublisher, buildEvent, createEventPublisherFromEnv } from '../events/publisher.js';
 import { DEFAULT_SWEEP_MIN_AGE_SECONDS, type SweepOptions, sweepOutbox } from '../events/sweep.js';
 import { PLATFORM_SCOPE, auditScope } from '../modules/audit/log.js';
 import { type ChainVerification, createAuditReader, createDynamoCheckpointStore, verifyAuditScope } from '../modules/audit/repository.js';
@@ -135,6 +135,39 @@ export class InvalidJobError extends Error {
   }
 }
 
+/**
+ * Kapi devami: SNS olay topic'inden bu kuyruga gelen (bildirim olmayan) domain olaylari
+ * (infra/scheduler.tf `scheduler_event_types`; apps/api/test/notification-filter.test.ts denetler).
+ *   MEMBERSHIP_ENDED  tasinanin aktif gecis / araclari gece taramasinin kuraliyla hemen pasif
+ */
+export const SCHEDULER_EVENT_TYPES = ['MEMBERSHIP_ENDED'] as const;
+export type SchedulerEvent = DomainEvent<(typeof SCHEDULER_EVENT_TYPES)[number]>;
+
+const SAFE_ID = /^[A-Za-z0-9_-]{1,64}$/;
+
+/**
+ * Mesaj bir domain olayi mi? (Raw delivery: govde olay JSON'u; kapaliysa SNS zarfi acilir.) Is mesaji
+ * ise `undefined`; bu kuyrukta islenmeyen / bozuk olay `InvalidJobError`.
+ */
+export function parseEventMessage(body: string): SchedulerEvent | undefined {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(body);
+  } catch {
+    return undefined;
+  }
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return undefined;
+  const o = raw as Record<string, unknown>;
+  if (o.Type === 'Notification' && typeof o.Message === 'string') return parseEventMessage(o.Message);
+  if (typeof o.eventId !== 'string' || typeof o.type !== 'string' || !('payload' in o)) return undefined;
+  if (!(SCHEDULER_EVENT_TYPES as readonly string[]).includes(o.type)) throw new InvalidJobError(`Bu kuyrukta islenmeyen olay: ${o.type}`);
+  const p = o.payload as Record<string, unknown> | null;
+  if (typeof o.apartmentId !== 'string' || !SAFE_ID.test(o.apartmentId) || !p || typeof p.userId !== 'string' || !SAFE_ID.test(p.userId) || typeof p.unitId !== 'string' || !SAFE_ID.test(p.unitId)) {
+    throw new InvalidJobError('Olay kimlikleri gecersiz');
+  }
+  return raw as SchedulerEvent;
+}
+
 export function parseJobMessage(body: string): JobMessage {
   let raw: unknown;
   try {
@@ -188,10 +221,10 @@ export type SchedulerDeps = {
   equipment: Pick<EquipmentService, 'digestItems'>;
   /** Y1: suresi dolup hic oy almamis oylamalarin oy listesini sistem olarak dondurur (`maintenance_tasks`). */
   polls: Pick<PollService, 'freezeEnded'>;
-  /** Guvenlik kapisi: tasinanlarin gecis / araclarini pasife alir (`maintenance_tasks`). */
-  gate: Pick<GateDepartures, 'sweep'>;
   /** Abonelik durum makinesi (`subscriptions`). */
   subscriptions: Pick<SubscriptionService, 'runDaily'>;
+  /** Guvenlik kapisi: tasinanlarin gecis / araclarini pasife alir (`maintenance_tasks`; `MEMBERSHIP_ENDED` aninda). */
+  gate: Pick<GateDepartures, 'sweep'> & Partial<Pick<GateDepartures, 'releaseNow'>>;
   /** null: online odeme kapali. Verilmezse ortam degiskenlerinden kurulur (ilk kullanimda). */
   payments: Pick<PaymentsService, 'reconcile' | 'reconcileRefunds'> | null;
   /** Mobil bildirim makbuz kontrolu (null: PUSH_CHANNEL=off). Verilmezse ortamdan kurulur. */
@@ -659,11 +692,35 @@ export function createSchedulerWorker(overrides: Partial<SchedulerDeps> = {}) {
     return outcomes;
   }
 
+  /** `MEMBERSHIP_ENDED`: o kullanici + bolum icin gece taramasinin kuraliyla aninda pasife alma. */
+  async function runEvent(event: SchedulerEvent) {
+    const g = gate();
+    if (!g.releaseNow) return { status: 'skipped' as const, reason: 'not_supported' as const };
+    const day = istanbulDate(now().toISOString());
+    const { userId, unitId } = event.payload;
+    try {
+      const r = await g.releaseNow(event.apartmentId, { userId, unitId }, day, SYSTEM_ACTOR, { trigger: 'membership_ended', eventId: event.eventId });
+      if (r.status === 'released') metrics().emit({ GateDepartureImmediate: 1 }, { msg: 'gate_departure_immediate', apartmentId: event.apartmentId, unitId, passes: r.passIds.length, vehicles: r.vehicleIds.length });
+      return r;
+    } catch (err) {
+      // Kisi verisi yok: apartman / bolum ve hata turu (gece taramasiyla ayni alarm).
+      log.error(JSON.stringify({ msg: 'gate_departure_failed', apartmentId: event.apartmentId, unitId, trigger: 'membership_ended', error: err instanceof Error ? err.name : 'unknown' }));
+      metrics().emit({ GateDepartureFailed: 1 }, { msg: 'gate_departure_failed', apartmentId: event.apartmentId, unitId });
+      throw err;
+    }
+  }
+
   const handler = async (sqsEvent: SqsEvent): Promise<SqsBatchResponse> => {
     const failures: SqsBatchResponse['batchItemFailures'] = [];
     for (const record of sqsEvent.Records ?? []) {
       let message: JobMessage | undefined;
       try {
+        const event = parseEventMessage(record.body);
+        if (event) {
+          const result = await runEvent(event);
+          log.info(JSON.stringify({ msg: 'event_processed', messageId: record.messageId, eventId: event.eventId, type: event.type, apartmentId: event.apartmentId, ...result }));
+          continue;
+        }
         message = parseJobMessage(record.body);
         const outcomes = await runJob(message);
         const failed = outcomes.filter((o) => o.status === 'failed');
@@ -698,7 +755,7 @@ export function createSchedulerWorker(overrides: Partial<SchedulerDeps> = {}) {
     return { batchItemFailures: failures };
   };
 
-  return Object.assign(handler, { runJob });
+  return Object.assign(handler, { runJob, runEvent });
 }
 
 /** Lambda giris noktasi (Terraform: handler = "scheduler-worker.handler"). */

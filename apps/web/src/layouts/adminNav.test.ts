@@ -16,6 +16,7 @@ describe('yonetim menusu: platform ve apartman ayrimi', () => {
       '/admin/billing/plans',
       '/admin/billing/invoices',
       '/admin/users',
+      '/admin/email-suppressions',
       '/admin/audit',
     ]);
     for (const p of ['/admin', '/admin/units', '/admin/finance', '/admin/announcements', '/admin/import', '/admin/settings']) {
@@ -35,7 +36,7 @@ describe('yonetim menusu: platform ve apartman ayrimi', () => {
     expect(navItemsFor('building_staff').map((n) => n.to)).not.toContain('/admin/audit');
     for (const role of APARTMENT_ADMIN_ROLES) {
       const paths = navItemsFor(role).map((n) => n.to);
-      for (const p of ['/admin/apartments', '/admin/payments', '/admin/payments/transfers', '/admin/payments/invoices', '/admin/billing/subscriptions', '/admin/billing/plans', '/admin/billing/invoices', '/admin/users']) {
+      for (const p of ['/admin/apartments', '/admin/payments', '/admin/payments/transfers', '/admin/payments/invoices', '/admin/billing/subscriptions', '/admin/billing/plans', '/admin/billing/invoices', '/admin/users', '/admin/email-suppressions']) {
         expect(paths).not.toContain(p);
       }
       expect(panelTitleFor(role)).toBe('Yönetim Paneli');

@@ -84,6 +84,8 @@ import { meterPortalRoutes, meterReadingRoutes, meterRoutes } from './modules/me
 import { type MeterPortalService, createMeterPortalService } from './modules/meters/portalView.js';
 import { type MeterPostingService, createMeterPostingService } from './modules/meters/posting.js';
 import { bulkJobRoutes } from './modules/bulkjobs/routes.js';
+import { emailSuppressionRoutes } from './modules/notifications/suppressionRoutes.js';
+import { type SuppressionService, createDynamoSuppressionStore, createSuppressionService } from './modules/notifications/suppressions.js';
 import { createDynamoBulkJobRepository } from './modules/bulkjobs/repository.js';
 import { type BulkJobQueue, createInlineBulkJobQueue, loadBulkJobQueueFromEnv } from './modules/bulkjobs/queue.js';
 import { type BulkJobService, createBulkJobService } from './modules/bulkjobs/service.js';
@@ -169,6 +171,10 @@ export type AppConfig = {
   bulkJobService?: BulkJobService;
   /** Finans 2.3-4: toplu geri alma ve duzeltilmis donem. */
   meterReversalService?: MeterReversalService;
+  /** Performans: sayac onizlemesinin arka plan isine alinacagi bolum esigi (testler; varsayilan 1.000). */
+  meterAsyncCalculateUnits?: number;
+  /** Bildirim devami: SES geri donus / sikayet e-posta engelleri (platform). */
+  suppressionService?: SuppressionService;
   /** Finans 2.3-5a: sakin tuketim gecmisi ve dagitim dokumu PDF. */
   meterPortalService?: MeterPortalService;
   portalService?: PortalService;
@@ -287,6 +293,10 @@ export function createApp(config: AppConfig) {
     config.featureService ?? createFeatureService({ reader: siteFeatures, license: async (id) => (await entitlements.resolve(id)) });
   app.route('/api/site-features', siteFeatureRoutes({ authenticate, service: featureService }));
   app.route('/api/admin/site-features', platformFeatureRoutes({ authenticate, service: featureService }));
+  app.route(
+    '/api/admin/email-suppressions',
+    emailSuppressionRoutes({ authenticate, service: config.suppressionService ?? createSuppressionService({ store: createDynamoSuppressionStore() }) }),
+  );
   app.route(
     '/api/audit',
     auditRoutes({
@@ -420,6 +430,7 @@ export function createApp(config: AppConfig) {
       posting: meterPostingService,
       jobs: bulkJobService,
       reversal: meterReversalService,
+      ...(config.meterAsyncCalculateUnits !== undefined ? { asyncCalculateUnits: config.meterAsyncCalculateUnits } : {}),
     }),
   );
   app.route('/api/meter-readings', meterReadingRoutes({ authenticate, service: config.meterReadingService ?? createMeterReadingService() }));

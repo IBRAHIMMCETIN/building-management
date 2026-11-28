@@ -108,6 +108,57 @@ resource "aws_sqs_queue_redrive_allow_policy" "jobs_dlq" {
 }
 
 # ---------------------------------------------------------------------------
+# Bildirim olmayan domain olaylari: SNS olay topic'i -> bu kuyruk -> scheduler worker.
+#   MEMBERSHIP_ENDED  tasinmada gecis / araclarin gece taramasini beklemeden pasife alinmasi
+# Liste apps/api/src/workers/scheduler-worker.ts SCHEDULER_EVENT_TYPES ile ayni olmali; bildirim
+# kuyrugunun listesiyle (sns_sqs.tf) birlesimi EVENT_TYPES'a esittir (notification-filter.test.ts).
+# Kuyruk politikasi yalnizca olay topic'ine izin verir; Scheduler rolunun kimlik politikasi aynen gecerli.
+# ---------------------------------------------------------------------------
+
+locals {
+  scheduler_event_types = ["MEMBERSHIP_ENDED"]
+}
+
+data "aws_iam_policy_document" "jobs_queue" {
+  statement {
+    sid     = "AllowEventsTopic"
+    actions = ["sqs:SendMessage"]
+
+    principals {
+      type        = "Service"
+      identifiers = ["sns.amazonaws.com"]
+    }
+
+    resources = [aws_sqs_queue.jobs.arn]
+
+    condition {
+      test     = "ArnEquals"
+      variable = "aws:SourceArn"
+      values   = [aws_sns_topic.events.arn]
+    }
+  }
+}
+
+resource "aws_sqs_queue_policy" "jobs" {
+  queue_url = aws_sqs_queue.jobs.id
+  policy    = data.aws_iam_policy_document.jobs_queue.json
+}
+
+resource "aws_sns_topic_subscription" "jobs_events" {
+  topic_arn            = aws_sns_topic.events.arn
+  protocol             = "sqs"
+  endpoint             = aws_sqs_queue.jobs.arn
+  raw_message_delivery = true
+
+  filter_policy_scope = "MessageAttributes"
+  filter_policy = jsonencode({
+    eventType = local.scheduler_event_types
+  })
+
+  depends_on = [aws_sqs_queue_policy.jobs]
+}
+
+# ---------------------------------------------------------------------------
 # Worker Lambda
 # ---------------------------------------------------------------------------
 

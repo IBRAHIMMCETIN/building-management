@@ -52,6 +52,8 @@ export const EVENT_TYPES = [
   'SUBSCRIPTION_PAST_DUE',
   'SUBSCRIPTION_SUSPENDED',
   'SUBSCRIPTION_REACTIVATED',
+  'MEMBERSHIP_ENDED',
+  'BULK_JOB_FINISHED',
 ] as const;
 export type EventType = (typeof EVENT_TYPES)[number];
 
@@ -310,6 +312,41 @@ export type SubscriptionPastDuePayload = { pastDueSince: IsoDate; suspendOn: Iso
 export type SubscriptionSuspendedPayload = { suspendedAt: IsoDate; reason: 'non_payment' | 'manual' };
 export type SubscriptionReactivatedPayload = { reactivatedOn: IsoDate; from: string };
 
+/**
+ * Kapi devami: uyelik yazimi (PATCH / iptal) kullaniciyi bugun itibariyla bolumde oturmayan yapti
+ * (bitis tarihi gecmis, iptal, oturan malik artik oturmuyor). Cari kapama bu olayi yazmaz: geri alma
+ * payi nedeniyle karar gece taramasinindir. Bildirim DEGILDIR: SNS aboneligiyle zamanlanmis
+ * gorev kuyruguna gider (infra/scheduler.tf `scheduler_event_types`) ve worker gece taramasinin
+ * kuraliyla (`gate/departures.ts` `departureCandidates`) o kullanicinin o bolumdeki aktif gecis ve
+ * araclarini hemen pasife alir. `eventId` = `MEMBERSHIP_ENDED:<userId>:<unitId>:<surum>`.
+ */
+export type MembershipEndedPayload = {
+  userId: string;
+  unitId: string;
+  source: 'membership';
+  endDate?: IsoDate;
+};
+
+/**
+ * Bildirim devami: arka plan toplu isi (bulkjobs) bitti (`completed` / `completed_with_errors` /
+ * `failed`). Alici isi baslatan kullanici (sistem baslattiysa kimse); hala apartmanda aktif yonetim
+ * rolu varsa. Sayilar ve baglanti icin is ozeti tasinir, hatali bolum ornekleri tasinmaz.
+ * `eventId` = `BULK_JOB_FINISHED:<jobId>:<is surumu>` (yeniden denenen is yeniden bildirir).
+ */
+export type BulkJobFinishedPayload = {
+  jobId: string;
+  kind: string;
+  status: 'completed' | 'completed_with_errors' | 'failed';
+  startedBy: string;
+  total: number;
+  succeeded: number;
+  failed: number;
+  written: number;
+  periodId?: string;
+  label?: string;
+  errorMessage?: string;
+};
+
 type PayloadByType = {
   DUE_GENERATED: DueGeneratedPayload;
   PAYMENT_RECEIVED: PaymentReceivedPayload;
@@ -339,6 +376,8 @@ type PayloadByType = {
   SUBSCRIPTION_PAST_DUE: SubscriptionPastDuePayload;
   SUBSCRIPTION_SUSPENDED: SubscriptionSuspendedPayload;
   SUBSCRIPTION_REACTIVATED: SubscriptionReactivatedPayload;
+  MEMBERSHIP_ENDED: MembershipEndedPayload;
+  BULK_JOB_FINISHED: BulkJobFinishedPayload;
 };
 
 export type DomainEvent<T extends EventType = EventType> = {

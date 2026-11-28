@@ -24,6 +24,15 @@ import { billingRecipients, isBillingEvent } from '../modules/subscriptions/noti
 import { entitlementOf, licensedFeatures } from '../modules/subscriptions/entitlements.js';
 import { resolveFeatures } from '../modules/features/catalog.js';
 import { subscriptionRepository } from '../modules/subscriptions/repository.js';
+import { bulkJobRecipients, isBulkJobEvent } from '../modules/bulkjobs/notifications.js';
+import {
+  type SnsLambdaEvent,
+  type SuppressionService,
+  createDynamoSuppressionStore,
+  createSuppressionService,
+  handleSesFeedback,
+  isSnsEvent,
+} from '../modules/notifications/suppressions.js';
 
 export type { DeliveryResult, Notification, NotificationTemplate, Notifier } from '../modules/notifications/notifier.js';
 export { createLogNotifier } from '../modules/notifications/notifier.js';
@@ -57,6 +66,8 @@ export { createLogNotifier } from '../modules/notifications/notifier.js';
  *                                 yazarlari (hala uyeyse) (modules/tenders/notifications.ts)
  *       SUBSCRIPTION_*         -> apartmanin guncel yoneticileri + yonetim firmasi (abonelik / lisans;
  *                                 tercih kategorisi `billing`; modules/subscriptions/notifications.ts)
+ *       BULK_JOB_FINISHED      -> toplu isi baslatan yonetici (o gun aktif yonetim rolu varsa)
+ *                                 (modules/bulkjobs/notifications.ts)
  *  4. Her aliciya `Notifier` ile bildirim gonderilir: NOTIFICATION_CHANNEL=log (yapilandirilmis
  *     log) veya ses (e-posta; tercih, adres ve alici bazli tekrar korumasi kanal icinde, bkz.
  *     modules/notifications/email.ts). SMS / WhatsApp ayni arayuzle eklenecek.
@@ -168,6 +179,9 @@ export function buildNotifications(
 
   if (event.type === 'OPERATIONS_DIGEST') {
     return operationsDigestRecipients(event, roles, day).map((r) => ({ eventId: event.eventId, apartmentId: event.apartmentId, userId: r.userId, template: r.template, data: r.data }));
+  }
+  if (isBulkJobEvent(event)) {
+    return bulkJobRecipients(event, roles, day).map((r) => ({ eventId: event.eventId, apartmentId: event.apartmentId, userId: r.userId, template: r.template, data: r.data }));
   }
   if (isGateEvent(event)) {
     return gateRecipients(event, memberships, day, { now: records.now ?? new Date(), ...('courier' in records ? { courier: records.courier } : {}) }).map((r) => ({
@@ -495,7 +509,7 @@ export function createNotificationWorker(overrides: Partial<WorkerDeps> = {}) {
         ? new Map((await deps.core.listUnits(event.apartmentId)).map((u) => [u.unitId, u.blockId]))
         : new Map<string, string>();
 
-    const roles = isTicketEvent(event) || event.type === 'OPERATIONS_DIGEST' || isBillingEvent(event) ? await deps.roles.list(event.apartmentId) : [];
+    const roles = isTicketEvent(event) || event.type === 'OPERATIONS_DIGEST' || isBillingEvent(event) || isBulkJobEvent(event) ? await deps.roles.list(event.apartmentId) : [];
     const records = await recordsFor(event);
     // Yonetim iptalinin hemen ardindaki ucret iadesi henuz yazilmadiysa sonucu beklenir (sinirli).
     if (refundSettling(event, records.booking, deps.now())) throw new DeferredEventError('Ucret iadesi sonucu bekleniyor');
@@ -571,5 +585,26 @@ export function createNotificationWorker(overrides: Partial<WorkerDeps> = {}) {
   };
 }
 
+/**
+ * Lambda giris noktasi: SQS bildirim kuyrugu (event source mapping) ve SES geri bildirim SNS topic'i
+ * (infra/ses_feedback.tf; Lambda aboneligi, asenkron cagri). SNS kaydi gelirse geri donus / sikayet
+ * engeli yazilir (modules/notifications/suppressions.ts), aksi halde bildirim olaylari islenir.
+ */
+export function createWorkerEntry(
+  deps: { sqs?: (e: SqsEvent) => Promise<SqsBatchResponse>; suppressions?: Pick<SuppressionService, 'record'>; sesFeedbackTopicArn?: string } = {},
+) {
+  let sqs = deps.sqs;
+  let suppressions = deps.suppressions;
+  return async (event: SqsEvent | SnsLambdaEvent): Promise<SqsBatchResponse | Awaited<ReturnType<typeof handleSesFeedback>>> => {
+    if (isSnsEvent(event)) {
+      suppressions ??= createSuppressionService({ store: createDynamoSuppressionStore() });
+      // Yalnizca yapilandirilmis SES geri bildirim topic'i (infra/worker.tf SES_FEEDBACK_TOPIC_ARN).
+      return handleSesFeedback(event, { service: suppressions, topicArn: deps.sesFeedbackTopicArn ?? process.env.SES_FEEDBACK_TOPIC_ARN });
+    }
+    sqs ??= createNotificationWorker();
+    return sqs(event as SqsEvent);
+  };
+}
+
 /** Lambda giris noktasi (Terraform: handler = "notification-worker.handler"). */
-export const handler = createNotificationWorker();
+export const handler = createWorkerEntry();

@@ -1,4 +1,4 @@
-import { ArrowLeftRight, BadgeCheck, Briefcase, Building, Layers, Receipt, CalendarDays, ClipboardPen, Contact, CreditCard, DoorOpen, FileText, FileUp, Gauge, Landmark, LayoutDashboard, ListChecks, Megaphone, Scale, ScrollText, Settings, ShieldCheck, Tag, UserCog, Users, Vote, Wallet, Wrench } from 'lucide-react';
+import { ArrowLeftRight, BadgeCheck, Briefcase, Building, CalendarDays, ClipboardPen, Contact, CreditCard, DoorOpen, FileText, FileUp, Gauge, Landmark, Layers, LayoutDashboard, ListChecks, MailX, Megaphone, Receipt, Scale, ScrollText, Settings, ShieldCheck, Tag, UserCog, Users, Vote, Wallet, Wrench } from 'lucide-react';
 import type { ComponentType } from 'react';
 import type { FeatureKey } from '@/lib/features/catalog';
 import { AUDIT_ROLES, EQUIPMENT_ROLES, GATE_ROLES, METER_READING_ROLES, METER_ROLES, MY_TASKS_ROLES, OFFICE_ROLES, PORTFOLIO_ROLES, type Role, SECURITY_ROLES, TEAM_ROLES, TICKET_ROLES, isPlatformRole } from '@/types/roles';
@@ -57,6 +57,7 @@ export const PLATFORM_NAV: readonly NavItem[] = [
   { to: '/admin/billing/plans', label: 'Abonelik Planları', icon: Layers },
   { to: '/admin/billing/invoices', label: 'Abonelik Faturaları', icon: Receipt },
   { to: '/admin/users', label: 'Kullanıcılar', icon: UserCog },
+  { to: '/admin/email-suppressions', label: 'E-posta Engelleri', icon: MailX },
   { to: '/admin/audit', label: 'Denetim Günlüğü', icon: ScrollText },
 ];
 
