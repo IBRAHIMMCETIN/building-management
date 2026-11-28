@@ -7,9 +7,9 @@ const plate = await import('@/lib/gate/plate');
 const pass = await import('@/lib/gate/pass');
 
 /*
- * Gecici esitlik testi: sakin kapi semalari ve yardimcilari su an web (lib/api/gate.ts, lib/gate/*) ve
- * ortak pakette (packages/shared/src/api/portalGate.ts, mobil kullanir) iki kopya. Tek kaynaga
- * indirilene kadar sekil veya davranis ayrilirsa bu test kirilir.
+ * Esitlik testi: web'deki eski yollar (lib/api/gate.ts, lib/gate/*) artik ortak paketten
+ * (packages/shared/src/api/portalGate.ts, api/gate.ts, gate/plate.ts) yeniden disa aktarir. Biri yeniden
+ * yerel bir kopya yazarsa ve sekil veya davranis ayrilirsa bu test kirilir.
  */
 
 const json = (s: z.ZodType) => z.toJSONSchema(s);

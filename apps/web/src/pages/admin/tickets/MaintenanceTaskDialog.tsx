@@ -1,3 +1,4 @@
+import { type ChecklistAnswer, checklistErrors } from '@bm/shared/api/work';
 import { AlertTriangle, CheckCircle2, Play, UserCheck, Wrench, XCircle } from 'lucide-react';
 import { useState } from 'react';
 import { Link } from 'react-router';
@@ -17,17 +18,10 @@ import { EstimateCard } from './EstimateCard';
 import { WorkCostCard } from './WorkCostCard';
 import { useTicketLabels } from './shared';
 
-type Result = { id: string; ok: boolean | null; note: string };
+type Result = ChecklistAnswer;
 
-/** Tamamlama formu dogrulamasi (API kurali: zorunlu maddeler cevaplanir; basarisiz maddede not). */
-export function checklistErrors(task: Pick<MaintenanceTask, 'checklist'>, results: readonly Result[]): string | null {
-  for (const item of task.checklist) {
-    const r = results.find((x) => x.id === item.id);
-    if (item.required && (r?.ok === null || r?.ok === undefined)) return `Zorunlu madde cevaplanmadı: ${item.text}`;
-    if (r?.ok === false && r.note.trim().length < 3) return `Başarısız madde için açıklama gerekli: ${item.text}`;
-  }
-  return null;
-}
+/** Tamamlama formu dogrulamasi (API kurali: zorunlu maddeler cevaplanir; basarisiz maddede not). Web + mobil ortak. */
+export { checklistErrors };
 
 /** Bakim gorevi: kontrol listesiyle tamamlama, fotograf, atama / ustlenme, atlama, gorevden ariza, masraf. */
 export function MaintenanceTaskDialog({ taskId, onClose, onOpenTicket }: { taskId: string | null; onClose: () => void; onOpenTicket?: (ticketId: string) => void }) {
