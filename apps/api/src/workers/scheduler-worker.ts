@@ -33,6 +33,7 @@ import { type BulkJobService, createBulkJobService } from '../modules/bulkjobs/s
 import { createDynamoDeviceRepository } from '../modules/notifications/devices.js';
 import { expoClientFromEnv, pushChannelMode } from '../modules/notifications/push.js';
 import { type ReceiptCheckResult, checkPushReceipts, createDynamoReceiptStore } from '../modules/notifications/push-receipts.js';
+import { type SubscriptionService, createSubscriptionService } from '../modules/subscriptions/service.js';
 
 /**
  * Zamanlanmis gorev worker'i (SQS tuketicisi).
@@ -75,6 +76,10 @@ import { type ReceiptCheckResult, checkPushReceipts, createDynamoReceiptStore } 
  *                  yonetime: her gun 30 gun icinde dolacak / son 30 gunde dolmus, pazartesi uzun
  *                  suredir dolmus sozlesme ve kontroller de) yayinlar.
  *                  Olay kimligi gun bazli deterministiktir (tekrar teslimde bildirim bir kez).
+ *   subscriptions  her gun 06:15 (Abonelik): abonelik durum makinesi - deneme bitis bildirimleri
+ *                  (7 / 1 gun), deneme sonu ilk donem, donem faturasi, vade gecince `past_due`, ek
+ *                  sure (`graceDays`) dolunca `suspended`, odeme gelince yeniden acilma. Aboneligi
+ *                  olmayan (legacy) site `skipped: legacy`. Gun tekrari degisiklik uretmez.
  *   outbox_sweep   5 dakikada bir: esikten (varsayilan 2 dk) eski, hala bekleyen outbox
  *                  kayitlarini relay cekirdegiyle yeniden yayinlar (apartman dongusu yok; tek tur).
  *   push_receipts  saatte bir (:20): mobil bildirimlerin Expo makbuzlari; kapanisindan 15 dk gecmis
@@ -117,6 +122,7 @@ export const JOBS = [
   'maintenance_tasks',
   'ticket_maintenance',
   'push_receipts',
+  'subscriptions',
 ] as const;
 export type Job = (typeof JOBS)[number];
 
@@ -184,6 +190,8 @@ export type SchedulerDeps = {
   polls: Pick<PollService, 'freezeEnded'>;
   /** Guvenlik kapisi: tasinanlarin gecis / araclarini pasife alir (`maintenance_tasks`). */
   gate: Pick<GateDepartures, 'sweep'>;
+  /** Abonelik durum makinesi (`subscriptions`). */
+  subscriptions: Pick<SubscriptionService, 'runDaily'>;
   /** null: online odeme kapali. Verilmezse ortam degiskenlerinden kurulur (ilk kullanimda). */
   payments: Pick<PaymentsService, 'reconcile' | 'reconcileRefunds'> | null;
   /** Mobil bildirim makbuz kontrolu (null: PUSH_CHANNEL=off). Verilmezse ortamdan kurulur. */
@@ -224,6 +232,7 @@ export function createSchedulerWorker(overrides: Partial<SchedulerDeps> = {}) {
     equipment?: SchedulerDeps['equipment'];
     polls?: SchedulerDeps['polls'];
     gate?: SchedulerDeps['gate'];
+    subscriptions?: SchedulerDeps['subscriptions'];
     payments?: SchedulerDeps['payments'];
     payouts?: SchedulerDeps['payouts'];
     invoices?: SchedulerDeps['invoices'];
@@ -260,6 +269,8 @@ export function createSchedulerWorker(overrides: Partial<SchedulerDeps> = {}) {
   const equipment = () => (lazy.equipment ??= overrides.equipment ?? createEquipmentService({ now, store: undefined }));
   const polls = () => (lazy.polls ??= overrides.polls ?? createPollService({ now, portal: createPortalService({ now }) }));
   const gate = () => (lazy.gate ??= overrides.gate ?? createGateDepartures({ repo: gateRepository, memberships: membershipRepository, now, metrics: metrics(), log }));
+  // Zamanlayicida PDF deposu gerekmez (PDF indirmede API uretir).
+  const subscriptions = () => (lazy.subscriptions ??= overrides.subscriptions ?? createSubscriptionService({ now, store: undefined }));
   /** Odeme servisleri tek yapilandirmadan, ilk kullanimda kurulur. */
   function paymentServices() {
     if (lazy.payments !== undefined && lazy.payouts !== undefined && lazy.invoices !== undefined) return;
@@ -591,6 +602,12 @@ export function createSchedulerWorker(overrides: Partial<SchedulerDeps> = {}) {
             digest: hasItems,
           },
         };
+      }
+
+      case 'subscriptions': {
+        const r = await subscriptions().runDaily(apartmentId, day);
+        if (r.status === 'skipped') return { apartmentId, status: 'skipped', reason: r.reason };
+        return { apartmentId, status: 'done', detail: { date: day, ...r } };
       }
 
       // Apartman dongusu disinda islenir (runJob); ledger_audit yukarida ayrilir.

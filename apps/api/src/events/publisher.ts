@@ -47,6 +47,11 @@ export const EVENT_TYPES = [
   'TENDER_DECIDED',
   'TENDER_CANCELLED',
   'TENDER_REPLIED',
+  'SUBSCRIPTION_TRIAL_ENDING',
+  'SUBSCRIPTION_INVOICE_ISSUED',
+  'SUBSCRIPTION_PAST_DUE',
+  'SUBSCRIPTION_SUSPENDED',
+  'SUBSCRIPTION_REACTIVATED',
 ] as const;
 export type EventType = (typeof EVENT_TYPES)[number];
 
@@ -287,6 +292,24 @@ export type TenderEventPayload = { tenderId: string };
  */
 export type TenderRepliedPayload = { tenderId: string; commentId: string };
 
+/**
+ * Abonelik / lisans (platform <-> apartman yonetimi). Alici: apartmanin guncel yoneticileri ve
+ * yonetim firmasi kullanicilari (tercih kategorisi `billing`). Yazimla ayni atomik islemde outbox;
+ * `eventId` abonelik kayit surumunu tasir (her gecis bir kez). Kisisel veri yok.
+ */
+export type SubscriptionTrialEndingPayload = { trialEndsAt: IsoDate; daysLeft: number; planName: string };
+export type SubscriptionInvoiceIssuedPayload = {
+  invoiceId: string;
+  invoiceNumber: string;
+  totalKurus: number;
+  dueDate: IsoDate;
+  periodStart: IsoDate;
+  periodEnd: IsoDate;
+};
+export type SubscriptionPastDuePayload = { pastDueSince: IsoDate; suspendOn: IsoDate; overdueTotalKurus: number; invoiceCount: number };
+export type SubscriptionSuspendedPayload = { suspendedAt: IsoDate; reason: 'non_payment' | 'manual' };
+export type SubscriptionReactivatedPayload = { reactivatedOn: IsoDate; from: string };
+
 type PayloadByType = {
   DUE_GENERATED: DueGeneratedPayload;
   PAYMENT_RECEIVED: PaymentReceivedPayload;
@@ -311,6 +334,11 @@ type PayloadByType = {
   TENDER_DECIDED: TenderEventPayload;
   TENDER_CANCELLED: TenderEventPayload;
   TENDER_REPLIED: TenderRepliedPayload;
+  SUBSCRIPTION_TRIAL_ENDING: SubscriptionTrialEndingPayload;
+  SUBSCRIPTION_INVOICE_ISSUED: SubscriptionInvoiceIssuedPayload;
+  SUBSCRIPTION_PAST_DUE: SubscriptionPastDuePayload;
+  SUBSCRIPTION_SUSPENDED: SubscriptionSuspendedPayload;
+  SUBSCRIPTION_REACTIVATED: SubscriptionReactivatedPayload;
 };
 
 export type DomainEvent<T extends EventType = EventType> = {

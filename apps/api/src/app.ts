@@ -91,6 +91,18 @@ import { type MeterReadingService, createMeterReadingService } from './modules/m
 import { type MeterReversalService, createMeterReversalService } from './modules/meters/reversal.js';
 import { type MeterService, createMeterService } from './modules/meters/service.js';
 import { createOwnershipReader } from './modules/ownership/reader.js';
+import {
+  type EntitlementReader,
+  assertStaffCapacity,
+  assertUnitCapacity,
+  createEntitlementReader,
+  failOpenFromEnv,
+  legacyEntitlementReader,
+  withEntitlements,
+} from './modules/subscriptions/entitlements.js';
+import { subscriptionRepository } from './modules/subscriptions/repository.js';
+import { platformBillingRoutes, subscriptionRoutes } from './modules/subscriptions/routes.js';
+import { type SubscriptionService, createSubscriptionService } from './modules/subscriptions/service.js';
 import { ownershipRoutes } from './modules/ownership/routes.js';
 import { type OwnershipService, createOwnershipService } from './modules/ownership/service.js';
 
@@ -208,6 +220,15 @@ export type AppConfig = {
   expenseBreakdown?: (ctx: { apartmentId: string }, month?: string) => Promise<ExpenseBreakdown>;
   /** Adim 1: platform / yonetici ozellik uclari (testlerde sahte depoyla). */
   featureService?: FeatureService;
+  /**
+   * Abonelik yetkileri (salt okunur, plan ozellikleri, limitler). Verilmezse: servis enjekte
+   * edilmisse (testler) veya veri deposu yapilandirilmamissa legacy (kisitsiz); production'da
+   * abonelik kaydindan (30 sn konteyner onbellegi; okuma hatasinda fail closed, yalnizca
+   * `ENTITLEMENTS_FAIL_OPEN=true` ile acik).
+   */
+  entitlements?: EntitlementReader;
+  /** Abonelik / lisans: platform plan / abonelik / fatura uclari ve yonetici gorunumu. */
+  subscriptionService?: SubscriptionService;
 };
 
 /** Testlerin sahte servislerle kurdugu uygulama mi? (production `createApp`'e servis vermez.) */
@@ -227,9 +248,15 @@ export function createApp(config: AppConfig) {
   const mfaPolicy = config.mfaPolicy ?? loadMfaPolicy();
   const metrics = config.metrics ?? noopMetrics;
   const mfaService = config.mfaService ?? createMfaService({ policy: mfaPolicy, metrics });
-  const authenticate = withSupportAccess(
-    withMfaPolicy(config.authenticate ?? denyAll, mfaPolicy, () => new Date(), metrics),
-    supportService,
+  // Abonelik yetkileri: destek erisiminden SONRA (dis katman) - karar aktif apartmanin aboneligiyle.
+  const entitlements: EntitlementReader =
+    config.entitlements ??
+    (hasInjectedServices(config) || !process.env.DYNAMODB_TABLE_NAME
+      ? legacyEntitlementReader
+      : createEntitlementReader({ getSubscription: (id) => subscriptionRepository.peekSubscription(id), failOpen: failOpenFromEnv() }));
+  const authenticate = withEntitlements(
+    withSupportAccess(withMfaPolicy(config.authenticate ?? denyAll, mfaPolicy, () => new Date(), metrics), supportService),
+    entitlements,
   );
   // Modul rotalari kendi onError'unu baglar; kalan hatalar da (ornek MFA_REQUIRED) ayni bicimde.
   app.onError(handleError);
@@ -280,9 +307,14 @@ export function createApp(config: AppConfig) {
       validateIncomeAccount: async (apartmentId, actor, accountId) => {
         await incomeAccountResolver?.({ apartmentId, userId: actor }, accountId, 'monthlyDuesPlan.incomeAccountId');
       },
+      assertUnitCapacity: (apartmentId, next) => assertUnitCapacity(entitlements, apartmentId, next),
     });
   app.route('/api/sites', coreRoutes({ authenticate, service: coreService }));
   app.route('/api/admin/apartments', coreAdminRoutes({ authenticate, service: coreService }));
+  // Abonelik / lisans: yonetici gorunumu (salt okunur durumda da acik) ve platform uclari.
+  const subscriptionService = config.subscriptionService ?? createSubscriptionService({ invalidate: (id) => entitlements.invalidate(id) });
+  app.route('/api/subscription', subscriptionRoutes({ authenticate, service: subscriptionService }));
+  app.route('/api/admin/billing', platformBillingRoutes({ authenticate, service: subscriptionService }));
 
   // Finans 2.1: mulkiyet sicili okuyucusu (split faturalama, portal paydas carisi, uyelik pay kurali).
   const ownershipReader = createOwnershipReader();
@@ -392,7 +424,8 @@ export function createApp(config: AppConfig) {
       residents: residentsService,
       finance: financeService,
       memberships: membershipService,
-      ...(config.coreService ? { core: config.coreService } : {}),
+      // Bolum ekleme ayni cekirdek servisle (abonelik bolum limiti dahil).
+      core: coreService,
     });
   app.route('/api/imports', importRoutes({ authenticate, service: importsService }));
 
@@ -400,7 +433,7 @@ export function createApp(config: AppConfig) {
     '/api/apartment-roles',
     apartmentRoleRoutes({
       authenticate,
-      service: config.apartmentRoleService ?? createApartmentRoleService(),
+      service: config.apartmentRoleService ?? createApartmentRoleService({ assertStaffCapacity: (apartmentId, next) => assertStaffCapacity(entitlements, apartmentId, next) }),
     }),
   );
 
