@@ -1,17 +1,25 @@
 import { BellRing } from 'lucide-react';
 import { useId } from 'react';
 import { Alert, Card, CardTitle, Skeleton } from '@/components/ui';
+import { useAuth } from '@/hooks/useAuth';
+import { useSubscriptionStatus } from '@/hooks/useSubscriptions';
 import { useMyDevices, useNotificationPreferences, useSaveNotificationPreferences } from '@/hooks/useTeam';
 import { errorMessage } from '@/lib/api/errors';
 import { BRAND_NAME } from '@/lib/brand';
 import {
+  type AnyNotificationCategory,
   type ChannelPreferencesInput,
+  MANAGEMENT_NOTIFICATION_CATEGORIES,
   NOTIFICATION_CATEGORIES,
   NOTIFICATION_CATEGORY_META,
   type NotificationPreferences,
   categoryEnabled,
   channelEnabled,
 } from '@/lib/api/notificationPreferences';
+import type { Role } from '@/types/roles';
+
+/** Abonelik / lisans bildirimleri (billing) yalnizca apartmani yoneten rollere gider. */
+const MANAGING_ROLES: readonly Role[] = ['apartment_manager', 'management_company'];
 
 /**
  * Hesabim - bildirim tercihleri (`/api/me/notification-preferences`): e-posta ana anahtari ve kategori
@@ -23,6 +31,9 @@ import {
  * Mobil bildirim (push): kullanicinin en az bir aktif telefonu varsa (`GET /api/me/devices`) e-posta
  * bolumunun altinda ayni yapida ana anahtar + kategoriler (yalnizca `push` alani gider); yoksa mobil
  * uygulamanin actigini soyleyen kisa not. Mobil uygulamanin Hesabım > Mobil bildirim karti ile ayni metinler.
+ *
+ * Abonelik: yonetici ve yonetim firmasina, abonelik sistemi platformda aciksa her iki bolumde de
+ * "Abonelik ve faturalar" konusu (ayni satir bicimi, en sonda).
  */
 export function NotificationPreferencesCard() {
   const prefs = useNotificationPreferences();
@@ -30,6 +41,11 @@ export function NotificationPreferencesCard() {
   // Mobil bildirim bolumu yalnizca kayitli (aktif) bir telefon varsa; yukleniyor / hata: bolum yok, e-posta etkilenmez.
   const devices = useMyDevices();
   const id = useId();
+  const { user } = useAuth();
+  const managing = !!user?.role && MANAGING_ROLES.includes(user.role);
+  const billing = useSubscriptionStatus();
+  const categories: readonly AnyNotificationCategory[] =
+    managing && billing.data?.enabled === true ? [...NOTIFICATION_CATEGORIES, ...MANAGEMENT_NOTIFICATION_CATEGORIES] : NOTIFICATION_CATEGORIES;
   const emailEnabled = prefs.data?.email.enabled ?? true;
 
   return (
@@ -60,7 +76,7 @@ export function NotificationPreferencesCard() {
             </span>
           </label>
           <div role="group" aria-label="E-posta konuları" className={`flex flex-col gap-3 pl-6 ${emailEnabled ? '' : 'opacity-60'}`}>
-            {NOTIFICATION_CATEGORIES.map((category) => {
+            {categories.map((category) => {
               const meta = NOTIFICATION_CATEGORY_META[category];
               const descId = `${id}-${category}-desc`;
               return (
@@ -87,7 +103,7 @@ export function NotificationPreferencesCard() {
           </div>
           {devices.data &&
             (devices.data.devices.length > 0 ? (
-              <PushSection id={id} prefs={prefs.data} saving={save.isPending} onChange={(push) => save.mutate({ push })} />
+              <PushSection id={id} prefs={prefs.data} categories={categories} saving={save.isPending} onChange={(push) => save.mutate({ push })} />
             ) : (
               <p className="text-small text-muted">
                 Mobil bildirimler, {BRAND_NAME} mobil uygulamasında giriş yapıp bildirimlere izin verdiğinizde açılır; konularını sonra buradan da seçebilirsiniz.
@@ -109,7 +125,20 @@ export function NotificationPreferencesCard() {
  * Mobil bildirim bolumu: e-posta bolumuyle ayni yapi (ana anahtar + aciklama, girintili konu grubu, kapaliyken
  * not). Konu kutularinin ekran okuyucu adi "<konu>, mobil bildirim": ayni konular e-posta bolumunde de var.
  */
-function PushSection({ id, prefs, saving, onChange }: { id: string; prefs: NotificationPreferences; saving: boolean; onChange: (push: ChannelPreferencesInput) => void }) {
+function PushSection({
+  id,
+  prefs,
+  categories,
+  saving,
+  onChange,
+}: {
+  id: string;
+  prefs: NotificationPreferences;
+  /** E-posta bolumuyle ayni konular (abonelik satiri dahil, ayni kuralla). */
+  categories: readonly AnyNotificationCategory[];
+  saving: boolean;
+  onChange: (push: ChannelPreferencesInput) => void;
+}) {
   const pushEnabled = channelEnabled(prefs, 'push');
   return (
     <>
@@ -131,7 +160,7 @@ function PushSection({ id, prefs, saving, onChange }: { id: string; prefs: Notif
         </span>
       </label>
       <div role="group" aria-label="Mobil bildirim konuları" className={`flex flex-col gap-3 pl-6 ${pushEnabled ? '' : 'opacity-60'}`}>
-        {NOTIFICATION_CATEGORIES.map((category) => {
+        {categories.map((category) => {
           const meta = NOTIFICATION_CATEGORY_META[category];
           const descId = `${id}-push-${category}-desc`;
           return (

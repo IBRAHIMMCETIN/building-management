@@ -16,8 +16,14 @@ type State = {
   mutate: ReturnType<typeof vi.fn>;
   /** `GET /api/me/devices`; undefined: yukleniyor / hata. */
   devices?: { deviceId: string; platform: string; lastSeenAt: string }[];
+  /** Aktif rol ve abonelik sisteminin acik olup olmadigi (abonelik satiri). */
+  role: string;
+  billing: boolean;
 };
-const state: State = { saving: false, mutate: vi.fn() };
+const state: State = { saving: false, mutate: vi.fn(), role: 'resident', billing: true };
+
+vi.mock('@/hooks/useAuth', () => ({ useAuth: () => ({ user: { role: state.role } }) }));
+vi.mock('@/hooks/useSubscriptions', () => ({ useSubscriptionStatus: () => ({ data: { enabled: state.billing, status: 'legacy', legacy: true, readOnly: false } }) }));
 
 vi.mock('@/hooks/useTeam', () => ({
   useNotificationPreferences: () => ({ data: state.data, isPending: !state.data && !state.loadError, isError: !!state.loadError, error: state.loadError ?? null }),
@@ -29,7 +35,7 @@ let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => {
   act(() => root?.unmount());
   document.body.innerHTML = '';
-  Object.assign(state, { data: undefined, loadError: undefined, saving: false, saveError: undefined, mutate: vi.fn(), devices: undefined });
+  Object.assign(state, { data: undefined, loadError: undefined, saving: false, saveError: undefined, mutate: vi.fn(), devices: undefined, role: 'resident', billing: true });
 });
 
 const PHONE = { deviceId: 'd1', platform: 'ios', lastSeenAt: '2026-11-28T08:00:00.000Z' };
@@ -157,6 +163,41 @@ describe('mobil bildirim bolumu', () => {
   it('kaydedilirken push anahtarlari da devre disi', () => {
     const { el } = render({ data: { email: { enabled: true }, push: { enabled: true } }, devices: [PHONE], saving: true });
     expect([...el.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')].every((i) => i.disabled)).toBe(true);
+  });
+});
+
+describe('abonelik ve faturalar satiri (yalnizca yonetim, sistem aciksa)', () => {
+  it('sakin, denetci, gorevli ve platform yoneticisinde yok', () => {
+    for (const role of ['resident', 'observer', 'building_staff', 'platform_admin']) {
+      const r = render({ data: { email: { enabled: true }, push: { enabled: true } }, devices: [PHONE], role });
+      expect(r.box('billing'), role).toBeNull();
+      expect(r.box('push.billing'), role).toBeNull();
+      act(() => root?.unmount());
+      document.body.innerHTML = '';
+    }
+  });
+
+  it('yoneticide e-posta ve mobil bolumde ayni satir bicimiyle, en sonda; yalnizca degisen alan gider', () => {
+    const { el, box, labelOf, descriptionOf } = render({ data: { email: { enabled: true, billing: false }, push: { enabled: true } }, devices: [PHONE], role: 'apartment_manager' });
+    const billing = box('billing');
+    expect(billing?.checked).toBe(false);
+    expect(labelOf(billing)).toBe('Abonelik ve faturalar');
+    expect(descriptionOf(billing)).toContain('Yalnızca yönetime gönderilir');
+    const emailGroup = el.querySelector('[role="group"][aria-label="E-posta konuları"]');
+    expect([...(emailGroup?.querySelectorAll('input') ?? [])].at(-1)?.getAttribute('name')).toBe('billing');
+    const push = box('push.billing');
+    expect(push?.checked).toBe(true);
+    expect(push?.getAttribute('aria-label')).toBe('Abonelik ve faturalar, mobil bildirim');
+    act(() => billing?.click());
+    expect(state.mutate).toHaveBeenLastCalledWith({ email: { billing: true } });
+    act(() => push?.click());
+    expect(state.mutate).toHaveBeenLastCalledWith({ push: { billing: false } });
+  });
+
+  it('abonelik sistemi kapaliyken yoneticide de iki bolumde de yok', () => {
+    const r = render({ data: { email: { enabled: true }, push: { enabled: true } }, devices: [PHONE], role: 'management_company', billing: false });
+    expect(r.box('billing')).toBeNull();
+    expect(r.box('push.billing')).toBeNull();
   });
 });
 

@@ -258,7 +258,7 @@ describe('portfoy servisi', () => {
   it('modul anahtari kapali apartmanda genel kurul / ihale bolumu okunmaz ve kartta yok', async () => {
     const { repo } = fakeRepo({ gsi, names });
     const reads: string[] = [];
-    const features = { resolve: async (apt: string) => ({ ...resolveFeatures(undefined), 'admin.assemblies': apt !== 'apt-2', 'admin.tenders': apt !== 'apt-1' }) };
+    const features = { resolve: async (apt: string) => ({ ...resolveFeatures(undefined), 'modules.pollsAssemblies': apt !== 'apt-2', 'modules.tenders': apt !== 'apt-1' }) };
     const service = createPortfolioService({ repo, sources: fakeSources({ onRead: (c, s) => reads.push(`${c.apartmentId}:${s}`) }), now: () => NOW, log: silent, features });
     const page = await service.list({ userId: USER });
     const card = (id: string) => page.items.find((c) => c.apartmentId === id);

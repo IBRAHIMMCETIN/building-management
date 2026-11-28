@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 vi.mock('@/lib/api/client', () => ({ apiClient: {} }));
 import { matchesSiteQuery, platformSiteSchema } from '@/lib/api/platform';
 import { ADMIN_ROLES, APARTMENT_ADMIN_ROLES, PLATFORM_HOME, homePathForRole } from '@/types/roles';
-import { APARTMENT_NAV, PLATFORM_NAV, filterNav, navItemsFor, panelTitleFor } from './adminNav';
+import { APARTMENT_NAV, PLATFORM_NAV, filterNav, navFeatureCheck, navItemsFor, panelTitleFor } from './adminNav';
 
 describe('yonetim menusu: platform ve apartman ayrimi', () => {
   it('platform_admin yalnizca platform geneli ogeleri gorur; apartman ekranlari yok', () => {
@@ -12,6 +12,9 @@ describe('yonetim menusu: platform ve apartman ayrimi', () => {
       '/admin/payments',
       '/admin/payments/transfers',
       '/admin/payments/invoices',
+      '/admin/billing/subscriptions',
+      '/admin/billing/plans',
+      '/admin/billing/invoices',
       '/admin/users',
       '/admin/email-suppressions',
       '/admin/audit',
@@ -33,7 +36,7 @@ describe('yonetim menusu: platform ve apartman ayrimi', () => {
     expect(navItemsFor('building_staff').map((n) => n.to)).not.toContain('/admin/audit');
     for (const role of APARTMENT_ADMIN_ROLES) {
       const paths = navItemsFor(role).map((n) => n.to);
-      for (const p of ['/admin/apartments', '/admin/payments', '/admin/payments/transfers', '/admin/payments/invoices', '/admin/users', '/admin/email-suppressions']) {
+      for (const p of ['/admin/apartments', '/admin/payments', '/admin/payments/transfers', '/admin/payments/invoices', '/admin/billing/subscriptions', '/admin/billing/plans', '/admin/billing/invoices', '/admin/users', '/admin/email-suppressions']) {
         expect(paths).not.toContain(p);
       }
       expect(panelTitleFor(role)).toBe('Yönetim Paneli');
@@ -116,8 +119,15 @@ describe('yonetim menusu: site ozellik anahtarlari (Adim 1)', () => {
     expect(filterNav(items, 'apartment_manager').map((n) => n.to)).toEqual(['/admin/a', '/admin/b']);
     expect(filterNav(items, 'apartment_manager', () => false).map((n) => n.to)).toEqual(['/admin/a']);
     expect(filterNav(items, 'observer', () => true).map((n) => n.to)).toEqual(['/admin/a']);
-    // Gercek menude yalnizca modul anahtarli ogeler (varsayilan acik) ozellige baglidir.
-    const off = navItemsFor('apartment_manager', false, () => false).map((n) => n.to);
-    expect(navItemsFor('apartment_manager').map((n) => n.to).filter((to) => !off.includes(to))).toEqual(['/admin/tenders', '/admin/assemblies']);
+    // Abonelik plan modulleri (modules.*) menude anahtara bagli; anahtarlar acikken menu aynen.
+    expect(navItemsFor('apartment_manager', false, () => false)).toEqual(navItemsFor('apartment_manager').filter((n) => !n.feature));
+    expect(navItemsFor('apartment_manager', false, () => true)).toEqual(navItemsFor('apartment_manager'));
+    expect(APARTMENT_NAV.filter((n) => n.feature).every((n) => n.feature?.startsWith('modules.'))).toBe(true);
+    // Site ozellikleri yuklenirken / okunamazken abonelik modulleri gorunur kalir (onceki davranis).
+    for (const status of ['loading', 'error'] as const) {
+      expect(navItemsFor('apartment_manager', false, navFeatureCheck(status, () => false))).toEqual(navItemsFor('apartment_manager'));
+      expect(navFeatureCheck(status, () => false)('admin.debtRestructure')).toBe(false);
+    }
+    expect(navFeatureCheck('ready', (k) => k !== 'modules.gate')('modules.gate')).toBe(false);
   });
 });

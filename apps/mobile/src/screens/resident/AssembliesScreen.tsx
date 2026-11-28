@@ -32,7 +32,7 @@ export function OwnersOnlyState() {
 export function AssemblyQueryState({ error, onRetry }: { error: unknown; onRetry: () => void }) {
   if (error instanceof ApiError && error.status === 403 && error.code === 'feature_disabled') {
     const key = (error.body as { feature?: unknown } | undefined)?.feature;
-    return <FeatureDisabledNotice feature={isFeatureKey(key) ? key : 'admin.assemblies'} title="Genel Kurul" />;
+    return <FeatureDisabledNotice feature={isFeatureKey(key) ? key : 'modules.pollsAssemblies'} title="Genel Kurul" />;
   }
   if (error instanceof ApiError && error.status === 403) return <OwnersOnlyState />;
   return <PortalQueryState error={error} onRetry={onRetry} />;

@@ -51,6 +51,11 @@ export type ApartmentRoleServiceDeps = {
   /** Cognito kullanici dizini (davet). Verilmezse ortamdan secilir (bkz. residents/directory). */
   directory: UserDirectory;
   now: () => Date;
+  /**
+   * Abonelik: yeni kisiyle olusacak aktif ekip kullanicisi sayisi plan limitini asiyorsa hata firlatir
+   * (`403 plan_limit_exceeded`). Ayni kisiye ikinci rol sayilmaz.
+   */
+  assertStaffCapacity?: (apartmentId: string, nextActiveStaff: number) => Promise<void>;
 };
 
 export type ApartmentRoleView = ApartmentRole & { isCurrent: boolean };
@@ -88,6 +93,24 @@ export function createApartmentRoleService(overrides: Partial<ApartmentRoleServi
     new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Istanbul' }).format(deps.now());
 
   const isCurrentOn = (r: ApartmentRole, day: IsoDate) => r.status === 'active' && r.startDate <= day && (!r.endDate || r.endDate >= day);
+
+  /** Plan limiti: yeni kisi (kimlik veya e-postayla mevcut aktif ekip uyesi degilse) sayilir. */
+  /** Koltuk tutan kayit: aktif ve bitmemis (bugun gecerli VEYA ileri tarihte baslayacak). */
+  const holdsSeat = (r: Pick<ApartmentRole, 'status' | 'endDate'>, day: IsoDate) => r.status === 'active' && (!r.endDate || r.endDate >= day);
+
+  /**
+   * Abonelik ekip limiti: ileri tarihli roller de sayilir (limit tarihle asilamaz). Ayni kisinin
+   * ikinci rolu sayilmaz. Not: kontrol okuma + yazma ile yapilir (atomik degil); es zamanli iki
+   * davet en fazla bir kisi asabilir, sonraki her ekleme yine reddedilir (README).
+   */
+  async function checkStaffCapacity(apartmentId: string, who: { userId?: string; email?: string }) {
+    if (!deps.assertStaffCapacity) return;
+    const day = today();
+    const seated = (await repo.list(apartmentId)).filter((r) => r.apartmentId === apartmentId && holdsSeat(r, day));
+    const known = seated.some((r) => (who.userId && r.userId === who.userId) || (who.email && r.email?.toLowerCase() === who.email));
+    if (known) return;
+    await deps.assertStaffCapacity(apartmentId, new Set(seated.map((r) => r.userId)).size + 1);
+  }
 
   function view(r: ApartmentRole, viewerRole?: Role): ApartmentRoleView {
     return {
@@ -164,6 +187,7 @@ export function createApartmentRoleService(overrides: Partial<ApartmentRoleServi
 
     const site = await deps.core.getSite(ctx.apartmentId);
     if (!site) throw new CoreError('not_found', 'Site bulunamadi');
+    await checkStaffCapacity(ctx.apartmentId, { userId });
 
     const ts = stamp();
     const record: ApartmentRole = {
@@ -236,6 +260,10 @@ export function createApartmentRoleService(overrides: Partial<ApartmentRoleServi
     if (endDate && (!current.endDate || endDate < current.endDate)) {
       await assertManagerRemains(ctx, { ...current, endDate });
     }
+    // Abonelik ekip limiti: bitmis kaydi tarih uzatarak yeniden koltuga almak da sayilir.
+    if (!holdsSeat(current, today()) && holdsSeat({ status: current.status, endDate }, today())) {
+      await checkStaffCapacity(ctx.apartmentId, { userId: current.userId });
+    }
 
     return save(
       {
@@ -286,6 +314,8 @@ export function createApartmentRoleService(overrides: Partial<ApartmentRoleServi
     }
     const site = await deps.core.getSite(ctx.apartmentId);
     if (!site) throw new CoreError('not_found', 'Site bulunamadi');
+    // Limit Cognito hesabi olusturulmadan once kontrol edilir (davet e-postasi gitmez).
+    await checkStaffCapacity(ctx.apartmentId, { email });
 
     let account: Awaited<ReturnType<UserDirectory['findOrCreate']>>;
     try {

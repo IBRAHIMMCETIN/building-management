@@ -29,7 +29,7 @@ export function MyTenderDetailPage() {
 function Detail({ tender: t }: { tender: Tender }) {
   const ask = useAskTenderQuestion();
   // Genel kurul modulu sitede kapaliysa karar baglantisi duz metin (sayfa acilmaz).
-  const assembliesOn = useFeature('admin.assemblies');
+  const assembliesOn = useFeature('modules.pollsAssemblies');
   const d = t.decision;
   return (
     <>

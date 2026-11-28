@@ -43,6 +43,9 @@ const PlatformApartmentsPage = lazyPage(() => import('@/pages/platform/apartment
 const PlatformInvoicesPage = lazyPage(() => import('@/pages/platform/payments/PlatformInvoicesPage'), 'PlatformInvoicesPage');
 const PlatformPaymentsPage = lazyPage(() => import('@/pages/platform/payments/PlatformPaymentsPage'), 'PlatformPaymentsPage');
 const PlatformPayoutsPage = lazyPage(() => import('@/pages/platform/payments/PlatformPayoutsPage'), 'PlatformPayoutsPage');
+const PlatformPlansPage = lazyPage(() => import('@/pages/platform/billing/PlatformPlansPage'), 'PlatformPlansPage');
+const PlatformSubscriptionsPage = lazyPage(() => import('@/pages/platform/billing/PlatformSubscriptionsPage'), 'PlatformSubscriptionsPage');
+const PlatformSubscriptionInvoicesPage = lazyPage(() => import('@/pages/platform/billing/PlatformSubscriptionInvoicesPage'), 'PlatformSubscriptionInvoicesPage');
 const ResidentAnnouncementsPage = lazyPage(() => import('@/pages/resident/AnnouncementsPage'), 'ResidentAnnouncementsPage');
 const MyPollsPage = lazyPage(() => import('@/pages/resident/polls/MyPollsPage'), 'MyPollsPage');
 const MyPollDetailPage = lazyPage(() => import('@/pages/resident/polls/MyPollDetailPage'), 'MyPollDetailPage');
@@ -120,7 +123,7 @@ export const router = createBrowserRouter([
                   { path: 'reservations', element: <ReservationsPage /> },
                   // Ihale / teklif toplama (denetci yalnizca paylasilanlari salt okur).
                   {
-                    element: <RequireFeature feature="admin.tenders" title="İhaleler" />,
+                    element: <RequireFeature feature="modules.tenders" title="İhaleler" />,
                     children: [
                       { path: 'tenders', element: <TendersPage /> },
                       { path: 'tenders/:tenderId', element: <TenderDetailPage /> },
@@ -128,7 +131,7 @@ export const router = createBrowserRouter([
                   },
                   // Y1: anket / oylama (yonetici + yonetim firmasi yazar, denetci salt okur).
                   { path: 'polls', element: <PollsPage /> },
-                  { element: <RequireFeature feature="admin.assemblies" title="Genel Kurul" />, children: [{ path: 'assemblies', element: <AssembliesPage /> }] },
+                  { element: <RequireFeature feature="modules.pollsAssemblies" title="Genel Kurul" />, children: [{ path: 'assemblies', element: <AssembliesPage /> }] },
                   { path: 'import', element: <ImportPage /> },
                   { path: 'settings', element: <SettingsPage /> },
                 ],
@@ -183,6 +186,9 @@ export const router = createBrowserRouter([
                   { path: 'payments', element: <PlatformPaymentsPage /> },
                   { path: 'payments/transfers', element: <PlatformPayoutsPage /> },
                   { path: 'payments/invoices', element: <PlatformInvoicesPage /> },
+                  { path: 'billing/subscriptions', element: <PlatformSubscriptionsPage /> },
+                  { path: 'billing/plans', element: <PlatformPlansPage /> },
+                  { path: 'billing/invoices', element: <PlatformSubscriptionInvoicesPage /> },
                   { path: 'users', element: <PlatformUsersPage /> },
                   { path: 'email-suppressions', element: <PlatformEmailSuppressionsPage /> },
                 ],
@@ -208,7 +214,7 @@ export const router = createBrowserRouter([
               { path: 'talepler/:ticketId', element: <MyTicketDetailPage /> },
               { path: 'rezervasyon', element: <MyReservationsPage /> },
               {
-                element: <RequireFeature feature="admin.tenders" title="İhaleler" />,
+                element: <RequireFeature feature="modules.tenders" title="İhaleler" />,
                 children: [
                   { path: 'ihale', element: <MyTendersPage /> },
                   { path: 'ihale/:tenderId', element: <MyTenderDetailPage /> },
@@ -223,7 +229,7 @@ export const router = createBrowserRouter([
               { path: 'oylamalar/:pollId', element: <MyPollDetailPage /> },
               // Genel kurul devami: kat maliklerine toplantilar, kararlar ve tutanak.
               {
-                element: <RequireFeature feature="admin.assemblies" title="Genel Kurul" />,
+                element: <RequireFeature feature="modules.pollsAssemblies" title="Genel Kurul" />,
                 children: [
                   { path: 'genel-kurul', element: <MyAssembliesPage /> },
                   { path: 'genel-kurul/:assemblyId', element: <MyAssemblyDetailPage /> },

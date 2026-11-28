@@ -16,12 +16,14 @@
  *   tenders        ihale / teklif toplama: sakinlerle paylasim, karar, yayindan sonra iptal ve sakinin
  *                  sorusuna yonetim yaniti. Duyurulardan ayri: ihale ortak gider kararidir (seffaflik);
  *                  duyurulari kapatan sakin ihale e-postalarini almaya devam edebilmeli (ve tersi).
+ *   billing        abonelik / lisans (yalnizca yonetici ve yonetim firmasi): deneme bitisi, abonelik
+ *                  faturasi, gecikme, askiya alma ve yeniden acilma. Sakinlere hic gitmez.
  *
  * Kategori once olay turunden (worker), yoksa sablon adindan cozulur. Yeni olay / sablon, ait
  * oldugu kategorinin on ekiyle adlandirilmalidir; kategorisi cozulemeyen bildirim yalnizca ana
  * anahtara (`email.enabled`) tabidir.
  */
-export const NOTIFICATION_CATEGORIES = ['finance', 'announcements', 'tickets', 'gate', 'reservations', 'polls', 'assemblies', 'tenders'] as const;
+export const NOTIFICATION_CATEGORIES = ['finance', 'announcements', 'tickets', 'gate', 'reservations', 'polls', 'assemblies', 'tenders', 'billing'] as const;
 export type NotificationCategory = (typeof NOTIFICATION_CATEGORIES)[number];
 
 const EVENT_PREFIXES: [prefix: string, category: NotificationCategory][] = [
@@ -40,6 +42,7 @@ const EVENT_PREFIXES: [prefix: string, category: NotificationCategory][] = [
   ['POLL_', 'polls'],
   ['ASSEMBLY_', 'assemblies'],
   ['TENDER_', 'tenders'],
+  ['SUBSCRIPTION_', 'billing'],
 ];
 
 const TEMPLATE_PREFIXES: [prefix: string, category: NotificationCategory][] = [
@@ -57,6 +60,7 @@ const TEMPLATE_PREFIXES: [prefix: string, category: NotificationCategory][] = [
   ['poll_', 'polls'],
   ['assembly_', 'assemblies'],
   ['tender_', 'tenders'],
+  ['billing_', 'billing'],
 ];
 
 const byPrefix = (table: [string, NotificationCategory][], value: string) => table.find(([p]) => value.startsWith(p))?.[1];

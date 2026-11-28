@@ -6,6 +6,8 @@ import { fireEvent, screen } from '@testing-library/react-native';
 import { assembly, heldAssembly, residentContexts } from '@/test/assemblyFixtures';
 import { renderApp } from '@/test/renderApp';
 import { tender } from '@/test/tenderFixtures';
+import { RESIDENT_MORE } from '@/lib/nav';
+import { AssembliesScreen } from './AssembliesScreen';
 import { AssemblyDetailScreen, electionLines } from './AssemblyDetailScreen';
 import { TenderDetailScreen } from './TenderDetailScreen';
 
@@ -94,5 +96,21 @@ describe('ihale: genel kurul karari bagi ve yanitlar', () => {
     await renderApp(<TenderDetailScreen id="t-1" />, { routes: { 'GET /api/portal/tenders/t-1': { tender: { ...base, comments } } } });
     expect(await screen.findByText('Yanıtlanan soru: Teklif KDV dahil mi?')).toBeTruthy();
     expect(screen.getByText('Evet, KDV dahil.')).toBeTruthy();
+  });
+});
+
+describe('modul anahtarlari (abonelik / site ozelligi)', () => {
+  it('Oylamalar ve Genel Kurul modules.pollsAssemblies, İhaleler modules.tenders anahtarina bagli', () => {
+    const featureOf = (key: string) => RESIDENT_MORE.find((i) => i.key === key)?.feature;
+    expect([featureOf('oylamalar'), featureOf('genel-kurul'), featureOf('ihale')]).toEqual(['modules.pollsAssemblies', 'modules.pollsAssemblies', 'modules.tenders']);
+  });
+
+  it('genel kurul 403: modul kapaliysa kapali ozellik notu, malik degilse maliklere acik bilgisi', async () => {
+    await renderApp(<AssembliesScreen />, {
+      ...asOwner,
+      routes: { ...contexts, 'GET /api/portal/assemblies': { status: 403, body: { error: 'feature_disabled', feature: 'modules.pollsAssemblies', message: 'Bu özellik siteniz için kapalı' } } },
+    });
+    expect(await screen.findByText('Bu özellik sitenizde kapalı. Açılmasını isterseniz site yönetiminize söyleyebilirsiniz.')).toBeTruthy();
+    expect(screen.queryByText('Genel kurul bilgileri kat maliklerine açıktır')).toBeNull();
   });
 });

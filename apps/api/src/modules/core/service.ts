@@ -396,6 +396,11 @@ export type CoreServiceDeps = {
    * ayarlar kaydedilirken dogrular (yoksa yalnizca tahakkuk aninda dogrulanir).
    */
   validateIncomeAccount?: (apartmentId: string, actor: string, accountId: string) => Promise<void>;
+  /**
+   * Abonelik: yeni bolumle olusacak aktif bolum sayisi plan limitini asiyorsa hata firlatir
+   * (`403 plan_limit_exceeded`; bolum ekleme ve toplu aktarim ayni yoldan gecer).
+   */
+  assertUnitCapacity?: (apartmentId: string, nextActiveUnits: number) => Promise<void>;
 };
 
 export function toUnitView(unit: Unit): UnitView {
@@ -690,6 +695,7 @@ export function createCoreService(overrides: Partial<CoreServiceDeps> = {}) {
       throw new CoreError('conflict', 'Bu blokta ayni numarali bagimsiz bolum zaten var');
     }
     if (landShare) assertLandShareTotal(units, undefined, landShare);
+    await deps.assertUnitCapacity?.(apartmentId, units.filter((u) => u.status === 'active').length + 1);
 
     const unitId = deps.newId();
     const unit: Unit = {

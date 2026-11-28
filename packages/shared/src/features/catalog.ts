@@ -17,12 +17,18 @@ export const FEATURE_KEYS = [
   'resident.mfa',
   'admin.sharedOwnership',
   'admin.debtRestructure',
-  'admin.assemblies',
-  'admin.tenders',
   'resident.expenseChart',
   'channels.whatsapp',
   'auth.phoneOtp',
   'payments.online',
+  'modules.gate',
+  'modules.reservations',
+  'modules.pollsAssemblies',
+  'modules.tenders',
+  'modules.equipment',
+  'modules.portfolio',
+  'modules.bulkJobs',
+  'channels.push',
 ] as const;
 
 export type FeatureKey = (typeof FEATURE_KEYS)[number];
@@ -35,12 +41,18 @@ export const FEATURE_LABELS: Record<FeatureKey, string> = {
   'resident.mfa': 'Sakinde iki adımlı doğrulama',
   'admin.sharedOwnership': 'Hisseli mülkiyet ve devir sihirbazı',
   'admin.debtRestructure': 'Borç yapılandırma ve muacceliyet',
-  'admin.assemblies': 'Genel kurul',
-  'admin.tenders': 'İhale / teklif toplama',
   'resident.expenseChart': 'Sakinde gider halka grafiği',
   'channels.whatsapp': 'WhatsApp bildirimleri',
   'auth.phoneOtp': 'Telefon + WhatsApp kodu ile giriş',
   'payments.online': 'Online aidat ödemesi',
+  'modules.gate': 'Güvenlik kapısı',
+  'modules.reservations': 'Ortak alan rezervasyonu',
+  'modules.pollsAssemblies': 'Anket, oylama ve genel kurul',
+  'modules.tenders': 'İhale / teklif toplama',
+  'modules.equipment': 'Ekipman sicili',
+  'modules.portfolio': 'Yönetim firması portföyü',
+  'modules.bulkJobs': 'Arka plan toplu işleri',
+  'channels.push': 'Mobil bildirim (push)',
 };
 
 export function isFeatureKey(value: unknown): value is FeatureKey {

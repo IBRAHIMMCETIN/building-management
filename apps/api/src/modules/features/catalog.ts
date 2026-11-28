@@ -11,6 +11,9 @@
  *  - Etkin deger = override varsa override, yoksa profilin varsayilani.
  *  - Yalnizca `platform_admin` degistirir; yonetici gorur ve "acilmasini istiyorum" talebi gonderir.
  *
+ *  - Abonelik: `licensable` anahtarlari abonelik plani da kisitlayabilir (modules/subscriptions):
+ *    etkin deger = site ayari VE plan izni; plan modulleri ayri bir anahtar sistemi degildir.
+ *
  * Yeni anahtar eklemek: `FEATURE_KEYS`'e ekle + `FEATURE_CATALOG`'a tanim yaz (web ayni listeyi
  * `apps/web/src/lib/features/catalog.ts` icinde tutar; test iki listenin esitligini dogrular).
  */
@@ -24,14 +27,20 @@ export const FEATURE_KEYS = [
   // Yonetici tarafi gizlemeleri
   'admin.sharedOwnership',
   'admin.debtRestructure',
-  // Modul anahtarlari (yonetim + sakin ekranlari birlikte; varsayilan acik, mevcut siteler degismez)
-  'admin.assemblies',
-  'admin.tenders',
   // Sonraki adimlar (3-7) icin hazir kancalar
   'resident.expenseChart',
   'channels.whatsapp',
   'auth.phoneOtp',
   'payments.online',
+  // Abonelik: plana baglanabilen moduller (her iki profilde varsayilan acik; mevcut davranis aynen).
+  'modules.gate',
+  'modules.reservations',
+  'modules.pollsAssemblies',
+  'modules.tenders',
+  'modules.equipment',
+  'modules.portfolio',
+  'modules.bulkJobs',
+  'channels.push',
 ] as const;
 
 export type FeatureKey = (typeof FEATURE_KEYS)[number];
@@ -39,7 +48,7 @@ export type FeatureKey = (typeof FEATURE_KEYS)[number];
 export const FEATURE_PROFILES = ['legacy', 'simple'] as const;
 export type FeatureProfile = (typeof FEATURE_PROFILES)[number];
 
-export type FeatureArea = 'resident' | 'admin' | 'channels' | 'auth' | 'payments';
+export type FeatureArea = 'resident' | 'admin' | 'channels' | 'auth' | 'payments' | 'modules';
 
 export type FeatureDefinition = {
   key: FeatureKey;
@@ -53,6 +62,11 @@ export type FeatureDefinition = {
   upcoming?: boolean;
   /** true: kurulumda platform ekibinin kullanmasi beklenir (yoneticiden gizli). */
   platformSetup?: boolean;
+  /**
+   * Abonelik: abonelik plani bu anahtari kisitlayabilir. Etkin deger = site ayari VE plan izni
+   * (aboneligi olmayan / legacy site ve abonelik sistemi kapaliyken yalnizca site ayari).
+   */
+  licensable?: boolean;
 };
 
 export const FEATURE_CATALOG: Readonly<Record<FeatureKey, FeatureDefinition>> = {
@@ -99,20 +113,6 @@ export const FEATURE_CATALOG: Readonly<Record<FeatureKey, FeatureDefinition>> = 
     description: 'Yönetici taksit planları, muacceliyet ve günlük temerrüt taraması.',
     defaults: { legacy: true, simple: false },
   },
-  'admin.assemblies': {
-    key: 'admin.assemblies',
-    area: 'admin',
-    label: 'Genel kurul',
-    description: 'Kat malikleri kurulu toplantıları, çağrı / iptal / erteleme bildirimleri, tebligat takibi, yazılı rıza ve sakin portalındaki genel kurul ekranı.',
-    defaults: { legacy: true, simple: true },
-  },
-  'admin.tenders': {
-    key: 'admin.tenders',
-    area: 'admin',
-    label: 'İhale / teklif toplama',
-    description: 'İhaleler, teklif karşılaştırması, hakedişler, sakin soruları ve sakin portalındaki ihale ekranı.',
-    defaults: { legacy: true, simple: true },
-  },
   'resident.expenseChart': {
     key: 'resident.expenseChart',
     area: 'resident',
@@ -143,8 +143,76 @@ export const FEATURE_CATALOG: Readonly<Record<FeatureKey, FeatureDefinition>> = 
     label: 'Online aidat ödemesi',
     description: 'Sakinin kartla online ödeme başlatması (Adım 7). Banka/sağlayıcı geri bildirimleri her zaman işlenir.',
     defaults: { legacy: true, simple: false },
+    licensable: true,
+  },
+  'modules.gate': {
+    key: 'modules.gate',
+    area: 'modules',
+    label: 'Güvenlik kapısı',
+    description: 'Misafir QR / kod, plaka sorgusu, kurye ve kapı günlüğü (yönetim, güvenlik ve sakin ekranları).',
+    defaults: { legacy: true, simple: true },
+    licensable: true,
+  },
+  'modules.reservations': {
+    key: 'modules.reservations',
+    area: 'modules',
+    label: 'Ortak alan rezervasyonu',
+    description: 'Tesis tanımları, rezervasyon onayı ve sakin rezervasyonları.',
+    defaults: { legacy: true, simple: true },
+    licensable: true,
+  },
+  'modules.pollsAssemblies': {
+    key: 'modules.pollsAssemblies',
+    area: 'modules',
+    label: 'Anket, oylama ve genel kurul',
+    description: 'Anket / oylama ve kat malikleri kurulu (çağrı, hazirun, tutanak).',
+    defaults: { legacy: true, simple: true },
+    licensable: true,
+  },
+  'modules.tenders': {
+    key: 'modules.tenders',
+    area: 'modules',
+    label: 'İhale / teklif toplama',
+    description: 'Teklif toplama, karşılaştırma ve sakinlerle paylaşım.',
+    defaults: { legacy: true, simple: true },
+    licensable: true,
+  },
+  'modules.equipment': {
+    key: 'modules.equipment',
+    area: 'modules',
+    label: 'Ekipman sicili',
+    description: 'Ekipman, garanti / sözleşme / periyodik kontrol tarihleri ve belgeler.',
+    defaults: { legacy: true, simple: true },
+    licensable: true,
+  },
+  'modules.portfolio': {
+    key: 'modules.portfolio',
+    area: 'modules',
+    label: 'Yönetim firması portföyü',
+    description: 'Birden fazla apartmanın özet kartları (aktif apartmana göre).',
+    defaults: { legacy: true, simple: true },
+    licensable: true,
+  },
+  'modules.bulkJobs': {
+    key: 'modules.bulkJobs',
+    area: 'modules',
+    label: 'Arka plan toplu işleri',
+    description: 'Elle başlatılan arka plan tahakkuk işi (büyük sitelerde otomatik iş ve aylık aidat etkilenmez).',
+    defaults: { legacy: true, simple: true },
+    licensable: true,
+  },
+  'channels.push': {
+    key: 'channels.push',
+    area: 'channels',
+    label: 'Mobil bildirim (push)',
+    description: 'Bildirimlerin mobil uygulamaya push olarak da gönderilmesi (e-posta etkilenmez).',
+    defaults: { legacy: true, simple: true },
+    licensable: true,
   },
 };
+
+/** Abonelik planinin kisitlayabildigi anahtarlar (katalog sirasiyla). */
+export const LICENSABLE_KEYS: readonly FeatureKey[] = FEATURE_KEYS.filter((k) => FEATURE_CATALOG[k].licensable === true);
 
 export type FeatureOverrides = Partial<Record<FeatureKey, boolean>>;
 

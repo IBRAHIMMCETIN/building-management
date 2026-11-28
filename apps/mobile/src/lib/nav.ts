@@ -19,8 +19,8 @@ export type WebFeature = {
   /**
    * Adim 1: yalnizca bu site ozelligi acikken (GET /api/site-features). Kapaliysa "Diğer"de gorunmez;
    * ekranina (bildirim / derin baglanti) gelinirse "Bu özellik sitenizde kapalı" notu (ResidentRouteGate).
-   * Modul anahtarlari: Genel Kurul `admin.assemblies`, İhaleler `admin.tenders` (web menusuyle ayni).
-   * Oylamalar icin katalogda anahtar yok (her zaman acik).
+   * Abonelik modul anahtarlari (web menusuyle ayni): Oylamalar ve Genel Kurul `modules.pollsAssemblies`,
+   * İhaleler `modules.tenders`, Ziyaretçi `modules.gate`, Rezervasyon `modules.reservations`.
    */
   feature?: FeatureKey;
   /** Mobildeki yerel ekran; yoksa "Diğer" yer tutucuyu (web'de ac) acar. */
@@ -30,10 +30,10 @@ export type WebFeature = {
 export const RESIDENT_MORE: readonly WebFeature[] = [
   { key: 'ziyaretci', label: 'Ziyaretçi', icon: DoorOpen, webPath: '/app/ziyaretci', description: 'Misafir geçişi oluşturma ve kapıdaki kurye için onay.', route: '/resident/gate' },
   { key: 'rezervasyon', label: 'Rezervasyon', icon: CalendarDays, webPath: '/app/rezervasyon', description: 'Ortak alan (salon, havuz, spor alanı) rezervasyonu.', route: '/resident/reservations' },
-  { key: 'oylamalar', label: 'Oylamalar', icon: Vote, webPath: '/app/oylamalar', description: 'Yönetimin başlattığı anket ve oylamalar.', route: '/resident/polls' },
-  { key: 'genel-kurul', label: 'Genel Kurul', icon: Landmark, webPath: '/app/genel-kurul', description: 'Kat malikleri kurulu toplantıları ve gündem.', ownersOnly: true, feature: 'admin.assemblies', route: '/resident/assemblies' },
+  { key: 'oylamalar', label: 'Oylamalar', icon: Vote, webPath: '/app/oylamalar', description: 'Yönetimin başlattığı anket ve oylamalar.', feature: 'modules.pollsAssemblies', route: '/resident/polls' },
+  { key: 'genel-kurul', label: 'Genel Kurul', icon: Landmark, webPath: '/app/genel-kurul', description: 'Kat malikleri kurulu toplantıları ve gündem.', ownersOnly: true, feature: 'modules.pollsAssemblies', route: '/resident/assemblies' },
   { key: 'tuketim', label: 'Tüketimim', icon: Gauge, webPath: '/app/tuketim', description: 'Sayaç okumaları ve tüketim payınız.', route: '/resident/consumption' },
-  { key: 'ihale', label: 'İhaleler', icon: Scale, webPath: '/app/ihale', description: 'Yönetimin sakinlerle paylaştığı teklifler ve ihaleler.', feature: 'admin.tenders', route: '/resident/tenders' },
+  { key: 'ihale', label: 'İhaleler', icon: Scale, webPath: '/app/ihale', description: 'Yönetimin sakinlerle paylaştığı teklifler ve ihaleler.', feature: 'modules.tenders', route: '/resident/tenders' },
 ];
 
 /**

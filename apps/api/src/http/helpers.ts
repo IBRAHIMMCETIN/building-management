@@ -20,6 +20,8 @@ import { PortalError } from '../modules/portal/service.js';
 import type { TableKeys } from '../modules/core/types.js';
 import { ValidationError } from '../modules/core/validation.js';
 import { FeatureDisabledError, featureDisabledBody } from '../modules/features/guard.js';
+import { EntitlementError, entitlementErrorBody } from '../modules/subscriptions/entitlements.js';
+import { SubscriptionError } from '../modules/subscriptions/errors.js';
 
 /** Modul rotalarinin ortak Hono ortami: dogrulanmis claim'ler `claims` altinda. */
 export type Env = { Variables: { claims: AuthClaims } };
@@ -77,6 +79,13 @@ export function handleError(err: Error, c: Context) {
   }
   if (err instanceof FeatureDisabledError) {
     return c.json(featureDisabledBody(err.feature), 403);
+  }
+  if (err instanceof EntitlementError) {
+    c.header('cache-control', 'no-store');
+    return c.json(entitlementErrorBody(err), err.httpStatus);
+  }
+  if (err instanceof SubscriptionError) {
+    return c.json({ error: err.code, message: err.message }, err.httpStatus);
   }
   if (err instanceof ValidationError) {
     return c.json({ error: 'validation_error', message: err.message, field: err.field }, 400);

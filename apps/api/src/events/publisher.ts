@@ -49,6 +49,12 @@ export const EVENT_TYPES = [
   'TENDER_DECIDED',
   'TENDER_CANCELLED',
   'TENDER_REPLIED',
+  'SUBSCRIPTION_TRIAL_ENDING',
+  'SUBSCRIPTION_INVOICE_ISSUED',
+  'SUBSCRIPTION_PAST_DUE',
+  'SUBSCRIPTION_SUSPENDED',
+  'SUBSCRIPTION_REACTIVATED',
+  'SUBSCRIPTION_CANCELLED',
   'MEMBERSHIP_ENDED',
   'BULK_JOB_FINISHED',
   'RESTRUCTURE_REQUESTED',
@@ -321,6 +327,25 @@ export type TenderEventPayload = { tenderId: string };
 export type TenderRepliedPayload = { tenderId: string; commentId: string };
 
 /**
+ * Abonelik / lisans (platform <-> apartman yonetimi). Alici: apartmanin guncel yoneticileri ve
+ * yonetim firmasi kullanicilari (tercih kategorisi `billing`). Yazimla ayni atomik islemde outbox;
+ * `eventId` abonelik kayit surumunu tasir (her gecis bir kez). Kisisel veri yok.
+ */
+export type SubscriptionTrialEndingPayload = { trialEndsAt: IsoDate; daysLeft: number; planName: string };
+export type SubscriptionInvoiceIssuedPayload = {
+  invoiceId: string;
+  invoiceNumber: string;
+  totalKurus: number;
+  dueDate: IsoDate;
+  periodStart: IsoDate;
+  periodEnd: IsoDate;
+};
+export type SubscriptionPastDuePayload = { pastDueSince: IsoDate; suspendOn: IsoDate; overdueTotalKurus: number; invoiceCount: number };
+export type SubscriptionSuspendedPayload = { suspendedAt: IsoDate; reason: 'non_payment' | 'manual' };
+export type SubscriptionReactivatedPayload = { reactivatedOn: IsoDate; from: string };
+export type SubscriptionCancelledPayload = { cancelledAt: IsoDate };
+
+/**
  * Kapi devami: uyelik yazimi (PATCH / iptal) kullaniciyi bugun itibariyla bolumde oturmayan yapti
  * (bitis tarihi gecmis, iptal, oturan malik artik oturmuyor). Cari kapama bu olayi yazmaz: geri alma
  * payi nedeniyle karar gece taramasinindir. Bildirim DEGILDIR: SNS aboneligiyle zamanlanmis
@@ -389,6 +414,12 @@ type PayloadByType = {
   TENDER_DECIDED: TenderEventPayload;
   TENDER_CANCELLED: TenderEventPayload;
   TENDER_REPLIED: TenderRepliedPayload;
+  SUBSCRIPTION_TRIAL_ENDING: SubscriptionTrialEndingPayload;
+  SUBSCRIPTION_INVOICE_ISSUED: SubscriptionInvoiceIssuedPayload;
+  SUBSCRIPTION_PAST_DUE: SubscriptionPastDuePayload;
+  SUBSCRIPTION_SUSPENDED: SubscriptionSuspendedPayload;
+  SUBSCRIPTION_REACTIVATED: SubscriptionReactivatedPayload;
+  SUBSCRIPTION_CANCELLED: SubscriptionCancelledPayload;
   MEMBERSHIP_ENDED: MembershipEndedPayload;
   BULK_JOB_FINISHED: BulkJobFinishedPayload;
   RESTRUCTURE_REQUESTED: RestructureEventPayload;

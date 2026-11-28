@@ -18,12 +18,14 @@ const profileSchema = z.enum(['legacy', 'simple']);
 
 export const featureDefinitionSchema = z.object({
   key: featureKeySchema,
-  area: z.enum(['resident', 'admin', 'channels', 'auth', 'payments']),
+  area: z.enum(['resident', 'admin', 'channels', 'auth', 'payments', 'modules']),
   label: z.string(),
   description: z.string(),
   defaults: z.object({ legacy: z.boolean(), simple: z.boolean() }),
   upcoming: z.boolean().optional(),
   platformSetup: z.boolean().optional(),
+  /** Abonelik plani da kisitlayabilir (etkin deger = site ayari VE plan). */
+  licensable: z.boolean().optional(),
 });
 export type FeatureDefinition = z.infer<typeof featureDefinitionSchema>;
 
@@ -34,6 +36,8 @@ export const siteFeatureViewSchema = z.object({
   inherited: z.boolean(),
   overrides: z.partialRecord(featureKeySchema, z.boolean()),
   features: z.record(featureKeySchema, z.boolean()),
+  /** Site ayarinda acik ama abonelik planinin kapsamadigi anahtarlar (yonetici gorunumu). */
+  planRestricted: z.array(featureKeySchema).optional(),
   catalog: z.array(featureDefinitionSchema),
 });
 export type SiteFeatureView = z.infer<typeof siteFeatureViewSchema>;

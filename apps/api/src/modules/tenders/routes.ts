@@ -1,14 +1,17 @@
 import { type Context, Hono } from 'hono';
 import type { Authenticator, Role } from '../../auth/claims.js';
 import { type Env, authenticateWith, handleError, readJson, requireRole } from '../../http/helpers.js';
-import { type SiteFeatureReader, featureAllowed, featureDisabledBody, requireFeature } from '../features/guard.js';
+import { type SiteFeatureReader, featureAllowed, featureDisabledBody } from '../features/guard.js';
 import { TenderError } from './errors.js';
 import type { TenderContext, TenderService } from './service.js';
 
 const READ_ROLES: readonly Role[] = ['apartment_manager', 'management_company', 'observer'];
 const WRITE_ROLES: readonly Role[] = ['apartment_manager', 'management_company'];
 
-/** `features`: site ozellik anahtari `admin.tenders` kapaliysa tum uclar 403 `feature_disabled` (verilmezse kontrol yok). */
+/**
+ * Modul anahtari (`modules.tenders`) merkezde: subscriptions/entitlements.ts `FEATURE_ROUTES`. `features`: genel kurul
+ * karar bagi icin `modules.pollsAssemblies` kontrolu (kapaliysa secici bos, bag 403; verilmezse kontrol yok).
+ */
 export type TenderRoutesDeps = { authenticate: Authenticator; service: TenderService; features?: SiteFeatureReader };
 
 /** Modul hatasi + ortak hata eslemesi (paylasilan `handleError`'a dokunmadan). */
@@ -17,7 +20,7 @@ function onError(err: Error, c: Context) {
   return handleError(err, c);
 }
 
-function base(authenticate: Authenticator, features?: SiteFeatureReader) {
+function base(authenticate: Authenticator) {
   const r = new Hono<Env>();
   r.onError(onError);
   r.use('*', authenticateWith(authenticate));
@@ -27,7 +30,6 @@ function base(authenticate: Authenticator, features?: SiteFeatureReader) {
     // Imzali belge linkleri ve teklif bilgisi onbelleklenmez.
     c.header('Cache-Control', 'no-store');
   });
-  r.use('*', requireFeature(features, 'admin.tenders'));
   return r;
 }
 
@@ -70,19 +72,19 @@ const quoteId = (c: Context<Env>) => c.req.param('quoteId') ?? '';
  * Belge yukleme: `POST /api/documents/invoice-uploads` (gider faturasiyla ayni sinirlar).
  */
 export function tenderRoutes({ authenticate, service, features }: TenderRoutesDeps) {
-  const r = base(authenticate, features);
+  const r = base(authenticate);
   r.get('/', requireRole(READ_ROLES), async (c) => c.json(await service.list(ctxOf(c), { status: c.req.query('status') })));
   r.post('/', requireRole(WRITE_ROLES), async (c) => {
     const result = await service.create(ctxOf(c), await readJson(c));
     return c.json(result, result.replayed ? 200 : 201);
   });
   // Genel kurul modulu kapaliysa karar bagi kurulamaz; secici bos doner.
-  const assembliesOn = (c: Context<Env>) => featureAllowed(features, c.get('claims'), 'admin.assemblies');
+  const assembliesOn = (c: Context<Env>) => featureAllowed(features, c.get('claims'), 'modules.pollsAssemblies');
   r.get('/assembly-decisions', requireRole(READ_ROLES), async (c) => c.json((await assembliesOn(c)) ? await service.assemblyDecisionOptions(ctxOf(c)) : { items: [] }));
   r.get('/:id', requireRole(READ_ROLES), async (c) => c.json(await service.get(ctxOf(c), id(c))));
   r.post('/:id/assembly-decision', requireRole(WRITE_ROLES), async (c) => {
     const body = await readJson(c);
-    if ((body as { assemblyDecision?: unknown } | null)?.assemblyDecision && !(await assembliesOn(c))) return c.json(featureDisabledBody('admin.assemblies'), 403);
+    if ((body as { assemblyDecision?: unknown } | null)?.assemblyDecision && !(await assembliesOn(c))) return c.json(featureDisabledBody('modules.pollsAssemblies'), 403);
     return c.json(await service.linkAssemblyDecision(ctxOf(c), id(c), body));
   });
   r.get('/:id/supplier-accounts', requireRole(WRITE_ROLES), async (c) => c.json(await service.supplierAccounts(ctxOf(c), id(c))));
@@ -93,7 +95,7 @@ export function tenderRoutes({ authenticate, service, features }: TenderRoutesDe
   r.post('/:id/publish', requireRole(WRITE_ROLES), async (c) => c.json(await service.publish(ctxOf(c), id(c), await readJson(c))));
   r.post('/:id/decide', requireRole(WRITE_ROLES), async (c) => {
     const body = await readJson(c);
-    if ((body as { assemblyDecision?: unknown } | null)?.assemblyDecision && !(await assembliesOn(c))) return c.json(featureDisabledBody('admin.assemblies'), 403);
+    if ((body as { assemblyDecision?: unknown } | null)?.assemblyDecision && !(await assembliesOn(c))) return c.json(featureDisabledBody('modules.pollsAssemblies'), 403);
     return c.json(await service.decide(ctxOf(c), id(c), body));
   });
   r.post('/:id/cancel', requireRole(WRITE_ROLES), async (c) => c.json(await service.cancel(ctxOf(c), id(c), await readJson(c))));
@@ -125,14 +127,14 @@ export function tenderRoutes({ authenticate, service, features }: TenderRoutesDe
  *   POST  /:id/comments                      { idempotencyKey, body }   soru (yalnizca yayinda)
  */
 export function tenderPortalRoutes({ authenticate, service, features }: TenderRoutesDeps) {
-  const r = base(authenticate, features);
+  const r = base(authenticate);
   r.use('*', requireRole(['resident']));
   r.get('/', async (c) => c.json(await service.portalList(ctxOf(c))));
   r.get('/:id', async (c) => {
     const out = await service.portalGet(ctxOf(c), id(c));
     // Genel kurul modulu sitede kapaliysa karar baglantisi acilamaz (portal 403 doner): baglanti yok.
     const ad = out.tender.assemblyDecision as { portalLink?: boolean } | undefined;
-    if (ad?.portalLink && !(await featureAllowed(features, c.get('claims'), 'admin.assemblies'))) ad.portalLink = false;
+    if (ad?.portalLink && !(await featureAllowed(features, c.get('claims'), 'modules.pollsAssemblies'))) ad.portalLink = false;
     return c.json(out);
   });
   r.get('/:id/quotes/:quoteId/document', async (c) => c.json(await service.portalQuoteDocument(ctxOf(c), id(c), quoteId(c))));

@@ -30,6 +30,10 @@ import {
 import { type AssemblyRepository, assemblyRepository } from '../modules/assemblies/repository.js';
 import { type TenderSnapshot, isTenderEvent, tenderRecipients } from '../modules/tenders/notifications.js';
 import { type TenderRepository, tenderRepository } from '../modules/tenders/repository.js';
+import { billingRecipients, isBillingEvent } from '../modules/subscriptions/notifications.js';
+import { createEntitlementReader, type entitlementOf, licensedFeatures } from '../modules/subscriptions/entitlements.js';
+import { type SiteFeatureSettings, resolveFeatures } from '../modules/features/catalog.js';
+import { subscriptionRepository } from '../modules/subscriptions/repository.js';
 import { bulkJobRecipients, isBulkJobEvent } from '../modules/bulkjobs/notifications.js';
 import {
   type SnsLambdaEvent,
@@ -74,6 +78,8 @@ export { createLogNotifier } from '../modules/notifications/notifier.js';
  *       TENDER_PUBLISHED / _DECIDED / _CANCELLED -> apartmanin guncel uyeleri; ihalenin guncel durumu
  *                                 olayla uyusmuyorsa kimse. TENDER_REPLIED -> yanitlanan acik sorularin
  *                                 yazarlari (hala uyeyse) (modules/tenders/notifications.ts)
+ *       SUBSCRIPTION_*         -> apartmanin guncel yoneticileri + yonetim firmasi (abonelik / lisans;
+ *                                 tercih kategorisi `billing`; modules/subscriptions/notifications.ts)
  *       BULK_JOB_FINISHED      -> toplu isi baslatan yonetici (o gun aktif yonetim rolu varsa)
  *                                 (modules/bulkjobs/notifications.ts)
  *       RESTRUCTURE_REQUESTED  -> yonetim (yonetici + firma); RESTRUCTURE_APPROVED / _REJECTED -> talebi
@@ -88,8 +94,8 @@ export { createLogNotifier } from '../modules/notifications/notifier.js';
  *     bkz. modules/notifications/push.ts). E-posta kanali hata verse de push denenir; hata olay
  *     sonunda firlatilir.
  *  6. Basariyla islenen olay icin `NOTIF#` kaydi yazilir (30 gun TTL).
- *  Site ozellik anahtari (Adim 1): olayin modulu sitede kapaliysa (genel kurul `admin.assemblies`,
- *  ihale `admin.tenders`) kimseye gonderilmez; olay islenmis sayilir (`skipped: feature_disabled`),
+ *  Site ozellik anahtari (Adim 1): olayin modulu sitede kapaliysa (oylama / genel kurul
+ *  `modules.pollsAssemblies`, ihale `modules.tenders`) kimseye gonderilmez; olay islenmis sayilir (`skipped: feature_disabled`),
  *  zamanlanmis islerdeki kuralla ayni.
  * Hatali mesajlar `batchItemFailures` ile yalnizca kendileri yeniden denenir; 5 denemeden
  * sonra DLQ'ya duser (Terraform: maxReceiveCount = 5) ve alarm uretir.
@@ -251,6 +257,16 @@ export function buildNotifications(
       data: r.data,
     }));
   }
+  if (isBillingEvent(event)) {
+    return billingRecipients(event, roles, day).map((r) => ({
+      eventId: event.eventId,
+      apartmentId: event.apartmentId,
+      userId: r.userId,
+      template: r.template,
+      data: r.data,
+      ...(r.essential ? { essential: true } : {}),
+    }));
+  }
   if (isRestructureEvent(event)) {
     return restructureRecipients(event, memberships, roles, day, records.planRequest).map((r) => ({
       eventId: event.eventId,
@@ -402,8 +418,8 @@ const PROCESSED_TTL_SECONDS = 30 * 24 * 3600;
 
 /** Olay turu on eki -> modulun site ozellik anahtari (kapaliysa bildirim gitmez). */
 const EVENT_FEATURES: [prefix: string, key: FeatureKey][] = [
-  ['ASSEMBLY_', 'admin.assemblies'],
-  ['TENDER_', 'admin.tenders'],
+  ['ASSEMBLY_', 'modules.pollsAssemblies'],
+  ['TENDER_', 'modules.tenders'],
 ];
 export const featureOfEvent = (type: string): FeatureKey | undefined => EVENT_FEATURES.find(([p]) => type.startsWith(p))?.[1];
 
@@ -424,12 +440,14 @@ export type WorkerDeps = {
   planRequests: Pick<PlanRequestRepository, 'get'>;
   /**
    * Site ozellikleri (yalnizca modulu anahtarli olaylarda okunur): `admin.debtRestructure` kapaliysa
-   * RESTRUCTURE_*, `admin.assemblies` kapaliysa ASSEMBLY_*, `admin.tenders` kapaliysa TENDER_* gonderilmez.
+   * RESTRUCTURE_*, `modules.pollsAssemblies` kapaliysa ASSEMBLY_*, `modules.tenders` kapaliysa TENDER_* gonderilmez.
    */
   features: Pick<SiteFeatureReader, 'resolve'>;
   notifier: Notifier;
   /** Mobil bildirim kanali; null: kapali (PUSH_CHANNEL=off). */
   push: PushChannel | null;
+  /** Etkin `channels.push`: site ayari VE abonelik plani (aboneligi olmayan / legacy: site ayari). */
+  pushAllowed: (apartmentId: string) => Promise<boolean>;
   /** Olay daha once islendi mi? */
   isProcessed: (apartmentId: string, eventId: string) => Promise<boolean>;
   markProcessed: (apartmentId: string, eventId: string, info: { type: EventType; recipients: number }) => Promise<void>;
@@ -442,8 +460,41 @@ const processedKey = (apartmentId: string, eventId: string) => ({
   SK: skKey('NOTIF', eventId),
 });
 
+/**
+ * Etkin `channels.push` (site ayari VE abonelik plani), konteyner icinde onbellekli (60 sn). Abonelik
+ * sistemi kapaliyken / ayar okunamazken plan okunmaz (sifir etki); site anahtari okunamazsa push
+ * acik kalir (abonelik oncesi davranis). Sistem aciksa abonelik okuma hatasi olayi yeniden denetir.
+ */
+export function createPushGate(source: {
+  getSettings: () => Promise<{ enabled: boolean }>;
+  getSubscription: (apartmentId: string) => Promise<Parameters<typeof entitlementOf>[0]>;
+  getSiteFeatures: (apartmentId: string) => Promise<SiteFeatureSettings | undefined>;
+  ttlMs?: number;
+} = {
+  getSettings: () => subscriptionRepository.getSettings(),
+  getSubscription: (id) => subscriptionRepository.peekSubscription(id),
+  getSiteFeatures: (id) => subscriptionRepository.peekSiteFeatures(id),
+}) {
+  const ttlMs = source.ttlMs ?? 60_000;
+  const entitlements = createEntitlementReader({ getSubscription: source.getSubscription, getSettings: source.getSettings, ttlMs });
+  const sites = new Map<string, { at: number; value: SiteFeatureSettings | undefined }>();
+  return async (apartmentId: string): Promise<boolean> => {
+    let site = sites.get(apartmentId);
+    if (!site || Date.now() - site.at >= ttlMs) {
+      try {
+        site = { at: Date.now(), value: await source.getSiteFeatures(apartmentId) };
+        sites.set(apartmentId, site);
+      } catch {
+        site = { at: Date.now(), value: undefined };
+      }
+    }
+    return licensedFeatures(resolveFeatures(site.value), await entitlements.resolve(apartmentId))['channels.push'];
+  };
+}
+
 export function createNotificationWorker(overrides: Partial<WorkerDeps> = {}) {
   const now = overrides.now ?? (() => new Date());
+  let pushGate: ((apartmentId: string) => Promise<boolean>) | undefined;
   const deps: WorkerDeps = {
     memberships: membershipRepository,
     core: coreRepository,
@@ -457,6 +508,13 @@ export function createNotificationWorker(overrides: Partial<WorkerDeps> = {}) {
     features: overrides.features ?? (overrides.core ? legacySiteFeatureReader : createSiteFeatureReader({ getSite: (id) => coreRepository.getSite(id) })),
     notifier: overrides.notifier ?? createNotifierFromEnv(),
     push: overrides.push !== undefined ? overrides.push : createPushChannelFromEnv(process.env, { now }),
+    // Etkin `channels.push` = site ayari VE abonelik plani (sistem kapaliyken / abonelik yoksa yalnizca
+    // site ayari). Veri deposu yapilandirilmamissa (yalnizca test) acik; okuma hatasi olayi yeniden denetir.
+    pushAllowed: async (apartmentId) => {
+      if (!process.env.DYNAMODB_TABLE_NAME) return true;
+      const gate = (pushGate ??= createPushGate());
+      return gate(apartmentId);
+    },
     isProcessed: async (apt, id) => Boolean(await getTenantItem(processedKey(apt, id))),
     markProcessed: async (apt, id, info) => {
       try {
@@ -585,7 +643,10 @@ export function createNotificationWorker(overrides: Partial<WorkerDeps> = {}) {
         ? new Map((await deps.core.listUnits(event.apartmentId)).map((u) => [u.unitId, u.blockId]))
         : new Map<string, string>();
 
-    const roles = isTicketEvent(event) || event.type === 'OPERATIONS_DIGEST' || isBulkJobEvent(event) || event.type === 'RESTRUCTURE_REQUESTED' ? await deps.roles.list(event.apartmentId) : [];
+    const roles =
+      isTicketEvent(event) || event.type === 'OPERATIONS_DIGEST' || isBillingEvent(event) || isBulkJobEvent(event) || event.type === 'RESTRUCTURE_REQUESTED'
+        ? await deps.roles.list(event.apartmentId)
+        : [];
     const records = await recordsFor(event);
     // Yonetim iptalinin hemen ardindaki ucret iadesi henuz yazilmadiysa sonucu beklenir (sinirli).
     if (refundSettling(event, records.booking, deps.now())) throw new DeferredEventError('Ucret iadesi sonucu bekleniyor');
@@ -608,7 +669,8 @@ export function createNotificationWorker(overrides: Partial<WorkerDeps> = {}) {
     // Push ayri saglayici: e-posta hatasi (or. SES kisitlamasi) push'u geciktirmez. Iki kanal da
     // gonderdiklerini kaydettigi icin yeniden denemede yalnizca kalanlar gider.
     let push: PushOutcome | undefined;
-    if (deps.push && notifications.length > 0) {
+    // Abonelik plani mobil bildirimi kapsamiyorsa push gonderilmez (e-posta etkilenmez).
+    if (deps.push && notifications.length > 0 && (await deps.pushAllowed(event.apartmentId))) {
       try {
         push = await deps.push.deliver(event.apartmentId, event.eventId, notifications);
       } catch (err) {

@@ -243,7 +243,7 @@ export type PortfolioServiceDeps = {
   /** Bolum hatasi yalnizca sunucu gunlugune (apartman + bolum + hata adi); istemciye kod doner. */
   log: (entry: Record<string, unknown>) => void;
   /**
-   * Site ozellik anahtarlari: genel kurul (`admin.assemblies`) / ihale (`admin.tenders`) modulu kapali
+   * Site ozellik anahtarlari: genel kurul (`modules.pollsAssemblies`) / ihale (`modules.tenders`) modulu kapali
    * apartmanda o bolum okunmaz ve kartta yer almaz. Verilmezse kontrol yok.
    */
   features?: Pick<SiteFeatureReader, 'resolve'>;
@@ -287,7 +287,7 @@ export function createPortfolioService(overrides: Partial<PortfolioServiceDeps> 
   }
 
   /** Modul anahtari acik mi (okuyucu yoksa acik). */
-  const moduleOn = async (apartmentId: string, key: 'admin.assemblies' | 'admin.tenders') => !deps.features || (await deps.features.resolve(apartmentId))[key];
+  const moduleOn = async (apartmentId: string, key: 'modules.pollsAssemblies' | 'modules.tenders') => !deps.features || (await deps.features.resolve(apartmentId))[key];
 
   function baseCard(apt: PageApartment): PortfolioCard {
     return { apartmentId: apt.apartmentId, apartmentName: apt.apartmentName, role: apt.role, readOnly: apt.role === 'observer', status: 'ok', failed: [] };
@@ -316,8 +316,8 @@ export function createPortfolioService(overrides: Partial<PortfolioServiceDeps> 
       maintenance: () => deps.sources.maintenance(ctx),
       equipment: async () => equipmentFigures((await deps.sources.equipment(ctx)).items),
       polls: async () => pollFigures(await deps.sources.polls(ctx)),
-      assemblies: async () => ((await moduleOn(apt.apartmentId, 'admin.assemblies')) ? assemblyFigures(await deps.sources.assemblies(ctx), nowIso) : undefined),
-      tenders: async () => ((await moduleOn(apt.apartmentId, 'admin.tenders')) ? tenderFigures((await deps.sources.tenders(ctx)).items) : undefined),
+      assemblies: async () => ((await moduleOn(apt.apartmentId, 'modules.pollsAssemblies')) ? assemblyFigures(await deps.sources.assemblies(ctx), nowIso) : undefined),
+      tenders: async () => ((await moduleOn(apt.apartmentId, 'modules.tenders')) ? tenderFigures((await deps.sources.tenders(ctx)).items) : undefined),
     };
     type ErrorLike = { name?: string; code?: string } | undefined;
     const values = new Map<PortfolioSection, unknown>();

@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { Alert, Badge, Button, Dialog, FormField, Select, Skeleton, Textarea } from '@/components/ui';
 import { usePlatformSiteFeatures, useUpdateSiteFeatures } from '@/hooks/useSiteFeatureAdmin';
 import { ApiError, errorMessage } from '@/lib/api/errors';
-import { FEATURE_AREA_LABELS, PROFILE_LABELS, type FeatureProfile } from '@/lib/features/catalog';
+import { FEATURE_AREA_LABELS, PROFILE_LABELS, type FeatureProfile, isPlanModuleKey } from '@/lib/features/catalog';
+import { useBillingSettings } from '@/hooks/useSubscriptions';
 import { type FeatureChoice, type FeatureDraft, REASON_MIN, buildFeaturePatch, draftFromView, effectiveValue } from '@/lib/features/draft';
 
 const CHOICE_LABELS = (defaultOn: boolean): Record<FeatureChoice, string> => ({
@@ -18,6 +19,9 @@ const CHOICE_LABELS = (defaultOn: boolean): Record<FeatureChoice, string> => ({
  */
 export function SiteFeaturesDialog({ site, onClose }: { site: { siteId: string; name: string } | undefined; onClose: () => void }) {
   const query = usePlatformSiteFeatures(site?.siteId);
+  // Abonelik modul anahtarlari yalnizca abonelik sistemi aciksa listelenir.
+  const billing = useBillingSettings();
+  const showPlanModules = billing.data?.enabled === true;
   const update = useUpdateSiteFeatures(site?.siteId ?? '');
   const [draft, setDraft] = useState<FeatureDraft | null>(null);
   const [reason, setReason] = useState('');
@@ -76,7 +80,7 @@ export function SiteFeaturesDialog({ site, onClose }: { site: { siteId: string; 
           </FormField>
 
           <ul className="flex flex-col divide-y divide-border" aria-label="Özellik anahtarları">
-            {view.catalog.map((def) => {
+            {view.catalog.filter((def) => showPlanModules || !isPlanModuleKey(def.key)).map((def) => {
               const labels = CHOICE_LABELS(def.defaults[draft.profile]);
               const on = effectiveValue(draft, def.key, def.defaults);
               return (
