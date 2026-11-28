@@ -16,7 +16,9 @@ describe('app.config.ts', () => {
     expect(c.android?.googleServicesFile).toBeUndefined();
     // Sabit degerler app.json'dan aynen gelir.
     expect(c.plugins).toEqual(base.plugins);
+    // iPad destegi acik; yon serbest (telefonda acilista dikey kilit: lib/orientation.ts).
     expect(c.orientation).toBe('default');
+    expect(c.ios?.supportsTablet).toBe(true);
   });
 
   it('development / preview sonekli kimlik, ad ve sema (yan yana kurulum)', () => {

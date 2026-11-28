@@ -3,10 +3,12 @@ import * as ScreenOrientation from 'expo-screen-orientation';
 import { Platform } from 'react-native';
 
 /*
- * Ekran yonu: telefonda dikey (M1 gibi), tablette serbest. Kapidaki tablet yatay da kullanilir; Kapı
- * ekrani genis ekranda iki sutuna gecer. app.json `orientation: default` + iOS baslangic kilidi dikey
- * (expo-screen-orientation eklentisi); karar acilista bir kez verilir. iPad destegi (`ios.supportsTablet`)
- * mağaza kararidir ve kapalidir: iPad'de uygulama telefon gibi dikey acilir.
+ * Ekran yonu: telefonda dikey (M1 gibi), tablette (iPad ve Android tablet) serbest. Kapidaki tablet yatay
+ * da kullanilir; Kapı ekrani yatay genis pencerede iki sutuna gecer, diger ekranlar genis ekranda ortali
+ * en fazla 720 pt (Screen). app.json `orientation: default` + iOS baslangic kilidi dikey
+ * (expo-screen-orientation eklentisi); karar acilista bir kez verilir. iPad destegi acik
+ * (`ios.supportsTablet: true`, coklu gorev: iPad'de iOS yon kilidini zaten uygulamaz; bolunmus ekranda dar
+ * pencere telefon yerlesimini kullanir).
  */
 export async function applyOrientationPolicy(): Promise<void> {
   if (Platform.OS === 'web') return;

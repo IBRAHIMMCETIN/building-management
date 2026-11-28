@@ -18,7 +18,7 @@ import { portalKeys, useMyStatement, useMySummary } from '@/hooks/usePortal';
 import { endpoints } from '@/lib/api/endpoints';
 import { openDocument } from '@/lib/openExternal';
 import { useServices } from '@/services';
-import { MIN_TOUCH, radii, space, withAlpha } from '@/theme/tokens';
+import { CONTENT_MAX_WIDTH, MIN_TOUCH, radii, space, withAlpha } from '@/theme/tokens';
 import { useTheme } from '@/theme/useTheme';
 
 export const TYPE_LABEL: Record<StatementRow['entryType'], string> = {
@@ -256,7 +256,8 @@ export function DuesScreen() {
 
 const styles = StyleSheet.create({
   root: { flex: 1 },
-  content: { padding: space(4), paddingBottom: space(8) },
+  // Genis ekranda (iPad) diger ekranlar gibi ortali, en fazla 720 pt (Screen `maxContentWidth`).
+  content: { padding: space(4), paddingBottom: space(8), width: '100%', maxWidth: CONTENT_MAX_WIDTH, alignSelf: 'center' },
   header: { gap: space(4), marginBottom: space(3) },
   flex: { flex: 1 },
   gap2: { gap: space(2) },
