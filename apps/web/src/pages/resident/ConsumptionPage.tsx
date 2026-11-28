@@ -1,3 +1,4 @@
+import { versusAverage } from '@bm/shared/api/meters';
 import { FileDown, Gauge } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { ChangeUnitLink, PortalQueryState } from '@/components/portal/PortalQueryState';
@@ -12,11 +13,8 @@ import { CATEGORY_LABELS, type TemplateCategory, formatConsumption, formatPercen
 import { formatTRY } from '@/lib/money';
 import { cn } from '@/lib/cn';
 
-/** Ortalamaya gore fark yuzdesi (ortalama 0 ise null). */
-export function versusAverage(mine: number, average: number): number | null {
-  if (!(average > 0)) return null;
-  return Math.round(((mine - average) / average) * 1000) / 10;
-}
+/** Ortalamaya gore fark yuzdesi (web + mobil ortak: packages/shared/src/api/meters.ts). */
+export { versusAverage };
 
 /**
  * Sakin: dairesinin donem donem sayac tuketimi, ortak / tuketim payi ayrimi, bina ve blok

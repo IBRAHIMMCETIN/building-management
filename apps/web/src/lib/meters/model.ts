@@ -2,16 +2,20 @@
  * Finans 2.3 sayac / endeks dagitimi - istemci tarafi saf yardimcilar (React'siz, test edilebilir).
  * Endeksler API'de OLCEKLI TAM SAYIDIR: gercek deger x 10^scale (ornek scale 3: 1.234,567 -> 1234567).
  * Ayristirma kurallari API'deki `parseIndexText` ile birebir aynidir (apps/api/src/modules/meters/common.ts).
+ * Sayac / kategori turleri, tuketim bicimleri ve sakin portali semasi web + mobil ortaktir:
+ * packages/shared/src/api/meters.ts (burada yeniden disa aktarilir).
  */
 
-export const METER_KINDS = ['heat_allocator', 'heat_meter', 'hot_water', 'cold_water'] as const;
-export type MeterKind = (typeof METER_KINDS)[number];
-export const METER_KIND_LABELS: Record<MeterKind, string> = {
-  heat_allocator: 'Isı pay ölçer',
-  heat_meter: 'Kalorimetre',
-  hot_water: 'Sıcak su sayacı',
-  cold_water: 'Soğuk su sayacı',
-};
+export {
+  CATEGORY_LABELS,
+  METER_KINDS,
+  METER_KIND_LABELS,
+  TEMPLATE_CATEGORIES,
+  formatConsumption,
+  formatPercentChange,
+  type MeterKind,
+  type TemplateCategory,
+} from '@bm/shared/api/meters';
 
 export const METER_STATUSES = ['active', 'replaced', 'retired', 'cancelled'] as const;
 export type MeterStatus = (typeof METER_STATUSES)[number];
@@ -20,14 +24,6 @@ export const METER_STATUS_LABELS: Record<MeterStatus, string> = {
   replaced: 'Değiştirildi',
   retired: 'Söküldü',
   cancelled: 'İptal',
-};
-
-export const TEMPLATE_CATEGORIES = ['heating', 'hot_water', 'cold_water'] as const;
-export type TemplateCategory = (typeof TEMPLATE_CATEGORIES)[number];
-export const CATEGORY_LABELS: Record<TemplateCategory, string> = {
-  heating: 'Isınma',
-  hot_water: 'Sıcak su',
-  cold_water: 'Soğuk su',
 };
 
 export const COMMON_KEYS = ['area', 'equal', 'land_share'] as const;
@@ -167,13 +163,6 @@ export function formatIndex(value: number, scale: number): string {
   return scale === 0 ? `${sign}${grouped}` : `${sign}${grouped},${s.slice(-scale)}`;
 }
 
-/** Ondalik metin tuketimi ("12.5" / "12,5") Turkce gosterime cevirir. */
-export function formatConsumption(value: string | number, maxFraction = 3): string {
-  const n = typeof value === 'number' ? value : Number(String(value).replace(',', '.'));
-  if (!Number.isFinite(n)) return String(value);
-  return new Intl.NumberFormat('tr-TR', { maximumFractionDigits: maxFraction }).format(n);
-}
-
 // ---------------------------------------------------------------------------
 // Fotograf kaniti
 // ---------------------------------------------------------------------------
@@ -258,12 +247,6 @@ export function parseImportTable(table: unknown[][]): ImportParse {
   }
   if (rows.length === 0 && errors.length === 0) errors.push('Aktarılacak satır bulunamadı.');
   return { rows, errors };
-}
-
-/** Yuzde degisim metni: 12.3 -> "+%12,3", -5 -> "-%5". */
-export function formatPercentChange(p: number): string {
-  const s = new Intl.NumberFormat('tr-TR', { maximumFractionDigits: 1 }).format(Math.abs(p));
-  return `${p > 0 ? '+' : p < 0 ? '-' : ''}%${s}`;
 }
 
 /** Okuma girisi icin yerel takvim gunu (Europe/Istanbul). */

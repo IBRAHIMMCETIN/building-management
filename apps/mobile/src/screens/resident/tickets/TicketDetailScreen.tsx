@@ -7,6 +7,7 @@ import { useState } from 'react';
 import { Platform, Pressable, StyleSheet, View } from 'react-native';
 import { SearchX, Star } from '@/components/icons';
 import { PortalQueryState } from '@/components/portal/PortalQueryState';
+import { RefetchErrorBanner } from '@/components/portal/RefetchErrorBanner';
 import { TicketStatusBadge } from '@/components/tickets/TicketBadges';
 import { PhotoPicker } from '@/components/tickets/PhotoPicker';
 import { TicketTimeline } from '@/components/tickets/TicketTimeline';
@@ -36,9 +37,11 @@ export function TicketDetailScreen({ id }: { id: string }) {
 
   return (
     <Screen refreshing={refreshing} onRefresh={() => void refresh()}>
+      {/* Yenileme hatasi: ekrandaki talep ve yazilmakta olan mesaj / not korunur. */}
+      {detail.isError && detail.data && <RefetchErrorBanner error={detail.error} onRetry={() => void detail.refetch()} />}
       {detail.isPending ? (
         <LoadingBlock label="Talep yükleniyor" lines={5} />
-      ) : detail.isError ? (
+      ) : !detail.data ? (
         detail.error instanceof ApiError && detail.error.status === 404 ? (
           <EmptyState icon={SearchX} title="Talep bulunamadı" description="Bu talep kaldırılmış veya sizinle paylaşılmıyor olabilir." />
         ) : (

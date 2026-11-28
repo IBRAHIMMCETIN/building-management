@@ -10,6 +10,7 @@ import { Pressable, StyleSheet, View } from 'react-native';
 import { CalendarCheck, CalendarDays, ChevronRight, CircleCheck } from '@/components/icons';
 import { FilterChips } from '@/components/portal/FilterChips';
 import { PortalQueryState } from '@/components/portal/PortalQueryState';
+import { RefetchErrorBanner } from '@/components/portal/RefetchErrorBanner';
 import { Alert, AppText, Badge, Button, Card, EmptyState, LoadingBlock, Screen } from '@/components/ui';
 import { useAuth } from '@/context/AuthProvider';
 import { reservationKeys, useCancelMyBooking, useMyBookings, usePortalFacilities } from '@/hooks/useReservations';
@@ -88,13 +89,21 @@ function Facilities() {
   const router = useRouter();
   const { colors } = useTheme();
   if (facilities.isPending) return <LoadingBlock label="Ortak alanlar yükleniyor" />;
-  if (facilities.isError) return <PortalQueryState error={facilities.error} onRetry={() => void facilities.refetch()} />;
+  if (!facilities.data) return <PortalQueryState error={facilities.error} onRetry={() => void facilities.refetch()} />;
   const { items, units } = facilities.data;
-  if (!units.length) return <EmptyState icon={CalendarDays} title="Rezervasyon için bir daireye üye olmanız gerekir" />;
-  if (!items.length) return <EmptyState icon={CalendarDays} title="Rezervasyona açık ortak alan yok" />;
+  const banner = facilities.isError ? <RefetchErrorBanner error={facilities.error} onRetry={() => void facilities.refetch()} /> : null;
+  if (!units.length || !items.length) {
+    return (
+      <>
+        {banner}
+        <EmptyState icon={CalendarDays} title={!units.length ? 'Rezervasyon için bir daireye üye olmanız gerekir' : 'Rezervasyona açık ortak alan yok'} />
+      </>
+    );
+  }
 
   return (
     <View style={styles.list}>
+      {banner}
       {items.map((f) => {
         const fee = f.feeKurus ? formatTRY(f.feeKurus) : 'Ücretsiz';
         const hours = hoursSummary(f.openingHours);
@@ -136,7 +145,7 @@ function MyBookings() {
   const [confirming, setConfirming] = useState<string>();
   const [notice, setNotice] = useState<string>();
   if (list.isPending) return <LoadingBlock label="Rezervasyonlarınız yükleniyor" />;
-  if (list.isError) return <PortalQueryState error={list.error} onRetry={() => void list.refetch()} />;
+  if (!list.data) return <PortalQueryState error={list.error} onRetry={() => void list.refetch()} />;
   const { upcoming, history } = list.data;
 
   const row = (b: MyBooking) => (
@@ -219,6 +228,7 @@ function MyBookings() {
 
   return (
     <>
+      {list.isError && <RefetchErrorBanner error={list.error} onRetry={() => void list.refetch()} />}
       {notice && <Alert tone="danger">{notice}</Alert>}
       {upcoming.length === 0 ? <EmptyState icon={CalendarCheck} title="Yaklaşan rezervasyonunuz yok" /> : <View style={styles.list}>{upcoming.map(row)}</View>}
       {history.length > 0 && (

@@ -8,6 +8,7 @@ import { useState } from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
 import { PayOnlineButton } from '@/components/portal/PayOnlineButton';
 import { PortalQueryState } from '@/components/portal/PortalQueryState';
+import { RefetchErrorBanner } from '@/components/portal/RefetchErrorBanner';
 import { PortalStatusBadge } from '@/components/portal/PortalStatusBadge';
 import { AppText, Button, Card, CardTitle, LoadingBlock, Screen, Skeleton } from '@/components/ui';
 import { useAuth } from '@/context/AuthProvider';
@@ -22,13 +23,14 @@ function DebtCard() {
   const { colors } = useTheme();
 
   if (summary.isPending) return <LoadingBlock label="Borç özeti yükleniyor" />;
-  if (summary.isError) return <PortalQueryState error={summary.error} onRetry={() => void summary.refetch()} />;
+  if (!summary.data) return <PortalQueryState error={summary.error} onRetry={() => void summary.refetch()} />;
 
   const s = summary.data;
   const clear = s.debt === 0;
 
   return (
     <Card>
+      {summary.isError && <RefetchErrorBanner error={summary.error} onRetry={() => void summary.refetch()} />}
       <View style={styles.between}>
         <View style={styles.flex}>
           <CardTitle>Güncel borç</CardTitle>
@@ -109,9 +111,10 @@ function MyTicketsCard() {
   return (
     <Card>
       <CardTitle icon={<Wrench size={20} color={colors.muted} aria-hidden />}>Arıza / Talep</CardTitle>
+      {list.isError && list.data && <RefetchErrorBanner error={list.error} onRetry={() => void list.refetch()} />}
       {list.isPending ? (
         <Skeleton height={20} width="50%" />
-      ) : list.isError ? (
+      ) : !list.data ? (
         <AppText variant="small" tone="muted">
           Talepler şu an yüklenemedi.
         </AppText>
@@ -138,7 +141,7 @@ function LatestAnnouncementsCard() {
   const list = useMyAnnouncements();
   const router = useRouter();
   const { colors } = useTheme();
-  if (list.isError) return null;
+  if (list.isError && !list.data) return null;
 
   return (
     <Card>
@@ -148,7 +151,7 @@ function LatestAnnouncementsCard() {
           <Skeleton height={16} width="70%" />
           <Skeleton height={16} width="50%" />
         </View>
-      ) : list.data.length === 0 ? (
+      ) : !list.data || list.data.length === 0 ? (
         <AppText variant="small" tone="muted">
           Güncel duyuru yok.
         </AppText>

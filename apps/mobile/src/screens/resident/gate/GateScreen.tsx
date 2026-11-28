@@ -21,6 +21,7 @@ import { Platform, StyleSheet, View } from 'react-native';
 import { Car, DoorOpen, LogIn, LogOut, Package, Plus, QrCode as QrIcon } from '@/components/icons';
 import { FilterChips } from '@/components/portal/FilterChips';
 import { PortalQueryState } from '@/components/portal/PortalQueryState';
+import { RefetchErrorBanner } from '@/components/portal/RefetchErrorBanner';
 import { Sheet } from '@/components/portal/Sheet';
 import { Alert, AppText, Badge, Button, Card, CardTitle, EmptyState, LoadingBlock, Screen, TextField } from '@/components/ui';
 import { useAuth } from '@/context/AuthProvider';
@@ -66,7 +67,7 @@ export function GateScreen() {
       </Screen>
     );
   }
-  if (overview.isError) {
+  if (!overview.data) {
     return (
       <Screen>
         <PortalQueryState error={overview.error} onRetry={() => void overview.refetch()} />
@@ -77,6 +78,7 @@ export function GateScreen() {
 
   return (
     <Screen refreshing={refreshing} onRefresh={() => void refresh()}>
+      {overview.isError && <RefetchErrorBanner error={overview.error} onRetry={() => void overview.refetch()} />}
       {units.length === 0 ? (
         <Alert>Misafir geçişi, kurye onayı ve araç kaydı yalnızca dairede oturan sakinler içindir. Bir hata olduğunu düşünüyorsanız yönetimle iletişime geçin.</Alert>
       ) : (
@@ -198,9 +200,10 @@ function Guests({ units, rotate, onNew }: { units: GateUnit[]; rotate: RotateMut
       <Button icon={Plus} label="Misafir geçişi oluştur" block onPress={onNew} />
       {a.revokePass.error && <Alert tone="danger">{errorMessage(a.revokePass.error)}</Alert>}
       {rotate.error ? <Alert tone="danger">{errorMessage(rotate.error)}</Alert> : null}
+      {passes.isError && passes.data && <RefetchErrorBanner error={passes.error} onRetry={() => void passes.refetch()} />}
       {passes.isPending ? (
         <LoadingBlock label="Misafir geçişleri yükleniyor" />
-      ) : passes.isError ? (
+      ) : !passes.data ? (
         <PortalQueryState error={passes.error} onRetry={() => void passes.refetch()} />
       ) : items.length === 0 ? (
         <EmptyState icon={DoorOpen} title="Henüz misafir geçişi yok" description="Misafiriniz gelmeden önce geçiş oluşturup QR'ı paylaşın." />
@@ -341,9 +344,10 @@ function MyVehicles({ units, max }: { units: GateUnit[]; max: number }) {
         <Button label="Aracı kaydet" block loading={a.createVehicle.isPending} onPress={add} />
       </Card>
       {toggleError && <Alert tone="danger">{toggleError}</Alert>}
+      {vehicles.isError && vehicles.data && <RefetchErrorBanner error={vehicles.error} onRetry={() => void vehicles.refetch()} />}
       {vehicles.isPending ? (
         <LoadingBlock label="Araçlar yükleniyor" />
-      ) : vehicles.isError ? (
+      ) : !vehicles.data ? (
         <PortalQueryState error={vehicles.error} onRetry={() => void vehicles.refetch()} />
       ) : items.length === 0 ? (
         <EmptyState icon={Car} title="Kayıtlı aracınız yok" />
@@ -427,9 +431,10 @@ function History({ units }: { units: GateUnit[] }) {
       <AppText variant="small" tone="muted">
         Dairenize gelen misafir, kurye ve ziyaretçilerin son 7 günlük giriş / çıkış kayıtları.
       </AppText>
+      {log.isError && log.data && <RefetchErrorBanner error={log.error} onRetry={() => void log.refetch()} />}
       {log.isPending ? (
         <LoadingBlock label="Kapı kayıtları yükleniyor" />
-      ) : log.isError ? (
+      ) : !log.data ? (
         <PortalQueryState error={log.error} onRetry={() => void log.refetch()} />
       ) : items.length === 0 ? (
         <EmptyState icon={DoorOpen} title="Son 7 günde kapı kaydı yok" />

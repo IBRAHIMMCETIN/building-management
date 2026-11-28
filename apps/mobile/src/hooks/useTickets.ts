@@ -76,9 +76,13 @@ export function useMyTicketActions(id: string) {
  * Demo modunda (EXPO_PUBLIC_API_MODE=demo) imzali link sahtedir, PUT yapilmaz. Demo kodu yalnizca o
  * modda yuklenir (kosullu require; services.tsx'teki demo fetch ile ayni yaklasim).
  */
-function demoPut(upload: PhotoUpload): Promise<string> {
-  const demo = require('@/dev/demo/tickets') as typeof import('@/dev/demo/tickets');
-  return demo.demoPut(upload);
+function put(upload: PhotoUpload, photo: PreparedPhoto, apiMode: string): Promise<string> {
+  // services.tsx ile ayni kural: demo yalnizca gelistirme paketinde; uretimde dal sabit katlamayla silinir.
+  if (__DEV__ && apiMode === 'demo') {
+    const demo = require('@/dev/demo/tickets') as typeof import('@/dev/demo/tickets');
+    return demo.demoPut(upload);
+  }
+  return putToSignedUrl(upload, photo.blob);
 }
 
 /** Tek fotografi yukler: `upload-url` (tur + boyut) ve imzali linke PUT; yukleme kimligini dondurur. */
@@ -87,7 +91,7 @@ export function usePhotoUploader(): (photo: PreparedPhoto) => Promise<string> {
   return useCallback(
     async (photo: PreparedPhoto) => {
       const upload = await portalTicketsApi.uploadUrl(api, { contentType: photo.type, size: photo.size });
-      return env.apiMode === 'demo' ? demoPut(upload) : putToSignedUrl(upload, photo.blob);
+      return put(upload, photo, env.apiMode);
     },
     [api, env.apiMode],
   );

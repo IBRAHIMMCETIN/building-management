@@ -4,12 +4,13 @@ import { formatDate } from '@bm/shared/dates';
 import { formatTRY } from '@bm/shared/money';
 import { addClock, addDays, dayLabel, durationOptions, formatMinutes, hoursSummary, partySizeError } from '@bm/shared/reservations/model';
 import { useRouter } from 'expo-router';
-import { useEffect, useMemo, useState } from 'react';
+import { type ReactNode, useEffect, useMemo, useState } from 'react';
 import { Platform, Pressable, StyleSheet, View } from 'react-native';
 import { CalendarCheck, SearchX } from '@/components/icons';
 import { DateField } from '@/components/portal/DateField';
 import { FilterChips } from '@/components/portal/FilterChips';
 import { PortalQueryState } from '@/components/portal/PortalQueryState';
+import { RefetchErrorBanner } from '@/components/portal/RefetchErrorBanner';
 import { Alert, AppText, Button, Card, EmptyState, LoadingBlock, Screen, Skeleton, TextField } from '@/components/ui';
 import { usePortalUnit } from '@/context/PortalUnitProvider';
 import { useAvailability, useCreateBooking, usePortalFacilities } from '@/hooks/useReservations';
@@ -33,7 +34,7 @@ export function FacilityBookingScreen({ facilityId }: { facilityId: string }) {
       </Screen>
     );
   }
-  if (facilities.isError) {
+  if (!facilities.data) {
     return (
       <Screen>
         <PortalQueryState error={facilities.error} onRetry={() => void facilities.refetch()} />
@@ -49,10 +50,12 @@ export function FacilityBookingScreen({ facilityId }: { facilityId: string }) {
       </Screen>
     );
   }
-  return <SlotPicker facility={facility} units={units.filter((u) => facility.unitIds.includes(u.unitId))} today={today} />;
+  // Yenileme hatasinda secim (tarih, dilim, sure, not) korunur; satir ici uyari gosterilir.
+  const banner = facilities.isError ? <RefetchErrorBanner error={facilities.error} onRetry={() => void facilities.refetch()} /> : null;
+  return <SlotPicker facility={facility} units={units.filter((u) => facility.unitIds.includes(u.unitId))} today={today} banner={banner} />;
 }
 
-function SlotPicker({ facility, units, today }: { facility: PortalFacility; units: PortalUnit[]; today: string }) {
+function SlotPicker({ facility, units, today, banner }: { facility: PortalFacility; units: PortalUnit[]; today: string; banner: ReactNode }) {
   const router = useRouter();
   const { colors } = useTheme();
   const { unitId: preferred } = usePortalUnit();
@@ -133,6 +136,7 @@ function SlotPicker({ facility, units, today }: { facility: PortalFacility; unit
 
   return (
     <Screen refreshing={refreshing} onRefresh={() => void refresh()}>
+      {banner}
       <View style={styles.head}>
         <AppText variant="heading" weight="semibold" accessibilityRole="header">
           {facility.name}
@@ -159,13 +163,14 @@ function SlotPicker({ facility, units, today }: { facility: PortalFacility; unit
         <AppText variant="small" weight="semibold" accessibilityRole="header">
           {dayLabel(date)}
         </AppText>
+        {day.isError && day.data && <RefetchErrorBanner error={day.error} onRetry={() => void day.refetch()} />}
         {day.isPending ? (
           <View accessible accessibilityRole="progressbar" accessibilityLabel="Saatler yükleniyor" style={styles.grid}>
             {Array.from({ length: 6 }, (_, i) => (
               <Skeleton key={i} height={MIN_TOUCH + 8} style={styles.slot} />
             ))}
           </View>
-        ) : day.isError ? (
+        ) : !day.data ? (
           <PortalQueryState error={day.error} onRetry={() => void day.refetch()} />
         ) : !day.data.open ? (
           <AppText variant="small" tone="muted">

@@ -82,9 +82,8 @@ export function sharesToBps(shares: readonly Share[]): number[] {
   return base.map((b) => Number(b));
 }
 
-/** 3334 -> "%33,34" */
-export const formatBps = (bps: number) =>
-  `%${(bps / 100).toLocaleString('tr-TR', { minimumFractionDigits: bps % 100 === 0 ? 0 : 2, maximumFractionDigits: 2 })}`;
+/** 3334 -> "%33,34" (tek tanim: packages/shared/src/api/polls.ts, web + mobil ortak). */
+export { formatBps } from '@bm/shared/api/polls';
 
 export const TRANSFER_KIND_LABELS: Record<TransferKind, string> = {
   sale_full: 'Tam satış',

@@ -1,6 +1,7 @@
 import { formatDateTime } from '@bm/shared/dates';
 import { Megaphone } from '@/components/icons';
 import { PortalQueryState } from '@/components/portal/PortalQueryState';
+import { RefetchErrorBanner } from '@/components/portal/RefetchErrorBanner';
 import { AppText, Card, EmptyState, LoadingBlock, Screen } from '@/components/ui';
 import { useMyAnnouncements } from '@/hooks/usePortal';
 
@@ -18,7 +19,7 @@ export function AnnouncementDetailScreen({ id }: { id: string }) {
       </Screen>
     );
   }
-  if (list.isError) {
+  if (!list.data) {
     return (
       <Screen>
         <PortalQueryState error={list.error} onRetry={() => void list.refetch()} />
@@ -37,6 +38,7 @@ export function AnnouncementDetailScreen({ id }: { id: string }) {
 
   return (
     <Screen>
+      {list.isError && <RefetchErrorBanner error={list.error} onRetry={() => void list.refetch()} />}
       <Card>
         <AppText variant="heading" weight="semibold" accessibilityRole="header">
           {a.title}

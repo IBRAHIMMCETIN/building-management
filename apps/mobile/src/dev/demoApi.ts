@@ -1,9 +1,13 @@
 import type { NotificationPreferences } from '@bm/shared/api/notificationPreferences';
 import { mockContextsFor } from '@bm/shared/auth/mockScenarios';
-import { decodeClaims } from '@bm/shared/auth/session';
+import { type SessionClaims, decodeClaims } from '@bm/shared/auth/session';
 import { createGateDemo } from './demo/gate';
 import { createReservationsDemo } from './demo/reservations';
 import { createTicketsDemo } from './demo/tickets';
+import { createAssembliesDemo } from './demoAssemblies';
+import { createConsumptionDemo } from './demoConsumption';
+import { createPollsDemo } from './demoPolls';
+import { createTendersDemo } from './demoTenders';
 
 /*
  * DEMO veri (EXPO_PUBLIC_API_MODE=demo, yalnizca mock kimlikle): API calismadan web onizlemesinde
@@ -125,16 +129,24 @@ function quote(now: Date) {
 
 export type DemoFetchOptions = { now?: () => Date };
 
-/** Ozellik demo dosyasinin gordugu istek (kimlik dogrulanmis, sakin rolu). */
-export type DemoRequest = { method: string; path: string; query: Record<string, string>; body: unknown; now: Date };
-/** Yanit veya `undefined` (bu dosyanin ucu degil). */
-export type DemoHandler = (req: DemoRequest) => { status: number; body?: unknown } | undefined;
+/** Alan bazli demo yanitlayici (ayri dosyalar: demo/tickets.ts, demoPolls.ts ...): ucu tanimiyorsa undefined. */
+export type DemoRequest = { method: string; path: string; query: Record<string, string>; body: unknown; now: Date; claims: SessionClaims };
+export type DemoReply = { status: number; body?: unknown };
+export type DemoHandler = (req: DemoRequest) => DemoReply | undefined;
 
-/** `fetch` yerine gecer: M1 uclari burada, diger ozellikler src/dev/demo/* dosyalarinda; digerleri 404. */
+/** `fetch` yerine gecer: M1 uclari burada, sonraki alanlar kendi dosyalarinda (`domains`); digerleri 404. */
 export function createDemoFetch({ now = () => new Date() }: DemoFetchOptions = {}): typeof fetch {
   let prefs: NotificationPreferences = { email: { enabled: true }, push: { enabled: true } };
   const start = now();
-  const domains: DemoHandler[] = [createTicketsDemo(start), createGateDemo(start), createReservationsDemo(start)];
+  const domains: DemoHandler[] = [
+    createTicketsDemo(start),
+    createGateDemo(start),
+    createReservationsDemo(start),
+    createPollsDemo(),
+    createAssembliesDemo(),
+    createConsumptionDemo(),
+    createTendersDemo(),
+  ];
 
   return (async (input: string | URL | Request, init?: RequestInit) => {
     const raw = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
@@ -180,14 +192,13 @@ export function createDemoFetch({ now = () => new Date() }: DemoFetchOptions = {
       case '/api/portal/payments/quote':
         return respond(200, quote(t));
     }
-    // Ozellik basina ayri demo dosyalari (src/dev/demo/*): ilk yanit veren kazanir.
-    const request: DemoRequest = { method, path, query: new URLSearchParamsLite(qs).entries(), body: init?.body ? JSON.parse(String(init.body)) : undefined, now: t };
-    for (const handle of domains) {
-      const reply = handle(request);
-      if (reply) return respond(reply.status, reply.body);
-    }
     if (path.startsWith('/api/documents/my-receipts/')) {
       return respond(404, { error: 'not_found', message: 'Demo modunda makbuz PDF’i yok; gerçek API’de makbuz burada açılır.' });
+    }
+    const body = init?.body ? (JSON.parse(String(init.body)) as unknown) : undefined;
+    for (const handle of domains) {
+      const reply = handle({ method, path, query: Object.fromEntries(new URLSearchParamsLite(qs).entries()), body, now: t, claims });
+      if (reply) return respond(reply.status, reply.body);
     }
     return respond(404, { error: 'not_found', message: 'Demo modunda bu veri yok.' });
   }) as typeof fetch;
@@ -206,7 +217,7 @@ class URLSearchParamsLite {
   get(key: string) {
     return this.map.get(key);
   }
-  entries(): Record<string, string> {
-    return Object.fromEntries(this.map);
+  entries() {
+    return this.map.entries();
   }
 }

@@ -1,3 +1,4 @@
+import { consumptionSchema } from '@bm/shared/api/meters';
 import { z } from 'zod';
 import {
   COMMON_KEYS,
@@ -371,34 +372,8 @@ export const importResultSchema = z.object({
   errors: z.array(importError).default([]),
 });
 
-export const portalPeriodSchema = z.object({
-  periodId: z.string(),
-  name: z.string(),
-  meterKind: z.enum(METER_KINDS),
-  category: z.enum(TEMPLATE_CATEGORIES),
-  startDate: isoDate,
-  endDate: isoDate,
-  dueDate: isoDate,
-  hasMeter: z.boolean(),
-  estimated: z.boolean(),
-  consumption: z.number(),
-  consumptionText: z.string(),
-  commonAmount: kurus,
-  consumptionAmount: kurus,
-  amount: kurus,
-  /** Endeks / tuketim sayacin olcegine gore bicimli metin ("1234,500"). */
-  meters: z.array(z.object({ meterId: z.string(), label: z.string(), endIndex: z.string().optional(), delta: z.string().optional(), endDate: isoDate.optional() })).default([]),
-  buildingAverage: z.number(),
-  blockAverage: z.number().optional(),
-  meteredUnits: z.number().int(),
-  previous: z.object({ periodId: z.string(), consumption: z.number(), diff: z.number(), percent: z.number().optional() }).optional(),
-});
-
-export const consumptionSchema = z.object({
-  unitId: z.string(),
-  unitNumber: z.string().optional(),
-  periods: z.array(portalPeriodSchema),
-});
+/** Sakin portali semasi web + mobil ortak: packages/shared/src/api/meters.ts. */
+export { consumptionSchema, portalPeriodSchema, type ConsumptionHistory, type PortalPeriod } from '@bm/shared/api/meters';
 
 export type Meter = z.infer<typeof meterSchema>;
 export type MeterEvent = z.infer<typeof meterEventSchema>;
@@ -415,8 +390,6 @@ export type CalculateResult = z.infer<typeof calculateSchema>;
 export type DistributionLine = z.infer<typeof lineSchema>;
 export type ReversePreview = z.infer<typeof reversePreviewSchema>;
 export type ImportResult = z.infer<typeof importResultSchema>;
-export type PortalPeriod = z.infer<typeof portalPeriodSchema>;
-export type ConsumptionHistory = z.infer<typeof consumptionSchema>;
 
 export type CreateMeterInput = {
   unitId: string;

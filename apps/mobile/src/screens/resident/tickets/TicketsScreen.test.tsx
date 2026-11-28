@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor, within } from '@testing-library/react-native';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react-native';
 import { renderApp } from '@/test/renderApp';
 import { portalTicket } from './ticketFixtures';
 import { TicketsScreen } from './TicketsScreen';
@@ -45,6 +45,23 @@ describe('Talepler', () => {
     await renderApp(<TicketsScreen />, { routes: { 'GET /api/portal/tickets': list([]) } });
     await fireEvent.press(await screen.findByRole('button', { name: 'Yeni talep' }));
     expect(mockRouter.push).toHaveBeenCalledWith('/resident/tickets/new');
+  });
+
+  it('yenileme hatasi: liste ekranda kalir, satir ici uyari + tekrar dene', async () => {
+    let fail = false;
+    const { queryClient } = await renderApp(<TicketsScreen />, {
+      routes: { 'GET /api/portal/tickets': () => (fail ? { status: 503, body: { error: 'unavailable' } } : list([portalTicket('1', 'open')])) },
+    });
+    expect(await screen.findByText('Talep 1')).toBeTruthy();
+    fail = true;
+    await act(async () => {
+      await queryClient.refetchQueries({ type: 'active' });
+    });
+    expect(await screen.findByText(/^Güncel bilgiler alınamadı; son yüklenen bilgiler gösteriliyor\./)).toBeTruthy();
+    expect(screen.getByText('Talep 1')).toBeTruthy();
+    fail = false;
+    await fireEvent.press(screen.getByRole('button', { name: 'Tekrar dene' }));
+    await waitFor(() => expect(screen.queryByText(/^Güncel bilgiler alınamadı/)).toBeNull());
   });
 
   it('sunucu hatasi Turkce gosterilir; tekrar dene listeyi getirir', async () => {

@@ -7,6 +7,7 @@ import { Platform, Pressable, StyleSheet, View } from 'react-native';
 import { ChevronRight, Plus, Wrench } from '@/components/icons';
 import { FilterChips } from '@/components/portal/FilterChips';
 import { PortalQueryState } from '@/components/portal/PortalQueryState';
+import { RefetchErrorBanner } from '@/components/portal/RefetchErrorBanner';
 import { TicketStatusBadge } from '@/components/tickets/TicketBadges';
 import { AppText, Badge, Button, EmptyState, LoadingBlock, Screen } from '@/components/ui';
 import { useMyTickets } from '@/hooks/useTickets';
@@ -48,9 +49,10 @@ export function TicketsScreen() {
           { value: 'closed', label: 'Kapanan' },
         ]}
       />
+      {list.isError && list.data && <RefetchErrorBanner error={list.error} onRetry={() => void list.refetch()} />}
       {list.isPending ? (
         <LoadingBlock label="Talepler yükleniyor" />
-      ) : list.isError ? (
+      ) : !list.data ? (
         <PortalQueryState error={list.error} onRetry={() => void list.refetch()} />
       ) : items.length === 0 ? (
         <EmptyState
