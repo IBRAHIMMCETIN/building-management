@@ -19,7 +19,9 @@ describe('bildirim baglantilari (push data.url)', () => {
 
   it('saha rolleri ve yonetim kendi alanina gider', () => {
     expect(deepLinkTarget('/kapi', 'guard')).toBe('/guard');
-    expect(deepLinkTarget('/talepler/tk-1', 'staff')).toBe('/staff');
+    expect(deepLinkTarget('/talepler/tk-1', 'staff')).toEqual({ pathname: '/staff/ticket/[id]', params: { id: 'tk-1' } });
+    expect(deepLinkTarget('/talepler', 'staff')).toBe('/staff');
+    expect(deepLinkTarget('/duyurular/an-1', 'staff')).toBe('/staff');
     expect(deepLinkTarget('/talepler/tk-1', 'panel')).toBe('/panel');
   });
 

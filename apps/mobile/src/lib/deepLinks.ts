@@ -49,7 +49,8 @@ export function deepLinkTarget(path: string, area: RoleArea | null): DeepLinkTar
   const withId = (params: Record<string, string>) => (id ? { ...params, id } : params);
 
   if (area === 'guard') return '/guard';
-  if (area === 'staff') return '/staff';
+  // Gorevliye atanan / guncellenen talep: dogrudan ayrintisi; digerleri İşlerim.
+  if (area === 'staff') return root === 'talepler' && id ? { pathname: '/staff/ticket/[id]', params: { id } } : '/staff';
   if (area === 'panel') return '/panel';
 
   switch (root) {
