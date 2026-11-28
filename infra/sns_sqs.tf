@@ -25,8 +25,8 @@ locals {
     "ASSEMBLY_CALLED",
     "TENDER_PUBLISHED", "TENDER_DECIDED", "TENDER_CANCELLED", "TENDER_REPLIED",
   ]
-  # Worker Lambda zaman asimi x 6 (AWS onerisi); worker 30 sn varsayilir.
-  notification_visibility_timeout = 180
+  # Worker Lambda zaman asimi x 6 (AWS onerisi); worker 60 sn (worker.tf).
+  notification_visibility_timeout = 360
 }
 
 resource "aws_sns_topic" "events" {

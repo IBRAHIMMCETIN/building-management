@@ -6,6 +6,7 @@ import { type MembershipRepository, membershipRepository } from '../modules/memb
 import { categoryOfEvent } from '../modules/notifications/categories.js';
 import { createNotifierFromEnv } from '../modules/notifications/email.js';
 import type { DeliveryResult, Notification, NotificationLine, NotificationTemplate, Notifier } from '../modules/notifications/notifier.js';
+import { type PushChannel, type PushOutcome, createPushChannelFromEnv } from '../modules/notifications/push.js';
 import { type UnitMembership, visibleParties } from '../modules/portal/types.js';
 import { type ApartmentRoleRepository, apartmentRoleRepository } from '../modules/apartment-roles/repository.js';
 import type { ApartmentRole } from '../modules/apartment-roles/types.js';
@@ -53,12 +54,17 @@ export { createLogNotifier } from '../modules/notifications/notifier.js';
  *  4. Her aliciya `Notifier` ile bildirim gonderilir: NOTIFICATION_CHANNEL=log (yapilandirilmis
  *     log) veya ses (e-posta; tercih, adres ve alici bazli tekrar korumasi kanal icinde, bkz.
  *     modules/notifications/email.ts). SMS / WhatsApp ayni arayuzle eklenecek.
- *  5. Basariyla islenen olay icin `NOTIF#` kaydi yazilir (30 gun TTL).
+ *  5. Mobil bildirim (PUSH_CHANNEL=expo): ayni bildirimler alicinin aktif Expo cihazlarina push
+ *     olarak da gider (push tercihi e-postadan bagimsiz; cihaz bazli `NOTIFPUSH#` tekrar korumasi;
+ *     bkz. modules/notifications/push.ts). E-posta kanali hata verse de push denenir; hata olay
+ *     sonunda firlatilir.
+ *  6. Basariyla islenen olay icin `NOTIF#` kaydi yazilir (30 gun TTL).
  * Hatali mesajlar `batchItemFailures` ile yalnizca kendileri yeniden denenir; 5 denemeden
  * sonra DLQ'ya duser (Terraform: maxReceiveCount = 5) ve alarm uretir.
  *
  * Bir alicinin gecici hatasinda olay yeniden denenir; e-posta kanali `NOTIFSENT#` kaydiyla
- * onceki alicilara ikinci kez gondermez (log kanalinda dis etki yoktur).
+ * onceki alicilara ikinci kez gondermez (log kanalinda dis etki yoktur); push kanali da yalnizca
+ * sonuclanmamis cihazlara tekrar gonderir.
  */
 
 // ---------------------------------------------------------------------------
@@ -347,6 +353,8 @@ export type WorkerDeps = {
   /** Ihale: guncel durum (bayat olay elenir) ve yanit olayinda yorumlar. */
   tenders: Pick<TenderRepository, 'get' | 'listComments'>;
   notifier: Notifier;
+  /** Mobil bildirim kanali; null: kapali (PUSH_CHANNEL=off). */
+  push: PushChannel | null;
   /** Olay daha once islendi mi? */
   isProcessed: (apartmentId: string, eventId: string) => Promise<boolean>;
   markProcessed: (apartmentId: string, eventId: string, info: { type: EventType; recipients: number }) => Promise<void>;
@@ -370,6 +378,7 @@ export function createNotificationWorker(overrides: Partial<WorkerDeps> = {}) {
     assemblies: assemblyRepository,
     tenders: tenderRepository,
     notifier: overrides.notifier ?? createNotifierFromEnv(),
+    push: overrides.push !== undefined ? overrides.push : createPushChannelFromEnv(process.env, { now }),
     isProcessed: async (apt, id) => Boolean(await getTenantItem(processedKey(apt, id))),
     markProcessed: async (apt, id, info) => {
       try {
@@ -396,7 +405,7 @@ export function createNotificationWorker(overrides: Partial<WorkerDeps> = {}) {
   const today = (): IsoDate =>
     new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Istanbul' }).format(deps.now());
 
-  type Outcome = { skipped: boolean; recipients: number; sent?: number; skippedRecipients?: Record<string, number> };
+  type Outcome = { skipped: boolean; recipients: number; sent?: number; skippedRecipients?: Record<string, number>; push?: PushOutcome };
 
   /** Olayin ihtiyac duydugu kayitlar (yalnizca ilgili olay turlerinde okunur). */
   async function recordsFor(event: DomainEvent): Promise<NotificationRecords> {
@@ -473,14 +482,30 @@ export function createNotificationWorker(overrides: Partial<WorkerDeps> = {}) {
     const notifications = buildNotifications(event, memberships, unitBlocks, today(), roles, records).map((n) => (category && !n.category ? { ...n, category } : n));
     let sent = 0;
     const skippedRecipients: Record<string, number> = {};
-    for (const n of notifications) {
-      // Hata firlatirsa olay yeniden denenir (gonderilmis alicilar kanalda atlanir).
-      const result: DeliveryResult | void = await deps.notifier.send(n);
-      if (!result || result.status === 'sent') sent++;
-      else skippedRecipients[result.reason] = (skippedRecipients[result.reason] ?? 0) + 1;
+    let failure: unknown;
+    try {
+      for (const n of notifications) {
+        // Hata firlatirsa olay yeniden denenir (gonderilmis alicilar kanalda atlanir).
+        const result: DeliveryResult | void = await deps.notifier.send(n);
+        if (!result || result.status === 'sent') sent++;
+        else skippedRecipients[result.reason] = (skippedRecipients[result.reason] ?? 0) + 1;
+      }
+    } catch (err) {
+      failure = err;
     }
+    // Push ayri saglayici: e-posta hatasi (or. SES kisitlamasi) push'u geciktirmez. Iki kanal da
+    // gonderdiklerini kaydettigi icin yeniden denemede yalnizca kalanlar gider.
+    let push: PushOutcome | undefined;
+    if (deps.push && notifications.length > 0) {
+      try {
+        push = await deps.push.deliver(event.apartmentId, event.eventId, notifications);
+      } catch (err) {
+        failure ??= err;
+      }
+    }
+    if (failure) throw failure;
     await deps.markProcessed(event.apartmentId, event.eventId, { type: event.type, recipients: notifications.length });
-    return { skipped: false, recipients: notifications.length, sent, skippedRecipients };
+    return { skipped: false, recipients: notifications.length, sent, skippedRecipients, ...(push ? { push } : {}) };
   }
 
   return async (sqsEvent: SqsEvent): Promise<SqsBatchResponse> => {

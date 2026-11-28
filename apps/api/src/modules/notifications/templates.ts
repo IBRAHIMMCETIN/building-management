@@ -516,6 +516,14 @@ const TICKET_STATUS_TEXT: Record<string, string> = {
 };
 const PRIORITY_TEXT: Record<string, string> = { low: 'Düşük', normal: 'Normal', high: 'Yüksek', urgent: 'Acil' };
 
+/** Talep durum bildirimindeki yeni durumun metni (e-posta ve push ortak). */
+export function ticketStatusText(d: Notification['data']): string {
+  const to = str(d.to);
+  if (to === 'cancelled') return d.cancelKind === 'rejected' ? 'Yönetim tarafından reddedildi' : 'Geri çekildi';
+  if (to === 'closed') return d.closeKind === 'auto' ? 'Süre dolduğu için kapandı' : d.closeKind === 'confirmed' ? 'Onaylanarak kapandı' : 'Yönetim tarafından kapatıldı';
+  return TICKET_STATUS_TEXT[to] ?? to;
+}
+
 const items = (v: unknown): NotificationItem[] => (Array.isArray(v) ? (v as NotificationItem[]).filter((x) => x && typeof x.label === 'string') : []);
 
 /** O1-3: gunluk operasyon ozeti (yonetim / gorevli). */
@@ -615,10 +623,7 @@ function ticketSpec(n: Notification, ctx: EmailContext): Spec | undefined {
         cta,
       };
     case 'ticket_status': {
-      const to = str(d.to);
-      let text = TICKET_STATUS_TEXT[to] ?? to;
-      if (to === 'cancelled') text = d.cancelKind === 'rejected' ? 'Yönetim tarafından reddedildi' : 'Geri çekildi';
-      if (to === 'closed') text = d.closeKind === 'auto' ? 'Süre dolduğu için kapandı' : d.closeKind === 'confirmed' ? 'Onaylanarak kapandı' : 'Yönetim tarafından kapatıldı';
+      const text = ticketStatusText(d);
       return {
         subject: `Talep durumu: ${number} - ${text}`,
         heading: 'Talep durumu güncellendi',

@@ -56,6 +56,7 @@ import { healthRoutes } from './modules/health/routes.js';
 import { meRoutes } from './modules/me/routes.js';
 import { type MeService, createMeService } from './modules/me/service.js';
 import { type PreferencesService, createPreferencesService } from './modules/notifications/preferences.js';
+import { type DeviceService, createDeviceService } from './modules/notifications/devices.js';
 import { membershipRepository } from './modules/memberships/repository.js';
 import { membershipRoutes } from './modules/memberships/routes.js';
 import { type MembershipService, createMembershipService } from './modules/memberships/service.js';
@@ -123,6 +124,8 @@ export type AppConfig = {
   metrics?: MetricsEmitter;
   /** Kullanici bildirim tercihleri (`/api/me/notification-preferences`). */
   notificationPreferences?: PreferencesService;
+  /** Mobil push cihaz kaydi (`/api/me/devices`). */
+  deviceService?: DeviceService;
   /** Testlerde sahte repository ile servis enjekte etmek icin. */
   coreService?: CoreService;
   financeService?: FinanceService;
@@ -237,6 +240,7 @@ export function createApp(config: AppConfig) {
       identify: config.identify ?? denyAllIdentity,
       service: config.meService ?? createMeService(),
       preferences: config.notificationPreferences ?? createPreferencesService(),
+      devices: config.deviceService ?? createDeviceService(),
       mfa: mfaService,
     }),
   );

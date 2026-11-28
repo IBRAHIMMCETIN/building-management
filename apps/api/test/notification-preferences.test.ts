@@ -82,7 +82,7 @@ describe('tercih govdesi ve kaydi', () => {
   it('kayit: duz oznitelikler (ariza icin eski `ticketEmails`); guncelleme okumadan yalnizca verilen alanlari SET eder', async () => {
     ddb.on(GetCommand).resolvesOnce({ Item: { emailEnabled: true, ticketEmails: false, emailGate: false, emailPolls: 'x', updatedAt: ts } });
     const repo = createDynamoPreferencesRepository();
-    expect(await repo.get('user-1')).toEqual({ email: { enabled: true, tickets: false, gate: false }, updatedAt: ts });
+    expect(await repo.get('user-1')).toEqual({ email: { enabled: true, tickets: false, gate: false }, push: { enabled: true }, updatedAt: ts });
     expect(ddb.commandCalls(GetCommand)[0]?.args[0].input.ConsistentRead).toBe(true);
 
     ddb.on(UpdateCommand).resolves({});
@@ -99,7 +99,7 @@ describe('tercih govdesi ve kaydi', () => {
   it('servis: once yalnizca verilen alanlar yazilir, yanit yazim sonrasi tutarli okumadan', async () => {
     const { repository, calls } = createFakePreferencesRepo();
     const service = createPreferencesService({ repository, now: () => NOW });
-    expect(await service.update('u', { email: { gate: false } })).toEqual({ email: { enabled: true, gate: false }, updatedAt: ts });
+    expect(await service.update('u', { email: { gate: false } })).toEqual({ email: { enabled: true, gate: false }, push: { enabled: true }, updatedAt: ts });
     expect(calls).toEqual(['patch:u', 'get:u']);
     expect((await service.update('u', { email: { enabled: false } })).email).toEqual({ enabled: false, gate: false });
   });
@@ -227,13 +227,79 @@ describe('/api/me/notification-preferences', () => {
         headers: { authorization: `Bearer ${encodeMockToken({ sub, role: 'resident', apartmentId: APT })}`, 'content-type': 'application/json' },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       });
-    expect(await (await call('GET', 'res-1')).json()).toEqual({ email: { enabled: true } });
+    expect(await (await call('GET', 'res-1')).json()).toEqual({ email: { enabled: true }, push: { enabled: true } });
     expect((await call('PUT', 'res-1', { email: { gate: false } })).status).toBe(200);
     const second = await call('PUT', 'res-1', { email: { polls: false } });
-    expect(await second.json()).toEqual({ email: { enabled: true, gate: false, polls: false }, updatedAt: ts });
+    expect(await second.json()).toEqual({ email: { enabled: true, gate: false, polls: false }, push: { enabled: true }, updatedAt: ts });
     expect(await (await call('GET', 'res-1')).json()).toMatchObject({ email: { enabled: true, gate: false, polls: false } });
     expect((await call('PUT', 'res-1', { email: { enabled: true, rezervasyon: false } })).status).toBe(400);
     expect((await call('PUT', 'res-1', { email: {} })).status).toBe(400);
-    expect(await (await call('GET', 'res-2')).json()).toEqual({ email: { enabled: true } });
+    expect(await (await call('GET', 'res-2')).json()).toEqual({ email: { enabled: true }, push: { enabled: true } });
+  });
+});
+
+describe('push tercihleri (mobil bildirim)', () => {
+  const ddb = mockClient(DynamoDBDocumentClient);
+  beforeEach(() => {
+    ddb.reset();
+    resetDynamoCache();
+    process.env.DYNAMODB_TABLE_NAME = 'bm-test-table';
+    process.env.AWS_REGION = 'eu-central-1';
+    process.env.DYNAMODB_ENDPOINT = '';
+  });
+
+  it('govde: push ayri kanal; email ve/veya push, en az bir alan; bilinmeyen / boolean olmayan reddedilir', () => {
+    expect(parsePreferences({ push: { enabled: false } })).toEqual({ push: { enabled: false } });
+    expect(parsePreferences({ email: { polls: false }, push: { gate: false } })).toEqual({ email: { polls: false }, push: { gate: false } });
+    // Bos kanal digerinin yaninda zararsiz (eski istemci + yeni alan).
+    expect(parsePreferences({ email: {}, push: { tenders: false } })).toEqual({ push: { tenders: false } });
+    for (const bad of [{}, { push: {} }, { email: {}, push: {} }, { push: { sms: true } }, { push: { gate: 'x' } }, { push: { enabled: 1 } }, { push: true }, { email: { enabled: true }, sms: {} }]) {
+      expect(() => parsePreferences(bad), JSON.stringify(bad)).toThrow(ValidationError);
+    }
+  });
+
+  it('kayit: push ozniteligi olmayan eski kayit push ACIK; push alanlari duz oznitelik (pushEnabled, pushGate...)', async () => {
+    ddb
+      .on(GetCommand)
+      .resolvesOnce({ Item: { emailEnabled: false, emailGate: false, updatedAt: ts } })
+      .resolvesOnce({ Item: { emailEnabled: true, pushEnabled: false, pushGate: false, pushTickets: true, pushPolls: 'x', updatedAt: ts } });
+    const repo = createDynamoPreferencesRepository();
+    expect(await repo.get('user-1')).toEqual({ email: { enabled: false, gate: false }, push: { enabled: true }, updatedAt: ts });
+    expect(await repo.get('user-1')).toEqual({ email: { enabled: true }, push: { enabled: false, gate: false, tickets: true }, updatedAt: ts });
+  });
+
+  it('PUT yalnizca email: push oznitelikleri yazilmaz; yalnizca push: email oznitelikleri yazilmaz', async () => {
+    ddb.on(UpdateCommand).resolves({});
+    const repo = createDynamoPreferencesRepository();
+    await repo.patch('user-1', { enabled: false, categories: {}, updatedAt: ts });
+    await repo.patch('user-1', { categories: {}, push: { enabled: false, categories: { gate: false, tickets: true } }, updatedAt: ts });
+    const [emailOnly, pushOnly] = ddb.commandCalls(UpdateCommand).map((c) => Object.values(c.args[0].input.ExpressionAttributeNames ?? {}));
+    expect(emailOnly).toEqual(['entityType', 'userId', 'updatedAt', 'emailEnabled']);
+    expect(pushOnly).toEqual(['entityType', 'userId', 'updatedAt', 'pushEnabled', 'pushTickets', 'pushGate']);
+  });
+
+  it('servis + uclar: push secimi e-postayi degistirmez (ve tersi); baska kullanici etkilenmez', async () => {
+    const { repository, store } = createFakePreferencesRepo();
+    const app = createApp({
+      version: 'test',
+      authenticate: createMockAuthenticator(),
+      identify: createMockIdentityResolver(),
+      notificationPreferences: createPreferencesService({ repository, now: () => NOW }),
+    });
+    const call = (method: string, sub: string, body?: unknown) =>
+      app.request('/api/me/notification-preferences', {
+        method,
+        headers: { authorization: `Bearer ${encodeMockToken({ sub, role: 'resident', apartmentId: APT })}`, 'content-type': 'application/json' },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      });
+    expect(await (await call('PUT', 'res-1', { email: { gate: false } })).json()).toEqual({ email: { enabled: true, gate: false }, push: { enabled: true }, updatedAt: ts });
+    const r = await call('PUT', 'res-1', { push: { gate: false, announcements: false } });
+    expect(r.status).toBe(200);
+    expect(await r.json()).toEqual({ email: { enabled: true, gate: false }, push: { enabled: true, gate: false, announcements: false }, updatedAt: ts });
+    expect(await (await call('PUT', 'res-1', { push: { enabled: false } })).json()).toMatchObject({ email: { enabled: true }, push: { enabled: false, gate: false } });
+    expect(store.get('res-1')?.email).toEqual({ enabled: true, gate: false });
+    expect((await call('PUT', 'res-1', { push: {} })).status).toBe(400);
+    expect((await call('PUT', 'res-1', { push: { kapi: false } })).status).toBe(400);
+    expect(await (await call('GET', 'res-2')).json()).toEqual({ email: { enabled: true }, push: { enabled: true } });
   });
 });

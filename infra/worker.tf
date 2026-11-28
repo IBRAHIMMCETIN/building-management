@@ -6,12 +6,16 @@
 #   yeniden denenir; 5 denemeden sonra DLQ'ya duser (sns_sqs.tf) ve alarm calar.
 # - Es zamanli calisma 2 ile sinirli: SMS/WhatsApp saglayicilarinin hiz sinirlarini asmamak
 #   ve DynamoDB'yi korumak icin.
-# - Kuyruk gorunurluk zaman asimi (180 sn) = 6 x Lambda zaman asimi (30 sn): AWS onerisi.
+# - Kuyruk gorunurluk zaman asimi (360 sn) = 6 x Lambda zaman asimi (60 sn): AWS onerisi. 60 sn:
+#   bir SQS partisinde (10 olay) e-posta + Expo push parcalari (100 mesaj / istek, istek basina en
+#   fazla 10 sn) icin pay.
+# - Mobil bildirim (push_channel = expo): Expo push API'sine (exp.host) giden HTTPS. Lambda VPC'ye
+#   baglanmaz (vpc_config yok): AWS'nin varsayilan internet cikisi kullanilir, NAT gerekmez.
 # ---------------------------------------------------------------------------
 
 locals {
   worker_function        = "${local.name}-notification-worker"
-  worker_timeout_seconds = 30
+  worker_timeout_seconds = 60
 
   # E-posta kanali (Asama 4): gonderen adres, alan adi ve SES izin kapsamlari.
   notification_ses         = var.notification_channel == "ses"
@@ -49,12 +53,39 @@ data "aws_iam_policy_document" "notification_worker" {
   }
 
   # Okuma: uyelikler, daireler, kisi (e-posta), ekip kayitlari (talep bildirimi alicilari ve kisi
-  # kaydi olmayan ekip uyesinin yedek e-postasi) ve kullanici tercihi. Yazma: yalnizca NOTIF#
-  # isleme kaydi ve NOTIFSENT# alici bazli gonderim kaydi.
+  # kaydi olmayan ekip uyesinin yedek e-postasi), kullanici tercihi ve push cihazlari. Yazma: NOTIF#
+  # isleme kaydi, NOTIFSENT# / NOTIFPUSH# gonderim kayitlari ve PUSHRCPT# makbuz kovalari. Silme yok.
   statement {
     sid       = "DynamoDb"
     actions   = ["dynamodb:GetItem", "dynamodb:Query", "dynamodb:PutItem"]
     resources = [aws_dynamodb_table.main.arn]
+  }
+
+  # Push: olu / yabanci cihazi pasife alma ve sahiplik kaydina TTL. Yalnizca USER# / PUSHTOKEN#
+  # bolumleri; apartman verisini guncelleyemez.
+  dynamic "statement" {
+    for_each = local.push_enabled ? [1] : []
+    content {
+      sid       = "PushDeviceUpdate"
+      actions   = ["dynamodb:UpdateItem"]
+      resources = [aws_dynamodb_table.main.arn]
+
+      condition {
+        test     = "ForAllValues:StringLike"
+        variable = "dynamodb:LeadingKeys"
+        values   = ["USER#*", "PUSHTOKEN#*"]
+      }
+    }
+  }
+
+  # Expo erisim anahtari (push.tf): yalnizca bu secret.
+  dynamic "statement" {
+    for_each = local.push_enabled ? [1] : []
+    content {
+      sid       = "ReadExpoAccessToken"
+      actions   = ["secretsmanager:GetSecretValue"]
+      resources = [aws_secretsmanager_secret.expo_access_token[0].arn]
+    }
   }
 
   statement {
@@ -94,7 +125,7 @@ resource "aws_iam_role_policy" "notification_worker" {
 
 resource "aws_lambda_function" "notification_worker" {
   function_name    = local.worker_function
-  description      = "SQS bildirim kuyrugu tuketicisi (DUE_GENERATED, PAYMENT_RECEIVED, ANNOUNCEMENT_PUBLISHED)"
+  description      = "SQS bildirim kuyrugu tuketicisi: e-posta / log ve Expo mobil bildirim (push)"
   role             = aws_iam_role.notification_worker.arn
   runtime          = var.lambda_runtime
   architectures    = ["arm64"]
@@ -108,7 +139,9 @@ resource "aws_lambda_function" "notification_worker" {
     variables = merge({
       NODE_ENV            = "production"
       DYNAMODB_TABLE_NAME = aws_dynamodb_table.main.name
-    }, local.notification_env)
+      # EMF metriklerinin `Stack` boyutu (push.tf alarmlari ayni degeri bekler).
+      METRICS_STACK = local.name
+    }, local.notification_env, local.push_worker_env)
   }
 
   depends_on = [

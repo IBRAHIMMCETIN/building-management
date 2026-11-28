@@ -28,6 +28,9 @@ import type { SqsBatchResponse, SqsEvent } from './notification-worker.js';
 import { createDynamoBulkJobRepository } from '../modules/bulkjobs/repository.js';
 import { loadBulkJobQueueFromEnv } from '../modules/bulkjobs/queue.js';
 import { type BulkJobService, createBulkJobService } from '../modules/bulkjobs/service.js';
+import { createDynamoDeviceRepository } from '../modules/notifications/devices.js';
+import { expoClientFromEnv, pushChannelMode } from '../modules/notifications/push.js';
+import { type ReceiptCheckResult, checkPushReceipts, createDynamoReceiptStore } from '../modules/notifications/push-receipts.js';
 
 /**
  * Zamanlanmis gorev worker'i (SQS tuketicisi).
@@ -72,6 +75,10 @@ import { type BulkJobService, createBulkJobService } from '../modules/bulkjobs/s
  *                  Olay kimligi gun bazli deterministiktir (tekrar teslimde bildirim bir kez).
  *   outbox_sweep   5 dakikada bir: esikten (varsayilan 2 dk) eski, hala bekleyen outbox
  *                  kayitlarini relay cekirdegiyle yeniden yayinlar (apartman dongusu yok; tek tur).
+ *   push_receipts  saatte bir (:20): mobil bildirimlerin Expo makbuzlari; kapanisindan 15 dk gecmis
+ *                  saat kovalarindaki ticket'lari sorgular, `DeviceNotRegistered` cihazlari pasife
+ *                  alir (modules/notifications/push-receipts.ts; apartman dongusu yok; tek tur).
+ *                  PUSH_CHANNEL=off iken `push_disabled` ile atlanir.
  *   ledger_audit   her gece 03:40: apartman basina SALT OKUNUR defter denetimi; sapma ->
  *                  log + `LedgerDrift` metrigi + platform alarmi (duzeltme yok). Pasif siteler dahil.
  *                  Faz B3: banka hesabi mutabakati (son ekstre kapanisi <-> defter, bekleyen
@@ -99,6 +106,7 @@ export const JOBS = [
   'installment_plans',
   'maintenance_tasks',
   'ticket_maintenance',
+  'push_receipts',
 ] as const;
 export type Job = (typeof JOBS)[number];
 
@@ -163,6 +171,8 @@ export type SchedulerDeps = {
   gate: Pick<GateDepartures, 'sweep'>;
   /** null: online odeme kapali. Verilmezse ortam degiskenlerinden kurulur (ilk kullanimda). */
   payments: Pick<PaymentsService, 'reconcile' | 'reconcileRefunds'> | null;
+  /** Mobil bildirim makbuz kontrolu (null: PUSH_CHANNEL=off). Verilmezse ortamdan kurulur. */
+  pushReceipts: { run(): Promise<ReceiptCheckResult> } | null;
   /** P4: platform transferi izleme (null: online odeme kapali). */
   payouts: Pick<PayoutService, 'detectReturned' | 'processResends'> | null;
   /** P4: platform komisyon faturasi taslaklari (null: online odeme kapali). */
@@ -195,6 +205,7 @@ export function createSchedulerWorker(overrides: Partial<SchedulerDeps> = {}) {
     payouts?: SchedulerDeps['payouts'];
     invoices?: SchedulerDeps['invoices'];
     bulkJobs?: SchedulerDeps['bulkJobs'];
+    pushReceipts?: SchedulerDeps['pushReceipts'];
   } = {};
   const lazyOps: { outbox?: SchedulerDeps['outbox']; auditor?: SchedulerDeps['auditor']; auditChain?: SchedulerDeps['auditChain']; metrics?: MetricsEmitter } = {};
   const now = overrides.now ?? (() => new Date());
@@ -287,6 +298,27 @@ export function createSchedulerWorker(overrides: Partial<SchedulerDeps> = {}) {
   const sweepOptions: SweepOptions = overrides.sweepOptions ?? {
     minAgeSeconds: Number(process.env.OUTBOX_SWEEP_MIN_AGE_SECONDS ?? DEFAULT_SWEEP_MIN_AGE_SECONDS),
   };
+
+  const pushReceipts = (): SchedulerDeps['pushReceipts'] => {
+    if (lazy.pushReceipts !== undefined) return lazy.pushReceipts;
+    if (overrides.pushReceipts !== undefined) return (lazy.pushReceipts = overrides.pushReceipts);
+    if (pushChannelMode() === 'off') return (lazy.pushReceipts = null);
+    const deps = { store: createDynamoReceiptStore(now), client: expoClientFromEnv(), devices: createDynamoDeviceRepository(), now, log };
+    return (lazy.pushReceipts = { run: () => checkPushReceipts(deps) });
+  };
+
+  /** Mobil bildirim makbuzlari: tum apartmanlar icin tek tur (saat kovalari apartmandan bagimsiz). */
+  async function runPushReceipts(): Promise<SiteOutcome> {
+    const service = pushReceipts();
+    if (!service) return { apartmentId: '_push', status: 'skipped', reason: 'push_disabled' };
+    try {
+      const r = await service.run();
+      metrics().emit({ PushReceiptsChecked: r.tickets, PushDevicesDeactivated: r.deactivated }, { msg: 'push_receipts', buckets: r.buckets, errors: r.errors });
+      return { apartmentId: '_push', status: 'done', detail: { ...r } };
+    } catch (err) {
+      return { apartmentId: '_push', status: 'failed', error: errorText(err) };
+    }
+  }
 
   /** Outbox suprucusu: tum apartmanlar icin tek tur (GSI1 apartmandan bagimsiz). */
   async function runSweep(): Promise<SiteOutcome> {
@@ -510,6 +542,7 @@ export function createSchedulerWorker(overrides: Partial<SchedulerDeps> = {}) {
       // Apartman dongusu disinda islenir (runJob); ledger_audit yukarida ayrilir.
       case 'outbox_sweep':
       case 'payout_returns':
+      case 'push_receipts':
         return { apartmentId, status: 'skipped', reason: 'not_site_job' };
     }
   }
@@ -517,6 +550,7 @@ export function createSchedulerWorker(overrides: Partial<SchedulerDeps> = {}) {
   async function runJob(message: JobMessage): Promise<SiteOutcome[]> {
     if (message.job === 'outbox_sweep') return [await runSweep()];
     if (message.job === 'payout_returns') return [await runPayoutReturns()];
+    if (message.job === 'push_receipts') return [await runPushReceipts()];
     const day = istanbulDate(message.scheduledTime);
     const ids = message.apartmentId ? [message.apartmentId] : await core.listSiteIds();
     const outcomes: SiteOutcome[] = [];
