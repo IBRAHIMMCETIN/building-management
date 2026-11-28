@@ -1,4 +1,4 @@
-import { AuthRequiredError } from '@bm/shared/api/errors';
+import { AuthRequiredError, NetworkError } from '@bm/shared/api/errors';
 import { AuthFlowError, toAuthFlowError } from '@bm/shared/auth/errors';
 import { type AuthAdapter, type AuthSession, type SignInStep, decodeClaims } from '@bm/shared/auth/session';
 import { Amplify } from 'aws-amplify';
@@ -14,6 +14,8 @@ import {
 } from 'aws-amplify/auth';
 import { cognitoUserPoolsTokenProvider } from 'aws-amplify/auth/cognito';
 import { secureStorage } from '../storage/secureStorage';
+import type { KeyValueStorage } from '../storage/types';
+import { isAuthRejection, isNetworkFailure } from './errors';
 
 /*
  * Cognito (Amplify v6, React Native). Akislar web ile ayni (apps/web/src/lib/auth/cognitoAdapter.ts):
@@ -28,7 +30,29 @@ import { secureStorage } from '../storage/secureStorage';
 
 export type CognitoConfig = { userPoolId: string; clientId: string };
 
-export function createCognitoAuthAdapter(config: CognitoConfig): AuthAdapter {
+/** Amplify'in token anahtarlari (aws-amplify TokenStore: `CognitoIdentityServiceProvider.<istemci>.<kullanici>.<token>`). */
+const AMPLIFY_PREFIX = 'CognitoIdentityServiceProvider';
+
+/**
+ * Saklanan son oturum, YENILEMEDEN (cevrimdisi acilis icin). Suresi dolmus olabilir: ilk API istegi
+ * yenilemeyi dener; ag yoksa ag hatasi, kesin redde oturum kapanir.
+ */
+export async function readStoredSession(clientId: string, storage: KeyValueStorage): Promise<AuthSession | null> {
+  try {
+    const user = await storage.getItem(`${AMPLIFY_PREFIX}.${clientId}.LastAuthUser`);
+    if (!user) return null;
+    const [idToken, accessToken] = await Promise.all([
+      storage.getItem(`${AMPLIFY_PREFIX}.${clientId}.${user}.idToken`),
+      storage.getItem(`${AMPLIFY_PREFIX}.${clientId}.${user}.accessToken`),
+    ]);
+    const claims = idToken ? decodeClaims(idToken) : null;
+    return idToken && accessToken && claims ? { idToken, accessToken, claims } : null;
+  } catch {
+    return null;
+  }
+}
+
+export function createCognitoAuthAdapter(config: CognitoConfig, storage: KeyValueStorage = secureStorage): AuthAdapter {
   let configured = false;
 
   function ensureConfigured() {
@@ -42,7 +66,7 @@ export function createCognitoAuthAdapter(config: CognitoConfig): AuthAdapter {
         },
       },
     });
-    cognitoUserPoolsTokenProvider.setKeyValueStorage(secureStorage);
+    cognitoUserPoolsTokenProvider.setKeyValueStorage(storage);
     configured = true;
   }
 
@@ -88,8 +112,10 @@ export function createCognitoAuthAdapter(config: CognitoConfig): AuthAdapter {
     async restore() {
       try {
         return await readSession();
-      } catch {
-        return null;
+      } catch (err) {
+        // Cevrimdisi soguk acilis (suresi dolmus token yenilenemedi): saklanan token'larla acilir;
+        // API istegi ag hatasi verir, baglanti gelince ilk istek yeniler. Diger hatalarda giris ekrani.
+        return isNetworkFailure(err) ? readStoredSession(config.clientId, storage) : null;
       }
     },
 
@@ -113,11 +139,14 @@ export function createCognitoAuthAdapter(config: CognitoConfig): AuthAdapter {
     confirmTotp: (code) => guard(async () => toStep(await confirmSignIn({ challengeResponse: code }))),
 
     async refresh() {
-      let session: AuthSession | null = null;
+      let session: AuthSession | null;
       try {
         session = await readSession(true);
-      } catch {
-        session = null;
+      } catch (err) {
+        // Amplify kesin redde token'lari siler (NotAuthorized -> token yok); ag / gecici hatada korur.
+        if (isAuthRejection(err)) throw new AuthRequiredError();
+        if (isNetworkFailure(err)) throw new NetworkError(err);
+        throw err;
       }
       if (!session) throw new AuthRequiredError();
       return session;

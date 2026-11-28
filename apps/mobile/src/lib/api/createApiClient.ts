@@ -1,5 +1,6 @@
 import { ApiError, AuthRequiredError, NetworkError, isApiErrorBody } from '@bm/shared/api/errors';
 import type { z } from 'zod';
+import { isAuthRejection, isNetworkFailure } from '../auth/errors';
 
 /*
  * Web istemcisinin (apps/web/src/lib/api/createApiClient.ts) React Native kopyasi; ayni hata
@@ -104,7 +105,9 @@ export function createApiClient(config: ApiClientConfig) {
     if (res.status === 401 && useAuth) {
       try {
         token = await config.getToken({ forceRefresh: true });
-      } catch {
+      } catch (err) {
+        // Yenileme reddedildiyse oturum duser; ag kesintisi / gecici hatada oturum korunur, istek hata verir.
+        if (!isAuthRejection(err)) throw isNetworkFailure(err) && !(err instanceof NetworkError) ? new NetworkError(err) : err;
         token = null;
       }
       if (!token) {

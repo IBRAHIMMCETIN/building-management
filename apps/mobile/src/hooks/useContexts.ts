@@ -1,17 +1,18 @@
 import type { SelectableContext } from '@bm/shared/auth/contextsSchema';
-import type { ActiveContext } from '@bm/shared/auth/session';
+import type { ActiveContext, SessionClaims } from '@bm/shared/auth/session';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { useAuth } from '@/context/AuthProvider';
 import { useServices } from '@/services';
 
-export const contextsQueryKey = (userId: string | undefined) => ['me', 'contexts', userId] as const;
+/** Kapsam (kullanici + aktif apartman + rol) anahtarda: baglam degisince acik kalan ekran da yeni sorguya baglanir. */
+export const contextsQueryKey = (claims: SessionClaims | undefined) => ['me', 'contexts', claims?.sub, claims?.apartmentId, claims?.role] as const;
 
 /** Kullanicinin secebilecegi apartman/rol baglamlari (web: hooks/useContexts.ts). */
 export function useContexts() {
   const { session } = useAuth();
   const { fetchContexts } = useServices();
   return useQuery({
-    queryKey: contextsQueryKey(session?.claims.sub),
+    queryKey: contextsQueryKey(session?.claims),
     queryFn: ({ signal }) => {
       if (!session) throw new Error('Oturum yok');
       return fetchContexts(session, signal);

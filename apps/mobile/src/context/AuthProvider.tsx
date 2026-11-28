@@ -1,6 +1,6 @@
 import type { ActiveContext, AuthSession, SessionClaims, SignInStep } from '@bm/shared/auth/session';
 import { type QueryClient, useQueryClient } from '@tanstack/react-query';
-import { type ReactNode, createContext, use, useMemo, useSyncExternalStore } from 'react';
+import { type ReactNode, createContext, use, useEffect, useMemo, useSyncExternalStore } from 'react';
 import { useServices } from '@/services';
 
 export type AuthContextValue = {
@@ -22,8 +22,14 @@ export type AuthContextValue = {
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
-/** Apartman / rol degisiminde onceki apartmanin onbellegi ve bekleyen mutasyonlar silinir (web ile ayni). */
-export function clearForContextSwitch(queryClient: QueryClient): void {
+/**
+ * Onceki kapsamin (kullanici / apartman / rol) onbellegi: suren istekler iptal, bekleyen mutasyonlar ve
+ * tum sorgular silinir. Oturum degismeden ONCE cagrilir (SessionManager.onScopeChange): yeni oturumla
+ * acilan ekranlar bos onbellekle baslar, eski kiracinin verisi gorunmez. Sorgu anahtarlari kapsami
+ * icerdigi icin acik kalan bilesenler de yeniden cizildiginde yeni sorguya baglanir.
+ */
+export function clearSessionCache(queryClient: QueryClient): void {
+  void queryClient.cancelQueries();
   queryClient.getMutationCache().clear();
   queryClient.removeQueries();
 }
@@ -38,38 +44,26 @@ export function AuthProvider({ children, fallback = null }: { children: ReactNod
   const state = useSyncExternalStore(manager.subscribe, manager.getState, manager.getState);
   const session = state.session;
 
+  // Giris, cikis, baglam degisimi ve 401 ile dusme: onbellek oturum degismeden once temizlenir.
+  useEffect(() => manager.onScopeChange(() => clearSessionCache(queryClient)), [manager, queryClient]);
+
   const value = useMemo<AuthContextValue>(() => {
-    // Kullanici/baglam degisince onceki kiracinin onbellegi yeni oturuma sizmasin.
-    const resetCache = <T,>(step: T) => {
-      queryClient.clear();
-      return step;
-    };
     const user = session?.claims ?? null;
     return {
       session,
       user,
       isAuthenticated: session !== null,
       needsContext: session !== null && !user?.role,
-      signIn: (input) => manager.signIn(input).then(resetCache),
-      confirmNewPassword: (pw) => manager.confirmNewPassword(pw).then(resetCache),
-      confirmTotp: (code) => manager.confirmTotp(code).then(resetCache),
-      signOut: () => manager.signOut().then(() => queryClient.clear()),
+      signIn: (input) => manager.signIn(input),
+      confirmNewPassword: (pw) => manager.confirmNewPassword(pw),
+      confirmTotp: (code) => manager.confirmTotp(code),
+      signOut: () => manager.signOut(),
       requestPasswordReset: (email) => manager.requestPasswordReset(email),
       confirmPasswordReset: (input) => manager.confirmPasswordReset(input),
-      setActiveContext: (ctx) =>
-        manager.setActiveContext(ctx).then(
-          (next) => {
-            clearForContextSwitch(queryClient);
-            return next;
-          },
-          (err: unknown) => {
-            clearForContextSwitch(queryClient);
-            throw err;
-          },
-        ),
+      setActiveContext: (ctx) => manager.setActiveContext(ctx),
       consumeExpiredNotice: () => manager.consumeExpiredNotice(),
     };
-  }, [session, manager, queryClient]);
+  }, [session, manager]);
 
   if (state.status === 'initializing') return <>{fallback}</>;
   return <AuthContext value={value}>{children}</AuthContext>;

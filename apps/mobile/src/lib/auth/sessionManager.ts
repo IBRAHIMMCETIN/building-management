@@ -1,5 +1,6 @@
 import { AuthRequiredError } from '@bm/shared/api/errors';
 import { type ActiveContext, type AuthAdapter, type AuthSession, type SignInStep, type TokenUse, apiTokenFor, isExpiring } from '@bm/shared/auth/session';
+import { isAuthRejection } from './errors';
 
 /*
  * React disindaki tek oturum kaynagi (web: apps/web/src/lib/auth/sessionManager.ts). apiClient
@@ -25,11 +26,18 @@ export type SessionHooks = {
 
 export const HOOK_TIMEOUT_MS = 3000;
 
+/** Oturum kapsami: kullanici + aktif apartman + rol. Token yenilemede degismez. */
+export const sessionScope = (s: AuthSession | null): string | null =>
+  s ? `${s.claims.sub}|${s.claims.apartmentId ?? ''}|${s.claims.role ?? ''}` : null;
+
 type Listener = () => void;
+/** Kapsam degisirken, aboneler (ekranlar) yeni oturumu gormeden ONCE cagrilir. */
+export type ScopeChangeListener = (prev: AuthSession | null, next: AuthSession | null) => void;
 
 export class SessionManager {
   private state: SessionState = { status: 'initializing', session: null };
   private listeners = new Set<Listener>();
+  private scopeListeners = new Set<ScopeChangeListener>();
   private expiredNotice: 'unauthorized' | null = null;
   /** Ayni anda gelen 401'ler tek bir yenileme cagrisini paylasir (single-flight). */
   private refreshing: Promise<AuthSession> | null = null;
@@ -62,7 +70,20 @@ export class SessionManager {
     for (const l of this.listeners) l();
   }
 
+  /**
+   * Kapsam (kullanici / apartman / rol) degisimini dinler: giris, cikis, baglam degisimi, 401 ile dusme.
+   * Onceki kapsamin onbellegi burada, yeni oturum ekranlara ulasmadan temizlenir (AuthProvider).
+   */
+  onScopeChange = (listener: ScopeChangeListener): (() => void) => {
+    this.scopeListeners.add(listener);
+    return () => this.scopeListeners.delete(listener);
+  };
+
   set(session: AuthSession | null): void {
+    const prev = this.state.session;
+    if (sessionScope(prev) !== sessionScope(session)) {
+      for (const l of this.scopeListeners) l(prev, session);
+    }
     this.setState({ status: 'ready', session });
   }
 
@@ -149,7 +170,10 @@ export class SessionManager {
     return next;
   }
 
-  /** Token yenileme (sure dolumu veya 401 sonrasi). */
+  /**
+   * Token yenileme (sure dolumu veya 401 sonrasi). Oturum YALNIZCA kimlik saglayicisinin reddinde
+   * duser; ag kesintisi / gecici hatada oturum korunur ve hata aynen doner (istek sonra yeniden denenir).
+   */
   refresh(): Promise<AuthSession> {
     const current = this.state.session;
     if (!current) return Promise.reject(new AuthRequiredError());
@@ -161,6 +185,7 @@ export class SessionManager {
         return next;
       })
       .catch((err: unknown) => {
+        if (!isAuthRejection(err)) throw err;
         this.expire();
         throw err instanceof AuthRequiredError ? err : new AuthRequiredError();
       })

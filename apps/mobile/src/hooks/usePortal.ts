@@ -1,6 +1,7 @@
 import { ApiError } from '@bm/shared/api/errors';
 import type { NotificationPreferencesInput } from '@bm/shared/api/notificationPreferences';
 import { PORTAL_OPEN_STATUSES } from '@bm/shared/api/tickets';
+import type { SessionClaims } from '@bm/shared/auth/session';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '@/context/AuthProvider';
 import { usePortalUnit } from '@/context/PortalUnitProvider';
@@ -21,7 +22,8 @@ export const portalKeys = {
 };
 
 export const accountKeys = {
-  notifications: (user: string | undefined) => ['me', 'notification-preferences', user] as const,
+  // Tercih kullanici genelidir; kapsam anahtarda yalnizca baglam degisiminde ekranin yeni sorguya baglanmasi icin.
+  notifications: (claims: SessionClaims | null | undefined) => ['me', 'notification-preferences', claims?.sub, claims?.apartmentId, claims?.role] as const,
 };
 
 /** Daire secimi / uyelik yok gibi "beklenen" 4xx'ler tekrar denenmez (ekran secici gosterir). */
@@ -83,7 +85,7 @@ export function useNotificationPreferences() {
   const { user } = useAuth();
   const { api } = useServices();
   return useQuery({
-    queryKey: accountKeys.notifications(user?.sub),
+    queryKey: accountKeys.notifications(user),
     queryFn: ({ signal }) => endpoints.notificationPreferences(api, signal),
     enabled: !!user,
   });
@@ -96,6 +98,6 @@ export function useSaveNotificationPreferences() {
   const { api } = useServices();
   return useMutation({
     mutationFn: (input: NotificationPreferencesInput) => endpoints.saveNotificationPreferences(api, input),
-    onSuccess: (data) => qc.setQueryData(accountKeys.notifications(user?.sub), data),
+    onSuccess: (data) => qc.setQueryData(accountKeys.notifications(user), data),
   });
 }

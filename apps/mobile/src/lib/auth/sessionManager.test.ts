@@ -1,8 +1,8 @@
-import { AuthRequiredError } from '@bm/shared/api/errors';
+import { AuthRequiredError, NetworkError } from '@bm/shared/api/errors';
 import { AuthFlowError } from '@bm/shared/auth/errors';
 import type { KeyValueStorage } from '../storage/types';
 import { createMockAuthAdapter } from './mockAdapter';
-import { SessionManager } from './sessionManager';
+import { SessionManager, sessionScope } from './sessionManager';
 
 function memoryStorage(): KeyValueStorage & { data: Map<string, string> } {
   const data = new Map<string, string>();
@@ -89,7 +89,7 @@ describe('SessionManager + mock adapter (web mockAdapter ile ayni senaryolar)', 
     expect(storage.data.has('bm.mock-session')).toBe(false);
   });
 
-  it('sure dolmak uzereyse token yenilenir; yenileme basarisizsa oturum duser', async () => {
+  it('yenileme: ag kesintisinde oturum korunur, istek ag hatasi verir; sonra yeniden denenir', async () => {
     const storage = memoryStorage();
     const adapter = createMockAuthAdapter({ storage, delayMs: 0 });
     const refresh = jest.spyOn(adapter, 'refresh');
@@ -99,11 +99,56 @@ describe('SessionManager + mock adapter (web mockAdapter ile ayni senaryolar)', 
     await manager.getApiToken({ forceRefresh: true });
     expect(refresh).toHaveBeenCalledTimes(1);
 
-    refresh.mockRejectedValueOnce(new Error('ag'));
+    refresh.mockRejectedValueOnce(new NetworkError(new TypeError('Network request failed')));
+    await expect(manager.getApiToken({ forceRefresh: true })).rejects.toBeInstanceOf(NetworkError);
+    expect(manager.getSession()?.claims.email).toBe('resident@dev.local');
+    expect(manager.consumeExpiredNotice()).toBeNull();
+
+    // Gecici servis hatasi da oturumu dusurmez; baglanti gelince yenileme basarili.
+    refresh.mockRejectedValueOnce(Object.assign(new Error('Rate exceeded'), { name: 'TooManyRequestsException' }));
+    await expect(manager.getApiToken({ forceRefresh: true })).rejects.toThrow('Rate exceeded');
+    expect(manager.getSession()).not.toBeNull();
+    expect(await manager.getApiToken({ forceRefresh: true })).toMatch(/^mock\./);
+  });
+
+  it.each([
+    ['AuthRequiredError', new AuthRequiredError()],
+    ['NotAuthorizedException (refresh token gecersiz)', Object.assign(new Error('Refresh Token has expired'), { name: 'NotAuthorizedException' })],
+    ['AuthFlowError NotAuthorizedException', new AuthFlowError('NotAuthorizedException', 'E-posta veya şifre hatalı.')],
+    ['RefreshTokenReuseException', Object.assign(new Error('reuse'), { name: 'RefreshTokenReuseException' })],
+  ])('yenileme kesin reddedilirse oturum duser: %s', async (_name, rejection) => {
+    const { manager, adapter } = setup();
+    await manager.ready;
+    await manager.signIn({ email: 'resident@dev.local', password: 'x' });
+    jest.spyOn(adapter, 'refresh').mockRejectedValueOnce(rejection);
     await expect(manager.getApiToken({ forceRefresh: true })).rejects.toBeInstanceOf(AuthRequiredError);
     expect(manager.getSession()).toBeNull();
     expect(manager.consumeExpiredNotice()).toBe('unauthorized');
     expect(manager.consumeExpiredNotice()).toBeNull();
+  });
+
+  it('kapsam degisimi (giris, baglam, cikis, 401) aboneler yeni oturumu gormeden ONCE bildirilir; yenilemede degil', async () => {
+    const { manager } = setup();
+    await manager.ready;
+    const log: string[] = [];
+    manager.onScopeChange((prev, next) => log.push(`kapsam ${sessionScope(prev)} -> ${sessionScope(next)} (gorunen: ${sessionScope(manager.getSession())})`));
+    manager.subscribe(() => log.push(`abone ${sessionScope(manager.getSession())}`));
+
+    await manager.signIn({ email: 'multi@dev.local', password: 'x' });
+    await manager.setActiveContext({ apartmentId: 'apt-dev-1', role: 'resident' });
+    await manager.refresh();
+    manager.expire();
+
+    expect(log).toEqual([
+      'kapsam null -> mock-multi|| (gorunen: null)',
+      'abone mock-multi||',
+      'kapsam mock-multi|| -> mock-multi|apt-dev-1|resident (gorunen: mock-multi||)',
+      'abone mock-multi|apt-dev-1|resident',
+      // yenileme: ayni kapsam, yalnizca abone
+      'abone mock-multi|apt-dev-1|resident',
+      'kapsam mock-multi|apt-dev-1|resident -> null (gorunen: mock-multi|apt-dev-1|resident)',
+      'abone null',
+    ]);
   });
 
   it('ayni anda gelen yenilemeler tek cagriyi paylasir', async () => {
