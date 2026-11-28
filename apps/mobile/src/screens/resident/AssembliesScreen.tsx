@@ -1,4 +1,5 @@
 import { ApiError } from '@bm/shared/api/errors';
+import { isFeatureKey } from '@bm/shared/features/catalog';
 import { KIND_LABELS, PORTAL_PHASE_LABELS, PORTAL_PHASE_TONES, type PortalAssembly } from '@bm/shared/api/assemblies';
 import { formatDateTime } from '@bm/shared/dates';
 import { useRouter } from 'expo-router';
@@ -8,6 +9,7 @@ import { Landmark } from '@/components/icons';
 import { PortalQueryState } from '@/components/portal/PortalQueryState';
 import { RefetchErrorBanner } from '@/components/portal/RefetchErrorBanner';
 import { RowLink } from '@/components/portal/RowLink';
+import { FeatureDisabledNotice } from '@/components/FeatureGate';
 import { AppText, Badge, EmptyState, LoadingBlock, Screen } from '@/components/ui';
 import { useMyAssemblies, useOwnerGate } from '@/hooks/useAssemblies';
 import { space } from '@/theme/tokens';
@@ -23,8 +25,15 @@ export function OwnersOnlyState() {
   );
 }
 
-/** 403: maliklere ozel bilgi; diger hatalar portalin ortak durumuna (daire secimi, tekrar dene). */
+/**
+ * 403: site ozelligi kapaliysa (`feature_disabled`, genel kurul modulu) kapali ozellik notu; aksi halde
+ * maliklere ozel bilgi. Diger hatalar portalin ortak durumuna (daire secimi, tekrar dene).
+ */
 export function AssemblyQueryState({ error, onRetry }: { error: unknown; onRetry: () => void }) {
+  if (error instanceof ApiError && error.status === 403 && error.code === 'feature_disabled') {
+    const key = (error.body as { feature?: unknown } | undefined)?.feature;
+    return <FeatureDisabledNotice feature={isFeatureKey(key) ? key : 'modules.pollsAssemblies'} title="Genel Kurul" />;
+  }
   if (error instanceof ApiError && error.status === 403) return <OwnersOnlyState />;
   return <PortalQueryState error={error} onRetry={onRetry} />;
 }

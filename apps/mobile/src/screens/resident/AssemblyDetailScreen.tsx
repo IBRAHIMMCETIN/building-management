@@ -36,6 +36,22 @@ export function decisionLine(d: PortalDecision): string {
   }).join(' — ');
 }
 
+type PortalElection = NonNullable<PortalDecision['election']>;
+
+/**
+ * Secim sonucu satirlari (web: components/assemblies/ElectionResult.tsx, sakin gorunumu): secilenin adi
+ * (KMK m.34: yoneticinin adi zaten asilir), digerleri sira etiketiyle; aday basina toplam oy / kat maliki /
+ * bolum / arsa payi. Secilen yoksa "Secim yapilamadi" aciklamasi.
+ */
+export function electionLines(e: PortalElection): { head: string; rows: string[] } {
+  return {
+    head: e.winnerName ? `Seçilen: ${e.winnerName}` : (e.noWinner ?? 'Seçim yapılamadı'),
+    rows: e.candidates.map(
+      (c) => `${c.name}${c.elected ? ' (seçildi)' : ''}: ${c.votes} oy · ${c.persons} kat maliki · ${c.units} bölüm${c.landShareBps !== null ? ` · arsa payı ${formatBps(c.landShareBps)}` : ''}`,
+    ),
+  };
+}
+
 /**
  * Sakin genel kurul ayrintisi (web: pages/resident/assemblies/MyAssemblyDetailPage.tsx), yalnizca kat
  * maliki: toplanti bilgisi, gundem ve gerekli cogunluk; kesinlesince yeter sayi, kararlar ve tutanak
@@ -127,7 +143,19 @@ function Detail({ assembly: a }: { assembly: PortalAssembly }) {
             {a.secondMeetingPlan.onlineUrl && <OnlineLink label="İkinci toplantı çevrim içi bağlantısı" url={a.secondMeetingPlan.onlineUrl} />}
           </>
         )}
+        {a.reschedules?.map((r) => (
+          <Alert key={r.at}>
+            {r.previousScheduledAt !== r.scheduledAt
+              ? `Toplantı ertelendi: ${formatDateTime(r.previousScheduledAt)} yerine ${formatDateTime(r.scheduledAt)}${r.placeChanged ? ' (yeri de değişti)' : ''}. Gerekçe: ${r.reason}`
+              : `Toplantı yeri değişti (${formatDateTime(r.at)}). Gerekçe: ${r.reason}`}
+          </Alert>
+        ))}
         {a.cancelReason && <Alert>{`Toplantı iptal edildi: ${a.cancelReason}`}</Alert>}
+        {a.phase === 'cancelled' && (
+          <AppText variant="small" tone="muted">
+            {`${a.cancelledAt ? `İptal tarihi: ${formatDateTime(a.cancelledAt)}. ` : ''}Bu tarihte toplantı yapılmayacak; yeni toplantı için ayrıca çağrı yapılır.`}
+          </AppText>
+        )}
         <AppText variant="small" tone="muted">
           Toplantıya kendiniz katılabilir veya yazılı vekaletnameyle temsil edilebilirsiniz. E-posta ve bu sayfa bilgilendirme amaçlıdır; yasal çağrı yönetiminizce ayrıca yapılır (KMK m.29).
         </AppText>
@@ -157,7 +185,21 @@ function Detail({ assembly: a }: { assembly: PortalAssembly }) {
                 </AppText>
               )}
               <AppText variant="caption" tone="muted">{`Gerekli çoğunluk: ${MAJORITY_LABELS[item.majority]}`}</AppText>
-              {item.decision && (
+              {item.candidateCount !== undefined && item.candidateCount > 0 && !item.decision?.election && (
+                <AppText variant="caption" tone="muted">{`${item.candidateCount} aday`}</AppText>
+              )}
+              {item.decision?.election ? (
+                <View style={styles.field}>
+                  <AppText variant="small" weight="medium">
+                    {electionLines(item.decision.election).head}
+                  </AppText>
+                  {electionLines(item.decision.election).rows.map((row) => (
+                    <AppText key={row} variant="caption" tone="muted" tabular>
+                      {row}
+                    </AppText>
+                  ))}
+                </View>
+              ) : item.decision && (
                 <AppText variant="caption" tone="muted" tabular>
                   {`${decisionLine(item.decision)}${item.decision.corrected ? ' · karar kaydı düzeltildi' : ''}`}
                 </AppText>

@@ -118,6 +118,29 @@ export type TenderExpenseLink = {
   idempotencyKey: string;
   linkedAt: IsoDateTime;
   linkedBy: string;
+  /** Hakedis sirasi (1'den). Eski kayitta yok. */
+  installment?: number;
+  /** Gecerli giderler toplami karar tutarini (KDV dahil) asinca zorunlu gerekce. */
+  overrunReason?: string;
+};
+
+/** Ihale basina en fazla bagli gider (hakedis; ters kaydedilenler dahil). */
+export const MAX_TENDER_EXPENSES = 50;
+
+/** Kazanan firmanin Finans tedarikci (vadeli borc) hesabi. */
+export type TenderSupplierAccount = { accountId: string; name: string; linkedAt: IsoDateTime; linkedBy: string };
+
+/** Ihalenin dayandigi genel kurul karari (ayni apartmanin degismez `ASMDEC#` kaydi). */
+export type TenderAssemblyDecisionLink = {
+  assemblyId: string;
+  itemId: string;
+  /** Baglandigi andaki karar kaydinin sirasi (sonra duzeltilirse ekranda belirtilir). */
+  seq: number;
+  itemTitle: string;
+  meetingAt: IsoDateTime;
+  decision: 'accepted';
+  linkedAt: IsoDateTime;
+  linkedBy: string;
 };
 
 export type Tender = TableKeys &
@@ -146,10 +169,18 @@ export type Tender = TableKeys &
     cancelledBy?: string;
     cancelReason?: string;
     cancelledFrom?: TenderStatus;
-    /** Karardan kaydedilen Finans gideri (yalnizca `decided`). */
+    /**
+     * ESKI MODEL (tek gider): karardan kaydedilen Finans gideri ve ters kaydedilip yerine yenisi
+     * kaydedilenler. Yeni yazimlar `expenses` listesine gecer (okuma ikisini birlestirir).
+     */
     expense?: TenderExpenseLink;
-    /** Finans'ta ters kayitla iptal edilip yerine yenisi kaydedilen onceki giderler (eskiden yeniye). */
     previousExpenses?: (TenderExpenseLink & { replacedAt: IsoDateTime })[];
+    /** Hakedisler: karara bagli tum Finans giderleri (eskiden yeniye; ters kaydedilenler dahil, silinmez). */
+    expenses?: TenderExpenseLink[];
+    /** Kazanan firmanin Finans tedarikci hesabi (gider aktariminda odeme hesabi). */
+    supplierAccount?: TenderSupplierAccount;
+    /** Genel kurul karari bagi (serbest `decision.reference` ayrica kalir). */
+    assemblyDecision?: TenderAssemblyDecisionLink;
   };
 
 export type TenderComment = TableKeys & {
@@ -167,6 +198,15 @@ export type TenderComment = TableKeys & {
    * gider. Eski (alansiz) yanitlar oncesindeki sorulari yanitlanmis sayar.
    */
   answers?: string[];
+  /** Yalnizca yonetim yaniti: belirli bir sakin sorusuna yanit (bildirim yalnizca o sorunun yazarina). */
+  replyTo?: string;
+  /**
+   * Moderasyon: yonetim sakin sorusunu gerekceyle gizledi (metin silinmez; sakinlere gosterilmez,
+   * yonetim ve denetci gerekceyle gorur). Denetimli (`tender.comment_hide`).
+   */
+  hiddenAt?: IsoDateTime;
+  hiddenBy?: string;
+  hideReason?: string;
   createdAt: IsoDateTime;
 };
 

@@ -1,6 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { RecordExpenseInput } from '@/lib/api/finance';
-import { type QuoteInput, type Tender, type TenderInput, portalTendersApi, tendersApi } from '@/lib/api/tenders';
+import { type AssemblyDecisionRef, type QuoteInput, type Tender, type TenderExpenseInput, type TenderInput, portalTendersApi, tendersApi } from '@/lib/api/tenders';
 import type { Role } from '@/types/roles';
 import { useAuth } from './useAuth';
 import { useInvalidateFinance } from './useFinance';
@@ -21,6 +20,8 @@ export const tenderKeys = {
   all: (apt: string) => [...unitKeys.apartment(apt), 'tenders'] as const,
   list: (apt: string) => [...tenderKeys.all(apt), 'list'] as const,
   detail: (apt: string, id: string) => [...tenderKeys.all(apt), 'detail', id] as const,
+  assemblyDecisions: (apt: string) => [...tenderKeys.all(apt), 'assembly-decisions'] as const,
+  supplierAccounts: (apt: string, id: string) => [...tenderKeys.all(apt), 'supplier-accounts', id] as const,
 };
 
 function useApt() {
@@ -40,7 +41,7 @@ export function useTender(id: string | undefined) {
 }
 
 /** Yazim sonrasi ayrinti yanitla guncellenir; liste ve (409 sonrasi) ayrinti yeniden cekilir. */
-function useTenderWrite<V>(fn: (v: V) => Promise<{ tender: Tender }>) {
+function useTenderWrite<V, R extends { tender: Tender } = { tender: Tender }>(fn: (v: V) => Promise<R>) {
   const { apt } = useApt();
   const qc = useQueryClient();
   return useMutation({
@@ -62,19 +63,44 @@ export function useTenderActions() {
     publish: useTenderWrite((v: { id: string; version: number; shortfallReason?: string }) =>
       tendersApi.publish(v.id, { version: v.version, ...(v.shortfallReason ? { shortfallReason: v.shortfallReason } : {}) }),
     ),
-    decide: useTenderWrite((v: { id: string; version: number; quoteId: string; reason: string; reference?: string }) =>
-      tendersApi.decide(v.id, { version: v.version, quoteId: v.quoteId, reason: v.reason, ...(v.reference ? { reference: v.reference } : {}) }),
+    decide: useTenderWrite((v: { id: string; version: number; quoteId: string; reason: string; reference?: string; assemblyDecision?: AssemblyDecisionRef }) =>
+      tendersApi.decide(v.id, {
+        version: v.version,
+        quoteId: v.quoteId,
+        reason: v.reason,
+        ...(v.reference ? { reference: v.reference } : {}),
+        ...(v.assemblyDecision ? { assemblyDecision: v.assemblyDecision } : {}),
+      }),
     ),
+    linkAssemblyDecision: useTenderWrite((v: { id: string; version: number; assemblyDecision: AssemblyDecisionRef | null }) =>
+      tendersApi.linkAssemblyDecision(v.id, { version: v.version, assemblyDecision: v.assemblyDecision }),
+    ),
+    linkSupplier: useTenderWrite((v: { id: string; version: number; accountId: string | null }) => tendersApi.linkSupplier(v.id, { version: v.version, accountId: v.accountId })),
+    hideComment: useTenderWrite((v: { id: string; commentId: string; reason: string }) => tendersApi.hideComment(v.id, v.commentId, { reason: v.reason })),
     cancel: useTenderWrite((v: { id: string; version: number; reason: string }) => tendersApi.cancel(v.id, { version: v.version, reason: v.reason })),
     withdrawQuote: useTenderWrite((v: { id: string; quoteId: string; version: number; reason: string }) => tendersApi.withdrawQuote(v.id, v.quoteId, { version: v.version, reason: v.reason })),
-    comment: useTenderWrite((v: { id: string; idempotencyKey: string; body: string }) => tendersApi.comment(v.id, { idempotencyKey: v.idempotencyKey, body: v.body })),
+    comment: useTenderWrite((v: { id: string; idempotencyKey: string; body: string; replyTo?: string }) =>
+      tendersApi.comment(v.id, { idempotencyKey: v.idempotencyKey, body: v.body, ...(v.replyTo ? { replyTo: v.replyTo } : {}) }),
+    ),
   };
+}
+
+/** Karar baglantisi secicisi: ayni apartmanin genel kurul kararlari (yalnizca acikken yuklenir). */
+export function useAssemblyDecisionOptions(enabled: boolean) {
+  const { apt, enabled: can } = useApt();
+  return useQuery({ queryKey: tenderKeys.assemblyDecisions(apt), queryFn: ({ signal }) => tendersApi.assemblyDecisions(signal).then((r) => r.items), enabled: can && enabled });
+}
+
+/** Tedarikci eslestirme secenekleri (yalnizca pencere acikken). */
+export function useSupplierAccounts(id: string, enabled: boolean) {
+  const { apt, enabled: can } = useApt();
+  return useQuery({ queryKey: tenderKeys.supplierAccounts(apt, id), queryFn: ({ signal }) => tendersApi.supplierAccounts(id, signal).then((r) => r.items), enabled: can && enabled });
 }
 
 /** Karardan gider: ihale ayrintisi yanitla guncellenir, Finans ozetleri yeniden cekilir. */
 export function useTenderExpense() {
   const invalidateFinance = useInvalidateFinance();
-  return useTenderWrite(async (v: { id: string; input: RecordExpenseInput }) => {
+  return useTenderWrite(async (v: { id: string; input: TenderExpenseInput }) => {
     const r = await tendersApi.createExpense(v.id, v.input);
     void invalidateFinance();
     return r;

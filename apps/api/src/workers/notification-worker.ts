@@ -1,6 +1,8 @@
 import { DataAccessError, getTenantItem, putNewItem, skKey, tenantPk } from '../config/dynamodb.js';
 import { type DomainEvent, EVENT_TYPES, type EventType } from '../events/publisher.js';
 import { type CoreRepository, coreRepository } from '../modules/core/repository.js';
+import type { FeatureKey } from '../modules/features/catalog.js';
+import { type SiteFeatureReader, createSiteFeatureReader, legacySiteFeatureReader } from '../modules/features/guard.js';
 import type { IsoDate, LiableParty } from '../modules/core/types.js';
 import { type MembershipRepository, membershipRepository } from '../modules/memberships/repository.js';
 import { categoryOfEvent } from '../modules/notifications/categories.js';
@@ -16,7 +18,15 @@ import { type GateRepository, gateRepository } from '../modules/gate/repository.
 import { type Courier, gateKeys } from '../modules/gate/types.js';
 import { type BookingSnapshot, isReservationEvent, refundSettling, reservationRecipients } from '../modules/reservations/notifications.js';
 import { type ReservationRepository, reservationRepository } from '../modules/reservations/repository.js';
-import { type AssemblyCallSnapshot, assemblyCallRecipients, isAssemblyEvent, meetingHash } from '../modules/assemblies/notifications.js';
+import {
+  type AssemblyCallSnapshot,
+  type AssemblyNoticeSnapshot,
+  assemblyCallRecipients,
+  assemblyNoticeRecipients,
+  isAssemblyEvent,
+  isAssemblyNoticeEvent,
+  meetingHash,
+} from '../modules/assemblies/notifications.js';
 import { type AssemblyRepository, assemblyRepository } from '../modules/assemblies/repository.js';
 import { type TenderSnapshot, isTenderEvent, tenderRecipients } from '../modules/tenders/notifications.js';
 import { type TenderRepository, tenderRepository } from '../modules/tenders/repository.js';
@@ -35,7 +45,6 @@ import {
 } from '../modules/notifications/suppressions.js';
 import { type PlanRequestSnapshot, isRestructureEvent, restructureRecipients } from '../modules/finance/planRequestNotifications.js';
 import { type PlanRequestRepository, planRequestRepository } from '../modules/finance/planRequests.js';
-import { type SiteFeatureReader, createSiteFeatureReader } from '../modules/features/guard.js';
 
 export type { DeliveryResult, Notification, NotificationTemplate, Notifier } from '../modules/notifications/notifier.js';
 export { createLogNotifier } from '../modules/notifications/notifier.js';
@@ -64,6 +73,8 @@ export { createLogNotifier } from '../modules/notifications/notifier.js';
  *                                 guncel durumu rezervasyon kaydindan (modules/reservations/notifications.ts)
  *       ASSEMBLY_CALLED        -> cagri kaydindaki malik kullanicilar (hala apartman uyesiyse); toplanti
  *                                 iptal edildiyse / basladiysa kimse (modules/assemblies/notifications.ts)
+ *       ASSEMBLY_CANCELLED / _RESCHEDULED -> toplantinin tum cagrilarindaki alicilar (hala uyeyse);
+ *                                 kayit olayla uyusmuyorsa (eski erteleme, iptal edilmemis) kimse
  *       TENDER_PUBLISHED / _DECIDED / _CANCELLED -> apartmanin guncel uyeleri; ihalenin guncel durumu
  *                                 olayla uyusmuyorsa kimse. TENDER_REPLIED -> yanitlanan acik sorularin
  *                                 yazarlari (hala uyeyse) (modules/tenders/notifications.ts)
@@ -83,6 +94,9 @@ export { createLogNotifier } from '../modules/notifications/notifier.js';
  *     bkz. modules/notifications/push.ts). E-posta kanali hata verse de push denenir; hata olay
  *     sonunda firlatilir.
  *  6. Basariyla islenen olay icin `NOTIF#` kaydi yazilir (30 gun TTL).
+ *  Site ozellik anahtari (Adim 1): olayin modulu sitede kapaliysa (oylama / genel kurul
+ *  `modules.pollsAssemblies`, ihale `modules.tenders`) kimseye gonderilmez; olay islenmis sayilir (`skipped: feature_disabled`),
+ *  zamanlanmis islerdeki kuralla ayni.
  * Hatali mesajlar `batchItemFailures` ile yalnizca kendileri yeniden denenir; 5 denemeden
  * sonra DLQ'ya duser (Terraform: maxReceiveCount = 5) ve alarm uretir.
  *
@@ -170,6 +184,7 @@ export type NotificationRecords = {
   courier?: CourierSnapshot;
   booking?: BookingSnapshot;
   assemblyCall?: AssemblyCallSnapshot;
+  assemblyNotice?: AssemblyNoticeSnapshot;
   tender?: TenderSnapshot;
   planRequest?: PlanRequestSnapshot;
 };
@@ -217,6 +232,15 @@ export function buildNotifications(
   }
   if (isAssemblyEvent(event)) {
     return assemblyCallRecipients(event, memberships, day, records.now ?? new Date(), records.assemblyCall).map((r) => ({
+      eventId: event.eventId,
+      apartmentId: event.apartmentId,
+      userId: r.userId,
+      template: r.template,
+      data: r.data,
+    }));
+  }
+  if (isAssemblyNoticeEvent(event)) {
+    return assemblyNoticeRecipients(event, memberships, day, records.now ?? new Date(), records.assemblyNotice).map((r) => ({
       eventId: event.eventId,
       apartmentId: event.apartmentId,
       userId: r.userId,
@@ -392,6 +416,13 @@ export function buildNotifications(
 
 const PROCESSED_TTL_SECONDS = 30 * 24 * 3600;
 
+/** Olay turu on eki -> modulun site ozellik anahtari (kapaliysa bildirim gitmez). */
+const EVENT_FEATURES: [prefix: string, key: FeatureKey][] = [
+  ['ASSEMBLY_', 'modules.pollsAssemblies'],
+  ['TENDER_', 'modules.tenders'],
+];
+export const featureOfEvent = (type: string): FeatureKey | undefined => EVENT_FEATURES.find(([p]) => type.startsWith(p))?.[1];
+
 export type WorkerDeps = {
   memberships: Pick<MembershipRepository, 'list'>;
   core: Pick<CoreRepository, 'listUnits'>;
@@ -401,13 +432,16 @@ export type WorkerDeps = {
   gate: Pick<GateRepository, 'get'>;
   /** Rezervasyon: gerekce / not ve ucret iadesinin guncel durumu. */
   reservations: Pick<ReservationRepository, 'getBooking'>;
-  /** Genel kurul cagrisi: cagri kaydi (alicilar) ve toplantinin guncel durumu. */
-  assemblies: Pick<AssemblyRepository, 'get' | 'getCall'>;
+  /** Genel kurul cagrisi: cagri kaydi (alicilar) ve toplantinin guncel durumu; iptal / ertelemede tum cagrilar. */
+  assemblies: Pick<AssemblyRepository, 'get' | 'getCall' | 'listCalls'>;
   /** Ihale: guncel durum (bayat olay elenir) ve yanit olayinda yorumlar. */
   tenders: Pick<TenderRepository, 'get' | 'listComments'>;
   /** Yapilandirma talebi: guncel durum (bayat olay elenir), alici ve tutarlar. */
   planRequests: Pick<PlanRequestRepository, 'get'>;
-  /** Site ozellikleri: `admin.debtRestructure` kapaliysa RESTRUCTURE_* bildirimleri gonderilmez. */
+  /**
+   * Site ozellikleri (yalnizca modulu anahtarli olaylarda okunur): `admin.debtRestructure` kapaliysa
+   * RESTRUCTURE_*, `modules.pollsAssemblies` kapaliysa ASSEMBLY_*, `modules.tenders` kapaliysa TENDER_* gonderilmez.
+   */
   features: Pick<SiteFeatureReader, 'resolve'>;
   notifier: Notifier;
   /** Mobil bildirim kanali; null: kapali (PUSH_CHANNEL=off). */
@@ -470,7 +504,8 @@ export function createNotificationWorker(overrides: Partial<WorkerDeps> = {}) {
     assemblies: assemblyRepository,
     tenders: tenderRepository,
     planRequests: planRequestRepository,
-    features: overrides.features ?? createSiteFeatureReader({ getSite: (id) => coreRepository.getSite(id) }),
+    // Sahte depolarla kurulan testler (core verilmis, ozellik okuyucu yok): eski davranis, tum ozellikler acik.
+    features: overrides.features ?? (overrides.core ? legacySiteFeatureReader : createSiteFeatureReader({ getSite: (id) => coreRepository.getSite(id) })),
     notifier: overrides.notifier ?? createNotifierFromEnv(),
     push: overrides.push !== undefined ? overrides.push : createPushChannelFromEnv(process.env, { now }),
     // Etkin `channels.push` = site ayari VE abonelik plani (sistem kapaliyken / abonelik yoksa yalnizca
@@ -506,7 +541,7 @@ export function createNotificationWorker(overrides: Partial<WorkerDeps> = {}) {
   const today = (): IsoDate =>
     new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Istanbul' }).format(deps.now());
 
-  type Outcome = { skipped: boolean; recipients: number; sent?: number; skippedRecipients?: Record<string, number>; push?: PushOutcome };
+  type Outcome = { skipped: boolean; reason?: 'feature_disabled'; recipients: number; sent?: number; skippedRecipients?: Record<string, number>; push?: PushOutcome };
 
   /** Olayin ihtiyac duydugu kayitlar (yalnizca ilgili olay turlerinde okunur). */
   async function recordsFor(event: DomainEvent): Promise<NotificationRecords> {
@@ -553,6 +588,29 @@ export function createNotificationWorker(overrides: Partial<WorkerDeps> = {}) {
             : null,
       };
     }
+    if (isAssemblyNoticeEvent(event)) {
+      const { assemblyId } = event.payload;
+      const [a, calls] = await Promise.all([deps.assemblies.get(event.apartmentId, assemblyId), deps.assemblies.listCalls(event.apartmentId, assemblyId)]);
+      return {
+        now: deps.now(),
+        assemblyNotice:
+          a && a.apartmentId === event.apartmentId
+            ? {
+                assemblyId,
+                status: a.status,
+                kind: a.kind,
+                scheduledAt: a.scheduledAt,
+                ...(a.location ? { location: a.location } : {}),
+                ...(a.onlineUrl ? { onlineUrl: a.onlineUrl } : {}),
+                ...(a.cancelReason ? { cancelReason: a.cancelReason } : {}),
+                ...(a.secondMeetingPlan ? { secondMeetingPlan: a.secondMeetingPlan } : {}),
+                reschedules: a.reschedules ?? [],
+                currentMeetingHash: meetingHash(a),
+                recipientUserIds: [...new Set(calls.filter((c) => c.apartmentId === event.apartmentId).flatMap((c) => c.recipientUserIds))],
+              }
+            : null,
+      };
+    }
     if (isTenderEvent(event)) {
       const { tenderId } = event.payload;
       const [t, comments] = await Promise.all([
@@ -573,6 +631,11 @@ export function createNotificationWorker(overrides: Partial<WorkerDeps> = {}) {
   async function processEvent(event: DomainEvent): Promise<Outcome> {
     if (await deps.isProcessed(event.apartmentId, event.eventId)) {
       return { skipped: true, recipients: 0 };
+    }
+    const feature = featureOfEvent(event.type);
+    if (feature && !(await deps.features.resolve(event.apartmentId))[feature]) {
+      await deps.markProcessed(event.apartmentId, event.eventId, { type: event.type, recipients: 0 });
+      return { skipped: true, reason: 'feature_disabled', recipients: 0 };
     }
     const memberships = await deps.memberships.list(event.apartmentId);
     const unitBlocks =

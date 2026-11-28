@@ -139,6 +139,14 @@ function spec(n: Notification, now: Date): Spec | undefined {
         body: `${formatDateTime(d.scheduledAt)} (Türkiye saati). Gündem ve ayrıntılar için dokunun.`,
         path: withId('/genel-kurul', d.assemblyId),
       };
+    case 'assembly_cancelled':
+      return { title: 'Kat malikleri kurulu toplantısı iptal edildi', body: `${formatDateTime(d.scheduledAt)} tarihli toplantı yapılmayacak.`, path: withId('/genel-kurul', d.assemblyId) };
+    case 'assembly_rescheduled':
+      return {
+        title: d.timeChanged !== 'true' ? 'Toplantı yeri değişti' : d.movedEarlier === 'true' ? 'Kat malikleri kurulu toplantısının tarihi değişti' : 'Kat malikleri kurulu toplantısı ertelendi',
+        body: `Yeni tarih: ${formatDateTime(d.scheduledAt)} (Türkiye saati). Ayrıntılar için dokunun.`,
+        path: withId('/genel-kurul', d.assemblyId),
+      };
     case 'tender_published':
       return { title: 'İhale teklifleri paylaşıldı', body: str(d.title), path: withId('/ihaleler', d.tenderId) };
     case 'tender_decided':

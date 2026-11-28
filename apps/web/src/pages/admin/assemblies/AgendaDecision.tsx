@@ -1,7 +1,9 @@
 import { type ReactNode, useMemo, useState } from 'react';
+import { ElectionResult } from '@/components/assemblies/ElectionResult';
 import { Alert, Badge, Button, Card, FormField, Input, Select, Textarea } from '@/components/ui';
 import { useRecordTally } from '@/hooks/useAssemblies';
 import {
+  ABSTAIN,
   type AgendaItem,
   type Assembly,
   type AssemblyUnit,
@@ -23,7 +25,7 @@ import {
 import { errorMessage } from '@/lib/api/errors';
 import { formatBps, formatFraction } from '@/lib/api/pollModel';
 import { formatDateTime } from '@/lib/dates';
-import { needsUnitVotes, prefillUnitVotes, setUnitVote, tallyIssue, unitVotesInput } from './schemas';
+import { ballotsInput, needsUnitVotes, prefillUnitVotes, setUnitVote, tallyIssue, unitVotesInput } from './schemas';
 
 type Props = {
   index: number;
@@ -59,12 +61,16 @@ export function AgendaDecision({ index, item, assembly, quorum, units, records, 
   const record = useRecordTally(assembly.assemblyId);
   const rule = itemRule(item);
   const kind = itemKind(item);
-  const byUnit = needsUnitVotes(rule);
+  const candidates = item.candidates ?? [];
+  const election = candidates.length > 0;
+  const byUnit = needsUnitVotes(rule) && !election;
   const latest = records.at(-1);
   const decided = Boolean(item.tally);
   const [editing, setEditing] = useState(false);
   const [counts, setCounts] = useState({ yes: '', no: '', abstain: '' });
   const [votes, setVotes] = useState<Record<string, VoteChoice | ''>>({});
+  /** Secim maddesi: bolum -> aday kimligi / `abstain` / '' (oy kullanmadi). */
+  const [ballots, setBallots] = useState<Record<string, string>>({});
   const [reason, setReason] = useState('');
   const [issue, setIssue] = useState<string | null>(null);
   const present = useMemo(() => units.filter((u) => u.attendance && u.attendance.mode !== 'absent'), [units]);
@@ -76,12 +82,15 @@ export function AgendaDecision({ index, item, assembly, quorum, units, records, 
     const t = item.tally;
     if (t) setCounts({ yes: String(t.yes), no: String(t.no), abstain: String(t.abstain) });
     setVotes(prefillUnitVotes(latest?.unitVotes));
+    setBallots({ ...(latest?.unitBallots ?? {}) });
     setEditing(true);
   };
 
   const save = async () => {
-    let body: { yes: number; no: number; abstain: number } | { votes: Record<string, VoteChoice> };
-    if (byUnit) {
+    let body: { yes: number; no: number; abstain: number } | { votes: Record<string, VoteChoice> } | { ballots: Record<string, string> };
+    if (election) {
+      body = { ballots: ballotsInput(ballots) };
+    } else if (byUnit) {
       body = { votes: unitVotesInput(votes) };
     } else {
       const parsed = { yes: Number(counts.yes || 0), no: Number(counts.no || 0), abstain: Number(counts.abstain || 0) };
@@ -116,7 +125,18 @@ export function AgendaDecision({ index, item, assembly, quorum, units, records, 
       </p>
       {preset?.hint && <p className="text-xs text-muted">{preset.hint}</p>}
 
-      {latest ? (
+      {election && !latest && <p className="text-xs text-muted">Adaylar: {candidates.map((c) => c.name).join(', ')}</p>}
+
+      {latest?.election ? (
+        <div className="flex flex-col gap-1">
+          <ElectionResult election={latest.election} />
+          <span className="text-xs text-muted">
+            Kayıt: {formatDateTime(latest.recordedAt)}
+            {latest.correctionReason ? ` · düzeltme (gerekçe: ${latest.correctionReason})` : ''}
+            {records.length > 1 ? ` · önceki ${records.length - 1} kayıt silinmez` : ''}
+          </span>
+        </div>
+      ) : latest ? (
         <div className="flex flex-col gap-1 text-xs text-muted tabular-nums">
           {VOTE_CHOICES.map((k) => (
             <span key={k}>{outcomeLine(latest.outcome, k)}</span>
@@ -164,7 +184,55 @@ export function AgendaDecision({ index, item, assembly, quorum, units, records, 
       {open && (
         <EntryBox boxed={decided}>
           {decided && <p className="text-small text-muted">Kayıtlı karar değişmez: düzeltme gerekçesiyle yeni kayıt olarak eklenir ve tutanakta / karar defterinde birlikte görünür.</p>}
-          {byUnit ? (
+          {election ? (
+            <div className="flex flex-col gap-2">
+              <p className="text-small text-muted">
+                Her oy veren tek aday seçer veya çekimser kalır; aynı kişinin oyunu kullandığı ve aynı kat malikine düşen bölümler birlikte işaretlenir. Aday bütün kat maliklerinin sayı ve arsa payı
+                çoğunluğuna ulaşırsa seçilir; en çok oy alan kendiliğinden seçilmez.
+              </p>
+              {present.length === 0 ? (
+                <p className="text-small">Katılım girilmedi.</p>
+              ) : (
+                <div className="overflow-x-auto rounded-xl border border-border">
+                  <table className="w-full text-left text-small">
+                    <caption className="sr-only">{index + 1}. madde bölüm bazında aday oyu</caption>
+                    <thead className="border-b border-border bg-surface-muted/50 text-xs text-muted">
+                      <tr>
+                        <th scope="col" className="px-3 py-2 font-medium">
+                          Bölüm
+                        </th>
+                        <th scope="col" className="px-3 py-2 font-medium">
+                          Arsa payı
+                        </th>
+                        <th scope="col" className="px-3 py-2 font-medium">
+                          Aday
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-border">
+                      {present.map((u) => (
+                        <tr key={u.unitId}>
+                          <td className="px-3 py-2">{unitLabel(u)}</td>
+                          <td className="px-3 py-2 tabular-nums">{u.landShare ? formatFraction(u.landShare) : '—'}</td>
+                          <td className="px-3 py-2">
+                            <Select aria-label={`${unitLabel(u)} aday oyu`} value={ballots[u.unitId] ?? ''} onChange={(e) => setBallots(setUnitVote<string>(ballots, present, u.unitId, e.target.value, rule))}>
+                              <option value="">Oy kullanmadı</option>
+                              {candidates.map((c) => (
+                                <option key={c.candidateId} value={c.candidateId}>
+                                  {c.name}
+                                </option>
+                              ))}
+                              <option value={ABSTAIN}>{CHOICE_LABELS.abstain}</option>
+                            </Select>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          ) : byUnit ? (
             <div className="flex flex-col gap-2">
               <p className="text-small text-muted">
                 Payda bütün kat malikleridir ({quorum.totalUnits} bölüm); katılmayan bölüm kabul sayılmaz. Aynı kişinin oyunu kullandığı bölümler{PERSON_RULES.includes(rule) ? ' ve aynı kat malikine düşen bölümler (kişi sayımı)' : ''} birlikte işaretlenir.

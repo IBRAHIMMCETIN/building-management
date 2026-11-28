@@ -117,6 +117,46 @@ describe('sakin genel kurul ayrintisi', () => {
     expect(container.textContent).toContain('Genel kurul bilgileri kat maliklerine açıktır');
     expect(container.textContent).not.toContain('Henüz bir daireye atanmadınız');
   });
+
+  it('iptal edilen toplanti: tarih ve gerekceyle uyari; erteleme gecmisi', async () => {
+    state = ok(
+      assembly({
+        status: 'cancelled',
+        phase: 'cancelled',
+        cancelReason: 'Yönetici istifa etti',
+        cancelledAt: '2026-12-01T09:00:00.000Z',
+        reschedules: [{ previousScheduledAt: '2026-12-10T16:00:00.000Z', scheduledAt: '2026-12-15T16:00:00.000Z', placeChanged: false, reason: 'Salon tadilatta', at: '2026-11-28T09:00:00.000Z' }],
+      }),
+    );
+    await render(<MyAssemblyDetailPage />);
+    const text = container.textContent ?? '';
+    expect(text).toContain('Bu toplantı iptal edildi (1 Ara 2026 12:00); 15 Ara 2026 19:00 tarihinde toplantı yapılmayacak. Gerekçe: Yönetici istifa etti');
+    expect(text).toContain('10 Ara 2026 19:00 tarihli toplantı 15 Ara 2026 19:00 tarihine ertelendi');
+    expect(text).toContain('Gerekçe: Salon tadilatta');
+  });
+
+  it('secim sonucu: secilen aday ve aday toplamlari; secim yapilamadiysa aciklama', async () => {
+    const decision = { decision: 'accepted', rule: 'persons_and_land', votes: { yes: 3, no: 1, abstain: 0 }, units: null, landShareBps: null, corrected: false, recordedAt: '2026-12-15T17:00:00.000Z' };
+    const candidates = [
+      { candidateId: 'c1', name: 'Ali Veli', votes: 3, persons: 3, units: 3, landShareBps: 9000, elected: true },
+      { candidateId: 'c2', name: 'Aday 2', votes: 1, persons: 1, units: 1, landShareBps: 1000, elected: false },
+    ];
+    state = ok(
+      assembly({
+        phase: 'held',
+        status: 'held',
+        agenda: [
+          { itemId: 'a1', title: 'Yönetici seçimi', decisionKind: 'manager_election', majority: 'persons_and_land', candidateCount: 2, decision: { ...decision, election: { winnerName: 'Ali Veli', candidates } } },
+          { itemId: 'a2', title: 'Denetçi seçimi', decisionKind: 'auditor_election', majority: 'persons_and_land', decision: { ...decision, decision: 'rejected', election: { winnerName: null, noWinner: 'Seçim yapılamadı: hiçbir aday çoğunluğa ulaşmadı.', candidates } } },
+        ] as never,
+      }),
+    );
+    await render(<MyAssemblyDetailPage />);
+    const text = container.textContent ?? '';
+    expect(text).toContain('Seçilen: Ali Veli');
+    expect(text).toContain('Aday 21 oy · 1 kat maliki · 1 bölüm · arsa payı');
+    expect(text).toContain('Seçim yapılamadı: hiçbir aday çoğunluğa ulaşmadı.');
+  });
 });
 
 describe('sakin genel kurul listesi', () => {

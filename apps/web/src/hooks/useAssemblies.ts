@@ -1,5 +1,16 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { type AssemblyInput, type AttendanceInput, type MinutesInput, type TallyInput, assembliesApi } from '@/lib/api/assemblies';
+import {
+  type AssemblyInput,
+  type AttendanceInput,
+  type ConsentEntryInput,
+  type ConsentInput,
+  type MinutesInput,
+  type RescheduleInput,
+  type ServiceAttemptInput,
+  type ServiceUpdateInput,
+  type TallyInput,
+  assembliesApi,
+} from '@/lib/api/assemblies';
 import { ApiError } from '@/lib/api/errors';
 import type { Role } from '@/types/roles';
 import { useAuth } from './useAuth';
@@ -20,6 +31,9 @@ export const assemblyKeys = {
   all: (apt: string) => [...unitKeys.apartment(apt), 'assemblies'] as const,
   list: (apt: string) => [...assemblyKeys.all(apt), 'list'] as const,
   detail: (apt: string, id: string) => [...assemblyKeys.all(apt), 'detail', id] as const,
+  service: (apt: string, id: string, unserved: boolean) => [...assemblyKeys.all(apt), 'service', id, unserved] as const,
+  consents: (apt: string) => [...assemblyKeys.all(apt), 'consents'] as const,
+  consent: (apt: string, cid: string) => [...assemblyKeys.all(apt), 'consents', cid] as const,
 };
 
 function useApt() {
@@ -98,6 +112,68 @@ export function useFinalizeAssembly(id: string) {
 export function useCancelAssembly() {
   const invalidate = useInvalidate();
   return useMutation({ mutationFn: ({ id, version, reason }: { id: string; version: number; reason: string }) => assembliesApi.cancel(id, version, reason), onSettled: invalidate });
+}
+
+/** Cagrisi gonderilmis toplantinin ertelenmesi / yer degisikligi (maliklere bildirim). */
+export function useRescheduleAssembly(id: string) {
+  const invalidate = useInvalidate();
+  return useMutation({ mutationFn: (input: RescheduleInput) => assembliesApi.reschedule(id, input), onSettled: invalidate });
+}
+
+// ---------------------------------------------------------------------------
+// Yasal cagri teslim takibi (KMK m.29)
+// ---------------------------------------------------------------------------
+
+export function useServiceReport(id: string | undefined, unserved = false) {
+  const { apt, enabled } = useApt();
+  return useQuery({ queryKey: assemblyKeys.service(apt, id ?? '', unserved), queryFn: ({ signal }) => assembliesApi.serviceReport(id ?? '', unserved, signal), enabled: enabled && !!id });
+}
+
+export function useAddServiceAttempt(id: string) {
+  const invalidate = useInvalidate();
+  return useMutation({ mutationFn: ({ ownerId, input }: { ownerId: string; input: ServiceAttemptInput }) => assembliesApi.addServiceAttempt(id, ownerId, input), onSettled: invalidate });
+}
+
+export function useUpdateServiceAttempt(id: string) {
+  const invalidate = useInvalidate();
+  return useMutation({
+    mutationFn: ({ ownerId, seq, input }: { ownerId: string; seq: number; input: ServiceUpdateInput }) => assembliesApi.updateServiceAttempt(id, ownerId, seq, input),
+    onSettled: invalidate,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Toplanti disinda yazili riza
+// ---------------------------------------------------------------------------
+
+export function useConsents() {
+  const { apt, enabled } = useApt();
+  return useQuery({ queryKey: assemblyKeys.consents(apt), queryFn: ({ signal }) => assembliesApi.consents(signal).then((r) => r.items), enabled });
+}
+
+export function useConsent(cid: string | undefined) {
+  const { apt, enabled } = useApt();
+  return useQuery({ queryKey: assemblyKeys.consent(apt, cid ?? ''), queryFn: ({ signal }) => assembliesApi.consent(cid ?? '', signal), enabled: enabled && !!cid });
+}
+
+export function useCreateConsent() {
+  const invalidate = useInvalidate();
+  return useMutation({ mutationFn: (input: ConsentInput) => assembliesApi.createConsent(input), onSettled: invalidate });
+}
+
+export function useRecordConsent(cid: string) {
+  const invalidate = useInvalidate();
+  return useMutation({ mutationFn: ({ unitId, input }: { unitId: string; input: ConsentEntryInput }) => assembliesApi.recordConsent(cid, unitId, input), onSettled: invalidate });
+}
+
+export function useCloseConsent(cid: string) {
+  const invalidate = useInvalidate();
+  return useMutation({ mutationFn: (version: number) => assembliesApi.closeConsent(cid, version), onSettled: invalidate });
+}
+
+export function useCancelConsent(cid: string) {
+  const invalidate = useInvalidate();
+  return useMutation({ mutationFn: ({ version, reason }: { version: number; reason: string }) => assembliesApi.cancelConsent(cid, version, reason), onSettled: invalidate });
 }
 
 // ---------------------------------------------------------------------------

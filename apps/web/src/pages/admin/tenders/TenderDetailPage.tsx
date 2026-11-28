@@ -1,20 +1,20 @@
-import { ArrowLeft, Ban, CheckCircle2, FileClock, Gavel, Pencil, Plus, ReceiptText, Send, Undo2 } from 'lucide-react';
+import { ArrowLeft, Ban, CheckCircle2, FileClock, Gavel, Landmark, Link2, Pencil, Plus, ReceiptText, Send, Undo2, Wallet } from 'lucide-react';
 import { useState } from 'react';
 import { Link, useParams } from 'react-router';
 import { QuoteComparison } from '@/components/tenders/QuoteComparison';
 import { TenderComments } from '@/components/tenders/TenderComments';
 import { Alert, Badge, Button, Card, CardTitle, Skeleton } from '@/components/ui';
 import { useOpenDocument } from '@/hooks/useOpenDocument';
-import { useTender, useTenderActions, useTenderExpense, useTenderPermissions } from '@/hooks/useTenders';
+import { useAssemblyDecisionOptions, useSupplierAccounts, useTender, useTenderActions, useTenderExpense, useTenderPermissions } from '@/hooks/useTenders';
 import { errorMessage } from '@/lib/api/errors';
-import { type Quote, type Tender, tendersApi } from '@/lib/api/tenders';
+import { type Quote, type Tender, type TenderComment, tendersApi } from '@/lib/api/tenders';
 import { formatDate, formatDateTime } from '@/lib/dates';
 import { formatTRY } from '@/lib/money';
 import { istanbulToday } from '@/lib/reservations/model';
 import { TENDER_CATEGORY_LABELS, TENDER_STATUS_LABELS, TENDER_STATUS_TONES, allowedActions, canEditQuotes, deadlineText, publishBlockers } from '@/lib/tenders/model';
 import { ROLE_LABELS, isRole } from '@/types/roles';
 import { ExpenseDialog, type ExpensePreset } from '../finance/ExpenseDialog';
-import { DecideDialog, PublishDialog, ReasonDialog } from './ActionDialogs';
+import { AssemblyLinkDialog, DecideDialog, PublishDialog, ReasonDialog, SupplierDialog } from './ActionDialogs';
 import { QuoteDialog } from './QuoteDialog';
 import { TenderDialog } from './TenderDialog';
 
@@ -33,7 +33,7 @@ export function TenderDetailPage() {
   );
 }
 
-type Open = null | 'edit' | 'quote' | 'publish' | 'decide' | 'cancel' | 'expense' | { edit: Quote } | { withdraw: Quote };
+type Open = null | 'edit' | 'quote' | 'publish' | 'decide' | 'cancel' | 'expense' | 'assembly' | 'supplier' | { edit: Quote } | { withdraw: Quote } | { hide: TenderComment };
 
 function Detail({ tender: t }: { tender: Tender }) {
   const { canWrite } = useTenderPermissions();
@@ -51,6 +51,10 @@ function Detail({ tender: t }: { tender: Tender }) {
     setOpenState(o);
   };
   const oldDoc = useOpenDocument();
+  // Secenekler yalnizca ilgili pencere acikken yuklenir.
+  const assemblyOptions = useAssemblyDecisionOptions(canWrite && (open === 'decide' || open === 'assembly'));
+  const supplierOptions = useSupplierAccounts(t.tenderId, canWrite && open === 'supplier');
+  const hiding = typeof open === 'object' && open !== null && 'hide' in open ? open.hide : undefined;
   const allowed = canWrite ? allowedActions(t.status) : [];
   const editable = canWrite && canEditQuotes(t.status);
   const close = () => setOpen(null);
@@ -140,9 +144,18 @@ function Detail({ tender: t }: { tender: Tender }) {
         tender={t}
         canWrite={canWrite}
         onExpense={() => {
-          if (t.expenseDraft) setExpensePreset({ ...t.expenseDraft, amount: t.expenseDraft.amountKurus });
+          if (t.expenseDraft) {
+            const { amountKurus, creditAccountId, installment: _i, ...rest } = t.expenseDraft;
+            setExpensePreset({
+              ...rest,
+              ...(amountKurus > 0 ? { amount: amountKurus } : {}),
+              ...(creditAccountId ? { creditAccountId, creditAccountName: t.supplierAccount?.name } : {}),
+            });
+          }
           setOpen('expense');
         }}
+        onLinkAssembly={() => setOpen('assembly')}
+        onLinkSupplier={() => setOpen('supplier')}
       />
       {t.shortfallReason && (
         <Alert>
@@ -213,6 +226,7 @@ function Detail({ tender: t }: { tender: Tender }) {
           pending={actions.comment.isPending}
           onSubmit={(v) => actions.comment.mutateAsync({ id: t.tenderId, ...v })}
           authorLabel={(c) => (c.authorKind === 'management' && c.authorRole && isRole(c.authorRole) ? ROLE_LABELS[c.authorRole] : undefined)}
+          {...(canWrite ? { onHide: (c: TenderComment) => setOpen({ hide: c }) } : {})}
         />
       )}
 
@@ -227,17 +241,55 @@ function Detail({ tender: t }: { tender: Tender }) {
             pending={actions.publish.isPending}
             onConfirm={(shortfallReason) => actions.publish.mutateAsync({ id: t.tenderId, version: openedVersion, ...(shortfallReason ? { shortfallReason } : {}) })}
           />
-          <DecideDialog open={open === 'decide'} onClose={close} tender={t} pending={actions.decide.isPending} onConfirm={(v) => actions.decide.mutateAsync({ id: t.tenderId, version: openedVersion, ...v })} />
+          <DecideDialog
+            open={open === 'decide'}
+            onClose={close}
+            tender={t}
+            pending={actions.decide.isPending}
+            assemblyOptions={assemblyOptions.data ?? []}
+            onConfirm={(v) => actions.decide.mutateAsync({ id: t.tenderId, version: openedVersion, ...v })}
+          />
+          <AssemblyLinkDialog
+            open={open === 'assembly'}
+            onClose={close}
+            tender={t}
+            options={assemblyOptions.data ?? []}
+            loading={assemblyOptions.isPending}
+            pending={actions.linkAssemblyDecision.isPending}
+            onConfirm={(assemblyDecision) => actions.linkAssemblyDecision.mutateAsync({ id: t.tenderId, version: openedVersion, assemblyDecision })}
+          />
+          <SupplierDialog
+            open={open === 'supplier'}
+            onClose={close}
+            tender={t}
+            options={supplierOptions.data ?? []}
+            loading={supplierOptions.isPending}
+            pending={actions.linkSupplier.isPending}
+            onConfirm={(accountId) => actions.linkSupplier.mutateAsync({ id: t.tenderId, version: openedVersion, accountId })}
+          />
+          <ReasonDialog
+            open={hiding !== undefined}
+            onClose={close}
+            title="Soruyu gizle"
+            description="Soru silinmez; sakinlere (yazarı dahil) gösterilmez, yönetim ve denetçi gerekçesiyle görür. Gerekçe denetim günlüğüne yazılır."
+            label="Gizleme gerekçesi"
+            minLength={5}
+            maxLength={300}
+            confirmLabel="Gizle"
+            danger
+            pending={actions.hideComment.isPending}
+            onConfirm={(reason) => (hiding ? actions.hideComment.mutateAsync({ id: t.tenderId, commentId: hiding.commentId, reason }) : Promise.resolve())}
+          />
           {expensePreset && (
             // Odeme kaynagi ihalede yok: Finans gider penceresi karardan on doldurulur, yonetici onaylar.
             <ExpenseDialog
               open={open === 'expense'}
               onClose={close}
-              title="İhale için gider kaydı"
+              title="İhale için gider / hakediş kaydı"
               preset={expensePreset}
               onRecord={async (input) => {
                 const r = await expense.mutateAsync({ id: t.tenderId, input });
-                return { amount: r.tender.expense?.amountKurus ?? input.amount };
+                return { amount: r.tender.expenses?.find((e) => e.expenseId === r.expenseId)?.amountKurus ?? input.amount };
               }}
             />
           )}
@@ -276,13 +328,17 @@ function Detail({ tender: t }: { tender: Tender }) {
 }
 
 /**
- * Karar ozeti. Yonetim: "Gider kaydı oluştur" Finans gider penceresini karardan on doldurulmus acar
- * (gider sessizce olusturulmaz); kaydedilen gider burada baglantisiyla gorunur.
+ * Karar ozeti: genel kurul karar bagi, tedarikci hesabi, hakedisler ve ilerleme. Yonetim: "Hakediş /
+ * gider ekle" Finans gider penceresini karardan on doldurulmus acar (kalan tutar; gider sessizce
+ * olusturulmaz); ters kaydedilen gider ilerlemeye sayilmaz.
  */
-function DecisionCard({ tender: t, canWrite, onExpense }: { tender: Tender; canWrite: boolean; onExpense: () => void }) {
+function DecisionCard({ tender: t, canWrite, onExpense, onLinkAssembly, onLinkSupplier }: { tender: Tender; canWrite: boolean; onExpense: () => void; onLinkAssembly: () => void; onLinkSupplier: () => void }) {
   const d = t.decision;
   if (!d) return null;
   const lowest = t.comparison.lowestQuoteIds.includes(d.quoteId);
+  const ad = t.assemblyDecision;
+  const p = t.expenseProgress;
+  const expenses = t.expenses ?? (t.expense ? [t.expense] : []);
   return (
     <Card className="flex flex-col gap-3 border-success/30">
       <div className="flex items-start gap-3">
@@ -299,26 +355,81 @@ function DecisionCard({ tender: t, canWrite, onExpense }: { tender: Tender; canW
           {d.reference && <p className="text-small text-muted">Karar referansı: {d.reference}</p>}
         </div>
       </div>
-      {t.expense && (
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-          <p className="text-small text-muted">
-            {t.expense.reversed ? 'Gider ters kaydedildi' : 'Gider kaydedildi'}: <span className="tabular-nums">{formatTRY(t.expense.amountKurus)}</span> · {formatDate(t.expense.date)}
-          </p>
-          <Link to="/admin/finance" className="text-xs text-accent underline-offset-4 hover:underline">
-            Finans'ta görüntüle
-          </Link>
+
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-small">
+        <Landmark className="size-4 shrink-0 text-muted" aria-hidden="true" />
+        {ad ? (
+          <span>
+            Genel kurul kararı:{' '}
+            <Link to={`/admin/assemblies?assembly=${encodeURIComponent(ad.assemblyId)}`} className="text-accent underline-offset-4 hover:underline">
+              {formatDate(ad.meetingAt)} · {ad.itemTitle}
+            </Link>
+            {ad.corrected && <span className="text-warning"> · karar sonradan düzeltildi{ad.currentDecision === 'rejected' ? ' (güncel kayıt: reddedildi)' : ''}</span>}
+          </span>
+        ) : (
+          <span className="text-muted">Genel kurul kararı bağlı değil.</span>
+        )}
+        {canWrite && t.status === 'decided' && (
+          <Button size="xs" variant="subtle" onClick={onLinkAssembly}>
+            <Link2 className="size-3.5" aria-hidden="true" />
+            {ad ? 'Değiştir / kaldır' : 'Bağla'}
+          </Button>
+        )}
+      </div>
+
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-small">
+        <Wallet className="size-4 shrink-0 text-muted" aria-hidden="true" />
+        {t.supplierAccount ? <span>Tedarikçi hesabı: {t.supplierAccount.name}</span> : <span className="text-muted">Finans tedarikçi hesabı eşleştirilmedi.</span>}
+        {canWrite && t.status === 'decided' && (
+          <Button size="xs" variant="subtle" onClick={onLinkSupplier}>
+            {t.supplierAccount ? 'Değiştir' : 'Eşleştir'}
+          </Button>
+        )}
+      </div>
+
+      {p && (
+        <div className="flex flex-col gap-1.5">
+          <div className="flex flex-wrap items-baseline justify-between gap-2 text-small">
+            <span className="font-medium">Hakedişler</span>
+            <span className="tabular-nums text-muted">
+              {formatTRY(p.activeTotalKurus)} / {formatTRY(p.decidedTotalKurus)} · %{(p.percentBps / 100).toLocaleString('tr-TR', { maximumFractionDigits: 1 })}
+              {p.overrunKurus > 0 ? ` · aşım ${formatTRY(p.overrunKurus)}` : ` · kalan ${formatTRY(p.remainingKurus)}`}
+            </span>
+          </div>
+          <div className="h-2 overflow-hidden rounded-full bg-surface-muted" role="progressbar" aria-label="Hakediş ilerlemesi" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.min(100, Math.round(p.percentBps / 100))}>
+            <div className={p.overrunKurus > 0 ? 'h-full bg-warning' : 'h-full bg-success'} style={{ width: `${Math.min(100, p.percentBps / 100)}%` }} />
+          </div>
         </div>
+      )}
+      {expenses.length > 0 && (
+        <ul className="flex flex-col gap-1 text-small">
+          {expenses.map((e, i) => (
+            <li key={e.expenseId} className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+              <span className={e.reversed ? 'text-muted line-through' : undefined}>
+                {e.installment ?? i + 1}. {e.reversed ? 'Gider ters kaydedildi' : 'Gider kaydedildi'}: <span className="tabular-nums">{formatTRY(e.amountKurus)}</span> · {formatDate(e.date)}
+              </span>
+              {e.reversed && <Badge tone="neutral">Ters kayıt</Badge>}
+              {e.overrunReason && <span className="text-xs text-warning">Aşım gerekçesi: {e.overrunReason}</span>}
+            </li>
+          ))}
+          <li>
+            <Link to="/admin/finance" className="text-xs text-accent underline-offset-4 hover:underline">
+              Finans'ta görüntüle
+            </Link>
+          </li>
+        </ul>
       )}
       {canWrite && t.expenseDraft && (
         <div className="flex flex-col items-start gap-2">
           <p className="text-small text-muted">
-            {t.expense?.reversed
-              ? 'Bağlı gider Finans’ta ters kayıtla iptal edildi; gerekiyorsa yeni gider kaydı oluşturun. Tutar, tedarikçi, açıklama ve gider kalemi karardan doldurulur, ödeme kaynağını siz seçersiniz.'
-              : `İş tamamlanıp fatura geldiğinde gideri buradan kaydedin; tutar, tedarikçi (“${d.supplierName}”), açıklama ve gider kalemi karardan doldurulur, ödeme kaynağını siz seçersiniz.`}
+            {expenses.some((e) => e.reversed) && !p?.activeCount
+              ? 'Bağlı gider Finans’ta ters kayıtla iptal edildi; gerekiyorsa yeni gider kaydı oluşturun.'
+              : `İş ilerledikçe hakedişleri veya faturaları buradan kaydedin; kalan tutar, tedarikçi (“${d.supplierName}”), açıklama ve gider kalemi karardan doldurulur.`}
+            {t.supplierAccount ? ' Ödeme hesabı eşleştirilmiş tedarikçi hesabıdır (vadeli).' : ' Ödeme kaynağını siz seçersiniz.'} Karar tutarı aşılırsa gerekçe istenir.
           </p>
           <Button size="sm" variant="secondary" onClick={onExpense}>
             <ReceiptText className="size-4" aria-hidden="true" />
-            Gider kaydı oluştur
+            Hakediş / gider ekle
           </Button>
         </div>
       )}

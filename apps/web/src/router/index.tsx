@@ -150,11 +150,16 @@ export const router = createBrowserRouter([
                   // Ortak alan rezervasyonu (denetci salt okur).
                   { path: 'reservations', element: <ReservationsPage /> },
                   // Ihale / teklif toplama (denetci yalnizca paylasilanlari salt okur).
-                  { path: 'tenders', element: <TendersPage /> },
-                  { path: 'tenders/:tenderId', element: <TenderDetailPage /> },
+                  {
+                    element: <RequireFeature feature="modules.tenders" title="İhaleler" />,
+                    children: [
+                      { path: 'tenders', element: <TendersPage /> },
+                      { path: 'tenders/:tenderId', element: <TenderDetailPage /> },
+                    ],
+                  },
                   // Y1: anket / oylama (yonetici + yonetim firmasi yazar, denetci salt okur).
                   { path: 'polls', element: <PollsPage /> },
-                  { path: 'assemblies', element: <AssembliesPage /> },
+                  { element: <RequireFeature feature="modules.pollsAssemblies" title="Genel Kurul" />, children: [{ path: 'assemblies', element: <AssembliesPage /> }] },
                   { path: 'import', element: <ImportPage /> },
                   { path: 'settings', element: <SettingsPage /> },
                 ],
@@ -237,8 +242,13 @@ export const router = createBrowserRouter([
               { path: 'talepler/yeni', element: <NewTicketWizard /> },
               { path: 'talepler/:ticketId', element: <MyTicketDetailPage /> },
               { path: 'rezervasyon', element: <MyReservationsPage /> },
-              { path: 'ihale', element: <MyTendersPage /> },
-              { path: 'ihale/:tenderId', element: <MyTenderDetailPage /> },
+              {
+                element: <RequireFeature feature="modules.tenders" title="İhaleler" />,
+                children: [
+                  { path: 'ihale', element: <MyTendersPage /> },
+                  { path: 'ihale/:tenderId', element: <MyTenderDetailPage /> },
+                ],
+              },
               // Adim 1: online odeme baslatma `payments.online` ozelligine bagli; sonuc sayfasi her zaman acik.
               { element: <RequireFeature feature="payments.online" title="Online ödeme" />, children: [{ path: 'odeme', element: <PaymentPage /> }] },
               { path: 'odeme/sonuc', element: <PaymentResultPage /> },
@@ -247,8 +257,13 @@ export const router = createBrowserRouter([
               { path: 'oylamalar', element: <MyPollsPage /> },
               { path: 'oylamalar/:pollId', element: <MyPollDetailPage /> },
               // Genel kurul devami: kat maliklerine toplantilar, kararlar ve tutanak.
-              { path: 'genel-kurul', element: <MyAssembliesPage /> },
-              { path: 'genel-kurul/:assemblyId', element: <MyAssemblyDetailPage /> },
+              {
+                element: <RequireFeature feature="modules.pollsAssemblies" title="Genel Kurul" />,
+                children: [
+                  { path: 'genel-kurul', element: <MyAssembliesPage /> },
+                  { path: 'genel-kurul/:assemblyId', element: <MyAssemblyDetailPage /> },
+                ],
+              },
               { path: 'account', element: <AccountPage /> },
             ],
           },

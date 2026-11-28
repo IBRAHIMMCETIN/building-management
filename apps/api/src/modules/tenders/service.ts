@@ -13,10 +13,13 @@
  */
 import { createHash, randomUUID } from 'node:crypto';
 import { type DomainEvent, buildEvent } from '../../events/publisher.js';
+import { type AssemblyRepository, assemblyRepository } from '../assemblies/repository.js';
+import type { AssemblyDecision } from '../assemblies/types.js';
 import type { IsoDate } from '../core/types.js';
 import { type Obj, ValidationError, asObject, assertId, isIsoDate, reqEnum, reqInt, reqString } from '../core/validation.js';
 import type { SignedDownload } from '../documents/service.js';
 import type { FinanceService, WorkLinkWrite } from '../finance/service.js';
+import { formatTL } from '../notifications/templates.js';
 import { type PortalRepository, portalRepository } from '../portal/repository.js';
 import { istanbulDate } from '../reservations/time.js';
 import { type TicketRepository, ticketRepository } from '../tickets/repository.js';
@@ -35,6 +38,7 @@ import {
   MAX_MIN_QUOTES,
   MAX_QUOTE_KURUS,
   MAX_QUOTES,
+  MAX_TENDER_EXPENSES,
   MAX_VAT_RATE,
   MAX_WARRANTY_MONTHS,
   TENDER_CATEGORIES,
@@ -42,7 +46,9 @@ import {
   TENDER_STATUSES,
   type QuoteDocument,
   type Tender,
+  type TenderAssemblyDecisionLink,
   type TenderComment,
+  type TenderExpenseLink,
   type TenderQuote,
   type TenderStatus,
   type TenderTicketLink,
@@ -67,7 +73,9 @@ export type TenderServiceDeps = {
    * Karardan gider kaydi: MEVCUT Finans gider servisi (`recordExpense`; ayni dogrulama, bakiye ve
    * defter kurallari). Verilmezse "Gider kaydı oluştur" 503.
    */
-  finance: Pick<FinanceService, 'recordExpense' | 'isReversed'> | undefined;
+  finance: Pick<FinanceService, 'recordExpense' | 'isReversed' | 'listAccounts'> | undefined;
+  /** Genel kurul karar bagi: ayni apartmanin toplanti ve degismez karar kayitlari (salt okuma). */
+  assemblies: Pick<AssemblyRepository, 'get' | 'list' | 'listDecisions'>;
   now: () => Date;
   newId: () => string;
 };
@@ -95,6 +103,7 @@ export function createTenderService(overrides: Partial<TenderServiceDeps> = {}) 
     tickets: ticketRepository,
     memberships: portalRepository,
     finance: undefined,
+    assemblies: assemblyRepository,
     now: () => new Date(),
     newId: () => randomUUID(),
     ...overrides,
@@ -125,14 +134,18 @@ export function createTenderService(overrides: Partial<TenderServiceDeps> = {}) 
     return a;
   }
 
-  /** Sakin: bu apartmanda bugun gecerli bir uyeligi olmali (tasinan sakin, token suresi dolmadan da goremez). */
-  async function residentOf(ctx: TenderContext) {
+  /**
+   * Sakin: bu apartmanda bugun gecerli bir uyeligi olmali (tasinan sakin, token suresi dolmadan da
+   * goremez). `owner`: bugun malik uyeligi var mi (genel kurul karar baglantisi yalnizca maliklere).
+   */
+  async function residentOf(ctx: TenderContext): Promise<{ owner: boolean }> {
     if (audienceOf(ctx) !== 'resident') throw new TenderError('forbidden', 'Bu ekran sakin portalıdır');
     const d = today();
-    const member = (await deps.memberships.listMemberships(ctx.apartmentId, ctx.userId)).some(
+    const current = (await deps.memberships.listMemberships(ctx.apartmentId, ctx.userId)).filter(
       (m) => m.apartmentId === ctx.apartmentId && m.status === 'active' && m.startDate <= d && (!m.endDate || m.endDate >= d),
     );
-    if (!member) throw new TenderError('forbidden', 'İhaleleri görmek için bu sitede güncel bir daire üyeliğiniz olmalı');
+    if (!current.length) throw new TenderError('forbidden', 'İhaleleri görmek için bu sitede güncel bir daire üyeliğiniz olmalı');
+    return { owner: current.some((m) => m.relation === 'owner') };
   }
 
   function requireDocuments(): TenderDocuments {
@@ -279,59 +292,149 @@ export function createTenderService(overrides: Partial<TenderServiceDeps> = {}) 
     };
   }
 
-  function commentView(c: TenderComment, ctx: TenderContext, audience: Audience) {
+  function commentView(c: TenderComment, ctx: TenderContext, audience: Audience, hiddenIds: ReadonlySet<string>) {
+    // Sakin gorunumunde gizlenen soruya yanit, sorusuz (bag kaldirilir) gosterilir.
+    const replyTo = c.replyTo && !(audience === 'resident' && hiddenIds.has(c.replyTo)) ? c.replyTo : undefined;
     return {
       commentId: c.commentId,
       body: c.body,
       authorKind: c.authorKind,
       mine: c.authorId === ctx.userId,
       createdAt: c.createdAt,
+      ...(replyTo ? { replyTo } : {}),
+      // Moderasyon: gizlenen soru sakinlere hic donmez; yonetim ve denetci gerekceyle gorur.
+      ...(c.hiddenAt && audience !== 'resident' ? { hidden: { at: c.hiddenAt, reason: c.hideReason ?? '', ...(audience === 'manager' && c.hiddenBy ? { by: c.hiddenBy } : {}) } } : {}),
       // KVKK: sakin ve denetci yazar kimligini gormez (denetciye sakin kisisel verisi maskelenir); yalnizca yonetim.
       ...(audience === 'manager' ? { authorId: c.authorId, authorRole: c.authorRole } : {}),
     };
   }
 
-  /** Gider penceresinin on dolumu: secilen teklifin KDV dahil toplami, firma ve ihale referansi. */
-  function expenseDraftOf(t: Tender, decision: NonNullable<Tender['decision']>) {
+  /** Tum bagli giderler (eski tek gider modeli dahil), eskiden yeniye. */
+  const expenseLinks = (t: Tender): TenderExpenseLink[] =>
+    t.expenses ?? [...(t.previousExpenses ?? []).map(({ replacedAt: _r, ...e }) => e), ...(t.expense ? [t.expense] : [])];
+
+  /** Finans'ta ters kayitla iptal edilmis bagli giderlerin islem kimlikleri (Finans yoksa bilinmez: hicbiri). */
+  async function reversedLinks(ctx: TenderContext, links: readonly TenderExpenseLink[]): Promise<Set<string>> {
+    const finance = deps.finance;
+    if (!finance || !links.length) return new Set();
+    const flags = await Promise.all(links.map((e) => finance.isReversed(ctx, e.transactionId)));
+    return new Set(links.filter((_, i) => flags[i]).map((e) => e.transactionId));
+  }
+
+  type Progress = ReturnType<typeof progressOf>;
+
+  /** Hakedis ilerlemesi: gecerli (ters kaydedilmemis) giderler karar tutarina (KDV dahil) gore. */
+  function progressOf(t: Tender, links: readonly TenderExpenseLink[], reversed: ReadonlySet<string>) {
+    const decided = t.decision?.totalKurus ?? 0;
+    const active = links.filter((e) => !reversed.has(e.transactionId));
+    const activeTotal = active.reduce((s, e) => s + e.amountKurus, 0);
+    return {
+      decidedTotalKurus: decided,
+      activeTotalKurus: activeTotal,
+      remainingKurus: Math.max(0, decided - activeTotal),
+      overrunKurus: Math.max(0, activeTotal - decided),
+      percentBps: decided > 0 ? Math.floor((activeTotal * 10_000) / decided) : 0,
+      activeCount: active.length,
+      reversedCount: links.length - active.length,
+    };
+  }
+
+  /**
+   * Gider penceresinin on dolumu: kalan tutar (karar tutari - gecerli giderler), firma, ihale referansi,
+   * kategoriye gore gider kalemi ve eslestirilmis tedarikci hesabi (vadeli gider).
+   */
+  function expenseDraftOf(t: Tender, decision: NonNullable<Tender['decision']>, progress: Progress, installment: number) {
     const ref = decision.reference ? ` · Karar ${decision.reference}` : '';
+    const part = installment > 1 ? ` · Hakediş ${installment}` : '';
     return {
-      amountKurus: decision.totalKurus,
+      amountKurus: progress.remainingKurus,
       supplier: decision.supplierName.slice(0, 120),
-      description: `İhale ${t.tenderId}: ${t.title}${ref}`.slice(0, 200),
+      description: `İhale ${t.tenderId}: ${t.title}${ref}${part}`.slice(0, 200),
       expenseAccountId: TENDER_EXPENSE_ACCOUNT[t.category] ?? 'exp-repair',
+      ...(t.supplierAccount ? { creditAccountId: t.supplierAccount.accountId } : {}),
       date: today(),
+      installment,
     };
   }
 
-  /** Bagli gider Finans'ta ters kayitla iptal edildi mi (Finans yoksa bilinmez: hayir). */
-  const expenseReversed = async (ctx: TenderContext, e: Tender['expense']) => (e && deps.finance ? deps.finance.isReversed(ctx, e.transactionId) : false);
-
-  function expenseView(t: Tender, audience: Audience, reversed: boolean) {
+  function expenseView(t: Tender, audience: Audience, links: readonly TenderExpenseLink[], reversed: ReadonlySet<string>) {
     if (audience === 'resident') return {};
-    const e = t.expense;
-    // Ters kaydedilmis gider yerine yenisi kaydedilebilir (on dolum yeniden sunulur).
-    const open = !e || reversed;
+    const progress = progressOf(t, links, reversed);
+    const all = links.map((e, i) => ({
+      expenseId: e.expenseId,
+      transactionId: e.transactionId,
+      amountKurus: e.amountKurus,
+      date: e.date,
+      linkedAt: e.linkedAt,
+      linkedBy: e.linkedBy,
+      reversed: reversed.has(e.transactionId),
+      installment: e.installment ?? i + 1,
+      ...(e.overrunReason ? { overrunReason: e.overrunReason } : {}),
+    }));
+    // `expense`: en son gecerli gider (eski istemciler icin; yoksa en sonuncu).
+    const latest = [...all].reverse().find((e) => !e.reversed) ?? all.at(-1);
     return {
-      ...(e ? { expense: { expenseId: e.expenseId, transactionId: e.transactionId, amountKurus: e.amountKurus, date: e.date, linkedAt: e.linkedAt, linkedBy: e.linkedBy, reversed } } : {}),
-      ...(audience === 'manager' && open && t.status === 'decided' && t.decision ? { expenseDraft: expenseDraftOf(t, t.decision) } : {}),
+      ...(all.length ? { expenses: all, expense: latest } : {}),
+      ...(t.status === 'decided' && t.decision ? { expenseProgress: progress } : {}),
+      ...(t.supplierAccount ? { supplierAccount: t.supplierAccount } : {}),
+      ...(audience === 'manager' && t.status === 'decided' && t.decision && links.length < MAX_TENDER_EXPENSES ? { expenseDraft: expenseDraftOf(t, t.decision, progress, links.length + 1) } : {}),
     };
   }
 
-  async function detailView(ctx: TenderContext, t: Tender, audience: Audience) {
-    const [comments, reversed] = await Promise.all([
+  /** Bolum basina degil madde basina en son (gecerli) karar kaydi. */
+  const latestDecisions = (ds: readonly AssemblyDecision[]) => {
+    const out = new Map<string, AssemblyDecision>();
+    for (const d of ds) {
+      const k = `${d.assemblyId}|${d.itemId}`;
+      if ((out.get(k)?.seq ?? 0) < d.seq) out.set(k, d);
+    }
+    return [...out.values()];
+  };
+
+  /**
+   * Genel kurul karari bagi. Sakin: karar ozeti (toplanti tarihi, madde, sonuc) ve `portalLink`
+   * (yalnizca malik ve tutanagi kesinlesmis toplanti: genel kurul portali kiraciya kapali). Karar sonra
+   * duzeltildiyse `corrected` + guncel sonuc.
+   */
+  async function assemblyLinkView(ctx: TenderContext, t: Tender, audience: Audience, resident?: { owner: boolean }) {
+    const l = t.assemblyDecision;
+    if (!l) return {};
+    const [a, decisions] = await Promise.all([deps.assemblies.get(ctx.apartmentId, l.assemblyId), deps.assemblies.listDecisions(ctx.apartmentId, l.assemblyId)]);
+    const own = a && a.apartmentId === ctx.apartmentId ? a : undefined;
+    const latest = latestDecisions(decisions.filter((d) => d.apartmentId === ctx.apartmentId && d.itemId === l.itemId))[0];
+    const corrected = Boolean(latest && latest.seq !== l.seq);
+    const base = {
+      assemblyId: l.assemblyId,
+      itemId: l.itemId,
+      itemTitle: l.itemTitle,
+      meetingAt: l.meetingAt,
+      decision: l.decision,
+      ...(corrected && latest ? { corrected: true, currentDecision: latest.outcome.decision } : {}),
+    };
+    if (audience === 'resident') return { assemblyDecision: { ...base, portalLink: Boolean(resident?.owner && own?.status === 'held') } };
+    return { assemblyDecision: { ...base, seq: l.seq, assemblyStatus: own?.status ?? 'missing', linkedAt: l.linkedAt, ...(audience === 'manager' ? { linkedBy: l.linkedBy } : {}) } };
+  }
+
+  async function detailView(ctx: TenderContext, t: Tender, audience: Audience, resident?: { owner: boolean }) {
+    const links = expenseLinks(t);
+    const [comments, reversed, assemblyLink] = await Promise.all([
       isShared(t) ? repo.listComments(ctx.apartmentId, t.tenderId) : Promise.resolve([] as TenderComment[]),
-      audience === 'resident' ? Promise.resolve(false) : expenseReversed(ctx, t.expense),
+      audience === 'resident' ? Promise.resolve(new Set<string>()) : reversedLinks(ctx, links),
+      assemblyLinkView(ctx, t, audience, resident),
     ]);
     comments.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    const hiddenIds = new Set(comments.filter((c) => c.hiddenAt).map((c) => c.commentId));
+    const visible = audience === 'resident' ? comments.filter((c) => !c.hiddenAt) : comments;
     return {
       ...summaryView(t, audience),
-      ...expenseView(t, audience, reversed),
+      ...expenseView(t, audience, links, reversed),
+      ...assemblyLink,
       description: t.description,
       ...(t.shortfallReason ? { shortfallReason: t.shortfallReason } : {}),
       ...(t.cancelReason ? { cancelReason: t.cancelReason, cancelledFrom: t.cancelledFrom } : {}),
       quotes: t.quotes.map((q) => quoteView(q, audience)),
       comparison: compareQuotes(t.quotes),
-      comments: comments.map((c) => commentView(c, ctx, audience)),
+      comments: visible.map((c) => commentView(c, ctx, audience, hiddenIds)),
       canComment: t.status === 'published' && audience !== 'observer',
       ...(audience === 'manager'
         ? { readiness: publishReadiness(t), createdBy: t.createdBy, updatedBy: t.updatedBy, ...(t.publishedBy ? { publishedBy: t.publishedBy } : {}), ...(t.cancelledBy ? { cancelledBy: t.cancelledBy } : {}) }
@@ -379,8 +482,8 @@ export function createTenderService(overrides: Partial<TenderServiceDeps> = {}) 
   }
 
   async function portalGet(ctx: TenderContext, tenderId: string) {
-    await residentOf(ctx);
-    return { tender: await detailView(ctx, await loadVisible(ctx, tenderId, 'resident'), 'resident') };
+    const r = await residentOf(ctx);
+    return { tender: await detailView(ctx, await loadVisible(ctx, tenderId, 'resident'), 'resident', r) };
   }
 
   /**
@@ -612,10 +715,14 @@ export function createTenderService(overrides: Partial<TenderServiceDeps> = {}) 
 
   /**
    * Yayinda -> karar: secilen aktif teklif + gerekce (en dusuk teklif secilmediyse de gerekce ayni
-   * alandir). Genel kurul / anket karari serbest referans olarak baglanabilir. Teklif ozeti saklanir.
+   * alandir). Genel kurul karari gercek bagla (`assemblyDecision: { assemblyId, itemId }`, ayni apartmanin
+   * kabul edilmis karari) veya serbest referansla (anket vb.) baglanabilir. Teklif ozeti saklanir.
    */
-  const decide = (ctx: TenderContext, tenderId: string, body: unknown) =>
-    transition(ctx, tenderId, 'decide', body, (t, o, ts) => {
+  async function decide(ctx: TenderContext, tenderId: string, body: unknown) {
+    managerOf(ctx);
+    const raw = asObject(body);
+    const link = raw.assemblyDecision === undefined || raw.assemblyDecision === null ? undefined : await resolveAssemblyDecision(ctx, raw.assemblyDecision);
+    return transition(ctx, tenderId, 'decide', raw, (t, o, ts) => {
       const quoteId = assertId(o.quoteId, 'quoteId');
       const quote = t.quotes.find((q) => q.quoteId === quoteId && q.status === 'active');
       if (!quote) throw new TenderError('not_found', 'Seçilen teklif bulunamadı');
@@ -624,12 +731,137 @@ export function createTenderService(overrides: Partial<TenderServiceDeps> = {}) 
       const amounts = normalizeQuote(quote);
       const lowest = compareQuotes(t.quotes).lowestQuoteIds.includes(quoteId);
       return {
-        next: { decision: { quoteId, reason, ...(reference ? { reference } : {}), supplierName: quote.supplierName, ...amounts, decidedAt: ts, decidedBy: ctx.userId } },
-        details: { quoteId, supplierName: quote.supplierName, totalKurus: amounts.totalKurus, lowest, ...(reference ? { reference } : {}) },
+        next: {
+          decision: { quoteId, reason, ...(reference ? { reference } : {}), supplierName: quote.supplierName, ...amounts, decidedAt: ts, decidedBy: ctx.userId },
+          ...(link ? { assemblyDecision: { ...link, linkedAt: ts } } : {}),
+        },
+        details: { quoteId, supplierName: quote.supplierName, totalKurus: amounts.totalKurus, lowest, ...(reference ? { reference } : {}), ...(link ? { assemblyId: link.assemblyId, assemblyItemId: link.itemId, assemblySeq: link.seq } : {}) },
         reason,
         notify: 'TENDER_DECIDED',
       };
     });
+  }
+
+  // -------------------------------------------------------------------------
+  // Genel kurul karari bagi
+  // -------------------------------------------------------------------------
+
+  /**
+   * Ayni apartmanin guncel (madde basina en son sirali) genel kurul kararlari: ihale karar seciciye.
+   * Yalnizca tutanagi kesinlesmis (`held`) toplantilar: karar ancak kesinlesince baglanabilir.
+   */
+  async function assemblyDecisionOptions(ctx: TenderContext) {
+    staffOf(ctx);
+    const [assemblies, decisions] = await Promise.all([deps.assemblies.list(ctx.apartmentId), deps.assemblies.listDecisions(ctx.apartmentId)]);
+    const statusOf = new Map(assemblies.filter((a) => a.apartmentId === ctx.apartmentId).map((a) => [a.assemblyId, a.status]));
+    const order = (itemId: string) => Number(itemId.replace(/\D/g, '')) || 0;
+    const items = latestDecisions(decisions.filter((d) => d.apartmentId === ctx.apartmentId && statusOf.get(d.assemblyId) === 'held'))
+      .sort((x, y) => y.meetingAt.localeCompare(x.meetingAt) || x.assemblyId.localeCompare(y.assemblyId) || order(x.itemId) - order(y.itemId))
+      .map((d) => ({ assemblyId: d.assemblyId, itemId: d.itemId, seq: d.seq, itemTitle: d.itemTitle, meetingAt: d.meetingAt, decisionKind: d.decisionKind, decision: d.outcome.decision, assemblyStatus: statusOf.get(d.assemblyId) }));
+    return { items };
+  }
+
+  /** Bag hedefi: ayni apartmanin tutanagi KESINLESMIS toplantisinin, madde icin en son (gecerli) ve KABUL edilmis karari. */
+  async function resolveAssemblyDecision(ctx: TenderContext, raw: unknown): Promise<TenderAssemblyDecisionLink> {
+    const o = asObject(raw, 'assemblyDecision');
+    const assemblyId = assertId(o.assemblyId, 'assemblyDecision.assemblyId');
+    const itemId = assertId(o.itemId, 'assemblyDecision.itemId');
+    const [a, decisions] = await Promise.all([deps.assemblies.get(ctx.apartmentId, assemblyId), deps.assemblies.listDecisions(ctx.apartmentId, assemblyId)]);
+    if (!a || a.apartmentId !== ctx.apartmentId) throw new TenderError('not_found', 'Genel kurul kaydı bulunamadı');
+    if (a.status === 'cancelled') throw new TenderError('unprocessable', 'İptal edilen toplantının kararına bağlanamaz');
+    if (a.status !== 'held') throw new TenderError('unprocessable', 'Tutanağı kesinleşmemiş toplantının kararına bağlanamaz; önce tutanağı kesinleştirin');
+    const latest = latestDecisions(decisions.filter((d) => d.apartmentId === ctx.apartmentId && d.itemId === itemId))[0];
+    if (!latest) throw new TenderError('not_found', 'Genel kurul kararı bulunamadı');
+    if (latest.outcome.decision !== 'accepted') throw new TenderError('unprocessable', 'Kabul edilmemiş genel kurul kararına ihale bağlanamaz');
+    return { assemblyId, itemId, seq: latest.seq, itemTitle: latest.itemTitle, meetingAt: latest.meetingAt, decision: 'accepted', linkedAt: stamp(), linkedBy: ctx.userId };
+  }
+
+  /** Karar bagini sonradan kurar / degistirir / kaldirir (`assemblyDecision: null`); iptal edilmemis ihalede. */
+  async function linkAssemblyDecision(ctx: TenderContext, tenderId: string, body: unknown) {
+    managerOf(ctx);
+    const o = asObject(body);
+    const version = parseVersion(o);
+    if (o.assemblyDecision === undefined) throw new ValidationError('assemblyDecision gerekli ({ assemblyId, itemId } veya null)', 'assemblyDecision');
+    const t = await load(ctx, tenderId);
+    if (t.status === 'cancelled') throw new TenderError('invalid_state', 'İptal edilen ihale değiştirilemez');
+    assertVersion(t, version);
+    const link = o.assemblyDecision === null ? undefined : await resolveAssemblyDecision(ctx, o.assemblyDecision);
+    const prev = t.assemblyDecision;
+    if (`${link?.assemblyId}|${link?.itemId}|${link?.seq}` === `${prev?.assemblyId}|${prev?.itemId}|${prev?.seq}`) return { tender: await detailView(ctx, t, 'manager') };
+    const ts = stamp();
+    const { assemblyDecision: _old, ...rest } = t;
+    const next: Tender = { ...rest, ...(link ? { assemblyDecision: { ...link, linkedAt: ts } } : {}), ...touch(ctx, t, ts) };
+    await write(ctx, {
+      tender: { item: next, expectedVersion: version },
+      audit: audit(ctx, 'tender.assembly_link', tenderId, {
+        ...(link ? { assemblyId: link.assemblyId, itemId: link.itemId, seq: link.seq } : { removed: true }),
+        ...(prev ? { previousAssemblyId: prev.assemblyId, previousItemId: prev.itemId } : {}),
+      }),
+    });
+    return { tender: await detailView(ctx, next, 'manager') };
+  }
+
+  // -------------------------------------------------------------------------
+  // Tedarikci (vadeli borc) hesabi eslestirme
+  // -------------------------------------------------------------------------
+
+  const normName = (s: string) =>
+    s
+      .toLocaleLowerCase('tr')
+      .replace(/[^0-9a-zçğıöşü]+/g, ' ')
+      .split(' ')
+      .filter((w) => w.length >= 3 && !['ltd', 'şti', 'sti', 'san', 'tic', 'inş', 'ins', 've', 'limited', 'şirketi', 'anonim'].includes(w));
+
+  /** Firma adinin anlamli ilk sozcugu hesap adinda geciyorsa oneri. */
+  const suggests = (supplier: string, account: string) => {
+    const first = normName(supplier)[0];
+    return Boolean(first && normName(account).includes(first));
+  };
+
+  /** Eslestirme icin aktif tedarikci hesaplari; firma adina benzeyenler once (`suggested`). */
+  async function supplierAccounts(ctx: TenderContext, tenderId: string) {
+    managerOf(ctx);
+    const t = await load(ctx, tenderId);
+    if (!deps.finance) throw new TenderError('unavailable', 'Finans modülü bu ortamda yapılandırılmamış');
+    const supplier = t.decision?.supplierName;
+    const items = (await deps.finance.listAccounts(ctx, 'payable'))
+      .filter((a) => a.status === 'active' && a.siteId === ctx.apartmentId)
+      .map((a) => ({ accountId: a.accountId, name: a.name, ...(a.code ? { code: a.code } : {}), suggested: supplier ? suggests(supplier, a.name) : false, linked: t.supplierAccount?.accountId === a.accountId }))
+      .sort((x, y) => Number(y.suggested) - Number(x.suggested) || x.name.localeCompare(y.name, 'tr'));
+    return { items };
+  }
+
+  /**
+   * Kazanan firmayi Finans tedarikci hesabina baglar (`accountId: null` bagi kaldirir). Yalnizca karara
+   * baglanmis ihalede; gider aktariminda odeme hesabi varsayilani olur (vadeli gider: tedarikci borcu).
+   */
+  async function linkSupplier(ctx: TenderContext, tenderId: string, body: unknown) {
+    managerOf(ctx);
+    const o = asObject(body);
+    const version = parseVersion(o);
+    if (o.accountId === undefined) throw new ValidationError('accountId gerekli (veya null)', 'accountId');
+    const t = await load(ctx, tenderId);
+    if (t.status !== 'decided' || !t.decision) throw new TenderError('invalid_state', 'Tedarikçi hesabı karara bağlanmış ihalede eşleştirilir');
+    assertVersion(t, version);
+    const ts = stamp();
+    let link: Tender['supplierAccount'];
+    if (o.accountId !== null) {
+      const accountId = assertId(o.accountId, 'accountId');
+      if (!deps.finance) throw new TenderError('unavailable', 'Finans modülü bu ortamda yapılandırılmamış');
+      const acc = (await deps.finance.listAccounts(ctx, 'payable')).find((a) => a.accountId === accountId && a.siteId === ctx.apartmentId);
+      if (!acc) throw new TenderError('not_found', 'Tedarikçi hesabı bulunamadı');
+      if (acc.status !== 'active') throw new TenderError('unprocessable', 'Pasif tedarikçi hesabı seçilemez');
+      link = { accountId, name: acc.name, linkedAt: ts, linkedBy: ctx.userId };
+    }
+    if ((link?.accountId ?? null) === (t.supplierAccount?.accountId ?? null)) return { tender: await detailView(ctx, t, 'manager') };
+    const { supplierAccount: _old, ...rest } = t;
+    const next: Tender = { ...rest, ...(link ? { supplierAccount: link } : {}), ...touch(ctx, t, ts) };
+    await write(ctx, {
+      tender: { item: next, expectedVersion: version },
+      audit: audit(ctx, 'tender.supplier_link', tenderId, { accountId: link?.accountId ?? null, previousAccountId: t.supplierAccount?.accountId ?? null, supplierName: t.decision.supplierName }),
+    });
+    return { tender: await detailView(ctx, next, 'manager') };
+  }
 
   /** Iptal (gerekceli): taslak, teklif toplama veya yayin asamasinda. Kayit silinmez. */
   const cancel = (ctx: TenderContext, tenderId: string, body: unknown) =>
@@ -768,60 +1000,80 @@ export function createTenderService(overrides: Partial<TenderServiceDeps> = {}) 
   // -------------------------------------------------------------------------
 
   /**
-   * "Gider kaydı oluştur": karara baglanmis ihale icin MEVCUT Finans gider servisiyle gider. Govde Finans
+   * "Gider / hakediş ekle": karara baglanmis ihale icin MEVCUT Finans gider servisiyle gider. Govde Finans
    * gider govdesidir (`expenseAccountId`, `creditAccountId`, `amount`, `date`, `description`, `supplier`,
-   * `invoiceNumber`, `invoiceUpload`); verilmeyen tutar / aciklama / firma / gider kalemi karardan
-   * (KDV dahil toplam, ihale referansi). Odeme kaynagi ihalede olmadigi icin arayuz Finans gider
-   * penceresini on doldurulmus acar; sessiz kayit yoktur.
+   * `invoiceNumber`, `invoiceUpload`) + `overrunReason?`; verilmeyen tutar (kalan), aciklama, firma, gider
+   * kalemi karardan; odeme hesabi verilmezse eslestirilmis tedarikci hesabi (vadeli gider), o da yoksa
+   * Finans varsayilani. Arayuz Finans gider penceresini on doldurulmus acar; sessiz kayit yoktur.
    *
-   * Gider + defter islemi + ihaledeki bag (`expense`, surum kosullu) + denetim kaydi TEK atomik yazim
-   * (`recordExpense` is baglantisi). Ihale basina tek gecerli gider: ayni anahtarla tekrar ayni sonucu
-   * doner, farkli anahtarla ikinci gider 409. Bagli gider Finans'ta ters kayitla iptal edildiyse yeni
-   * anahtarla yenisi kaydedilebilir: eskisi `previousExpenses`'a gecer, denetimde `replacesExpenseId`.
-   * Es zamanli iki istekte surum kosulu yalnizca birini yazar.
+   * Ihale basina birden fazla gider (hakedis, en fazla MAX_TENDER_EXPENSES). Gecerli (ters kaydedilmemis)
+   * giderler toplami karar tutarini (KDV dahil) asarsa gerekce (`overrunReason`) zorunlu; aksi halde 422.
+   * Gider + defter islemi + ihaledeki bag (`expenses`, surum kosullu) + denetim kaydi TEK atomik yazim
+   * (`recordExpense` is baglantisi); sinir her denemede guncel ihale ve ters kayit durumuyla yeniden
+   * kontrol edilir (es zamanli iki hakedis siniri birlikte asamaz). Ayni anahtar ayni sonucu doner.
    */
   async function createExpense(ctx: TenderContext, tenderId: string, body: unknown) {
     managerOf(ctx);
     const o = asObject(body);
     const key = assertId(o.idempotencyKey, 'idempotencyKey');
     const t = await load(ctx, tenderId);
-    const prior = [...(t.previousExpenses ?? []), ...(t.expense ? [t.expense] : [])].find((e) => e.idempotencyKey === key);
+    const prior = expenseLinks(t).find((e) => e.idempotencyKey === key);
     if (prior) return { tender: await detailView(ctx, t, 'manager'), expenseId: prior.expenseId, transactionId: prior.transactionId, replayed: true };
     if (t.status !== 'decided' || !t.decision) throw new TenderError('invalid_state', 'Yalnızca karara bağlanmış ihale için gider kaydı oluşturulabilir');
     if (!deps.finance) throw new TenderError('unavailable', 'Finans modülü bu ortamda yapılandırılmamış');
     const finance = deps.finance;
-    // Gecerli (ters kaydedilmemis) bagli gider varsa ikinci gider yok.
-    const linkedOpen = async (e: Tender['expense']) => !!e && !(await finance.isReversed(ctx, e.transactionId));
-    if (t.expense && (await linkedOpen(t.expense))) throw new TenderError('conflict', 'Bu ihale için gider kaydı zaten oluşturuldu', { expenseId: t.expense.expenseId });
-    const draft = expenseDraftOf(t, t.decision);
+    const overrunReason = o.overrunReason === undefined || o.overrunReason === null || o.overrunReason === '' ? undefined : reqReason(o, 'overrunReason', 10, 500);
+    const links0 = expenseLinks(t);
+    if (links0.length >= MAX_TENDER_EXPENSES) throw new TenderError('unprocessable', `Bir ihaleye en fazla ${MAX_TENDER_EXPENSES} gider bağlanabilir`);
+    const progress0 = progressOf(t, links0, await reversedLinks(ctx, links0));
+    const draft = expenseDraftOf(t, t.decision, progress0, links0.length + 1);
     const has = (k: string) => o[k] !== undefined && o[k] !== null && o[k] !== '';
+    if (!has('amount') && progress0.remainingKurus === 0) {
+      throw new TenderError('unprocessable', 'Karar tutarının tamamı gider olarak kaydedildi; aşım gideri için tutar ve gerekçe girin', { overBudget: true, remainingKurus: 0, overrunKurus: 0 });
+    }
+    const amount = has('amount') ? o.amount : progress0.remainingKurus;
+    // Erken kontrol: Finans yazimindan once (gereksiz fatura tasima yok); yazimda guncel kayitla yeniden.
+    if (typeof amount === 'number') assertCap(progress0, amount, overrunReason);
+    const { overrunReason: _r, ...financeBody } = o;
     const r = await finance.recordExpense(
       ctx,
       {
-        ...o,
+        ...financeBody,
         expenseAccountId: has('expenseAccountId') ? o.expenseAccountId : draft.expenseAccountId,
-        amount: has('amount') ? o.amount : draft.amountKurus,
+        ...(has('creditAccountId') ? {} : t.supplierAccount ? { creditAccountId: t.supplierAccount.accountId } : {}),
+        amount,
         description: has('description') ? o.description : draft.description,
         supplier: has('supplier') ? o.supplier : draft.supplier,
       },
       {
-        fp: { tender: tenderId },
+        fp: { tender: tenderId, ...(overrunReason ? { overrunReason } : {}) },
         expenseLink: { type: 'tender', id: tenderId, label: `İhale: ${t.title}`.slice(0, 200) },
         async build({ transaction, expense }): Promise<WorkLinkWrite> {
           if (!expense) throw new Error('gider kaydi yok');
-          // Her denemede guncel ihale: bu arada baska gider baglandiysa ikinci gider yazilmaz.
+          // Her denemede guncel ihale ve ters kayit durumu: es zamanli hakedisler siniri birlikte asamaz.
           const cur = await load(ctx, tenderId);
           if (cur.status !== 'decided' || !cur.decision) throw new TenderError('invalid_state', 'Yalnızca karara bağlanmış ihale için gider kaydı oluşturulabilir');
-          if (cur.expense && (await linkedOpen(cur.expense))) throw new TenderError('conflict', 'Bu ihale için gider kaydı zaten oluşturuldu', { expenseId: cur.expense.expenseId });
-          const replaced = cur.expense;
-          const next: Tender = {
-            ...cur,
-            expense: { expenseId: expense.expenseId, transactionId: transaction.transactionId, amountKurus: expense.amount, date: expense.date, idempotencyKey: key, linkedAt: transaction.createdAt, linkedBy: ctx.userId },
-            ...(replaced ? { previousExpenses: [...(cur.previousExpenses ?? []), { ...replaced, replacedAt: transaction.createdAt }].slice(-20) } : {}),
-            updatedAt: transaction.createdAt,
-            updatedBy: ctx.userId,
-            version: cur.version + 1,
+          const links = expenseLinks(cur);
+          if (links.length >= MAX_TENDER_EXPENSES) throw new TenderError('unprocessable', `Bir ihaleye en fazla ${MAX_TENDER_EXPENSES} gider bağlanabilir`);
+          const progress = progressOf(cur, links, await reversedLinks(ctx, links));
+          assertCap(progress, expense.amount, overrunReason);
+          const installment = links.length + 1;
+          const after = progress.activeTotalKurus + expense.amount;
+          const overrun = Math.max(0, after - cur.decision.totalKurus);
+          const link: TenderExpenseLink = {
+            expenseId: expense.expenseId,
+            transactionId: transaction.transactionId,
+            amountKurus: expense.amount,
+            date: expense.date,
+            idempotencyKey: key,
+            linkedAt: transaction.createdAt,
+            linkedBy: ctx.userId,
+            installment,
+            ...(overrun > 0 && overrunReason ? { overrunReason } : {}),
           };
+          // Eski tek gider alanlari yeni listeye tasinir (silinen bilgi yok: hepsi `expenses` icinde).
+          const { expense: _e, previousExpenses: _p, ...rest } = cur;
+          const next: Tender = { ...rest, expenses: [...links, link], updatedAt: transaction.createdAt, updatedBy: ctx.userId, version: cur.version + 1 };
           return {
             replaceRecords: [{ item: next, expectedVersion: cur.version, label: `tender:${tenderId}` }],
             auditDetails: {
@@ -829,8 +1081,11 @@ export function createTenderService(overrides: Partial<TenderServiceDeps> = {}) 
                 tenderId,
                 quoteId: cur.decision.quoteId,
                 decisionTotalKurus: cur.decision.totalKurus,
-                amountDiffers: expense.amount !== cur.decision.totalKurus,
-                ...(replaced ? { replacesExpenseId: replaced.expenseId, replacesTransactionId: replaced.transactionId } : {}),
+                installment,
+                activeBeforeKurus: progress.activeTotalKurus,
+                activeAfterKurus: after,
+                ...(overrun > 0 ? { overrunKurus: overrun, overrunReason } : {}),
+                ...(cur.supplierAccount && expense.creditAccountId === cur.supplierAccount.accountId ? { supplierAccountId: cur.supplierAccount.accountId } : {}),
               },
             },
           };
@@ -838,6 +1093,18 @@ export function createTenderService(overrides: Partial<TenderServiceDeps> = {}) 
       },
     );
     return { tender: await detailView(ctx, await load(ctx, tenderId), 'manager'), expenseId: r.expense.expenseId, transactionId: r.transaction.transactionId, replayed: r.replayed };
+  }
+
+  /** Gecerli giderler + yeni tutar karar tutarini asarsa gerekce zorunlu. */
+  function assertCap(p: Progress, amount: number, reason: string | undefined) {
+    const overrun = p.activeTotalKurus + amount - p.decidedTotalKurus;
+    if (overrun > 0 && !reason) {
+      throw new TenderError('unprocessable', `Geçerli giderler toplamı karar tutarını (KDV dahil ${formatTL(p.decidedTotalKurus)}) ${formatTL(overrun)} aşıyor; aşım için gerekçe yazın`, {
+        overBudget: true,
+        remainingKurus: p.remainingKurus,
+        overrunKurus: overrun,
+      });
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -857,19 +1124,22 @@ export function createTenderService(overrides: Partial<TenderServiceDeps> = {}) 
       if (c.answers) for (const id of c.answers) answered.add(id);
       else legacyUntil = c.createdAt;
     }
-    return sorted.filter((c) => c.authorKind === 'resident' && !answered.has(c.commentId) && c.createdAt > legacyUntil).map((c) => c.commentId).slice(-MAX_ANSWERS);
+    // Gizlenen (moderasyon) soru yanit beklemez: yanit e-postasi gitmez.
+    return sorted.filter((c) => c.authorKind === 'resident' && !c.hiddenAt && !answered.has(c.commentId) && c.createdAt > legacyUntil).map((c) => c.commentId).slice(-MAX_ANSWERS);
   }
 
   async function comment(ctx: TenderContext, tenderId: string, body: unknown) {
     const audience = audienceOf(ctx);
     if (audience === 'observer') throw new TenderError('forbidden', 'Denetçi yorum yazamaz');
-    if (audience === 'resident') await residentOf(ctx);
+    const resident = audience === 'resident' ? await residentOf(ctx) : undefined;
     const o = asObject(body);
     const key = assertId(o.idempotencyKey, 'idempotencyKey');
     const text = reqString(o, 'body', MAX_COMMENT_LENGTH, 3);
-    const fp = fingerprint({ kind: 'comment', tenderId, text, by: ctx.userId });
+    const replyTo = o.replyTo === undefined || o.replyTo === null || o.replyTo === '' ? undefined : assertId(o.replyTo, 'replyTo');
+    if (replyTo && audience !== 'manager') throw new ValidationError('Belirli bir soruya yalnızca yönetim yanıt verebilir', 'replyTo');
+    const fp = fingerprint({ kind: 'comment', tenderId, text, by: ctx.userId, ...(replyTo ? { replyTo } : {}) });
     const t = await loadVisible(ctx, tenderId, audience);
-    const result = async () => ({ tender: await detailView(ctx, await load(ctx, tenderId), audience) });
+    const result = async () => ({ tender: await detailView(ctx, await load(ctx, tenderId), audience, resident) });
     if (await replayOf(ctx, key, 'comment', fp)) return { ...(await result()), replayed: true };
     if (t.status !== 'published') throw new TenderError('invalid_state', 'Yalnızca yayındaki ihaleye soru yazılabilir');
     const existing = await repo.listComments(ctx.apartmentId, tenderId);
@@ -881,10 +1151,16 @@ export function createTenderService(overrides: Partial<TenderServiceDeps> = {}) 
     } else if (existing.filter((c) => c.authorKind === 'management').length >= MAX_MANAGEMENT_COMMENTS) {
       throw new TenderError('unprocessable', `Bir ihaleye en fazla ${MAX_MANAGEMENT_COMMENTS} yönetim yanıtı yazılabilir`);
     }
+    if (replyTo) {
+      const q = existing.find((c) => c.commentId === replyTo);
+      if (!q || q.authorKind !== 'resident') throw new TenderError('not_found', 'Yanıtlanan soru bulunamadı');
+      if (q.hiddenAt) throw new TenderError('unprocessable', 'Gizlenen soru yanıtlanamaz');
+    }
     const ts = stamp();
     const commentId = `c-${shortId()}`;
-    // Yonetim yaniti: o ana kadar yanitlanmamis sakin sorulari (her soru bir kez; e-posta alicilari).
-    const answers = audience === 'manager' ? openQuestions(existing) : undefined;
+    // Yonetim yaniti: belirli soruya yanitta yalnizca o soru; aksi halde o ana kadar yanitlanmamis sakin
+    // sorulari (her soru bir kez; e-posta alicilari).
+    const answers = audience === 'manager' ? (replyTo ? [replyTo] : openQuestions(existing)) : undefined;
     const item: TenderComment = {
       ...tenderKeys.comment(ctx.apartmentId, tenderId, ts, commentId),
       entityType: 'TENDER_COMMENT',
@@ -896,6 +1172,7 @@ export function createTenderService(overrides: Partial<TenderServiceDeps> = {}) 
       authorRole: ctx.role,
       authorKind: audience === 'resident' ? 'resident' : 'management',
       ...(answers ? { answers } : {}),
+      ...(replyTo ? { replyTo } : {}),
       createdAt: ts,
     };
     try {
@@ -906,7 +1183,7 @@ export function createTenderService(overrides: Partial<TenderServiceDeps> = {}) 
         // Acik sorularin yazarlarina e-posta (outbox; worker yorumlari okur).
         ...(audience === 'manager'
           ? {
-              audit: audit(ctx, 'tender.comment', tenderId, { commentId, length: text.length }),
+              audit: audit(ctx, 'tender.comment', tenderId, { commentId, length: text.length, ...(replyTo ? { replyTo } : {}) }),
               outbox: [buildEvent({ eventId: `TENDER_REPLIED:${tenderId}:${commentId}`, type: 'TENDER_REPLIED', apartmentId: ctx.apartmentId, actorId: ctx.userId, occurredAt: ts, payload: { tenderId, commentId } }, deps.now)],
             }
           : {}),
@@ -918,6 +1195,25 @@ export function createTenderService(overrides: Partial<TenderServiceDeps> = {}) 
       throw err;
     }
     return { ...(await result()), replayed: false };
+  }
+
+  /**
+   * Moderasyon: yonetim sakin sorusunu gerekceyle gizler (metin silinmez; sakinlere ve yazara
+   * gosterilmez, yonetim / denetci gerekceyle gorur). Bir kez; denetimli (`tender.comment_hide`).
+   */
+  async function hideComment(ctx: TenderContext, tenderId: string, commentId: string, body: unknown) {
+    managerOf(ctx);
+    const o = asObject(body);
+    const reason = reqReason(o, 'reason', 5, 300);
+    assertId(commentId, 'commentId');
+    const t = await load(ctx, tenderId);
+    const c = (await repo.listComments(ctx.apartmentId, tenderId)).find((x) => x.commentId === commentId);
+    if (!c) throw new TenderError('not_found', 'Soru bulunamadı');
+    if (c.authorKind !== 'resident') throw new TenderError('unprocessable', 'Yalnızca sakin soruları gizlenebilir');
+    if (c.hiddenAt) throw new TenderError('conflict', 'Soru zaten gizlendi');
+    const next: TenderComment = { ...c, hiddenAt: stamp(), hiddenBy: ctx.userId, hideReason: reason };
+    await write(ctx, { hide: next, audit: audit(ctx, 'tender.comment_hide', tenderId, { commentId, length: c.body.length }, reason) });
+    return { tender: await detailView(ctx, t, 'manager') };
   }
 
   return {
@@ -935,6 +1231,11 @@ export function createTenderService(overrides: Partial<TenderServiceDeps> = {}) 
     createExpense,
     quoteDocument,
     comment,
+    hideComment,
+    linkSupplier,
+    supplierAccounts,
+    linkAssemblyDecision,
+    assemblyDecisionOptions,
     portalList,
     portalGet,
     portalQuoteDocument,

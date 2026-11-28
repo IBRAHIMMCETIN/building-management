@@ -490,7 +490,10 @@ export function createApp(config: AppConfig) {
   // Y1: anket / oylama. Oy hakki ve agirlik mulkiyet modulunun oy listesinden; sakin dairesi portal kuraliyla.
   const pollService = config.pollService ?? createPollService({ portal: portalService });
   app.route('/api/polls', pollRoutes({ authenticate, service: pollService }));
-  const assemblyService = config.assemblyService ?? createAssemblyService();
+  const assemblyService =
+    config.assemblyService ?? createAssemblyService({
+      documents: { prepare: documentsService.prepareAssemblyConsent, commit: documentsService.commitAssemblyConsent, sign: documentsService.signAssemblyDocument },
+    });
   app.route('/api/assemblies', assemblyRoutes({ authenticate, service: assemblyService }));
 
   // Faz 3 (O1): ariza / talep (yonetim, gorevli, guvenlik, denetci).
@@ -508,13 +511,14 @@ export function createApp(config: AppConfig) {
   const tenderService =
     config.tenderService ??
     createTenderService({ documents: { promote: documentsService.promoteTenderQuote, sign: documentsService.signTenderDocument }, finance: financeService });
-  app.route('/api/tenders', tenderRoutes({ authenticate, service: tenderService }));
+  app.route('/api/tenders', tenderRoutes({ authenticate, service: tenderService, features: siteFeatures }));
 
   // Yonetim firmasi portfoyu: kullanicinin yonettigi / denetledigi tum apartmanlarin ozetleri,
   // mevcut servislerin salt okunur ozetlerinden (yeniden hesaplama yok).
   const portfolioService =
     config.portfolioService ??
     createPortfolioService({
+      features: siteFeatures,
       sources: createPortfolioSources({
         core: coreRepository,
         ledger: financeRepository,
@@ -542,7 +546,7 @@ export function createApp(config: AppConfig) {
   app.route('/api/portal/polls', pollPortalRoutes({ authenticate, service: pollService }));
   // Genel kurul devami: kat maliki sakinler icin toplantilar, kararlar ve tutanak.
   app.route('/api/portal/assemblies', assemblyPortalRoutes({ authenticate, service: assemblyService }));
-  app.route('/api/portal/tenders', tenderPortalRoutes({ authenticate, service: tenderService }));
+  app.route('/api/portal/tenders', tenderPortalRoutes({ authenticate, service: tenderService, features: siteFeatures }));
   app.route(
     '/api/portal',
     portalRoutes({

@@ -25,6 +25,7 @@ import { formatDate, formatDateTime } from '@/lib/dates';
 import { AgendaDecision } from './AgendaDecision';
 import { AssemblyCallCard } from './AssemblyCallCard';
 import { MinutesCard } from './MinutesCard';
+import { ServiceCard } from './ServiceCard';
 import { attendanceInput } from './schemas';
 
 type Props = { assemblyId: string | null; canWrite: boolean; onClose: () => void; onEdit: (a: Assembly) => void };
@@ -96,7 +97,13 @@ export function AssemblyDetailDialog({ assemblyId, canWrite, onClose, onEdit }: 
               )}
               {data.warnings.length > 0 && <Alert>{data.warnings.join(' ')}</Alert>}
               {editable && !started && <Alert>Katılım, yeter sayı, karar ve tutanak toplantı başladıktan sonra ({formatDateTime(a.scheduledAt)}) girilir. Hazirun cetveli şimdilik ön izlemedir.</Alert>}
-              {a.cancelReason && <p className="text-muted">İptal gerekçesi: {a.cancelReason}</p>}
+              {a.cancelReason && (
+                <p className="text-muted">
+                  İptal gerekçesi: {a.cancelReason}
+                  {a.cancelledAt ? ` (${formatDateTime(a.cancelledAt)})` : ''}
+                  {a.cancelEventId ? ' · çağrı alıcılarına iptal bildirimi gönderildi' : ''}
+                </p>
+              )}
               <div className="flex flex-wrap gap-2 pt-1">
                 <Button size="sm" variant="secondary" loading={doc.pendingId === a.assemblyId} onClick={() => void doc.open(a.assemblyId, () => assembliesApi.attendanceSheet(a.assemblyId))}>
                   <FileText className="size-4" aria-hidden="true" />
@@ -123,6 +130,8 @@ export function AssemblyDetailDialog({ assemblyId, canWrite, onClose, onEdit }: 
             ) : (
               (a.calls?.length ?? 0) > 0 && <AssemblyCallCard assembly={a} outdated={false} canWrite={false} />
             )}
+
+            {a.status !== 'cancelled' && <ServiceCard key={`service-${a.assemblyId}`} assembly={a} canWrite={canWrite} />}
 
             <QuorumCard assembly={a} quorum={data.quorum} editable={live} />
 
@@ -364,7 +373,14 @@ function CancelBox({ assembly }: { assembly: Assembly }) {
   }
   return (
     <Card className="flex flex-col gap-3">
-      <FormField label="İptal gerekçesi" hint="Gerekçe denetim günlüğüne yazılır. Kayıt silinmez.">
+      <FormField
+        label="İptal gerekçesi"
+        hint={
+          (assembly.calls?.length ?? 0) > 0 && Date.now() < Date.parse(assembly.scheduledAt)
+            ? 'Çağrı gönderildiği için iptal, gerekçesiyle birlikte çağrı alan bütün kat maliklerine e-posta ve mobil bildirimle duyurulur. Kayıt silinmez.'
+            : 'Gerekçe denetim günlüğüne yazılır. Kayıt silinmez.'
+        }
+      >
         <Textarea maxLength={500} value={reason} onChange={(e) => setReason(e.target.value)} />
       </FormField>
       {cancel.isError && <Alert tone="danger">{errorMessage(cancel.error)}</Alert>}

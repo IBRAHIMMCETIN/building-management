@@ -14,7 +14,7 @@ import type { IsoDate, IsoDateTime, LandShare, TableKeys } from '../core/types.j
 import type { VotingRollItem } from '../ownership/register.js';
 import { PollError } from './errors.js';
 
-export type RollOwnerType = 'poll' | 'assembly';
+export type RollOwnerType = 'poll' | 'assembly' | 'consent';
 export type RollVoter = { userId: string; relation: 'owner' | 'tenant' };
 
 export type RollEntry = {
@@ -55,7 +55,7 @@ export type RollChunk = TableKeys & {
   entries: RollEntry[];
 };
 
-const PREFIX: Record<RollOwnerType, string> = { poll: 'POLLROLL', assembly: 'ASMROLL' };
+const PREFIX: Record<RollOwnerType, string> = { poll: 'POLLROLL', assembly: 'ASMROLL', consent: 'ASMCONSROLL' };
 const MAX_CHUNK_BYTES = 300_000;
 const MAX_BUCKETS = 90;
 const MAX_TOTAL_BYTES = 3_500_000;

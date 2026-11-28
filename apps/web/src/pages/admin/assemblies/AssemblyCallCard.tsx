@@ -1,10 +1,11 @@
-import { Mail } from 'lucide-react';
+import { CalendarClock, Mail } from 'lucide-react';
 import { useState } from 'react';
-import { Alert, Button, Card, CardTitle, FormField, Textarea } from '@/components/ui';
-import { useSendCall } from '@/hooks/useAssemblies';
+import { Alert, Button, Card, CardTitle, FormField, Input, Textarea } from '@/components/ui';
+import { useRescheduleAssembly, useSendCall } from '@/hooks/useAssemblies';
 import type { Assembly, CallCheck } from '@/lib/api/assemblies';
 import { errorMessage } from '@/lib/api/errors';
-import { formatDateTime } from '@/lib/dates';
+import { formatDateTime, isoToIstanbulLocal } from '@/lib/dates';
+import { rescheduleInput } from './schemas';
 
 type Props = { assembly: Assembly; check?: CallCheck; outdated: boolean; canWrite: boolean };
 
@@ -58,6 +59,21 @@ export function AssemblyCallCard({ assembly: a, check, outdated, canWrite }: Pro
       {send.isSuccess && <Alert tone="success">Çağrı kaydedildi; e-postalar kısa süre içinde gönderilir.</Alert>}
       {send.isError && <Alert tone="danger">{errorMessage(send.error)}</Alert>}
 
+      {(a.reschedules?.length ?? 0) > 0 && (
+        <ul className="flex flex-col gap-1.5 text-small">
+          {a.reschedules?.map((r) => (
+            <li key={r.seq}>
+              {r.previousScheduledAt === r.scheduledAt ? 'Yer değişti' : r.scheduledAt < r.previousScheduledAt ? 'Tarihi değişti' : 'Ertelendi'}: {formatDateTime(r.at)} · {formatDateTime(r.previousScheduledAt)}
+              {r.previousScheduledAt !== r.scheduledAt ? ` yerine ${formatDateTime(r.scheduledAt)}` : ''}
+              {(r.previousLocation ?? '') !== (r.location ?? '') ? ` · yeni yer: ${r.location ?? 'çevrim içi'}` : ''}
+              <span className="text-muted"> · Gerekçe: {r.reason}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {canSend && calls.length > 0 && !a.roll && <RescheduleBox assembly={a} />}
+
       {canSend &&
         (calls.length === 0 ? (
           <div>
@@ -101,5 +117,95 @@ export function AssemblyCallCard({ assembly: a, check, outdated, canWrite }: Pro
           </div>
         ))}
     </Card>
+  );
+}
+
+/**
+ * Cagrisi gonderilmis toplantinin ertelenmesi / yer degisikligi: gerekceli, denetimli; tum cagri
+ * alicilarina e-posta ve mobil bildirim gider. Onceki cagri eskir (gerekirse yeniden gonderilir).
+ */
+function RescheduleBox({ assembly: a }: { assembly: Assembly }) {
+  const reschedule = useRescheduleAssembly(a.assemblyId);
+  const [open, setOpen] = useState(false);
+  const [form, setForm] = useState({ reason: '', scheduledAt: '', location: '', onlineUrl: '', secondAt: '', secondLocation: '' });
+  const [issue, setIssue] = useState<string | null>(null);
+  const start = () => {
+    setForm({
+      reason: '',
+      scheduledAt: isoToIstanbulLocal(a.scheduledAt),
+      location: a.location ?? '',
+      onlineUrl: a.onlineUrl ?? '',
+      secondAt: a.secondMeetingPlan ? isoToIstanbulLocal(a.secondMeetingPlan.scheduledAt) : '',
+      secondLocation: a.secondMeetingPlan?.location ?? '',
+    });
+    setIssue(null);
+    reschedule.reset();
+    setOpen(true);
+  };
+  const submit = () => {
+    const r = rescheduleInput(a, form);
+    if ('issue' in r) {
+      setIssue(r.issue);
+      return;
+    }
+    setIssue(null);
+    reschedule.mutate(r.input, { onSuccess: () => setOpen(false) });
+  };
+  const result = reschedule.data;
+
+  return (
+    <>
+      {result && (
+        <Alert tone="success">
+          Değişiklik kaydedildi; kat maliklerine bildirim gönderilir. {result.warnings.join(' ')}
+        </Alert>
+      )}
+      {open ? (
+        <Card className="flex flex-col gap-3">
+          <p className="text-small text-muted">Çağrı alan bütün kat maliklerine e-posta ve mobil bildirim gider. Kanun erteleme usulü öngörmez; yeni tarih için yasal çağrıyı yeniden yapın.</p>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <FormField label="Yeni tarih ve saat">
+              <Input type="datetime-local" value={form.scheduledAt} onChange={(e) => setForm({ ...form, scheduledAt: e.target.value })} />
+            </FormField>
+            <FormField label="Toplantı yeri">
+              <Input autoComplete="off" maxLength={300} value={form.location} onChange={(e) => setForm({ ...form, location: e.target.value })} />
+            </FormField>
+          </div>
+          <FormField label="Çevrim içi bağlantı (isteğe bağlı)">
+            <Input type="url" autoComplete="off" maxLength={500} placeholder="https://" value={form.onlineUrl} onChange={(e) => setForm({ ...form, onlineUrl: e.target.value })} />
+          </FormField>
+          {a.secondMeetingPlan && (
+            <div className="grid gap-3 sm:grid-cols-2">
+              <FormField label="İkinci toplantı tarihi" hint="İlk toplantı tarihi değişince ikinci toplantı yeniden bildirilir (KMK m.29/3; 7-15 gün sonra).">
+                <Input type="datetime-local" value={form.secondAt} onChange={(e) => setForm({ ...form, secondAt: e.target.value })} />
+              </FormField>
+              <FormField label="İkinci toplantı yeri">
+                <Input autoComplete="off" maxLength={300} value={form.secondLocation} onChange={(e) => setForm({ ...form, secondLocation: e.target.value })} />
+              </FormField>
+            </div>
+          )}
+          <FormField label="Erteleme / değişiklik gerekçesi" hint="Gerekçe denetim günlüğüne ve maliklere giden bildirime yazılır.">
+            <Textarea maxLength={500} value={form.reason} onChange={(e) => setForm({ ...form, reason: e.target.value })} />
+          </FormField>
+          {issue && <Alert tone="danger">{issue}</Alert>}
+          {reschedule.isError && <Alert tone="danger">{errorMessage(reschedule.error)}</Alert>}
+          <div className="flex flex-wrap justify-end gap-2">
+            <Button variant="ghost" onClick={() => setOpen(false)} disabled={reschedule.isPending}>
+              Vazgeç
+            </Button>
+            <Button loading={reschedule.isPending} disabled={form.reason.trim().length < 3} onClick={submit}>
+              Kaydet ve bildir
+            </Button>
+          </div>
+        </Card>
+      ) : (
+        <div>
+          <Button size="sm" variant="secondary" onClick={start}>
+            <CalendarClock className="size-4" aria-hidden="true" />
+            Ertele / yer değiştir
+          </Button>
+        </div>
+      )}
+    </>
   );
 }

@@ -27,6 +27,8 @@ export type TenderWrite = {
   tender?: { item: Tender; expectedVersion: number };
   /** Yeni yorum; ayni yazimda ihalenin verilen durumda oldugu kontrol edilir. */
   comment?: { item: TenderComment; requireStatus: TenderStatus };
+  /** Moderasyon: var olan yorumun gizlenmesi (metin ayni; yalnizca henuz gizlenmemisse). */
+  hide?: TenderComment;
   idempotency?: TenderIdempotency;
   /** Bildirim olaylari (transactional outbox): ayni atomik yazimda `OUTBOX#<eventId>`. */
   outbox?: DomainEvent[];
@@ -60,7 +62,7 @@ export function createTenderRepository(): TenderRepository {
     getIdempotency: (apt, key) => getTenantItem<TenderIdempotency>(tenderKeys.idempotency(apt, key)),
     async write(apt, w) {
       const pk = tenantPk(apt);
-      for (const doc of [w.tender?.item, w.comment?.item, w.idempotency]) {
+      for (const doc of [w.tender?.item, w.comment?.item, w.idempotency, w.hide]) {
         if (doc && doc.PK !== pk) throw new Error('Kiraci uyusmazligi');
       }
       const { client, tableName } = getDynamo();
@@ -98,6 +100,16 @@ export function createTenderRepository(): TenderRepository {
           },
         });
         add('duplicate', { Put: { TableName: tableName, Item: w.comment.item, ConditionExpression: 'attribute_not_exists(PK)' } });
+      }
+      if (w.hide) {
+        add('version', {
+          Put: {
+            TableName: tableName,
+            Item: w.hide,
+            ConditionExpression: 'attribute_exists(PK) AND attribute_not_exists(#hidden)',
+            ExpressionAttributeNames: { '#hidden': 'hiddenAt' },
+          },
+        });
       }
       // Olay kimligi deterministik (gecis / yorum basina bir kez): ayni olay iki kez yazilamaz.
       for (const e of w.outbox ?? []) add('version', { Put: { TableName: tableName, Item: toOutboxItem(e, e.occurredAt, apt), ConditionExpression: 'attribute_not_exists(PK)' } });

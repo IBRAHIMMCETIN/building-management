@@ -1,7 +1,8 @@
 import { type FormEvent, useEffect, useState } from 'react';
-import { Alert, Badge, Button, Dialog, FormField, Input, Textarea } from '@/components/ui';
+import { Alert, Badge, Button, Dialog, FormField, Input, Select, Textarea } from '@/components/ui';
 import { errorMessage } from '@/lib/api/errors';
-import type { Tender } from '@/lib/api/tenders';
+import type { AssemblyDecisionOption, AssemblyDecisionRef, SupplierAccountOption, Tender } from '@/lib/api/tenders';
+import { formatDate } from '@/lib/dates';
 import { cn } from '@/lib/cn';
 import { formatTRY } from '@/lib/money';
 import { comparisonColumns, publishBlockers } from '@/lib/tenders/model';
@@ -127,20 +128,54 @@ export function PublishDialog({ open, onClose, tender, pending, onConfirm }: Pub
   );
 }
 
-type DecideProps = { open: boolean; onClose: () => void; tender: Tender; pending: boolean; onConfirm: (v: { quoteId: string; reason: string; reference?: string }) => Promise<unknown> };
+type DecideProps = {
+  open: boolean;
+  onClose: () => void;
+  tender: Tender;
+  pending: boolean;
+  /** Genel kurul karar baglantisi secenekleri (yuklenmediyse bos). */
+  assemblyOptions?: readonly AssemblyDecisionOption[];
+  onConfirm: (v: { quoteId: string; reason: string; reference?: string; assemblyDecision?: AssemblyDecisionRef }) => Promise<unknown>;
+};
+
+/** Secici degeri `<toplanti>|<madde>`. */
+const refKey = (o: { assemblyId: string; itemId: string }) => `${o.assemblyId}|${o.itemId}`;
+const refOf = (key: string): AssemblyDecisionRef | undefined => {
+  const [assemblyId, itemId] = key.split('|');
+  return assemblyId && itemId ? { assemblyId, itemId } : undefined;
+};
+export const assemblyOptionLabel = (o: AssemblyDecisionOption) => `${formatDate(o.meetingAt)} · ${o.itemTitle}${o.decision === 'accepted' ? '' : ' (reddedildi)'}`;
+
+/** Ayni apartmanin genel kurul kararlari; yalnizca kabul edilmis karar secilebilir (API de dogrular). */
+function AssemblyDecisionSelect({ value, onChange, options, label }: { value: string; onChange: (v: string) => void; options: readonly AssemblyDecisionOption[]; label: string }) {
+  return (
+    <FormField label={label} hint={options.length ? 'Sakinlerden malik olanlar karara genel kurul sayfasından ulaşır.' : 'Bu apartmanda kayıtlı genel kurul kararı yok.'}>
+      <Select value={value} disabled={!options.length} onChange={(e) => onChange(e.target.value)}>
+        <option value="">Bağlantı yok</option>
+        {options.map((o) => (
+          <option key={refKey(o)} value={refKey(o)} disabled={o.decision !== 'accepted'}>
+            {assemblyOptionLabel(o)}
+          </option>
+        ))}
+      </Select>
+    </FormField>
+  );
+}
 
 /** Karar: secilen teklif, gerekce ve istege bagli genel kurul / anket karari referansi. */
-export function DecideDialog({ open, onClose, tender, pending, onConfirm }: DecideProps) {
+export function DecideDialog({ open, onClose, tender, pending, assemblyOptions = [], onConfirm }: DecideProps) {
   const { columns } = comparisonColumns(tender);
   const [quoteId, setQuoteId] = useState('');
   const [reason, setReason] = useState('');
   const [reference, setReference] = useState('');
+  const [assembly, setAssembly] = useState('');
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     if (open) {
       setQuoteId(tender.comparison.lowestQuoteIds[0] ?? '');
       setReason('');
       setReference('');
+      setAssembly('');
       setError(null);
     }
   }, [open, tender.comparison.lowestQuoteIds]);
@@ -156,7 +191,8 @@ export function DecideDialog({ open, onClose, tender, pending, onConfirm }: Deci
       return;
     }
     try {
-      await onConfirm({ quoteId, reason: reason.trim(), ...(reference.trim() ? { reference: reference.trim() } : {}) });
+      const assemblyDecision = refOf(assembly);
+      await onConfirm({ quoteId, reason: reason.trim(), ...(reference.trim() ? { reference: reference.trim() } : {}), ...(assemblyDecision ? { assemblyDecision } : {}) });
       onClose();
     } catch (err) {
       setError(errorMessage(err));
@@ -182,7 +218,8 @@ export function DecideDialog({ open, onClose, tender, pending, onConfirm }: Deci
         <FormField label="Karar gerekçesi" hint={selectedLowest ? 'Sakinler kararı ve gerekçeyi görür.' : 'En düşük teklif seçilmedi: nedenini açıkça yazın (garanti, referans, süre…). Sakinler görür.'}>
           <Textarea rows={3} maxLength={1000} value={reason} onChange={(e) => setReason(e.target.value)} />
         </FormField>
-        <FormField label="Karar referansı (isteğe bağlı)" hint="Örn. genel kurul / yönetim kurulu karar no, anket bağlantısı.">
+        <AssemblyDecisionSelect label="Genel kurul kararı (isteğe bağlı)" value={assembly} onChange={setAssembly} options={assemblyOptions} />
+        <FormField label="Diğer karar referansı (isteğe bağlı)" hint="Örn. yönetim kurulu karar no, anket bağlantısı.">
           <Input maxLength={200} value={reference} onChange={(e) => setReference(e.target.value)} />
         </FormField>
         {error && <Alert tone="danger">{error}</Alert>}
@@ -192,6 +229,122 @@ export function DecideDialog({ open, onClose, tender, pending, onConfirm }: Deci
           </Button>
           <Button type="submit" loading={pending}>
             Kararı kaydet
+          </Button>
+        </div>
+      </form>
+    </Dialog>
+  );
+}
+
+type LinkProps = {
+  open: boolean;
+  onClose: () => void;
+  tender: Tender;
+  options: readonly AssemblyDecisionOption[];
+  loading: boolean;
+  pending: boolean;
+  onConfirm: (assemblyDecision: AssemblyDecisionRef | null) => Promise<unknown>;
+};
+
+/** Genel kurul karar bagini sonradan kurar, degistirir veya kaldirir (denetimli). */
+export function AssemblyLinkDialog({ open, onClose, tender, options, loading, pending, onConfirm }: LinkProps) {
+  const current = tender.assemblyDecision ? refKey(tender.assemblyDecision) : '';
+  const [value, setValue] = useState(current);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    if (open) {
+      setValue(current);
+      setError(null);
+    }
+  }, [open, current]);
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    try {
+      await onConfirm(refOf(value) ?? null);
+      onClose();
+    } catch (err) {
+      setError(errorMessage(err));
+    }
+  };
+  return (
+    <Dialog open={open} onClose={() => !pending && onClose()} title="Genel kurul kararı bağlantısı">
+      <form className="flex flex-col gap-4" noValidate onSubmit={(e) => void submit(e)}>
+        {loading ? <p className="text-small text-muted">Kararlar yükleniyor…</p> : <AssemblyDecisionSelect label="Genel kurul kararı" value={value} onChange={setValue} options={options} />}
+        {error && <Alert tone="danger">{error}</Alert>}
+        <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+          <Button variant="ghost" onClick={onClose} disabled={pending}>
+            Vazgeç
+          </Button>
+          <Button type="submit" loading={pending} disabled={loading || value === current}>
+            {value ? 'Bağla' : 'Bağlantıyı kaldır'}
+          </Button>
+        </div>
+      </form>
+    </Dialog>
+  );
+}
+
+type SupplierProps = {
+  open: boolean;
+  onClose: () => void;
+  tender: Tender;
+  options: readonly SupplierAccountOption[];
+  loading: boolean;
+  pending: boolean;
+  onConfirm: (accountId: string | null) => Promise<unknown>;
+};
+
+/**
+ * Kazanan firmayi Finans tedarikci (vadeli borc) hesabina baglar: gider / hakedis kaydinda odeme
+ * hesabi varsayilani olur. Firma adina benzeyen hesaplar once listelenir.
+ */
+export function SupplierDialog({ open, onClose, tender, options, loading, pending, onConfirm }: SupplierProps) {
+  const current = tender.supplierAccount?.accountId ?? '';
+  const [value, setValue] = useState(current);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    if (open) setError(null);
+  }, [open]);
+  useEffect(() => {
+    if (!open) return;
+    setValue(current || options.find((o) => o.suggested)?.accountId || '');
+  }, [open, current, options]);
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    try {
+      await onConfirm(value || null);
+      onClose();
+    } catch (err) {
+      setError(errorMessage(err));
+    }
+  };
+  return (
+    <Dialog open={open} onClose={() => !pending && onClose()} title="Tedarikçi hesabı">
+      <form className="flex flex-col gap-4" noValidate onSubmit={(e) => void submit(e)}>
+        <p className="text-small text-muted">“{tender.decision?.supplierName}” için Finans’taki tedarikçi (vadeli borç) hesabını seçin. Hesap yoksa Finans → Hesaplar ekranından ekleyin.</p>
+        {loading ? (
+          <p className="text-small text-muted">Hesaplar yükleniyor…</p>
+        ) : (
+          <FormField label="Tedarikçi hesabı">
+            <Select value={value} onChange={(e) => setValue(e.target.value)}>
+              <option value="">Eşleştirme yok</option>
+              {options.map((o) => (
+                <option key={o.accountId} value={o.accountId}>
+                  {o.name}
+                  {o.code ? ` (${o.code})` : ''}
+                  {o.suggested ? ' · önerilen' : ''}
+                </option>
+              ))}
+            </Select>
+          </FormField>
+        )}
+        {error && <Alert tone="danger">{error}</Alert>}
+        <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+          <Button variant="ghost" onClick={onClose} disabled={pending}>
+            Vazgeç
+          </Button>
+          <Button type="submit" loading={pending} disabled={loading || value === current}>
+            Kaydet
           </Button>
         </div>
       </form>

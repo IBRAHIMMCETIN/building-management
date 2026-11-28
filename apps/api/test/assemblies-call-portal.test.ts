@@ -103,7 +103,9 @@ describe('cagri: kayit, olay ve uyarilar', () => {
     expect((await w.call('GET', '/asm1')).body.warnings).toEqual([]);
     await w.call('POST', '/asm1/call', { version: w.version() });
     expect((await w.call('GET', '/asm1')).body.callOutdated).toBe(false);
-    await w.call('PATCH', '/asm1', { version: w.version(), location: 'Kafeterya' });
+    // Cagridan sonra yer degisikligi duzenlemeyle degil, bildirimli ertelemeyle.
+    expect((await w.call('PATCH', '/asm1', { version: w.version(), location: 'Kafeterya' })).status).toBe(409);
+    expect((await w.call('PATCH', '/asm1', { version: w.version(), agenda: ['Yönetim kurulu seçimi', 'İşletme projesi', 'Dilek ve temenniler'] })).status).toBe(200);
     expect((await w.call('GET', '/asm1')).body.callOutdated).toBe(true);
   });
 });
@@ -125,7 +127,7 @@ describe('cagri bildirimi: worker, e-posta ve tercih', () => {
     expect(late).toEqual([]);
     await w.call('POST', '/asm1/cancel', { version: w.version(), reason: 'Ertelendi' });
     const cancelled: Notification[] = [];
-    await workerFor(w, cancelled)(sqs(w.outbox));
+    await workerFor(w, cancelled)(sqs(w.outbox.filter((e) => e.type === 'ASSEMBLY_CALLED')));
     expect(cancelled).toEqual([]);
   });
 
@@ -134,13 +136,13 @@ describe('cagri bildirimi: worker, e-posta ve tercih', () => {
     await w.call('POST', '', meeting);
     await w.call('POST', '/asm1/call', { version: w.version() });
     const first = [...w.outbox];
-    await w.call('PATCH', '/asm1', { version: w.version(), location: 'Kafeterya' });
+    await w.call('POST', '/asm1/reschedule', { version: w.version(), location: 'Kafeterya', reason: 'Salon tadilatta' });
     const stale: Notification[] = [];
     expect((await workerFor(w, stale)(sqs(first))).batchItemFailures).toEqual([]);
     expect(stale).toEqual([]);
     await w.call('POST', '/asm1/call', { version: w.version(), resend: true, reason: 'Yer değişti' });
     const fresh: Notification[] = [];
-    await workerFor(w, fresh)(sqs(w.outbox.slice(1)));
+    await workerFor(w, fresh)(sqs(w.outbox.slice(1).filter((e) => e.type === 'ASSEMBLY_CALLED')));
     expect(fresh).toHaveLength(5);
     expect(fresh[0]).toMatchObject({ eventId: 'ASSEMBLY_CALLED:asm1:2', data: { location: 'Kafeterya', resend: 'true' } });
   });

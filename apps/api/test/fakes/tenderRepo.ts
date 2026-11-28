@@ -35,7 +35,7 @@ export function createFakeTenderRepo(shared?: Map<string, Doc>) {
       beforeWrite = undefined;
       if (hook) await hook();
       const pk = `APT#${apt}`;
-      for (const d of [w.tender?.item, w.comment?.item, w.idempotency]) {
+      for (const d of [w.tender?.item, w.comment?.item, w.idempotency, w.hide]) {
         if (d && d.PK !== pk) throw new Error('Kiraci uyusmazligi');
       }
       if (w.idempotency && store.has(k(w.idempotency))) throw new TenderConflictError('duplicate');
@@ -48,7 +48,12 @@ export function createFakeTenderRepo(shared?: Map<string, Doc>) {
         if (!t || t.status !== w.comment.requireStatus) throw new TenderConflictError('status');
       }
       if ((w.outbox ?? []).some((e) => outbox.some((o) => o.eventId === e.eventId))) throw new TenderConflictError('version');
+      if (w.hide) {
+        const cur = store.get(k(w.hide));
+        if (!cur || cur.hiddenAt) throw new TenderConflictError('version');
+      }
       const put = (d: Doc) => store.set(k(d), structuredClone(d));
+      if (w.hide) put(w.hide as unknown as Doc);
       if (w.idempotency) put(w.idempotency as unknown as Doc);
       if (w.tender) put(w.tender.item as unknown as Doc);
       if (w.comment) put(w.comment.item as unknown as Doc);

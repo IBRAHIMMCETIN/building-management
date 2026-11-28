@@ -17,6 +17,7 @@ import {
   type MajorityRule,
   SECOND_MEETING_MAX_DAYS,
   firstMeetingCandidates,
+  isElectionKind,
   kindLabel,
 } from '@/lib/api/assemblies';
 import { errorMessage } from '@/lib/api/errors';
@@ -179,6 +180,21 @@ export function AssemblyDialog({ open, onClose, assembly }: Props) {
                   )}
                   {row.decisionKind !== 'custom' && DECISION_PRESETS[row.decisionKind].hint && (
                     <p className="text-xs text-muted sm:col-span-2">{DECISION_PRESETS[row.decisionKind].hint}</p>
+                  )}
+                  {isElectionKind(row.decisionKind) && (
+                    <div className="sm:col-span-2">
+                      <Input
+                        aria-label={`${i + 1}. madde adayları`}
+                        autoComplete="off"
+                        placeholder="Adaylar (virgülle ayırın; isteğe bağlı)"
+                        value={row.candidates ?? ''}
+                        onChange={(e) => patchRow(i, { candidates: e.target.value })}
+                      />
+                      <p className="mt-1 text-xs text-muted">
+                        Aday girilirse her oy veren tek aday seçer; aday bütün kat maliklerinin sayı ve arsa payı çoğunluğuna ulaşırsa seçilir, kimse ulaşamazsa seçim yapılamaz
+                        {row.decisionKind === 'auditor_election' ? '. Denetçi kat malikleri arasından seçilir (KMK m.41).' : ' (KMK m.34).'}
+                      </p>
+                    </div>
                   )}
                   {row.decisionKind === 'custom' && row.majority === 'two_thirds_votes' && (
                     <p className="text-xs text-muted sm:col-span-2">Toplu yapı yönetim planı değişikliği gibi kanun veya yönetim planında üçte iki aranan haller için (KMK m.70; teyit edilmeli).</p>
