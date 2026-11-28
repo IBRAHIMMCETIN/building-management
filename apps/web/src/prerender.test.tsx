@@ -70,6 +70,15 @@ describe('derleme sonu on-render ciktisi', () => {
     const view = new DataView(png.buffer);
     expect(String.fromCharCode(...png.subarray(1, 4))).toBe('PNG');
     expect([view.getUint32(16), view.getUint32(20)]).toEqual([1200, 630]);
-    expect(PRERENDER_PAGES[0]!.description.length).toBeLessThanOrEqual(160);
+    expect(PRERENDER_PAGES[0]!.description.length).toBeLessThanOrEqual(150);
+  });
+
+  it('sablondaki varsayilan aciklama tanitim sayfasininkiyle ayni (tek metin; uygulama kabugunda da dogru)', () => {
+    const doc = parse(template);
+    const landing = PRERENDER_PAGES[0]!;
+    for (const selector of ['meta[name="description"]', 'meta[property="og:description"]', 'meta[name="twitter:description"]']) {
+      expect(doc.querySelector(selector)!.getAttribute('content'), selector).toBe(landing.description);
+    }
+    expect(doc.title).toBe(landing.title);
   });
 });

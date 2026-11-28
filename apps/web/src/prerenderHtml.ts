@@ -36,7 +36,7 @@ export const PRERENDER_PAGES: readonly PrerenderPage[] = [
     file: 'index.html',
     title: LANDING_TITLE,
     description:
-      'Çok bloklu siteler için aidat ve tahsilat, banka ekstresi eşleştirme, arıza ve bakım, güvenlik kapısı ve genel kurul. Pilot dönemde ücretsiz deneme.',
+      'Çok bloklu siteler için aidat ve tahsilat, banka ekstresi eşleştirme, arıza ve bakım, kapı ve genel kurul. Pilot dönemde ücretsiz deneme.',
   },
   ...LEGAL_DOCUMENT_ORDER.map((key): PrerenderPage => {
     const doc = LEGAL_DOCUMENTS[key];
