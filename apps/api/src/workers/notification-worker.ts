@@ -21,7 +21,8 @@ import { type AssemblyRepository, assemblyRepository } from '../modules/assembli
 import { type TenderSnapshot, isTenderEvent, tenderRecipients } from '../modules/tenders/notifications.js';
 import { type TenderRepository, tenderRepository } from '../modules/tenders/repository.js';
 import { billingRecipients, isBillingEvent } from '../modules/subscriptions/notifications.js';
-import { entitlementOf } from '../modules/subscriptions/entitlements.js';
+import { entitlementOf, licensedFeatures } from '../modules/subscriptions/entitlements.js';
+import { resolveFeatures } from '../modules/features/catalog.js';
 import { subscriptionRepository } from '../modules/subscriptions/repository.js';
 
 export type { DeliveryResult, Notification, NotificationTemplate, Notifier } from '../modules/notifications/notifier.js';
@@ -363,7 +364,7 @@ export type WorkerDeps = {
   notifier: Notifier;
   /** Mobil bildirim kanali; null: kapali (PUSH_CHANNEL=off). */
   push: PushChannel | null;
-  /** Abonelik: apartmanin planinda mobil bildirim var mi (aboneligi olmayan / legacy: var). */
+  /** Etkin `channels.push`: site ayari VE abonelik plani (aboneligi olmayan / legacy: site ayari). */
   pushAllowed: (apartmentId: string) => Promise<boolean>;
   /** Olay daha once islendi mi? */
   isProcessed: (apartmentId: string, eventId: string) => Promise<boolean>;
@@ -389,9 +390,17 @@ export function createNotificationWorker(overrides: Partial<WorkerDeps> = {}) {
     tenders: tenderRepository,
     notifier: overrides.notifier ?? createNotifierFromEnv(),
     push: overrides.push !== undefined ? overrides.push : createPushChannelFromEnv(process.env, { now }),
-    // Veri deposu yapilandirilmamissa (yalnizca test) legacy; okuma hatasi olayi yeniden denetir.
-    pushAllowed: async (apartmentId) =>
-      !process.env.DYNAMODB_TABLE_NAME || entitlementOf(await subscriptionRepository.peekSubscription(apartmentId)).features.mobile_push,
+    // Etkin `channels.push` = site ayari VE abonelik plani (sistem kapaliyken / abonelik yoksa yalnizca
+    // site ayari). Veri deposu yapilandirilmamissa (yalnizca test) acik; okuma hatasi olayi yeniden denetir.
+    pushAllowed: async (apartmentId) => {
+      if (!process.env.DYNAMODB_TABLE_NAME) return true;
+      const [features, settings, sub] = await Promise.all([
+        subscriptionRepository.peekSiteFeatures(apartmentId),
+        subscriptionRepository.getSettings(),
+        subscriptionRepository.peekSubscription(apartmentId),
+      ]);
+      return licensedFeatures(resolveFeatures(features), entitlementOf(settings.enabled ? sub : undefined))['channels.push'];
+    },
     isProcessed: async (apt, id) => Boolean(await getTenantItem(processedKey(apt, id))),
     markProcessed: async (apt, id, info) => {
       try {

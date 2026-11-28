@@ -20,6 +20,8 @@ import { type SubscriptionRepository, type UnnumberedInvoice, subscriptionReposi
 import {
   BILLING_PERIODS,
   type BillingPeriod,
+  type BillingSettings,
+  billingSettingsKeys,
   DEFAULT_GRACE_DAYS,
   DEFAULT_PAYMENT_TERM_DAYS,
   PAYMENT_METHODS,
@@ -67,7 +69,8 @@ export type SubscriptionServiceDeps = {
   roles: Pick<ApartmentRoleRepository, 'list'>;
   store: DocumentStore | undefined;
   /** Yazimdan sonra ayni konteynerdeki yetki onbellegi temizlenir. */
-  invalidate?: (apartmentId: string) => void;
+  /** Apartman verilmezse tum onbellek (platform ayari degisti). */
+  invalidate?: (apartmentId?: string) => void;
   now: () => Date;
 };
 
@@ -276,6 +279,48 @@ export function createSubscriptionService(overrides: Partial<SubscriptionService
   }
 
   // -------------------------------------------------------------------------
+  // Platform ayari (varsayilan kapali)
+  // -------------------------------------------------------------------------
+
+  const disabledError = () =>
+    new SubscriptionError('billing_disabled', 'Abonelik sistemi platform ayarında kapalı; önce Abonelikler ekranından açın.');
+
+  async function requireEnabled() {
+    if (!(await repo.getSettings()).enabled) throw disabledError();
+  }
+
+  const getSettings = () => repo.getSettings();
+
+  /** Govde: { version, enabled, automation?, reason } - platform zincirine denetimli. */
+  async function updateSettings(ctx: Ctx, input: unknown) {
+    const o = asObject(input);
+    const expected = reqInt(o, 'version', 0, Number.MAX_SAFE_INTEGER);
+    const why = reason(o);
+    if (typeof o.enabled !== 'boolean') throw new ValidationError('enabled true/false olmalıdır', 'enabled');
+    if (o.automation !== undefined && typeof o.automation !== 'boolean') throw new ValidationError('automation true/false olmalıdır', 'automation');
+    const current = await repo.getSettings();
+    if (current.version !== expected) throw new SubscriptionError('conflict', 'Ayar başka biri tarafından güncellendi (sürüm uyuşmazlığı)');
+    const enabled = o.enabled;
+    // Sistem kapatilinca otomasyon da kapanir (yeniden acilista bilincli secilir).
+    const automation = enabled && (o.automation === undefined ? current.automation : (o.automation as boolean));
+    const ts = stamp();
+    const item: BillingSettings = { ...billingSettingsKeys, entityType: 'SUBSCRIPTION_SETTINGS', enabled, automation, updatedAt: ts, updatedBy: ctx.userId, version: expected + 1 };
+    try {
+      await repo.saveSettings(item, expected, {
+        action: 'subscription.settings',
+        target: { type: 'platform_setting', id: 'subscriptions' },
+        reason: why,
+        details: { from: { enabled: current.enabled, automation: current.automation }, to: { enabled, automation } },
+      });
+    } catch (err) {
+      if (err instanceof DataAccessError && err.code === 'conflict') throw new SubscriptionError('conflict', 'Ayar başka biri tarafından güncellendi (sürüm uyuşmazlığı)');
+      throw err;
+    }
+    deps.invalidate?.();
+    return { enabled, automation, version: item.version, updatedAt: ts };
+  }
+
+  // -------------------------------------------------------------------------
   // Plan katalogu (platform)
   // -------------------------------------------------------------------------
 
@@ -431,6 +476,7 @@ export function createSubscriptionService(overrides: Partial<SubscriptionService
   }
 
   async function startSubscription(ctx: Ctx, apartmentId: string, input: unknown) {
+    await requireEnabled();
     const o = asObject(input);
     const idempotencyKey = reqString(o, 'idempotencyKey', 100, 8);
     const site = await requireSite(apartmentId);
@@ -494,6 +540,7 @@ export function createSubscriptionService(overrides: Partial<SubscriptionService
   }
 
   async function changePlan(ctx: Ctx, apartmentId: string, input: unknown) {
+    await requireEnabled();
     const o = asObject(input);
     const expected = reqVersion(o);
     const why = reason(o);
@@ -512,6 +559,7 @@ export function createSubscriptionService(overrides: Partial<SubscriptionService
   }
 
   async function changeStatus(ctx: Ctx, apartmentId: string, input: unknown) {
+    await requireEnabled();
     const o = asObject(input);
     const expected = reqVersion(o);
     const why = reason(o);
@@ -539,7 +587,17 @@ export function createSubscriptionService(overrides: Partial<SubscriptionService
    * Bir apartmanin gunluk adimi. Abonelik yoksa (legacy) yazim yok. Ayni gun tekrar calismak
    * degisiklik uretmez (yazim da yok).
    */
-  async function runDaily(apartmentId: string, day: IsoDate = today(), actor = SUBSCRIPTION_SYSTEM_ACTOR) {
+  /**
+   * `manual: true`: platformun "Donemi isle" islemi (otomasyon kapaliyken de calisir; elle fatura).
+   * Zamanlanmis is yalnizca platform ayarinda otomasyon aciksa ilerletir.
+   */
+  async function runDaily(apartmentId: string, day: IsoDate = today(), actor = SUBSCRIPTION_SYSTEM_ACTOR, opts: { manual?: boolean } = {}) {
+    const settings = await repo.getSettings();
+    if (!settings.enabled) {
+      if (opts.manual) throw disabledError();
+      return { status: 'skipped' as const, reason: 'billing_disabled' };
+    }
+    if (!settings.automation && !opts.manual) return { status: 'skipped' as const, reason: 'automation_off' };
     return retrying(async () => {
       const sub = await repo.getSubscription(apartmentId);
       if (!sub) return { status: 'skipped' as const, reason: 'legacy' };
@@ -664,8 +722,14 @@ export function createSubscriptionService(overrides: Partial<SubscriptionService
   // -------------------------------------------------------------------------
 
   /** Banner ve salt okunur bildirimi icin hafif durum (tum yonetim paneli rolleri). */
+  /** Platform ayari kapaliyken abonelik kaydi yok sayilir (legacy = bugunku davranis). */
+  async function effectiveSubscription(apartmentId: string) {
+    const [settings, sub] = await Promise.all([repo.getSettings(), repo.getSubscription(apartmentId)]);
+    return settings.enabled ? sub : undefined;
+  }
+
   async function statusView(apartmentId: string) {
-    const sub = await repo.getSubscription(apartmentId);
+    const sub = await effectiveSubscription(apartmentId);
     const e: Entitlement = entitlementOf(sub);
     const day = today();
     return {
@@ -679,7 +743,7 @@ export function createSubscriptionService(overrides: Partial<SubscriptionService
   }
 
   async function managerView(apartmentId: string) {
-    const [sub, invoices, use] = await Promise.all([repo.getSubscription(apartmentId), repo.listInvoices(apartmentId), usage(apartmentId)]);
+    const [sub, invoices, use] = await Promise.all([effectiveSubscription(apartmentId), repo.listInvoices(apartmentId), usage(apartmentId)]);
     const e = entitlementOf(sub);
     return {
       ...(await statusView(apartmentId)),
@@ -709,6 +773,8 @@ export function createSubscriptionService(overrides: Partial<SubscriptionService
   }
 
   return {
+    getSettings,
+    updateSettings,
     listPlans,
     getPlan,
     createPlan,

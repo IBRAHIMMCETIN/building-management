@@ -96,6 +96,7 @@ import {
   assertStaffCapacity,
   assertUnitCapacity,
   createEntitlementReader,
+  createLicensedFeatureReader,
   failOpenFromEnv,
   legacyEntitlementReader,
   withEntitlements,
@@ -248,15 +249,25 @@ export function createApp(config: AppConfig) {
   const mfaPolicy = config.mfaPolicy ?? loadMfaPolicy();
   const metrics = config.metrics ?? noopMetrics;
   const mfaService = config.mfaService ?? createMfaService({ policy: mfaPolicy, metrics });
-  // Abonelik yetkileri: destek erisiminden SONRA (dis katman) - karar aktif apartmanin aboneligiyle.
+  // Abonelik yetkileri (platform ayari kapaliyken / abonelik yoksa legacy = bugunku davranis).
   const entitlements: EntitlementReader =
     config.entitlements ??
     (hasInjectedServices(config) || !process.env.DYNAMODB_TABLE_NAME
       ? legacyEntitlementReader
-      : createEntitlementReader({ getSubscription: (id) => subscriptionRepository.peekSubscription(id), failOpen: failOpenFromEnv() }));
+      : createEntitlementReader({
+          getSubscription: (id) => subscriptionRepository.peekSubscription(id),
+          getSettings: () => subscriptionRepository.getSettings(),
+          failOpen: failOpenFromEnv(),
+        }));
+  // Adim 1: site bazli ozellik anahtarlari; etkin deger = site ayari VE abonelik plani izni
+  // (plan modulleri ayni katalogun `licensable` anahtarlari; ayni guard ve hata kodu).
+  const baseSiteFeatures =
+    config.siteFeatures ?? (hasInjectedServices(config) ? legacySiteFeatureReader : createSiteFeatureReader({ getSite: (id) => coreRepository.getSite(id) }));
+  const siteFeatures = createLicensedFeatureReader(baseSiteFeatures, entitlements);
+  // Destek erisiminden SONRA (dis katman): kapali modul ve salt okunur karari aktif apartmana gore.
   const authenticate = withEntitlements(
     withSupportAccess(withMfaPolicy(config.authenticate ?? denyAll, mfaPolicy, () => new Date(), metrics), supportService),
-    entitlements,
+    { entitlements, features: siteFeatures },
   );
   // Modul rotalari kendi onError'unu baglar; kalan hatalar da (ornek MFA_REQUIRED) ayni bicimde.
   app.onError(handleError);
@@ -271,10 +282,9 @@ export function createApp(config: AppConfig) {
 
   app.route('/api/health', healthRoutes(config));
 
-  // Adim 1: site bazli ozellik anahtarlari (tum korumali modul rotalarindan once kurulur).
-  const siteFeatures =
-    config.siteFeatures ?? (hasInjectedServices(config) ? legacySiteFeatureReader : createSiteFeatureReader({ getSite: (id) => coreRepository.getSite(id) }));
-  const featureService = config.featureService ?? createFeatureService({ reader: siteFeatures });
+  // Adim 1 uclari (tum korumali modul rotalarindan once). Yonetici gorunumu plan iznini de yansitir.
+  const featureService =
+    config.featureService ?? createFeatureService({ reader: siteFeatures, license: async (id) => (await entitlements.resolve(id)) });
   app.route('/api/site-features', siteFeatureRoutes({ authenticate, service: featureService }));
   app.route('/api/admin/site-features', platformFeatureRoutes({ authenticate, service: featureService }));
   app.route(

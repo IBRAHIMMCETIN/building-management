@@ -1,5 +1,6 @@
 import { skKey, tenantPk } from '../../config/dynamodb.js';
 import type { IsoDate, IsoDateTime, TableKeys } from '../core/types.js';
+import { FEATURE_CATALOG, type FeatureKey, LICENSABLE_KEYS } from '../features/catalog.js';
 
 /**
  * Abonelik / lisans (platform <-> apartman yonetimi). Online odemedeki platform komisyon
@@ -17,40 +18,47 @@ import type { IsoDate, IsoDateTime, TableKeys } from '../core/types.js';
  */
 
 // ---------------------------------------------------------------------------
-// Plan ozellikleri (modul anahtarlari)
+// Plan ozellikleri: Adim 1 site ozellik katalogunun `licensable` anahtarlari (ayri bir anahtar
+// sistemi yok; modules/features/catalog.ts). Etkin deger = site ayari VE plan izni.
 // ---------------------------------------------------------------------------
 
-export const PLAN_FEATURES = [
-  'online_payment',
-  'gate',
-  'reservations',
-  'polls_assemblies',
-  'tenders',
-  'equipment',
-  'portfolio',
-  'mobile_push',
-  'bulk_jobs',
-] as const;
-export type PlanFeature = (typeof PLAN_FEATURES)[number];
+export const PLAN_FEATURES: readonly FeatureKey[] = LICENSABLE_KEYS;
+export type PlanFeature = FeatureKey;
 
-export const PLAN_FEATURE_LABELS: Record<PlanFeature, string> = {
-  online_payment: 'Online aidat ödemesi',
-  gate: 'Güvenlik kapısı (QR, plaka, kurye)',
-  reservations: 'Ortak alan rezervasyonu',
-  polls_assemblies: 'Anket, oylama ve genel kurul',
-  tenders: 'İhale / teklif toplama',
-  equipment: 'Ekipman sicili',
-  portfolio: 'Yönetim firması portföyü',
-  mobile_push: 'Mobil bildirim (push)',
-  bulk_jobs: 'Arka plan toplu işleri',
-};
-
-export type PlanFeatures = Record<PlanFeature, boolean>;
+/** Plana dahil anahtarlar (yalnizca `licensable` anahtarlar tutulur). */
+export type PlanFeatures = Partial<Record<FeatureKey, boolean>>;
 
 export const isPlanFeature = (v: unknown): v is PlanFeature => typeof v === 'string' && (PLAN_FEATURES as readonly string[]).includes(v);
 
-/** Tum ozellikler acik (legacy abonelik ve sinirsiz planlar). */
+export const planFeatureLabel = (k: FeatureKey) => FEATURE_CATALOG[k].label;
+
+/** Tum plan anahtarlari acik (legacy abonelik ve sinirsiz planlar). */
 export const allFeatures = (): PlanFeatures => Object.fromEntries(PLAN_FEATURES.map((f) => [f, true])) as PlanFeatures;
+
+// ---------------------------------------------------------------------------
+// Platform ayari: abonelik sistemi varsayilan KAPALI (sahip karari: pilot ucretsiz; otomasyon sonra)
+// ---------------------------------------------------------------------------
+
+/**
+ *   PK = `PLATFORM#SETTINGS`, SK = `SUBSCRIPTIONS`  (kayit yoksa: enabled=false, automation=false)
+ *  - `enabled: false`: hicbir apartman kisitlanmaz (hepsi legacy gibi), gunluk is calismaz,
+ *    abonelik baslatma / durum / plan degisikligi reddedilir. Plan katalogu hazirlanabilir.
+ *  - `automation: false`: gunluk is durum ilerletmez ve fatura kesmez; platform ekibi apartman
+ *    bazinda "Donemi isle" ile elle calistirir (elle fatura). `true`: gunluk is otomatik.
+ */
+export type BillingSettings = TableKeys & {
+  entityType: 'SUBSCRIPTION_SETTINGS';
+  enabled: boolean;
+  automation: boolean;
+  updatedAt: IsoDateTime;
+  updatedBy: string;
+  version: number;
+};
+
+export type BillingSettingsView = { enabled: boolean; automation: boolean; version: number; updatedAt?: IsoDateTime };
+
+export const billingSettingsKeys: TableKeys = { PK: 'PLATFORM#SETTINGS', SK: 'SUBSCRIPTIONS' };
+export const DEFAULT_BILLING_SETTINGS: BillingSettingsView = { enabled: false, automation: false, version: 0 };
 
 // ---------------------------------------------------------------------------
 // Plan

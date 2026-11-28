@@ -1,10 +1,14 @@
 import { TransactionCanceledException } from '@aws-sdk/client-dynamodb';
 import { GetCommand, QueryCommand, type QueryCommandOutput, type TransactWriteCommandInput } from '@aws-sdk/lib-dynamodb';
-import { DataAccessError, getDynamo, getTenantItem, queryTenantAll, toDataAccessError } from '../../config/dynamodb.js';
+import { DataAccessError, getDynamo, getTenantItem, queryTenantAll, tenantPk, toDataAccessError } from '../../config/dynamodb.js';
+import type { SiteFeatureSettings } from '../features/catalog.js';
 import { toOutboxItems } from '../../events/outbox.js';
 import type { DomainEvent } from '../../events/publisher.js';
 import { type AuditDraft, sendWithAudits } from '../audit/log.js';
 import {
+  type BillingSettings,
+  type BillingSettingsView,
+  DEFAULT_BILLING_SETTINGS,
   PLAN_CATALOG_PK,
   type PlanHead,
   type PlanVersion,
@@ -15,9 +19,15 @@ import {
   counterKeys,
   formatInvoiceNumber,
   invoiceKeys,
+  billingSettingsKeys,
   planKeys,
   subscriptionKeys,
 } from './types.js';
+
+const settingsView = (item: Partial<BillingSettings> | undefined): BillingSettingsView =>
+  item?.entityType === 'SUBSCRIPTION_SETTINGS'
+    ? { enabled: item.enabled === true, automation: item.automation === true, version: item.version ?? 0, ...(item.updatedAt ? { updatedAt: item.updatedAt } : {}) }
+    : { ...DEFAULT_BILLING_SETTINGS };
 
 type TransactItem = NonNullable<TransactWriteCommandInput['TransactItems']>[number];
 
@@ -42,6 +52,10 @@ export type SubscriptionCommit = {
 export type InvoicePage = { items: SubscriptionInvoice[]; nextCursor?: string };
 
 export type SubscriptionRepository = {
+  /** Platform ayari (kayit yoksa varsayilan: kapali). */
+  getSettings(): Promise<BillingSettingsView>;
+  /** `expectedVersion: 0` ilk kayit. */
+  saveSettings(item: BillingSettings, expectedVersion: number, audit: AuditDraft): Promise<void>;
   getPlan(code: string): Promise<PlanHead | undefined>;
   listPlans(): Promise<PlanHead[]>;
   listPlanVersions(code: string): Promise<PlanVersion[]>;
@@ -53,6 +67,8 @@ export type SubscriptionRepository = {
   getSubscription(apartmentId: string): Promise<Subscription | undefined>;
   /** Hizli okuma (yetki kontrolu; tutarli okuma degil). */
   peekSubscription(apartmentId: string): Promise<Subscription | undefined>;
+  /** Sitenin Adim 1 ozellik ayari (bildirim worker'i: `channels.push`); site yoksa undefined. */
+  peekSiteFeatures(apartmentId: string): Promise<SiteFeatureSettings | undefined>;
   listSubscriptions(): Promise<Subscription[]>;
   getInvoice(apartmentId: string, invoiceId: string): Promise<SubscriptionInvoice | undefined>;
   listInvoices(apartmentId: string): Promise<SubscriptionInvoice[]>;
@@ -134,6 +150,36 @@ export function numberInvoices(invoices: readonly UnnumberedInvoice[], counters:
 
 export function createSubscriptionRepository(): SubscriptionRepository {
   return {
+    async getSettings() {
+      const { client, tableName } = getDynamo();
+      try {
+        const out = await client.send(new GetCommand({ TableName: tableName, Key: billingSettingsKeys }));
+        return settingsView(out?.Item as BillingSettings | undefined);
+      } catch (err) {
+        throw toDataAccessError(err);
+      }
+    },
+    async saveSettings(item, expectedVersion, audit) {
+      const { client, tableName } = getDynamo();
+      const put: TransactItem =
+        expectedVersion === 0
+          ? { Put: { TableName: tableName, Item: item, ConditionExpression: 'attribute_not_exists(PK)' } }
+          : {
+              Put: {
+                TableName: tableName,
+                Item: item,
+                ConditionExpression: 'attribute_exists(PK) AND #version = :expected',
+                ExpressionAttributeNames: { '#version': 'version' },
+                ExpressionAttributeValues: { ':expected': expectedVersion },
+              },
+            };
+      try {
+        await sendWithAudits(client, [put], [audit]);
+      } catch (err) {
+        if (conditionFailed(err)) throw new DataAccessError('conflict', 'Ayar başka biri tarafından güncellendi (sürüm uyuşmazlığı)', { cause: err });
+        throw toDataAccessError(err);
+      }
+    },
     getPlan: (code) => getTenantItem<PlanHead>(planKeys.head(code)),
     async listPlans() {
       const { items } = await queryIndex<PlanHead>(PLAN_CATALOG_PK);
@@ -201,6 +247,15 @@ export function createSubscriptionRepository(): SubscriptionRepository {
         const out = await client.send(new GetCommand({ TableName: tableName, Key: subscriptionKeys(apartmentId) }));
         const item = out?.Item as Subscription | undefined;
         return item?.entityType === 'SUBSCRIPTION' ? item : undefined;
+      } catch (err) {
+        throw toDataAccessError(err);
+      }
+    },
+    async peekSiteFeatures(apartmentId) {
+      const { client, tableName } = getDynamo();
+      try {
+        const out = await client.send(new GetCommand({ TableName: tableName, Key: { PK: tenantPk(apartmentId), SK: 'SITE' }, ProjectionExpression: 'settings.features' }));
+        return (out?.Item as { settings?: { features?: SiteFeatureSettings } } | undefined)?.settings?.features;
       } catch (err) {
         throw toDataAccessError(err);
       }
@@ -282,7 +337,11 @@ export const subscriptionRepository: SubscriptionRepository = createSubscription
 // Bellek ici depo (testler ve yerel gelistirme)
 // ---------------------------------------------------------------------------
 
-export function createMemorySubscriptionRepository() {
+export function createMemorySubscriptionRepository(initial: Partial<BillingSettingsView> = { enabled: true, automation: true }) {
+  let settings: BillingSettings | undefined =
+    initial.enabled !== undefined || initial.automation !== undefined
+      ? { ...billingSettingsKeys, entityType: 'SUBSCRIPTION_SETTINGS', enabled: initial.enabled === true, automation: initial.automation === true, updatedAt: '2026-01-01T00:00:00.000Z', updatedBy: 'seed', version: 1 }
+      : undefined;
   const plans = new Map<string, PlanHead>();
   const versions = new Map<string, PlanVersion[]>();
   const subs = new Map<string, Subscription>();
@@ -294,6 +353,12 @@ export function createMemorySubscriptionRepository() {
   const clone = <T>(v: T): T => structuredClone(v);
 
   const repo: SubscriptionRepository = {
+    getSettings: async () => settingsView(settings),
+    async saveSettings(item, expectedVersion, audit) {
+      if ((settings?.version ?? 0) !== expectedVersion) throw conflict();
+      settings = clone(item);
+      audits.push(audit);
+    },
     getPlan: async (code) => clone(plans.get(code)),
     listPlans: async () => [...plans.values()].map(clone).sort((a, b) => a.code.localeCompare(b.code)),
     listPlanVersions: async (code) => clone([...(versions.get(code) ?? [])].sort((a, b) => b.planVersion - a.planVersion)),
@@ -314,6 +379,7 @@ export function createMemorySubscriptionRepository() {
     },
     getSubscription: async (apt) => clone(subs.get(apt)),
     peekSubscription: async (apt) => clone(subs.get(apt)),
+    peekSiteFeatures: async () => undefined,
     listSubscriptions: async () => [...subs.values()].map(clone),
     getInvoice: async (apt, id) => clone(invoices.get(`${apt}|${id}`)),
     listInvoices: async (apt) => [...invoices.values()].filter((i) => i.apartmentId === apt).map(clone),

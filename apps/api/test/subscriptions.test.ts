@@ -15,14 +15,20 @@ import {
   EntitlementError,
   assertStaffCapacity,
   assertUnitCapacity,
-  checkRequest,
   createEntitlementReader,
+  createLicensedFeatureReader,
   entitlementOf,
   featureForRequest,
   legacyEntitlementReader,
+  licensedFeatures,
+  readOnlyCheck,
   staticEntitlementReader,
   withEntitlements,
 } from '../src/modules/subscriptions/entitlements.js';
+import { FEATURE_CATALOG, FEATURE_KEYS, resolveFeatures } from '../src/modules/features/catalog.js';
+import { featureAllowed, staticSiteFeatureReader } from '../src/modules/features/guard.js';
+import type { FeatureRepository } from '../src/modules/features/repository.js';
+import { createFeatureService } from '../src/modules/features/service.js';
 import { invoicePdfContent, invoicePdfHash, invoicePdfKey } from '../src/modules/subscriptions/invoicePdf.js';
 import { type AdvanceInput, TransitionError, advance, applyAction } from '../src/modules/subscriptions/machine.js';
 import { billingRecipients } from '../src/modules/subscriptions/notifications.js';
@@ -106,8 +112,8 @@ const unit = (apt: string, id: string, status: 'active' | 'inactive' = 'active')
 const role = (apt: string, userId: string, r: ApartmentRole['role'], over: Partial<ApartmentRole> = {}) =>
   ({ apartmentId: apt, userId, role: r, status: 'active', startDate: '2026-01-01', ...over }) as ApartmentRole;
 
-function fixture(now: { value: Date }) {
-  const mem = createMemorySubscriptionRepository();
+function fixture(now: { value: Date }, settings?: Parameters<typeof createMemorySubscriptionRepository>[0]) {
+  const mem = createMemorySubscriptionRepository(settings);
   const docs = createMemoryDocumentStore();
   const units = new Map<string, Unit[]>([
     [APT, Array.from({ length: 12 }, (_, i) => unit(APT, `u${i}`))],
@@ -127,7 +133,7 @@ function fixture(now: { value: Date }) {
     },
     roles: { list: async (id) => roles.get(id) ?? [] },
     store: docs.store,
-    invalidate: (id) => invalidated.push(id),
+    invalidate: (id) => invalidated.push(id ?? '*'),
     now: () => now.value,
   });
   return { service, mem, docs, units, roles, invalidated };
@@ -188,10 +194,10 @@ describe('abonelik fiyati ve KDV', () => {
   });
 
   it('plan dogrulamasi: kademe sirasi, sinirsiz yalnizca son kademe, bilinmeyen ozellik', () => {
-    const ok = parsePlanContent({ code: 'Test-1', name: 'Test', pricing: { model: 'flat', monthlyKurus: 100, annualKurus: 1000 }, features: { gate: true } });
+    const ok = parsePlanContent({ code: 'Test-1', name: 'Test', pricing: { model: 'flat', monthlyKurus: 100, annualKurus: 1000 }, features: { 'modules.gate': true } });
     expect(ok).toMatchObject({ code: 'test-1', trialDays: 30, pricing: { vatRateBps: 2000 }, limits: { maxUnits: null, maxStaffUsers: null } });
-    expect(ok.features.gate).toBe(true);
-    expect(ok.features.tenders).toBe(false);
+    expect(ok.features['modules.gate']).toBe(true);
+    expect(ok.features['modules.tenders']).toBe(false);
     expect(() => parsePlanContent({ code: 'x1', name: 'XX', pricing: { model: 'flat', monthlyKurus: 1.5, annualKurus: 1 } })).toThrow(/kuruş/);
     expect(() =>
       parsePlanContent({ code: 'x1', name: 'XX', pricing: { model: 'tiered', tiers: [{ maxUnits: null, monthlyKurus: 1, annualKurus: 1 }, { maxUnits: 10, monthlyKurus: 1, annualKurus: 1 }] } }),
@@ -316,46 +322,86 @@ describe('abonelik durum makinesi (tarih bazli)', () => {
 
 describe('abonelik yetkileri (entitlement)', () => {
   const suspended = entitlementOf(sub({ status: 'suspended' }));
-  const noTenders = entitlementOf(sub({ status: 'active', plan: plan({ features: { ...allFeatures(), tenders: false, bulk_jobs: false } }) }));
+  const noTenders = entitlementOf(sub({ status: 'active', plan: plan({ features: { ...allFeatures(), 'modules.tenders': false, 'modules.bulkJobs': false } }) }));
+  const siteAll = resolveFeatures(undefined);
 
-  it('legacy (abonelik kaydi yok): her sey acik, limit yok', () => {
+  it('plan modulleri Adim 1 katalogunun licensable anahtarlari (ayri anahtar sistemi yok); yeni anahtarlar iki profilde de acik', () => {
+    expect(PLAN_FEATURES).toEqual(FEATURE_KEYS.filter((k) => FEATURE_CATALOG[k].licensable));
+    expect(PLAN_FEATURES).toEqual(expect.arrayContaining(['payments.online', 'modules.gate', 'modules.tenders', 'channels.push']));
+    for (const k of PLAN_FEATURES.filter((k) => k !== 'payments.online')) {
+      expect(FEATURE_CATALOG[k].defaults, k).toEqual({ legacy: true, simple: true });
+    }
+  });
+
+  it('legacy (abonelik kaydi yok veya sistem kapali): her sey site ayari gibi, limit yok', () => {
     const legacy = entitlementOf(undefined);
     expect(legacy).toMatchObject({ legacy: true, status: 'legacy', readOnly: false, limits: { maxUnits: null, maxStaffUsers: null } });
     expect(PLAN_FEATURES.every((f) => legacy.features[f])).toBe(true);
-    expect(checkRequest(legacy, { method: 'POST', path: '/api/tenders' })).toBeUndefined();
+    expect(licensedFeatures(siteAll, legacy)).toEqual(siteAll);
+    // Site ayarinda kapali olan anahtar legacy'de de kapali kalir (bugunku davranis).
+    expect(licensedFeatures(resolveFeatures({ profile: 'simple', overrides: {} }), legacy)['payments.online']).toBe(false);
+    expect(readOnlyCheck(legacy, { method: 'POST', path: '/api/tenders' })).toBeUndefined();
   });
 
   it('askida: yazimlar 423, okumalar / sakin portali / abonelik ekrani / zincir dogrulamasi acik', () => {
-    const err = checkRequest(suspended, { method: 'POST', path: '/api/announcements' });
+    const err = readOnlyCheck(suspended, { method: 'POST', path: '/api/announcements' });
     expect(err).toBeInstanceOf(EntitlementError);
     expect(err).toMatchObject({ code: 'subscription_read_only', httpStatus: 423 });
     expect(err?.message).toMatch(/salt okunur/);
-    expect(checkRequest(suspended, { method: 'DELETE', path: '/api/sites/apt-1/units/u1' })?.code).toBe('subscription_read_only');
-    expect(checkRequest(suspended, { method: 'GET', path: '/api/finance/reports/trial-balance' })).toBeUndefined();
-    expect(checkRequest(suspended, { method: 'POST', path: '/api/portal/payments/intents' })).toBeUndefined();
-    expect(checkRequest(suspended, { method: 'POST', path: '/api/portal/tickets' })).toBeUndefined();
-    expect(checkRequest(suspended, { method: 'POST', path: '/api/audit/verify' })).toBeUndefined();
-    expect(checkRequest(suspended, { method: 'GET', path: '/api/subscription' })).toBeUndefined();
+    expect(readOnlyCheck(suspended, { method: 'DELETE', path: '/api/sites/apt-1/units/u1' })?.code).toBe('subscription_read_only');
+    expect(readOnlyCheck(suspended, { method: 'GET', path: '/api/finance/reports/trial-balance' })).toBeUndefined();
+    expect(readOnlyCheck(suspended, { method: 'POST', path: '/api/portal/payments/intents' })).toBeUndefined();
+    expect(readOnlyCheck(suspended, { method: 'POST', path: '/api/portal/tickets' })).toBeUndefined();
+    expect(readOnlyCheck(suspended, { method: 'POST', path: '/api/audit/verify' })).toBeUndefined();
+    expect(readOnlyCheck(suspended, { method: 'GET', path: '/api/subscription' })).toBeUndefined();
     // Onek benzerligi: /api/portalx portal degildir.
-    expect(checkRequest(suspended, { method: 'POST', path: '/api/portalx' })?.code).toBe('subscription_read_only');
+    expect(readOnlyCheck(suspended, { method: 'POST', path: '/api/portalx' })?.code).toBe('subscription_read_only');
     expect(entitlementOf(sub({ status: 'cancelled' })).readOnly).toBe(true);
     expect(entitlementOf(sub({ status: 'past_due' })).readOnly).toBe(false);
   });
 
-  it('plan ozelligi kapali modul 403 feature_not_in_plan (okuma dahil); toplu is yalnizca baslatmada', () => {
-    expect(checkRequest(noTenders, { method: 'GET', path: '/api/tenders' })).toMatchObject({ code: 'feature_not_in_plan', httpStatus: 403, details: { feature: 'tenders' } });
-    expect(checkRequest(noTenders, { method: 'GET', path: '/api/portal/tenders/t1' })?.code).toBe('feature_not_in_plan');
-    expect(checkRequest(noTenders, { method: 'POST', path: '/api/finance/dues/jobs' })?.code).toBe('feature_not_in_plan');
-    expect(checkRequest(noTenders, { method: 'POST', path: '/api/finance/dues' })).toBeUndefined();
-    expect(checkRequest(noTenders, { method: 'GET', path: '/api/jobs/j1' })).toBeUndefined();
-    expect(featureForRequest('GET', '/api/gate/plates')).toBe('gate');
+  it('etkin ozellik = site ayari VE plan; modul yollari katalog anahtarina eslenir; toplu is yalnizca baslatmada', () => {
+    const eff = licensedFeatures(siteAll, noTenders);
+    expect(eff['modules.tenders']).toBe(false);
+    expect(eff['modules.gate']).toBe(true);
+    // Plan izin verse de site ayari kapaliysa kapali.
+    expect(licensedFeatures(resolveFeatures({ profile: 'legacy', overrides: { 'modules.gate': false } }), noTenders)['modules.gate']).toBe(false);
+    expect(featureForRequest('GET', '/api/tenders')).toBe('modules.tenders');
+    expect(featureForRequest('GET', '/api/portal/tenders/t1')).toBe('modules.tenders');
+    expect(featureForRequest('POST', '/api/finance/dues/jobs')).toBe('modules.bulkJobs');
+    expect(featureForRequest('GET', '/api/finance/dues/jobs')).toBeUndefined();
+    expect(featureForRequest('POST', '/api/finance/dues')).toBeUndefined();
+    expect(featureForRequest('GET', '/api/jobs/j1')).toBeUndefined();
+    expect(featureForRequest('GET', '/api/gate/plates')).toBe('modules.gate');
     expect(featureForRequest('GET', '/api/gateway')).toBeUndefined();
+    // Online odeme merkezden baglanmaz: mevcut guard (teklif + baslatma) plan iznini okuyucudan alir.
+    expect(featureForRequest('POST', '/api/portal/payments')).toBeUndefined();
+  });
+
+  it('yonetici ozellik gorunumu plan disini kapali + planRestricted gosterir; platform gorunumu sitenin kendi ayarini', async () => {
+    const svc = createFeatureService({
+      repository: { getSite: async () => site(APT, 'Gül Sitesi') } as unknown as FeatureRepository,
+      license: async () => noTenders,
+    });
+    const v = await svc.view(APT, { licensed: true });
+    expect(v.features['modules.tenders']).toBe(false);
+    expect(v.planRestricted).toEqual(['modules.tenders', 'modules.bulkJobs']);
+    expect((await svc.view(APT)).features['modules.tenders']).toBe(true);
+    expect((await svc.view(APT)).planRestricted).toBeUndefined();
+  });
+
+  it('lisansli okuyucu mevcut guard ile: plan disi payments.online 403 feature_disabled', async () => {
+    const noPay = staticEntitlementReader(entitlementOf(sub({ status: 'active', plan: plan({ features: { ...allFeatures(), 'payments.online': false } }) })));
+    const reader = createLicensedFeatureReader(staticSiteFeatureReader(), noPay);
+    expect(await featureAllowed(reader, { userId: 'r', role: 'resident', apartmentId: APT }, 'payments.online')).toBe(false);
+    expect(await featureAllowed(reader, { userId: 'p', role: 'platform_admin' }, 'payments.online')).toBe(true);
+    expect(await featureAllowed(createLicensedFeatureReader(staticSiteFeatureReader(), legacyEntitlementReader), { userId: 'r', role: 'resident', apartmentId: APT }, 'payments.online')).toBe(true);
   });
 
   it('sarmalayici: dogrudan platform_admin muaf, destek oturumu ve apartmansiz istek', async () => {
     const reader = staticEntitlementReader(suspended);
     const call = async (claims: Record<string, unknown> | null, method = 'POST', path = '/api/announcements') => {
-      const auth = withEntitlements(() => claims as never, reader);
+      const auth = withEntitlements(() => claims as never, { entitlements: reader, features: createLicensedFeatureReader(staticSiteFeatureReader(), reader) });
       const headers = new Map<string, string>();
       const c = { req: { method, path }, header: (k: string, v: string) => headers.set(k, v) } as never;
       try {
@@ -496,7 +542,7 @@ describe('abonelik servisi', () => {
       reason: 'Fiyat güncellemesi',
       name: 'Temel',
       pricing: { model: 'per_unit', monthlyKurus: 0, annualKurus: 0, perUnitMonthlyKurus: 2_000, perUnitAnnualKurus: 20_000 },
-      features: { online_payment: true },
+      features: { 'payments.online': true },
       limits: { maxUnits: 100, maxStaffUsers: 5 },
     });
     expect(updated).toMatchObject({ planVersion: 2, version: 2, placeholder: false });
@@ -646,7 +692,7 @@ describe('abonelik HTTP uclari', () => {
   });
 
   it('askidaki apartmanda yazim 423 (Turkce mesaj), okuma ve abonelik ekrani acik; plan disi modul 403', async () => {
-    const reader = staticEntitlementReader(entitlementOf(sub({ status: 'suspended', plan: plan({ features: { ...allFeatures(), tenders: false } }) })));
+    const reader = staticEntitlementReader(entitlementOf(sub({ status: 'suspended', plan: plan({ features: { ...allFeatures(), 'modules.tenders': false } }) })));
     const { req } = app(reader);
     const write = await req('POST', '/api/announcements', manager, { title: 'x' });
     expect(write.status).toBe(423);
@@ -656,7 +702,7 @@ describe('abonelik HTTP uclari', () => {
     expect((await req('GET', '/api/subscription/status', manager)).status).toBe(200);
     const tenders = await req('GET', '/api/tenders', manager);
     expect(tenders.status).toBe(403);
-    expect(await tenders.json()).toMatchObject({ error: 'feature_not_in_plan', feature: 'tenders' });
+    expect(await tenders.json()).toMatchObject({ error: 'feature_disabled', feature: 'modules.tenders' });
     // Gorevli de salt okunur hatasini ayni bicimde alir (mobil: mesaj gosterilir).
     expect((await req('POST', '/api/tickets', staff, {})).status).toBe(423);
     // Dogrudan platform_admin muaf: platform ucunda islem yapabilir.
@@ -736,5 +782,47 @@ describe('abonelik bildirimleri', () => {
       [APT2, '2026-12-01'],
     ]);
     expect(outcomes.map((o) => o.status)).toEqual(['done', 'skipped']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Platform ayari: varsayilan kapali, otomasyon ayri
+// ---------------------------------------------------------------------------
+
+describe('abonelik platform ayari (varsayilan kapali)', () => {
+  const platform = { userId: 'p1' };
+
+  it('kayit yoksa kapali: baslatma reddedilir, gunluk is calismaz, plan katalogu hazirlanabilir', async () => {
+    const f = fixture({ value: at('2026-11-01') }, {});
+    expect(await f.service.getSettings()).toEqual({ enabled: false, automation: false, version: 0 });
+    expect((await f.service.seedPlaceholderPlans(platform)).created).toHaveLength(4);
+    await expect(f.service.startSubscription(platform, APT, { idempotencyKey: 'start-apt-1-0001', planCode: 'temel' })).rejects.toMatchObject({ code: 'billing_disabled' });
+    expect(await f.service.runDaily(APT, '2026-12-01')).toEqual({ status: 'skipped', reason: 'billing_disabled' });
+    await expect(f.service.runDaily(APT, '2026-12-01', 'p1', { manual: true })).rejects.toMatchObject({ code: 'billing_disabled' });
+    expect(await f.service.statusView(APT)).toMatchObject({ status: 'legacy', legacy: true });
+  });
+
+  it('acma surum kosullu ve platform zincirine denetimli; kapatinca otomasyon da kapanir; yetki okuyucusu kapaliyken legacy', async () => {
+    const f = fixture({ value: at('2026-11-01') }, {});
+    await expect(f.service.updateSettings(platform, { version: 3, enabled: true, reason: 'Pilot sonrası açılış' })).rejects.toMatchObject({ code: 'conflict' });
+    const on = await f.service.updateSettings(platform, { version: 0, enabled: true, automation: false, reason: 'Pilot sonrası açılış' });
+    expect(on).toMatchObject({ enabled: true, automation: false, version: 1 });
+    expect(f.invalidated).toContain('*');
+    const audit = f.mem.audits.find((a) => a.action === 'subscription.settings');
+    expect(audit?.apartmentId).toBeUndefined();
+    expect(audit?.reason).toBe('Pilot sonrası açılış');
+
+    await f.service.seedPlaceholderPlans(platform);
+    await f.service.startSubscription(platform, APT, { idempotencyKey: 'start-apt-1-0001', planCode: 'temel', trialDays: 0 });
+    // Otomasyon kapali: zamanlanmis is ilerletmez; platformun elle "donemi isle" islemi calisir (elle fatura).
+    expect(await f.service.runDaily(APT, '2026-12-01')).toEqual({ status: 'skipped', reason: 'automation_off' });
+    expect(await f.service.runDaily(APT, '2026-12-01', 'p1', { manual: true })).toMatchObject({ status: 'updated', invoices: ['YNS-2026-000002'] });
+
+    const reader = createEntitlementReader({ getSubscription: (id) => f.mem.repo.peekSubscription(id), getSettings: () => f.mem.repo.getSettings(), ttlMs: 0 });
+    expect((await reader.resolve(APT)).legacy).toBe(false);
+    const off = await f.service.updateSettings(platform, { version: 1, enabled: false, automation: true, reason: 'Geçici kapatma' });
+    expect(off).toMatchObject({ enabled: false, automation: false });
+    expect((await reader.resolve(APT)).legacy).toBe(true);
+    expect(await f.service.managerView(APT)).toMatchObject({ status: 'legacy', legacy: true });
   });
 });

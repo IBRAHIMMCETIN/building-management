@@ -28,7 +28,15 @@ export type SiteFeatureView = {
   inherited: boolean;
   overrides: FeatureOverrides;
   features: ResolvedFeatures;
+  /**
+   * Abonelik: site ayarinda acik ama abonelik planinin kapsamadigi anahtarlar (yalnizca yonetici
+   * gorunumunde; `features` bunlari kapali gosterir).
+   */
+  planRestricted?: FeatureKey[];
 };
+
+/** Abonelik plani izni (modules/subscriptions): `legacy` ise kisit yok. */
+export type FeatureLicense = (apartmentId: string) => Promise<{ legacy: boolean; features: Partial<Record<FeatureKey, boolean>> }>;
 
 export type FeatureRequestView = Omit<FeatureRequest, 'PK' | 'SK' | 'GSI1PK' | 'GSI1SK'> & { siteName?: string };
 
@@ -36,6 +44,8 @@ export type FeatureServiceDeps = {
   repository: FeatureRepository;
   /** Guncellemeden sonra ayni konteynerdeki guard onbellegi temizlenir. */
   reader?: Pick<SiteFeatureReader, 'invalidate'>;
+  /** Abonelik: yonetici gorunumu ve talep kontrolu etkin degeri (site VE plan) kullanir. */
+  license?: FeatureLicense;
   now: () => Date;
 };
 
@@ -80,8 +90,26 @@ export function createFeatureService(overrides: Partial<FeatureServiceDeps> = {}
     };
   }
 
-  async function view(apartmentId: string): Promise<SiteFeatureView> {
-    return toView(await requireSite(apartmentId));
+  /** Site ayari VE plan izni; plan disi kalan anahtarlar `planRestricted`. */
+  async function licensed(v: SiteFeatureView): Promise<SiteFeatureView> {
+    if (!deps.license) return v;
+    const lic = await deps.license(v.apartmentId);
+    if (lic.legacy) return v;
+    const features = { ...v.features };
+    const planRestricted: FeatureKey[] = [];
+    for (const k of Object.keys(features) as FeatureKey[]) {
+      if (FEATURE_CATALOG[k].licensable && features[k] && lic.features[k] !== true) {
+        features[k] = false;
+        planRestricted.push(k);
+      }
+    }
+    return { ...v, features, ...(planRestricted.length ? { planRestricted } : {}) };
+  }
+
+  /** `licensed: true` (yonetici ucu): etkin deger; platform ucu sitenin kendi ayarini gorur. */
+  async function view(apartmentId: string, opts: { licensed?: boolean } = {}): Promise<SiteFeatureView> {
+    const v = toView(await requireSite(apartmentId));
+    return opts.licensed ? licensed(v) : v;
   }
 
   /**
@@ -165,7 +193,8 @@ export function createFeatureService(overrides: Partial<FeatureServiceDeps> = {}
     const note = optString(o, 'note', NOTE_MAX)?.trim() || undefined;
 
     const site = await requireSite(apartmentId);
-    if (resolveFeatures(site.settings.features)[feature]) {
+    // Plan disi kalan (site ayarinda acik) ozellik de talep edilebilir: platform plani yukseltir.
+    if ((await licensed(toView(site))).features[feature]) {
       throw new CoreError('conflict', 'Bu ozellik siteniz icin zaten acik');
     }
     const existing = await repo.getRequest(apartmentId, feature);

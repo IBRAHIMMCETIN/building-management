@@ -31,7 +31,8 @@ export function siteFeatureRoutes({ authenticate, service }: FeatureRoutesDeps) 
   r.use('*', noStore);
   const apt = (c: Context<Env>) => c.get('claims').apartmentId as string;
 
-  r.get('/', requireRole(SITE_ROLES), async (c) => c.json({ ...(await service.view(apt(c))), catalog: service.catalog() }));
+  // Etkin deger: site ayari VE (varsa) abonelik plani izni.
+  r.get('/', requireRole(SITE_ROLES), async (c) => c.json({ ...(await service.view(apt(c), { licensed: true })), catalog: service.catalog() }));
   r.get('/requests', requireRole(REQUEST_READ_ROLES), async (c) => c.json({ items: await service.siteRequests(apt(c)) }));
   r.post('/requests', requireRole(REQUEST_WRITE_ROLES), async (c) => {
     const result = await service.requestEnable(c.get('claims').userId, apt(c), await readJson(c));

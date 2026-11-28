@@ -113,7 +113,11 @@ describe('ozellik katalogu', () => {
   });
 
   it('sade mod: tum gizlemeler ve kancalar kapali; override profili ezer', () => {
-    expect(Object.values(resolveFeatures(simpleModeFeatures())).every((v) => v === false)).toBe(true);
+    const simple = resolveFeatures(simpleModeFeatures());
+    // Gizlemeler ve kancalar kapali; abonelikle kisitlanabilen moduller (modules.*, channels.push) bugunku gibi acik.
+    const planModules = FEATURE_KEYS.filter((k) => FEATURE_CATALOG[k].licensable && k !== 'payments.online');
+    expect(FEATURE_KEYS.filter((k) => !planModules.includes(k)).every((k) => simple[k] === false)).toBe(true);
+    expect(planModules.every((k) => simple[k] === true)).toBe(true);
     const r = resolveFeatures({ profile: 'simple', overrides: { 'admin.debtRestructure': true } });
     expect(r['admin.debtRestructure']).toBe(true);
     expect(r['resident.restructure']).toBe(false);

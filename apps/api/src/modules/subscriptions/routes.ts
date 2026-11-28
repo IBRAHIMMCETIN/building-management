@@ -40,6 +40,7 @@ export function subscriptionRoutes({ authenticate, service }: SubscriptionRoutes
 
 /**
  * Platform (`/api/admin/billing`, yalnizca dogrudan `platform_admin`; destek oturumu kullanamaz):
+ *   GET|PUT /settings                              { version, enabled, automation?, reason } (varsayilan kapali)
  *   GET    /plans                                  plan katalogu
  *   POST   /plans                                  { idempotencyKey, code, name, description?, pricing, features, limits, trialDays? }
  *   POST   /plans/seed                             ornek (yer tutucu) planlari ekle
@@ -51,7 +52,7 @@ export function subscriptionRoutes({ authenticate, service }: SubscriptionRoutes
  *   POST   /subscriptions/:apartmentId             { idempotencyKey, planCode, billingPeriod?, trialDays?, graceDays?, paymentTermDays?, reason? }
  *   POST   /subscriptions/:apartmentId/plan        { version, planCode, billingPeriod?, reason }
  *   POST   /subscriptions/:apartmentId/status      { version, action: extend_trial|activate|suspend|cancel|reactivate, reason, trialEndsAt? }
- *   POST   /subscriptions/:apartmentId/sync        gunluk adimi simdi calistir (idempotent)
+ *   POST   /subscriptions/:apartmentId/sync        donemi elle isle: gunluk adim (fatura dahil; idempotent)
  *   GET    /invoices?status=&apartmentId=&cursor=&limit=
  *   POST   /invoices/:apartmentId/:invoiceId/paid  { version, method, reference, paidOn?, note? }
  *   POST   /invoices/:apartmentId/:invoiceId/void  { version, reason }
@@ -70,6 +71,8 @@ export function platformBillingRoutes({ authenticate, service }: SubscriptionRou
   const ctx = (c: Context<Env>) => ({ userId: c.get('claims').userId });
   const p = (c: Context<Env>, name: string) => c.req.param(name) ?? '';
 
+  r.get('/settings', async (c) => c.json(await service.getSettings()));
+  r.put('/settings', async (c) => c.json(await service.updateSettings(ctx(c), await readJson(c))));
   r.get('/plans', async (c) => c.json({ items: await service.listPlans() }));
   r.post('/plans', async (c) => {
     const out = await service.createPlan(ctx(c), await readJson(c));
@@ -88,7 +91,7 @@ export function platformBillingRoutes({ authenticate, service }: SubscriptionRou
   });
   r.post('/subscriptions/:apartmentId/plan', async (c) => c.json(await service.changePlan(ctx(c), p(c, 'apartmentId'), await readJson(c))));
   r.post('/subscriptions/:apartmentId/status', async (c) => c.json(await service.changeStatus(ctx(c), p(c, 'apartmentId'), await readJson(c))));
-  r.post('/subscriptions/:apartmentId/sync', async (c) => c.json(await service.runDaily(p(c, 'apartmentId'), undefined, ctx(c).userId)));
+  r.post('/subscriptions/:apartmentId/sync', async (c) => c.json(await service.runDaily(p(c, 'apartmentId'), undefined, ctx(c).userId, { manual: true })));
 
   r.get('/invoices', async (c) => {
     const limit = Number(c.req.query('limit') ?? '50');

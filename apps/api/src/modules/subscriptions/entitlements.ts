@@ -1,9 +1,10 @@
 import type { Context } from 'hono';
 import type { AuthClaims, Authenticator } from '../../auth/claims.js';
+import type { FeatureKey, ResolvedFeatures } from '../features/catalog.js';
+import { FeatureDisabledError, type SiteFeatureReader } from '../features/guard.js';
 import {
+  type BillingSettingsView,
   PLAN_FEATURES,
-  PLAN_FEATURE_LABELS,
-  type PlanFeature,
   type PlanFeatures,
   type PlanLimits,
   READ_ONLY_STATUSES,
@@ -13,20 +14,22 @@ import {
 } from './types.js';
 
 /**
- * Abonelik yetkileri (entitlement) - API'nin TEK kontrol noktasi.
+ * Abonelik yetkileri (entitlement). Ayri bir ozellik anahtari sistemi DEGILDIR: plan, Adim 1 site
+ * ozellik katalogunun `licensable` anahtarlarini kisitlar (modules/features/catalog.ts) ve kapali
+ * modul ayni hatayla (`403 feature_disabled`, web'de ayni bildirim) reddedilir.
  *
- * `withEntitlements` rol gerektiren tum uclarin kimlik dogrulayicisini sarar (app.ts; MFA ve destek
- * erisiminden sonra). Kararlar aktif apartmanin aboneligine gore:
- *  - Abonelik kaydi yok -> `legacy` (Abonelik oncesi siteler): tum ozellikler acik, limit yok.
- *    Gelistirme ortaminda ve mevcut sitelerde hicbir sey degismez.
+ *  - Platform ayari kapaliysa (varsayilan; `PLATFORM#SETTINGS`) veya apartmanin abonelik kaydi yoksa
+ *    `legacy`: kisit yok, site bugunku gibi davranir.
+ *  - Etkin ozellik = site ayari VE plan izni (`createLicensedFeatureReader`); mevcut `requireFeature`
+ *    guard'lari (or. `payments.online`) bunu otomatik kullanir. Kendi guard'i olmayan modul yollari
+ *    `FEATURE_ROUTES` ile merkezden ayni hatayi alir.
  *  - `suspended` / `cancelled` -> SALT OKUNUR: yazma istekleri `423 subscription_read_only`.
  *    Haric: okumalar (GET/HEAD; raporlar ve PDF disa aktarimi dahil), sakin portali (`/api/portal/*`:
  *    aidat odemesi dahil; sakin aboneligin tarafi degildir), abonelik ekrani, denetim zinciri
  *    dogrulamasi ve dogrudan `platform_admin`.
- *  - Plan ozelligi kapali modul -> `403 feature_not_in_plan` (tum yontemler; `FEATURE_ROUTES`).
  *  - Bolum / ekip limiti ilgili serviste (`assertUnitCapacity`, `assertStaffCapacity`): `403 plan_limit_exceeded`.
  *
- * Okuma Lambda konteyneri icinde kisa sure (30 sn) onbelleklenir; platform degisikligi ayni
+ * Okumalar Lambda konteyneri icinde kisa sure (30 sn) onbelleklenir; platform degisikligi ayni
  * konteynerde onbellegi hemen temizler. Okuma hatasi varsayilan olarak YUTULMAZ (fail closed);
  * yalnizca `ENTITLEMENTS_FAIL_OPEN=true` ile acikca istenirse legacy kabul edilip loglanir.
  */
@@ -35,20 +38,13 @@ export type Entitlement = {
   legacy: boolean;
   status: SubscriptionStatus | 'legacy';
   readOnly: boolean;
+  /** Plan izinleri (`licensable` anahtarlar). */
   features: PlanFeatures;
   limits: PlanLimits;
 };
 
-export const LEGACY_ENTITLEMENT: Readonly<Entitlement> = Object.freeze({
-  legacy: true,
-  status: 'legacy',
-  readOnly: false,
-  features: allFeatures(),
-  limits: { maxUnits: null, maxStaffUsers: null },
-});
-
 export function entitlementOf(sub: Pick<Subscription, 'status' | 'plan'> | undefined): Entitlement {
-  if (!sub) return { ...LEGACY_ENTITLEMENT, features: allFeatures(), limits: { ...LEGACY_ENTITLEMENT.limits } };
+  if (!sub) return { legacy: true, status: 'legacy', readOnly: false, features: allFeatures(), limits: { maxUnits: null, maxStaffUsers: null } };
   return {
     legacy: false,
     status: sub.status,
@@ -65,6 +61,8 @@ export type EntitlementReader = {
 
 export type EntitlementReaderDeps = {
   getSubscription: (apartmentId: string) => Promise<Pick<Subscription, 'status' | 'plan'> | undefined>;
+  /** Platform ayari; verilmezse sistem acik kabul edilir (testler). */
+  getSettings?: () => Promise<Pick<BillingSettingsView, 'enabled'>>;
   ttlMs?: number;
   now?: () => number;
   /** true: okuma hatasinda legacy (yalnizca acikca yapilandirilirsa). */
@@ -72,15 +70,26 @@ export type EntitlementReaderDeps = {
   log?: Pick<Console, 'error'>;
 };
 
-export function createEntitlementReader({ getSubscription, ttlMs = 30_000, now = Date.now, failOpen = false, log = console }: EntitlementReaderDeps): EntitlementReader {
+export function createEntitlementReader({ getSubscription, getSettings, ttlMs = 30_000, now = Date.now, failOpen = false, log = console }: EntitlementReaderDeps): EntitlementReader {
   const cache = new Map<string, { at: number; value: Entitlement }>();
+  let settings: { at: number; enabled: boolean } | undefined;
+  const fresh = (at: number) => ttlMs > 0 && now() - at < ttlMs;
+
+  async function enabled(): Promise<boolean> {
+    if (!getSettings) return true;
+    if (settings && fresh(settings.at)) return settings.enabled;
+    const value = (await getSettings()).enabled === true;
+    if (ttlMs > 0) settings = { at: now(), enabled: value };
+    return value;
+  }
+
   return {
     async resolve(apartmentId) {
       const hit = cache.get(apartmentId);
-      if (hit && ttlMs > 0 && now() - hit.at < ttlMs) return hit.value;
+      if (hit && fresh(hit.at)) return hit.value;
       let value: Entitlement;
       try {
-        value = entitlementOf(await getSubscription(apartmentId));
+        value = (await enabled()) ? entitlementOf(await getSubscription(apartmentId)) : entitlementOf(undefined);
       } catch (err) {
         if (!failOpen) throw err;
         log.error(JSON.stringify({ level: 'error', msg: 'entitlement_read_failed_open', apartmentId, error: err instanceof Error ? err.name : 'unknown' }));
@@ -90,6 +99,7 @@ export function createEntitlementReader({ getSubscription, ttlMs = 30_000, now =
       return value;
     },
     invalidate(apartmentId) {
+      settings = undefined;
       if (apartmentId) cache.delete(apartmentId);
       else cache.clear();
     },
@@ -107,11 +117,36 @@ export const legacyEntitlementReader: EntitlementReader = staticEntitlementReade
 
 export const failOpenFromEnv = (env: NodeJS.ProcessEnv = process.env) => env.ENTITLEMENTS_FAIL_OPEN?.trim().toLowerCase() === 'true';
 
+/** Etkin ozellikler: site ayari VE (aboneligi varsa) plan izni. */
+export function licensedFeatures(site: ResolvedFeatures, e: Entitlement): ResolvedFeatures {
+  if (e.legacy) return site;
+  const out = { ...site };
+  for (const k of PLAN_FEATURES) out[k] = site[k] && e.features[k] === true;
+  return out;
+}
+
+/**
+ * Adim 1 site ozellik okuyucusunun yerine gecen okuyucu: `requireFeature` / `featureAllowed` ve
+ * yonetici `GET /api/site-features` etkin degeri (site VE plan) gorur.
+ */
+export function createLicensedFeatureReader(site: SiteFeatureReader, entitlements: EntitlementReader): SiteFeatureReader {
+  return {
+    async resolve(apartmentId) {
+      const [features, e] = await Promise.all([site.resolve(apartmentId), entitlements.resolve(apartmentId)]);
+      return licensedFeatures(features, e);
+    },
+    invalidate(apartmentId) {
+      site.invalidate(apartmentId);
+      entitlements.invalidate(apartmentId);
+    },
+  };
+}
+
 // ---------------------------------------------------------------------------
-// Hatalar
+// Hatalar (kapali modul: Adim 1 `FeatureDisabledError`)
 // ---------------------------------------------------------------------------
 
-export type EntitlementErrorCode = 'subscription_read_only' | 'feature_not_in_plan' | 'plan_limit_exceeded';
+export type EntitlementErrorCode = 'subscription_read_only' | 'plan_limit_exceeded';
 
 export class EntitlementError extends Error {
   readonly code: EntitlementErrorCode;
@@ -140,32 +175,31 @@ export function readOnlyError(status: SubscriptionStatus | 'legacy'): Entitlemen
   );
 }
 
-export const featureError = (feature: PlanFeature) =>
-  new EntitlementError('feature_not_in_plan', `Bu modül aboneliğinizin planında yok: ${PLAN_FEATURE_LABELS[feature]}. Planınızı yükseltmek için platform ekibiyle iletişime geçin.`, { feature });
-
 // ---------------------------------------------------------------------------
 // Kurallar
 // ---------------------------------------------------------------------------
 
-/** Plan ozelligine bagli modul yollari (onek; `/api/...`). `methods` verilirse yalnizca o yontemler. */
-export const FEATURE_ROUTES: readonly { prefix: string; feature: PlanFeature; methods?: readonly string[] }[] = [
-  { prefix: '/api/portal/payments', feature: 'online_payment' },
-  { prefix: '/api/finance/online-payments', feature: 'online_payment' },
-  { prefix: '/api/gate', feature: 'gate' },
-  { prefix: '/api/portal/gate', feature: 'gate' },
-  { prefix: '/api/reservations', feature: 'reservations' },
-  { prefix: '/api/portal/reservations', feature: 'reservations' },
-  { prefix: '/api/polls', feature: 'polls_assemblies' },
-  { prefix: '/api/portal/polls', feature: 'polls_assemblies' },
-  { prefix: '/api/assemblies', feature: 'polls_assemblies' },
-  { prefix: '/api/portal/assemblies', feature: 'polls_assemblies' },
-  { prefix: '/api/tenders', feature: 'tenders' },
-  { prefix: '/api/portal/tenders', feature: 'tenders' },
-  { prefix: '/api/equipment', feature: 'equipment' },
-  { prefix: '/api/portfolio', feature: 'portfolio' },
+/**
+ * Kendi `requireFeature` guard'i olmayan modul yollari (onek; `/api/...`) -> katalog anahtari.
+ * `payments.online` burada YOK: mevcut guard (teklif + baslatma) site ayariyla ayni kalsin, yoldaki
+ * odeme sonuclari her zaman okunabilsin; plan izni o guard'a okuyucu uzerinden zaten eklenir.
+ */
+export const FEATURE_ROUTES: readonly { prefix: string; feature: FeatureKey; methods?: readonly string[] }[] = [
+  { prefix: '/api/gate', feature: 'modules.gate' },
+  { prefix: '/api/portal/gate', feature: 'modules.gate' },
+  { prefix: '/api/reservations', feature: 'modules.reservations' },
+  { prefix: '/api/portal/reservations', feature: 'modules.reservations' },
+  { prefix: '/api/polls', feature: 'modules.pollsAssemblies' },
+  { prefix: '/api/portal/polls', feature: 'modules.pollsAssemblies' },
+  { prefix: '/api/assemblies', feature: 'modules.pollsAssemblies' },
+  { prefix: '/api/portal/assemblies', feature: 'modules.pollsAssemblies' },
+  { prefix: '/api/tenders', feature: 'modules.tenders' },
+  { prefix: '/api/portal/tenders', feature: 'modules.tenders' },
+  { prefix: '/api/equipment', feature: 'modules.equipment' },
+  { prefix: '/api/portfolio', feature: 'modules.portfolio' },
   // Acik arka plan isi baslatma; buyuk sitede otomatik ise donen tahakkuk ve is durumu sorgusu
   // bilerek baglanmaz (aidat tahakkuku planla kesilmemeli).
-  { prefix: '/api/finance/dues/jobs', feature: 'bulk_jobs', methods: ['POST'] },
+  { prefix: '/api/finance/dues/jobs', feature: 'modules.bulkJobs', methods: ['POST'] },
 ];
 
 /** Salt okunur durumda da yazilabilen yollar (temel islemler). */
@@ -176,33 +210,36 @@ export const isWriteMethod = (method: string) => !READ_METHODS.has(method.toUppe
 
 const under = (path: string, prefix: string) => path === prefix || path.startsWith(`${prefix}/`);
 
-export function featureForRequest(method: string, path: string): PlanFeature | undefined {
+export function featureForRequest(method: string, path: string): FeatureKey | undefined {
   const m = method.toUpperCase();
   return FEATURE_ROUTES.find((r) => under(path, r.prefix) && (!r.methods || r.methods.includes(m)))?.feature;
 }
 
-/** Dogrudan `platform_admin` (destek oturumu degil) abonelik kurallarindan muaftir. */
+/** Dogrudan `platform_admin` (destek oturumu degil) abonelik kurallarindan muaftir (Adim 1 guard'i gibi). */
 export const bypassesEntitlements = (claims: AuthClaims) => claims.role === 'platform_admin' && !claims.supportSessionId;
 
-/** Istegin karari: engel varsa hata, yoksa undefined (SAF). */
-export function checkRequest(e: Entitlement, req: { method: string; path: string }): EntitlementError | undefined {
-  if (e.legacy) return undefined;
-  const feature = featureForRequest(req.method, req.path);
-  if (feature && !e.features[feature]) return featureError(feature);
-  if (e.readOnly && isWriteMethod(req.method) && !READ_ONLY_EXEMPT_PREFIXES.some((p) => under(req.path, p))) return readOnlyError(e.status);
-  return undefined;
+/** Salt okunur karari (SAF): engel varsa hata, yoksa undefined. */
+export function readOnlyCheck(e: Entitlement, req: { method: string; path: string }): EntitlementError | undefined {
+  if (e.legacy || !e.readOnly || !isWriteMethod(req.method)) return undefined;
+  return READ_ONLY_EXEMPT_PREFIXES.some((p) => under(req.path, p)) ? undefined : readOnlyError(e.status);
 }
 
 /**
  * Kimlik dogrulayici sarmalayicisi: istek moduldeki isleyiciye ulasmadan karar verilir. Aktif
- * apartmani olmayan istek (platform uclari, baglam secimi) kontrol edilmez.
+ * apartmani olmayan istek (platform uclari, baglam secimi) kontrol edilmez. `features` etkin
+ * (site VE plan) okuyucudur.
  */
-export function withEntitlements(authenticate: Authenticator, reader: EntitlementReader): Authenticator {
+export function withEntitlements(authenticate: Authenticator, deps: { entitlements: EntitlementReader; features: SiteFeatureReader }): Authenticator {
   return async (c: Context) => {
     const claims = await authenticate(c);
     if (!claims || !claims.apartmentId || bypassesEntitlements(claims)) return claims;
-    const e = await reader.resolve(claims.apartmentId);
-    const err = checkRequest(e, { method: c.req.method, path: c.req.path });
+    const req = { method: c.req.method, path: c.req.path };
+    const key = featureForRequest(req.method, req.path);
+    if (key && !(await deps.features.resolve(claims.apartmentId))[key]) {
+      c.header('Cache-Control', 'no-store');
+      throw new FeatureDisabledError(key);
+    }
+    const err = readOnlyCheck(await deps.entitlements.resolve(claims.apartmentId), req);
     if (err) {
       c.header('Cache-Control', 'no-store');
       throw err;
