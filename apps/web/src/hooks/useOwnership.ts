@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { type CreateTransferInput, type OwnerBilling, type RegisterInput, type TransferInput, ownershipApi } from '@/lib/api/ownership';
+import { useFeature } from '@/context/SiteFeaturesContext';
 import { useAuth } from './useAuth';
 import { financeKeys, useFinancePermissions } from './useFinance';
 import { unitKeys } from './useUnits';
@@ -35,10 +36,12 @@ export function useUnitOwnership(unitId: string | undefined) {
 
 export function useUnitTransfers(unitId: string | undefined) {
   const { apt, canRead } = useApt();
+  // Adim 1: devir sihirbazi sitede kapaliysa devir listesi istenmez.
+  const on = useFeature('admin.sharedOwnership');
   return useQuery({
     queryKey: ownershipKeys.transfers(apt, unitId ?? ''),
     queryFn: ({ signal }) => ownershipApi.listTransfers(unitId as string, signal).then((r) => r.items),
-    enabled: canRead && !!unitId,
+    enabled: canRead && !!unitId && on,
   });
 }
 

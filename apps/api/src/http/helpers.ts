@@ -18,6 +18,7 @@ import { PaymentsError } from '../modules/payments/service.js';
 import { PortalError } from '../modules/portal/service.js';
 import type { TableKeys } from '../modules/core/types.js';
 import { ValidationError } from '../modules/core/validation.js';
+import { FeatureDisabledError, featureDisabledBody } from '../modules/features/guard.js';
 
 /** Modul rotalarinin ortak Hono ortami: dogrulanmis claim'ler `claims` altinda. */
 export type Env = { Variables: { claims: AuthClaims } };
@@ -72,6 +73,9 @@ export function handleError(err: Error, c: Context) {
   if (err instanceof MfaError) {
     if (err.httpStatus >= 500) console.error(err);
     return c.json({ error: err.code, message: err.message }, err.httpStatus);
+  }
+  if (err instanceof FeatureDisabledError) {
+    return c.json(featureDisabledBody(err.feature), 403);
   }
   if (err instanceof ValidationError) {
     return c.json({ error: 'validation_error', message: err.message, field: err.field }, 400);

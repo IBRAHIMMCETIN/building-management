@@ -2,7 +2,7 @@
 
 Türkiye'deki apartman, site ve profesyonel yönetim firmaları için çok kiracılı (multi-tenant), sunucusuz bir site ve aidat yönetim platformu. Kat Mülkiyeti Kanunu'na uygun alt cari (malik / kiracı) ayrımı, dağıtım anahtarlarıyla toplu tahakkuk ve değişmez (append-only) finansal defter üzerine kuruludur.
 
-> **Durum (26.11.2026):** Aktif geliştirme; tüm işler `main` dalında. `dev` yığını AWS `eu-north-1`'de, web Cloudflare Pages'te (https://building-management-apx.pages.dev) çalışıyor. Tamamlananlar: backend çekirdeği, yönetici / sakin / görevli ekranları, kıstelyevm, belge deposu, toplu aktarım, online ödeme (iyzico + PayTR, P1–P5; **canlıya alınmadı**), taşınmada cari kapama, transactional outbox + bildirim hattı, güvenlik G1–G2 (SHA-256 zincirli denetim günlüğü, zorunlu MFA) ve arayüzü, banka ekstresi B1–B3.5, Finans 2.1–2.4 (hisseli mülkiyet, mahsup / yapılandırma, sayaç-endeks dağıtımı, dönem kapanışı / bütçe / raporlar), Faz 1 ekip-rol yönetimi, O1 arıza / bakım, büyük siteler için arka plan toplu işleri (`bulkjobs`, 5.000 bölüme kadar) ve prod yapılandırma şablonu (`infra/prod.tfvars`, korkuluklar). **Alan adı `yonetimsistemim.com` henüz satın alınmadı**; buna bağlı SES e-posta, G3 (Cloudflare WAF) ve canlı ödeme aktivasyonu planlanan / bekleyen adımlardır. `prod` yığını henüz dağıtılmadı ([infra/PROD_DEPLOY.md](infra/PROD_DEPLOY.md), [Canlıya Geçiş Kontrol Listesi](#canlıya-geçiş-kontrol-listesi)). Ayrıntılar için [Yol Haritası](#yol-haritası).
+> **Durum (28.11.2026):** Aktif geliştirme; [15 adımlık geliştirme sırası](#geliştirme-sırası-15-adım) esas alınıyor, Adım 1 (site bazlı özellik anahtarları) `feat/adim-1-feature-flags` dalında. `dev` yığını AWS `eu-north-1`'de, web Cloudflare Pages'te (https://building-management-apx.pages.dev) çalışıyor. Tamamlananlar: backend çekirdeği, yönetici / sakin / görevli ekranları, kıstelyevm, belge deposu, toplu aktarım, online ödeme (iyzico + PayTR, P1–P5; **canlıya alınmadı**), taşınmada cari kapama, transactional outbox + bildirim hattı, güvenlik G1–G2 (SHA-256 zincirli denetim günlüğü, zorunlu MFA) ve arayüzü, banka ekstresi B1–B3.5, Finans 2.1–2.4 (hisseli mülkiyet, mahsup / yapılandırma, sayaç-endeks dağıtımı, dönem kapanışı / bütçe / raporlar), Faz 1 ekip-rol yönetimi, O1 arıza / bakım, büyük siteler için arka plan toplu işleri (`bulkjobs`, 5.000 bölüme kadar) ve prod yapılandırma şablonu (`infra/prod.tfvars`, korkuluklar). **Alan adı `yonetimsistemim.com` henüz satın alınmadı**; buna bağlı SES e-posta, G3 (Cloudflare WAF) ve canlı ödeme aktivasyonu planlanan / bekleyen adımlardır. `prod` yığını henüz dağıtılmadı ([infra/PROD_DEPLOY.md](infra/PROD_DEPLOY.md), [Canlıya Geçiş Kontrol Listesi](#canlıya-geçiş-kontrol-listesi)). Ayrıntılar için [Yol Haritası](#yol-haritası).
 
 ---
 
@@ -363,6 +363,7 @@ Tüm uçlar `/api` altındadır. `GET /api/health` dışındakiler JWT ile korun
 | `mfa` | `/api/mfa` | `GET /users/:userId` (MFA ve hesap durumu, `canReset` / `blockedReason`; sıfırlamayla aynı yetki kuralları), `GET /users?email=` (yalnızca `platform_admin`), `POST /users/:userId/reset` `{ reason }` (10-500 karakter): cihaz kaybında TOTP'yi kapatır ve tüm oturumları düşürür; önce denetim günlüğüne yazılır. `platform_admin` herkes için; `apartment_manager` / `management_company` yalnızca kendi apartmanındaki, başka apartmanda yönetici/denetçi olmayan ve `platform_admin` olmayan kullanıcılar için. Kendi MFA'sı ve destek oturumu ile yapılamaz |
 | `finance/bank` | `/api/bank` | Faz B3.5: `POST /statements/:id/commit` `{ …, rememberFormat? }` (eşleme `BANKFMT#` olarak aynı atomik yazımda + `bank.format.save`), `GET /lines/:lineId/payable-suggestions`, `POST /lines/:lineId/settle-payable` `{ bankAccountId, expectedVersion, payableAccountId, description?, reason? }`, `GET /reconciliation/report?bankAccountId=&from=&to=` (PDF, 5 dk imzalı link). Faz B3: `GET\|POST /statements/:id/auto-match` (`{ idempotencyKey, minConfidence? = 0.85 }`; istek başına 25 satır, `remaining > 0` ise aynı anahtarla devam), `POST /lines/:lineId/expense` `{ bankAccountId, expectedVersion, expenseAccountId, description?, supplier?, invoiceNumber?, reason? }`, `GET /reconciliation?bankAccountId=&from=&to=` (açılış/kapanış, fark, bekleyen net, açıklanamayan fark, giren/çıkan döküm); `/unmatch` gidere çevrilmiş satırı da ters kayıtla geri alır. Faz B2 eşleştirme: `GET /queue`, `/targets`, `/lines/:lineId/suggestions`, `/lines/:lineId/history`, `/reconciliation`, `/accounts`; `POST /lines/:lineId/match` `{ bankAccountId, expectedVersion, allocations[{accountId, amount}] }`, `/ignore`, `/unmatch` `{ bankAccountId, expectedVersion, reason }`; `PUT /accounts/:id/profile`. Faz B1 banka ekstresi aktarımı: `POST /statements/upload-url` (5 dk imzalı PUT, S3 `apartments/{apt}/bank-statements/{yyyy}/{mm}/{statementId}`, ≤ 5 MB), `POST /statements` (önizleme: CSV/XLSX/HTML-xls, sütun eşleme istek > hesaba kayıtlı > otomatik, dosya içi ve önceden aktarılmış tekrarlar, bakiye sürekliliği, çakışan dönem), `POST /statements/:id/commit` `{ expectedVersion, acknowledgeWarnings? }` (idempotent satır yazımı + denetim), `GET /statements[/:id]`, `GET /lines?bankAccountId=&status=&from=&to=&statementId=&order=&limit=&cursor=`, `GET\|PUT /formats/:bankAccountId` (sürüm koşullu), `GET /templates`. Yazma: `apartment_manager`, `management_company`; okuma: + `observer` (`platform_admin` yalnızca destek oturumuyla) |
 | `bulkjobs` | `/api/jobs` | Arka plan toplu işleri (büyük siteler, 1.000–5.000 bölüm): `GET /:jobId` (durum `pending\|running\|completed\|completed_with_errors\|failed`, `processed` / `total` / `percent`, hatalı bölüm örnekleri, sonuç), `POST /:jobId/retry` (idempotent; yazılmış kalemler tekrar yazılmaz). Başlatan uçlar **202** + `{ mode: 'job', job }` döner: `POST /api/finance/dues/jobs` (her zaman), `POST /api/finance/dues` (toplu kapsam `SYNC_BULK_UNITS` = 60 bölümü aşarsa) ve `POST /api/metering/periods/:id/approve` (dönem `SYNC_POSTING_UNITS` = 60 bölümü aşarsa). İş SQS `bulk-jobs` kuyruğundan `bulk-worker` Lambda'sıyla 25'erli parçalarla, parça içinde sınırlı eşzamanlılıkla yazılır; Lambda süresi azalınca kendini aynı kuyruğa devam mesajıyla bırakır. Kalem anahtarları senkron yolla aynıdır (`<key>_<unitId>`, `MDP_<periodId>_<unitId>`): tekrar teslim ve yeniden deneme çift kayıt üretmez. Büyük sitelerde zamanlanmış aylık aidat da bu kuyruğu kullanır. Okuma: `apartment_manager`, `management_company`, `observer`; yeniden deneme: ilk ikisi |
+| `features` | `/api/site-features`, `/api/admin/site-features` | Adım 1 site bazlı özellik anahtarları (`site.settings.features`: `profile: legacy\|simple` + anahtar bazlı override; kayıt yoksa `legacy` = Adım 1 öncesi davranış, yeni siteler `simple`). `GET /api/site-features` (tüm apartman rolleri; etkin durum + katalog), `GET\|POST /api/site-features/requests` `{ feature, note? }` ("Açtırmak istiyorum"; yazma: `apartment_manager`, `management_company`). Platform (`platform_admin`, destek oturumu hariç): `GET /api/admin/site-features/requests`, `POST /requests/:siteId/:feature/dismiss` `{ reason }`, `GET\|PATCH /api/admin/site-features/:siteId` `{ version, reason, profile?, features?: { anahtar: true\|false\|null } }`. Her değişiklik ve talep denetim zincirine aynı atomik yazımda girer (fail closed). Kapalı özelliğe ait uçlar `403 { error: 'feature_disabled', feature }`: `/api/finance/plans*` (`admin.debtRestructure`), `/api/ownership` billing + transfers (`admin.sharedOwnership`), `/api/portal/my-plans` (`resident.restructure`), `/api/portal/offset-*` (`resident.advanceOffset`), sakin bağlamında `/api/me/notification-preferences` ve `/api/me/mfa/totp/*`, `/api/portal/payments` quote + başlatma (`payments.online`). Zamanlanmış `installment_plans` kapalı sitede `skipped: feature_disabled`. Guard okuması 30 sn konteyner önbellekli |
 | `support` | `/api/support/sessions` | Yalnızca `platform_admin`: gerekçeli (≥20 karakter) ve süreli (≤60 dk) destek oturumu aç/listele/bitir. Oturum `X-Support-Session: <apartmentId>.<sessionId>` başlığıyla o apartmanda **salt okunur** (`observer`) erişim verir; her istek işlenmeden önce denetime yazılır |
 
 ---
@@ -471,6 +472,52 @@ API Gateway sınırı istemci başına değil, rota başınadır: arka ucu ve ma
 ---
 
 ## Yol Haritası
+
+### Geliştirme Sırası (15 adım)
+
+> 28.11.2026 kararı. Hedef: Diyarbakır'da 4–5 bloklu, 200+ daireli siteler; teknolojiyi az kullanan sakin ve yöneticiler. Tüm geliştirmeler mevcut kodun üzerine yapılır; fazla gelen özellikler **silinmez, site bazında gizlenir**. Bildirim şimdilik yalnızca WhatsApp; sakin girişi telefon + WhatsApp kodu; ödeme havale/EFT + ekstre eşleştirme. Alan adı, avukat ve şirket kuruluşu en sona bırakıldı; pilot bu süreçler tamamlanana kadar ücretsiz deneme. Ayrıntı: proje dokümanı `claude/gelistirme-sirasi.md`. Her adım ayrı dalda yapılır, testler geçince `main`'e alınır.
+
+**Bölüm 1 — Kod geliştirmeleri**
+
+- [ ] **Adım 1 — Site bazlı özellik anahtarları ve gizlemeler** (`feat/adim-1-feature-flags`; kod tamamlandı, yerel typecheck/test doğrulaması bekliyor): `site.settings.features` (profil `legacy` / `simple` + anahtar bazlı override), merkezi katalog (`modules/features/catalog.ts`), ortak guard (`403 feature_disabled`), zamanlanmış işlerde kontrol (`installment_plans`), platform `GET/PATCH /api/admin/site-features/:siteId`, yönetici `GET /api/site-features` + "Açtırmak istiyorum" (`POST /api/site-features/requests`), değiştirilemez denetim kaydı; web'de `SiteFeaturesProvider`, menü/rota/kart filtreleri, platformda "Özellikler" penceresi ve talep listesi
+- [ ] Adım 2 — Ölçek ve dayanıklılık: sakin portalında ödemelerin daireye göre sorgulanması, gece defter denetiminin site başına bölünmesi + süre/hata alarmı, banka mutabakatı ve tedarikçi açık kalemlerinde sınırlı okuma, 300–500 daireli sentetik yük testi, yedekten dönüş tatbikatı ve runbook
+- [ ] Adım 3 — Sakin ana sayfası ve gider halka grafiği (`resident.expenseChart`): aylık özetlere gider kırılımı, kuruş yuvarlamalı dağılım servisi, "Borcunuz", IBAN + referans kopyalama, "Arıza bildir", son ödemeler ve duyurular
+- [ ] Adım 4 — WhatsApp kanalı (`channels.whatsapp`): Meta Cloud API (Secrets Manager), şablonlar, bildirim hattına kanal, teslim bildirimleri, sakin izni, günlük kota (giriş kodları önce), yedek kanal (e-posta / "ulaşılamayan sakinler"), reklam içeriği kontrolü, webhook + alarmlar
+- [ ] Adım 5 — Telefon + WhatsApp kodu ile giriş (`auth.phoneOtp`): Cognito özel doğrulama tetikleyicileri, kısa ömürlü / sınırlı denemeli / düz metin saklanmayan kod, telefonla davet, web giriş ekranı
+- [ ] Adım 6 — Site kurulum sihirbazı (platform): site/blok, daire ve kişiler, mülkiyet, açılış bakiyeleri, hesap planı + aidat planı + dağıtım kuralları, özellik anahtarları, banka hesabı, ekip davetleri, sakinlere WhatsApp daveti
+- [ ] Adım 7 — Tek ödeme sağlayıcısı (`payments.online`): seçilmeyen sağlayıcının yapılandırmadan kapatılması
+- [ ] Adım 8 — KVKK (taslak metinlerle): sürümlü aydınlatma okundu kaydı, kişisel verinin defterden ayrı tutulması, anonimleştirme ve saklama süreleri, veri sahibi başvurusu, log maskeleme kontrolü
+- [ ] Adım 9 — Uçtan uca test ve prod dağıtımı: dev'de tüm akışlar + düzeltme turu, gerçek WhatsApp numarası, prod (pages.dev + API Gateway adresi), Cognito varsayılan e-postası
+
+**Bölüm 2 — Pilot**
+
+- [ ] Adım 10 — Ücretsiz pilot: kurulum ve veri aktarımı, önce bir iki blok, WhatsApp numarasının önceden duyurulması, yönetici ve yaşlı sakinlerle kullanıcı testi, düzeltme turu, tüm siteye açılış
+
+**Bölüm 3 — Sona bırakılanlar (sırayla)**
+
+- [ ] Adım 11 — Alan adı: SES (sandbox çıkışı, geri dönüş/şikâyet), Cloudflare WAF ve özel adresler, API doğrudan adresinin kapatılması, tanıtım sayfası ve kurumsal e-posta
+- [ ] Adım 12 — Avukat: aydınlatma metni, kullanım koşulları, veri işleme sözleşmesi, yurt dışı aktarım + Kurum bildirimi, VERBİS değerlendirmesi, kesin metinlerin taslakların yerine konması
+- [ ] Adım 13 — Şirket kuruluşu: şirket, muhasebeci ve e-fatura
+- [ ] Adım 14 — Meta işletme doğrulaması: başvuru, görünen ad onayı, mesaj limitinin artması, günlük kotanın gevşetilmesi
+- [ ] Adım 15 — Ücretli kullanıma geçiş: pilotun ücretliye geçmesi, yeni sitelere satış
+
+> **Risk notu:** Avukat süreci tamamlanmadan gerçek sakin verisi işlenirken yurt dışı aktarım (AWS, Meta) ve veri işleme sözleşmesi eksik kalır (idari para cezası riski). Pilot küçük tutulur, taslak aydınlatma metni ilk günden ekranda olur, avukat süreci mümkünse pilot başlarken devreye alınır.
+
+**Gizlenecek / dondurulacak özellikler (Adım 1 anahtarları)**
+
+| Özellik | Karar | Anahtar |
+| --- | --- | --- |
+| İkinci ödeme sağlayıcısı, platform transfer, geri dönen aktarım takibi | Tek sağlayıcı açık kalır, yeni geliştirme yok | `payments.online` (Adım 7) |
+| Platform komisyon faturası ekranları | Dondurulur | — |
+| Sakin portalında yapılandırma ve mahsup kartları | Sakinden kaldırılır, yönetici tarafında kalır | `resident.restructure`, `resident.advanceOffset` |
+| Sakin "Hesabım"da bildirim tercihleri ve iki adımlı doğrulama | Sakinde gizlenir | `resident.notificationPrefs`, `resident.mfa` |
+| Hisseli mülkiyet bölünmüş cari modu, mülk/hisse devri sihirbazı | Yöneticiden gizlenir, kurulumda platform kullanır | `admin.sharedOwnership` |
+| Borç yapılandırma ve muacceliyet | Varsayılan kapalı (sade mod) | `admin.debtRestructure` |
+| Destek oturumu, zincir doğrulama ekranı | Olduğu gibi kalır | — |
+
+**İleride eklenecekler:** SMS kanalı ve kontör, bildirim tercih ekranı, WhatsApp destek modülü; yönetim firması portföyü, abonelik/lisans, platform faturası; toplu yapı yönetişimi, anket ve online oylama; plaka sorgu, misafir/kurye QR, PWA; online ödemenin canlıya alınması, şifresiz ödeme linki, taksit, otomatik ödeme talimatı; sakin portalından yapılandırma talebi, tedarikçi avans mahsubu; rezervasyon, ihale, arıza v2, basit mod yönetici paneli, isim içermeyen aylık gider özeti PDF'i; rapor/PDF worker, OCR, büyük sitede sayaç önizlemesinin arka plana alınması, denetim günlüğü WORM dışa aktarımı, Cloudflare Pages Terraform modülü.
+
+**Yapılmayacaklar:** borçlu isimlerini içeren panoya asılacak / herkese açık liste; sakinin muhasebe terimleriyle karşılaştığı ekranlar; çalışan modüllerin silinmesi (yalnızca gizleme).
 
 ### Tamamlanan
 
@@ -735,6 +782,8 @@ API Gateway sınırı istemci başına değil, rota başınadır: arka ucu ve ma
 - `npm run backfill:month-summary -w @bm/api -- --dry-run` (P1-c): P1-c öncesi yazılmış (`ms` işaretsiz) işlemlerin ay/hesap toplamlarını hesaplar ve sitenin tüm defteriyle karşılaştırır; hiçbir şey yazmaz. Bayraksız çalıştırma bu toplamları `MSUM#<YYYY-MM>#<hesap>` öğelerinin ayrı eski alanlarına (`ld/lc/lp`) `SET` eder, defterle kuruşu kuruşuna eşitse siteyi `MSUMSTATE.ready` işaretler; ancak o zaman raporlar açık ayları özetten okur (fark varsa site işaretlenmez, raporlar eski doğru yolda kalır, çıkış kodu 2). `--verify` yazmadan özet ile defteri karşılaştırır; fark veya hazır olmayan site varsa çıkış kodu 2. Defter (TX/LE), bakiyeler, idempotency ve denetim zinciri değişmez; tekrar çalıştırılabilir. **Dağıtım tamamlandıktan sonra** (eski kodla çalışan Lambda kalmadığında) her ortamda bir kez.
 
 ### Sırada
+
+> **Not (28.11.2026):** Öncelik ve sıra için yukarıdaki [Geliştirme Sırası](#geliştirme-sırası-15-adım) esastır; aşağıdaki liste teknik borç ve eski plan kayıtlarıdır (çoğu "İleride eklenecekler"e taşındı).
 
 > iyzico sandbox Pazaryeri yetkisi ve ilk uçtan uca ödeme doğrulaması tüm modüller tamamlandıktan sonra yapılacak (bkz. [Canlıya Geçiş Kontrol Listesi](#canlıya-geçiş-kontrol-listesi)).
 

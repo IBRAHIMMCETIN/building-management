@@ -1,4 +1,5 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useFeature } from '@/context/SiteFeaturesContext';
 import { usePortalUnit } from '@/context/PortalUnitContext';
 import { ApiError } from '@/lib/api/errors';
 import {
@@ -101,10 +102,12 @@ export function useRejectOffsetRequest() {
 
 export function usePlans(filter: { accountId?: string; status?: PlanDisplayStatus } = {}) {
   const { apt, canRead } = useApt();
+  // Adim 1: borc yapilandirma sitede kapaliysa liste istenmez (API 403 feature_disabled).
+  const on = useFeature('admin.debtRestructure');
   return useQuery({
     queryKey: restructureKeys.plans(apt, filter),
     queryFn: ({ signal }) => restructureApi.listPlans(filter, signal).then((r) => r.items),
-    enabled: canRead,
+    enabled: canRead && on,
   });
 }
 
@@ -161,30 +164,33 @@ const portalRestructureKeys = {
 
 export function useMyPlans() {
   const { apt, userId, unitId, enabled } = usePortalScope();
+  const on = useFeature('resident.restructure');
   return useQuery({
     queryKey: portalRestructureKeys.plans(apt, userId, unitId),
     queryFn: ({ signal }) => restructureApi.myPlans(unitId, signal).then((r) => r.items),
-    enabled,
+    enabled: enabled && on,
     retry,
   });
 }
 
 export function useOffsetOptions() {
   const { apt, userId, unitId, enabled } = usePortalScope();
+  const on = useFeature('resident.advanceOffset');
   return useQuery({
     queryKey: portalRestructureKeys.options(apt, userId, unitId),
     queryFn: ({ signal }) => restructureApi.offsetOptions(unitId, signal),
-    enabled,
+    enabled: enabled && on,
     retry,
   });
 }
 
 export function useMyOffsetRequests() {
   const { apt, userId, enabled } = usePortalScope();
+  const on = useFeature('resident.advanceOffset');
   return useQuery({
     queryKey: portalRestructureKeys.requests(apt, userId),
     queryFn: ({ signal }) => restructureApi.myOffsetRequests(signal).then((r) => r.items),
-    enabled,
+    enabled: enabled && on,
     retry,
   });
 }

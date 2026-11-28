@@ -2,6 +2,7 @@ import { ArrowRightLeft, CheckCircle2, CircleAlert, Undo2 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { Alert, Badge, Button, Card, Dialog, FormField, Select, Skeleton, Textarea } from '@/components/ui';
 import { useOwnershipPermissions, useReverseTransfer, useSetBilling, useSetRepresentative, useUnitOwnership, useUnitTransfers } from '@/hooks/useOwnership';
+import { useFeature } from '@/context/SiteFeaturesContext';
 import { errorMessage } from '@/lib/api/errors';
 import { OWNER_BILLING_MODES, type OwnerBilling, type OwnershipTransfer, type UnitOwnership } from '@/lib/api/ownership';
 import { cn } from '@/lib/cn';
@@ -245,6 +246,9 @@ type ViewProps = { unitId: string; unitLabel: string; names: Map<string, string>
 /** Daire ayrintisi - "Mulkiyet" sekmesi icerigi: paydaslar, temsilci, faturalama modu, gecmis, devirler. */
 export function UnitOwnershipView({ unitId, unitLabel, names, people }: ViewProps) {
   const { canWrite } = useOwnershipPermissions();
+  // Adim 1: bolunmus cari modu ve devir sihirbazi `admin.sharedOwnership` ozelligine bagli
+  // (platform ekibi kurulumda acip kullanir). Pay tablosu, hisse duzeltme ve temsilci acik kalir.
+  const sharedOn = useFeature('admin.sharedOwnership');
   const ownership = useUnitOwnership(unitId);
   const transfers = useUnitTransfers(unitId);
   const [mode, setMode] = useState<'view' | 'wizard'>('view');
@@ -257,7 +261,7 @@ export function UnitOwnershipView({ unitId, unitLabel, names, people }: ViewProp
   const latest = list.find((t) => t.status === 'completed');
   const complete = !!data?.current && isCompleteTable(data.current.owners.map((o) => o.share));
 
-  if (mode === 'wizard' && data?.current) {
+  if (mode === 'wizard' && data?.current && sharedOn) {
     return (
       <OwnershipTransferWizard
         key={run}
@@ -292,18 +296,20 @@ export function UnitOwnershipView({ unitId, unitLabel, names, people }: ViewProp
                 <Button size="sm" variant="secondary" onClick={() => setRegisterOpen(true)}>
                   Hisseleri düzenle
                 </Button>
-                <Button
-                  size="sm"
-                  disabled={!complete}
-                  title={complete ? undefined : 'Önce hisseleri tamamlayın'}
-                  onClick={() => {
-                    setRun((n) => n + 1);
-                    setMode('wizard');
-                  }}
-                >
-                  <ArrowRightLeft className="size-4" aria-hidden="true" />
-                  Mülk / hisse devri
-                </Button>
+                {sharedOn && (
+                  <Button
+                    size="sm"
+                    disabled={!complete}
+                    title={complete ? undefined : 'Önce hisseleri tamamlayın'}
+                    onClick={() => {
+                      setRun((n) => n + 1);
+                      setMode('wizard');
+                    }}
+                  >
+                    <ArrowRightLeft className="size-4" aria-hidden="true" />
+                    Mülk / hisse devri
+                  </Button>
+                )}
               </div>
             )}
           </div>
@@ -321,7 +327,7 @@ export function UnitOwnershipView({ unitId, unitLabel, names, people }: ViewProp
           {canWrite ? (
             <>
               <RepresentativeForm unitId={unitId} data={data} names={names} />
-              <BillingForm unitId={unitId} data={data} />
+              {sharedOn && <BillingForm unitId={unitId} data={data} />}
             </>
           ) : (
             data.warnings.includes('temsilci yok') && <Alert>Paylı mülkiyette temsilci seçilmemiş (temsilci yok).</Alert>
@@ -345,7 +351,7 @@ export function UnitOwnershipView({ unitId, unitLabel, names, people }: ViewProp
             </div>
           )}
 
-          {list.length > 0 && (
+          {sharedOn && list.length > 0 && (
             <div className="flex flex-col gap-2">
               <p className="text-small font-medium">Devirler</p>
               <ul className="flex flex-col gap-2">

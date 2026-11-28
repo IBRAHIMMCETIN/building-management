@@ -6,6 +6,7 @@ import { LoginPage } from '@/pages/auth/LoginPage';
 import { ForbiddenPage, NotFoundPage, RouteErrorPage } from '@/pages/errors/ErrorPages';
 import { ADMIN_ROLES, APARTMENT_ADMIN_ROLES, AUDIT_ROLES, METER_READING_ROLES, METER_ROLES, MY_TASKS_ROLES, OFFICE_ROLES, PLATFORM_ROLES, RESIDENT_ROLES, SECURITY_ROLES, TEAM_ROLES, TICKET_ROLES } from '@/types/roles';
 import { RedirectIfAuthenticated, RequireRole, RequireSession, RootRedirect } from './guards';
+import { RequireFeature } from './RequireFeature';
 import { lazyPage } from './lazyPage';
 
 // Sayfalar ayri parcalardir (giris ekrani ve hata sayfalari haric): rota acilinca indirilir.
@@ -157,7 +158,8 @@ export const router = createBrowserRouter([
               { path: 'talepler', element: <MyTicketsPage /> },
               { path: 'talepler/yeni', element: <NewTicketWizard /> },
               { path: 'talepler/:ticketId', element: <MyTicketDetailPage /> },
-              { path: 'odeme', element: <PaymentPage /> },
+              // Adim 1: online odeme baslatma `payments.online` ozelligine bagli; sonuc sayfasi her zaman acik.
+              { element: <RequireFeature feature="payments.online" title="Online ödeme" />, children: [{ path: 'odeme', element: <PaymentPage /> }] },
               { path: 'odeme/sonuc', element: <PaymentResultPage /> },
               { path: 'announcements', element: <ResidentAnnouncementsPage /> },
               { path: 'account', element: <AccountPage /> },

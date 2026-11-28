@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useFeature } from '@/context/SiteFeaturesContext';
 import { type RoleEndInput, type RoleInviteInput, apartmentRolesApi } from '@/lib/api/apartmentRoles';
 import { notificationPreferencesApi, type NotificationPreferences } from '@/lib/api/notificationPreferences';
 import type { Role } from '@/types/roles';
@@ -66,10 +67,12 @@ export const accountKeys = {
 
 export function useNotificationPreferences() {
   const { user } = useAuth();
+  // Adim 1: sakin baglaminda tercih ekrani site ozelligine baglidir (yonetim rolleri etkilenmez).
+  const residentPrefs = useFeature('resident.notificationPrefs');
   return useQuery({
     queryKey: accountKeys.notifications(user?.sub),
     queryFn: ({ signal }) => notificationPreferencesApi.get(signal),
-    enabled: !!user,
+    enabled: !!user && (user.role !== 'resident' || residentPrefs),
   });
 }
 

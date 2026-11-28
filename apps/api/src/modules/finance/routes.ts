@@ -9,6 +9,7 @@ import type { BudgetService } from './budgets.js';
 import type { PlanService } from './plans.js';
 import { type BulkJobService, jobView } from '../bulkjobs/service.js';
 import { BulkTooLargeError, type FinanceContext, type FinanceService } from './service.js';
+import { type SiteFeatureReader, requireFeature } from '../features/guard.js';
 
 const READ_ROLES: readonly Role[] = ['apartment_manager', 'management_company', 'observer'];
 const WRITE_ROLES: readonly Role[] = ['apartment_manager', 'management_company'];
@@ -29,6 +30,8 @@ export type FinanceRoutesDeps = {
   budgets?: BudgetService;
   /** Buyuk toplu tahakkuk arka plan isi (SQS). Verilmezse buyuk kapsam 422 doner. */
   jobs?: Pick<BulkJobService, 'startDues'>;
+  /** Adim 1: site ozellik anahtarlari; `admin.debtRestructure` kapaliysa /plans* 403 (verilmezse kontrol yok). */
+  features?: SiteFeatureReader;
 };
 
 /**
@@ -49,7 +52,7 @@ export type FinanceRoutesDeps = {
  * Tenant izolasyonu: `apartmentId` YALNIZCA JWT claim'inden gelir; URL/govde ile
  * degistirilemez. Claim'de apartmentId yoksa (ornegin apartman secilmemis) 403 doner.
  */
-export function financeRoutes({ authenticate, service, closures, offsets, plans, periods, reports, budgets, jobs }: FinanceRoutesDeps) {
+export function financeRoutes({ authenticate, service, closures, offsets, plans, periods, reports, budgets, jobs, features }: FinanceRoutesDeps) {
   const r = new Hono<Env>();
   r.use('*', authenticateWith(authenticate));
   r.use('*', async (c, next) => {
@@ -248,6 +251,10 @@ export function financeRoutes({ authenticate, service, closures, offsets, plans,
 
   // ----- Finans 2.2: borc yapilandirma -----
   if (plans) {
+    // Adim 1: `admin.debtRestructure` kapaliysa taksit plani / muacceliyet uclari 403 feature_disabled.
+    const planGate = requireFeature(features, 'admin.debtRestructure');
+    r.use('/plans', planGate);
+    r.use('/plans/*', planGate);
     r.post('/plans/preview', requireRole(WRITE_ROLES), async (c) => c.json(await plans.preview(ctx(c), await readJson(c))));
     r.post('/plans', requireRole(WRITE_ROLES), async (c) => {
       const result = await plans.create(ctx(c), await readJson(c));

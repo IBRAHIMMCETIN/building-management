@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 vi.mock('@/lib/api/client', () => ({ apiClient: {} }));
 import { matchesSiteQuery, platformSiteSchema } from '@/lib/api/platform';
 import { ADMIN_ROLES, APARTMENT_ADMIN_ROLES, PLATFORM_HOME, homePathForRole } from '@/types/roles';
-import { APARTMENT_NAV, PLATFORM_NAV, navItemsFor, panelTitleFor } from './adminNav';
+import { APARTMENT_NAV, PLATFORM_NAV, filterNav, navItemsFor, panelTitleFor } from './adminNav';
 
 describe('yonetim menusu: platform ve apartman ayrimi', () => {
   it('platform_admin yalnizca platform geneli ogeleri gorur; apartman ekranlari yok', () => {
@@ -97,5 +97,18 @@ describe('bina gorevlisi ve guvenlik menu izolasyonu', () => {
         expect.arrayContaining(['/admin/units', '/admin/finance', '/admin/announcements', '/admin/import', '/admin/settings']),
       );
     }
+  });
+});
+
+describe('yonetim menusu: site ozellik anahtarlari (Adim 1)', () => {
+  it('ozellige bagli oge yalnizca ozellik acikken gorunur; varsayilan davranis degismez', () => {
+    const items = [
+      { ...APARTMENT_NAV[0]!, to: '/admin/a' },
+      { ...APARTMENT_NAV[0]!, to: '/admin/b', roles: ['apartment_manager'] as const, feature: 'admin.debtRestructure' as const },
+    ];
+    expect(filterNav(items, 'apartment_manager').map((n) => n.to)).toEqual(['/admin/a', '/admin/b']);
+    expect(filterNav(items, 'apartment_manager', () => false).map((n) => n.to)).toEqual(['/admin/a']);
+    expect(filterNav(items, 'observer', () => true).map((n) => n.to)).toEqual(['/admin/a']);
+    expect(navItemsFor('apartment_manager', () => false)).toEqual(navItemsFor('apartment_manager'));
   });
 });

@@ -20,6 +20,10 @@ import { ticketPortalRoutes } from './modules/tickets/portalRoutes.js';
 import { ticketRoutes } from './modules/tickets/routes.js';
 import { type TicketService, createTicketService } from './modules/tickets/service.js';
 import { coreAdminRoutes, coreRoutes } from './modules/core/routes.js';
+import { coreRepository } from './modules/core/repository.js';
+import { type SiteFeatureReader, createSiteFeatureReader, legacySiteFeatureReader } from './modules/features/guard.js';
+import { platformFeatureRoutes, siteFeatureRoutes } from './modules/features/routes.js';
+import { type FeatureService, createFeatureService } from './modules/features/service.js';
 import { type CoreService, createCoreService } from './modules/core/service.js';
 import { documentRoutes } from './modules/documents/routes.js';
 import { type DocumentsService, createDocumentsService } from './modules/documents/service.js';
@@ -161,7 +165,20 @@ export type AppConfig = {
   payoutService?: PayoutService;
   invoiceService?: InvoiceService;
   fakePaymentProvider?: FakePaymentProvider;
+  /**
+   * Adim 1: site ozellik anahtarlari okuyucusu (guard). Verilmezse: herhangi bir servis enjekte
+   * edilmisse (testler) tum mevcut ozellikler acik kabul edilir (legacy); production'da site kaydindan
+   * okunur (30 sn konteyner onbellegi, okuma hatasinda fail closed).
+   */
+  siteFeatures?: SiteFeatureReader;
+  /** Adim 1: platform / yonetici ozellik uclari (testlerde sahte depoyla). */
+  featureService?: FeatureService;
 };
+
+/** Testlerin sahte servislerle kurdugu uygulama mi? (production `createApp`'e servis vermez.) */
+function hasInjectedServices(config: AppConfig): boolean {
+  return Object.entries(config).some(([key, value]) => value !== undefined && (/Service$/.test(key) || key === 'notificationPreferences'));
+}
 
 // Runtime'dan bagimsiz API: bugun EC2'da Node sunucusu, ileride Lambda
 // (hono/aws-lambda) ayni uygulamayi calistirir. Yeni domain modulleri
@@ -191,6 +208,13 @@ export function createApp(config: AppConfig) {
   app.options('/api/*', (c) => c.body(null, 204));
 
   app.route('/api/health', healthRoutes(config));
+
+  // Adim 1: site bazli ozellik anahtarlari (tum korumali modul rotalarindan once kurulur).
+  const siteFeatures =
+    config.siteFeatures ?? (hasInjectedServices(config) ? legacySiteFeatureReader : createSiteFeatureReader({ getSite: (id) => coreRepository.getSite(id) }));
+  const featureService = config.featureService ?? createFeatureService({ reader: siteFeatures });
+  app.route('/api/site-features', siteFeatureRoutes({ authenticate, service: featureService }));
+  app.route('/api/admin/site-features', platformFeatureRoutes({ authenticate, service: featureService }));
   app.route(
     '/api/audit',
     auditRoutes({
@@ -208,6 +232,7 @@ export function createApp(config: AppConfig) {
       service: config.meService ?? createMeService(),
       preferences: config.notificationPreferences ?? createPreferencesService(),
       mfa: mfaService,
+      features: siteFeatures,
     }),
   );
   app.route('/api/mfa', mfaAdminRoutes({ authenticate, service: mfaService }));
@@ -291,6 +316,7 @@ export function createApp(config: AppConfig) {
       ...(reportService ? { reports: reportService } : {}),
       ...(budgetService ? { budgets: budgetService } : {}),
       jobs: bulkJobService,
+      features: siteFeatures,
     }),
   );
   // Faz B1: banka ekstresi aktarimi (ekstre yukleme, onizleme, satir aktarimi, sutun eslemesi).
@@ -303,7 +329,7 @@ export function createApp(config: AppConfig) {
   const membershipService = config.membershipService ?? createMembershipService({ ownership: ownershipReader });
   // Finans 2.1: sahte finans servisiyle kurulan testlerde (ownershipService verilmemisse) baglanmaz.
   const ownershipService = config.ownershipService ?? (config.financeService ? undefined : createOwnershipService({ finance: financeService }));
-  if (ownershipService) app.route('/api/ownership', ownershipRoutes({ authenticate, service: ownershipService }));
+  if (ownershipService) app.route('/api/ownership', ownershipRoutes({ authenticate, service: ownershipService, features: siteFeatures }));
   app.route('/api/memberships', membershipRoutes({ authenticate, service: membershipService }));
   // Finans 2.3: sayac sicili / degisim / sablon / donem (yonetici) ve okuma girisi (+ bina gorevlisi).
   const meterPortalService = config.meterPortalService ?? createMeterPortalService();
@@ -361,7 +387,7 @@ export function createApp(config: AppConfig) {
   );
 
 
-  app.route('/api/portal/payments', paymentPortalRoutes({ authenticate, service: paymentsService }));
+  app.route('/api/portal/payments', paymentPortalRoutes({ authenticate, service: paymentsService, features: siteFeatures }));
   app.route('/api/portal/meters', meterPortalRoutes({ authenticate, service: meterPortalService }));
   // Faz 3 (O1-2): sakin ariza / talep (daha ozel yol, `/api/portal`'dan once).
   app.route('/api/portal/tickets', ticketPortalRoutes({ authenticate, service: ticketService }));
@@ -373,6 +399,7 @@ export function createApp(config: AppConfig) {
       paymentReference: (ctx, unitId) => bankMatchService.paymentReference(ctx, unitId),
       ...(offsetService ? { offsets: offsetService } : {}),
       ...(planService ? { plans: planService } : {}),
+      features: siteFeatures,
     }),
   );
 

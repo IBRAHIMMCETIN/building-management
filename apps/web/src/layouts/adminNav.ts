@@ -1,5 +1,6 @@
 import { ArrowLeftRight, Building, ClipboardPen, Contact, CreditCard, Gauge, FileText, FileUp, LayoutDashboard, ListChecks, Megaphone, ScrollText, Settings, ShieldCheck, UserCog, Users, Wallet, Wrench } from 'lucide-react';
 import type { ComponentType } from 'react';
+import type { FeatureKey } from '@/lib/features/catalog';
 import { AUDIT_ROLES, METER_READING_ROLES, METER_ROLES, MY_TASKS_ROLES, OFFICE_ROLES, type Role, SECURITY_ROLES, TEAM_ROLES, TICKET_ROLES, isPlatformRole } from '@/types/roles';
 
 export type NavItem = {
@@ -9,6 +10,8 @@ export type NavItem = {
   end?: boolean;
   /** Verilirse yalnizca bu rollere gorunur (yetki kontrolu yine API'de). */
   roles?: readonly Role[];
+  /** Adim 1: verilirse yalnizca bu site ozelligi acikken gorunur (rota da `RequireFeature` ile korunur). */
+  feature?: FeatureKey;
 };
 
 /** Apartmana ozel yonetim menusu (aktif apartman baglami gerektirir). */
@@ -43,9 +46,13 @@ export const PLATFORM_NAV: readonly NavItem[] = [
  * her oge acik rol listesi tasir, boylece yeni eklenen bir ekran varsayilan olarak bina gorevlisi /
  * guvenlige acilmaz (router'daki `RequireRole` ayni listeleri kullanir).
  */
-export function navItemsFor(role: Role | undefined): readonly NavItem[] {
-  const items = isPlatformRole(role) ? PLATFORM_NAV : APARTMENT_NAV;
-  return items.filter((i) => !i.roles || (!!role && i.roles.includes(role)));
+export function navItemsFor(role: Role | undefined, isEnabled: (key: FeatureKey) => boolean = () => true): readonly NavItem[] {
+  return filterNav(isPlatformRole(role) ? PLATFORM_NAV : APARTMENT_NAV, role, isEnabled);
+}
+
+/** Rol ve (Adim 1) site ozelligi filtresi; ozellik kontrolu verilmezse her ozellik acik sayilir. */
+export function filterNav(items: readonly NavItem[], role: Role | undefined, isEnabled: (key: FeatureKey) => boolean = () => true): readonly NavItem[] {
+  return items.filter((i) => (!i.roles || (!!role && i.roles.includes(role))) && (!i.feature || isEnabled(i.feature)));
 }
 
 export function panelTitleFor(role: Role | undefined): string {

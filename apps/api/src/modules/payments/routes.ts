@@ -1,4 +1,5 @@
 import { type Context, Hono } from 'hono';
+import { type SiteFeatureReader, requireFeature } from '../features/guard.js';
 import type { Authenticator } from '../../auth/claims.js';
 import { type Env, authenticateWith, handleError, readJson, requireRole } from '../../http/helpers.js';
 import type { FakePaymentProvider } from './fakeProvider.js';
@@ -12,7 +13,7 @@ import { PAYMENT_ADMIN_ROLES, PAYMENT_MANAGER_ROLES, PAYMENT_ROLES, type Payment
  *   POST /                       odeme niyeti olustur -> saglayici odeme sayfasi (paymentPageUrl)
  *   GET  /:intentId?refresh=1    niyet durumu (refresh: saglayicidan sorgulayip sonuclandir)
  */
-export function paymentPortalRoutes({ authenticate, service }: { authenticate: Authenticator; service: PaymentsService }) {
+export function paymentPortalRoutes({ authenticate, service, features }: { authenticate: Authenticator; service: PaymentsService; features?: SiteFeatureReader }) {
   const r = new Hono<Env>();
   r.onError(handleError);
 
@@ -31,9 +32,12 @@ export function paymentPortalRoutes({ authenticate, service }: { authenticate: A
     return { apartmentId: apartmentId as string, userId, role };
   };
 
-  r.get('/quote', async (c) => c.json(await service.quote(ctx(c), c.req.query('unitId'))));
+  // Adim 1: `payments.online` kapaliysa sakin odeme baslatamaz. Sonuc sorgusu (GET /:intentId) ve
+  // saglayici callback/webhook'lari her zaman acik kalir (yoldaki odeme sonuclanmali).
+  const online = requireFeature(features, 'payments.online');
+  r.get('/quote', online, async (c) => c.json(await service.quote(ctx(c), c.req.query('unitId'))));
 
-  r.post('/', async (c) => {
+  r.post('/', online, async (c) => {
     const view = await service.createIntent(ctx(c), await readJson(c), { ip: clientIp(c) });
     return c.json(view, 'replayed' in view ? 200 : 201);
   });

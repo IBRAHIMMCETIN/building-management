@@ -2,11 +2,20 @@ import { type Context, Hono } from 'hono';
 import type { Authenticator, Role } from '../../auth/claims.js';
 import { type Env, authenticateWith, handleError, publicView, readJson, requireRole } from '../../http/helpers.js';
 import type { OwnershipContext, OwnershipService } from './service.js';
+import { type SiteFeatureReader, requireFeature } from '../features/guard.js';
 
 const READ_ROLES: readonly Role[] = ['apartment_manager', 'management_company', 'observer'];
 const WRITE_ROLES: readonly Role[] = ['apartment_manager', 'management_company'];
 
-export type OwnershipRoutesDeps = { authenticate: Authenticator; service: OwnershipService };
+export type OwnershipRoutesDeps = {
+  authenticate: Authenticator;
+  service: OwnershipService;
+  /**
+   * Adim 1: `admin.sharedOwnership` kapaliysa bolunmus cari modu (PUT billing) ve mulk/hisse devri
+   * uclari 403 feature_disabled. Sicil okuma / duzeltme ve sorun listesi acik kalir. Verilmezse kontrol yok.
+   */
+  features?: SiteFeatureReader;
+};
 
 /**
  * Finans 2.1 - Hisseli mulkiyet ve mulk/hisse devri (`/api/ownership`).
@@ -26,7 +35,7 @@ export type OwnershipRoutesDeps = { authenticate: Authenticator; service: Owners
  *
  * Tenant izolasyonu: `apartmentId` YALNIZCA JWT claim'inden gelir. `observer` salt okunur.
  */
-export function ownershipRoutes({ authenticate, service }: OwnershipRoutesDeps) {
+export function ownershipRoutes({ authenticate, service, features }: OwnershipRoutesDeps) {
   const r = new Hono<Env>();
   r.use('*', authenticateWith(authenticate));
   r.use('*', async (c, next) => {
@@ -41,6 +50,12 @@ export function ownershipRoutes({ authenticate, service }: OwnershipRoutesDeps) 
     const claims = c.get('claims');
     return { apartmentId: claims.apartmentId as string, userId: claims.userId };
   };
+
+  const sharedGate = requireFeature(features, 'admin.sharedOwnership');
+  r.use('/units/:unitId/billing', sharedGate);
+  r.use('/units/:unitId/transfers', sharedGate);
+  r.use('/units/:unitId/transfers/*', sharedGate);
+  r.use('/transfers/*', sharedGate);
 
   r.get('/issues', requireRole(READ_ROLES), async (c) => c.json(await service.issues(ctx(c))));
   r.get('/voting-roll', requireRole(READ_ROLES), async (c) => c.json(await service.votingRoll(ctx(c), { date: c.req.query('date') })));

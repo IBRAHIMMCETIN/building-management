@@ -1,4 +1,4 @@
-import { Building, CreditCard, LifeBuoy, Search, ShieldAlert } from 'lucide-react';
+import { Building, CreditCard, LifeBuoy, Search, ShieldAlert, ToggleRight } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { SupportDialog } from '@/components/support/SupportDialog';
 import { sessionManager } from '@/lib/auth/sessionManager';
@@ -9,6 +9,8 @@ import { usePlatformApartments } from '@/hooks/usePlatform';
 import { errorMessage } from '@/lib/api/errors';
 import { SITE_TYPE_LABELS, matchesSiteQuery } from '@/lib/api/platform';
 import { formatDate } from '@/lib/dates';
+import { FeatureRequestsCard } from './FeatureRequestsCard';
+import { SiteFeaturesDialog } from './SiteFeaturesDialog';
 
 type Filter = 'all' | 'active' | 'inactive';
 
@@ -42,6 +44,8 @@ export function PlatformApartmentsPage() {
   const [filter, setFilter] = useState<Filter>('all');
   const [q, setQ] = useState('');
   const [supportFor, setSupportFor] = useState<{ siteId: string; name: string }>();
+  // Adim 1: site bazli ozellik anahtarlari penceresi.
+  const [featuresFor, setFeaturesFor] = useState<{ siteId: string; name: string }>();
   // Destek modu sunucu tarafinda reddedildiyse / suresi dolduysa bir kez bilgi verilir.
   const [supportNotice] = useState(() => sessionManager.consumeSupportNotice());
 
@@ -116,6 +120,10 @@ export function PlatformApartmentsPage() {
                   )}
                 </div>
               )}
+                <Button variant="secondary" size="sm" onClick={() => setFeaturesFor({ siteId: s.siteId, name: s.name })}>
+                  <ToggleRight className="size-4" aria-hidden="true" />
+                  Özellikler
+                </Button>
                 <Button variant="secondary" size="sm" onClick={() => setSupportFor({ siteId: s.siteId, name: s.name })}>
                   <LifeBuoy className="size-4" aria-hidden="true" />
                   Destek erişimi
@@ -137,6 +145,7 @@ export function PlatformApartmentsPage() {
         </Alert>
       )}
       <SupportDialog apartment={supportFor} onClose={() => setSupportFor(undefined)} />
+      <SiteFeaturesDialog site={featuresFor} onClose={() => setFeaturesFor(undefined)} />
       <div>
         <h1 className="text-title font-bold">Apartmanlar</h1>
         <p className="text-small text-muted">Platformdaki tüm apartman ve siteler. Apartman içi veriler (daire, kişi, finans) yalnızca o apartmanın yöneticilerine açıktır.</p>
@@ -163,6 +172,8 @@ export function PlatformApartmentsPage() {
           </span>
         </Alert>
       )}
+
+      <FeatureRequestsCard onOpenSite={setFeaturesFor} />
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <FilterChips<Filter> label="Durum" value={filter} onChange={setFilter} options={FILTERS} />

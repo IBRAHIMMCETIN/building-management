@@ -2,13 +2,15 @@ import { Building2, Gauge, Home, Megaphone, Receipt, Wrench } from 'lucide-react
 import type { ComponentType } from 'react';
 import { NavLink, Outlet } from 'react-router';
 import { PortalUnitProvider } from '@/context/PortalUnitContext';
+import { SiteFeaturesProvider, useSiteFeatures } from '@/context/SiteFeaturesContext';
+import type { FeatureKey } from '@/lib/features/catalog';
 import { useActiveApartmentName } from '@/hooks/useActiveContextLabel';
 import { BRAND_NAME } from '@/lib/brand';
 import { cn } from '@/lib/cn';
 import { UserMenu } from './UserMenu';
 import { PageSuspense } from '@/router/lazyPage';
 
-type NavItem = { to: string; label: string; icon: ComponentType<{ className?: string }>; end?: boolean };
+type NavItem = { to: string; label: string; icon: ComponentType<{ className?: string }>; end?: boolean; /** Adim 1: yalnizca bu ozellik acikken. */ feature?: FeatureKey };
 
 const NAV: NavItem[] = [
   { to: '/app', label: 'Ana Sayfa', icon: Home, end: true },
@@ -35,6 +37,16 @@ export function PortalBrand() {
 /** Mobil oncelikli: ust bar + altta sekme cubugu (PWA'da ana ekrandan acilinca da rahat). */
 export function ResidentLayout() {
   return (
+    <SiteFeaturesProvider>
+      <ResidentShell />
+    </SiteFeaturesProvider>
+  );
+}
+
+function ResidentShell() {
+  const { isEnabled } = useSiteFeatures();
+  const items = NAV.filter((i) => !i.feature || isEnabled(i.feature));
+  return (
     <div className="flex min-h-dvh flex-col">
       <header className="sticky top-0 z-10 flex h-14 min-w-0 items-center justify-between gap-3 border-b border-border bg-surface px-4">
         <PortalBrand />
@@ -51,9 +63,10 @@ export function ResidentLayout() {
 
       <nav
         aria-label="Sakin menüsü"
-        className="fixed inset-x-0 bottom-0 z-10 grid grid-cols-5 border-t border-border bg-surface pb-[env(safe-area-inset-bottom)]"
+        className="fixed inset-x-0 bottom-0 z-10 grid border-t border-border bg-surface pb-[env(safe-area-inset-bottom)]"
+        style={{ gridTemplateColumns: `repeat(${items.length}, minmax(0, 1fr))` }}
       >
-        {NAV.map(({ to, label, icon: Icon, end }) => (
+        {items.map(({ to, label, icon: Icon, end }) => (
           <NavLink
             key={to}
             to={to}
