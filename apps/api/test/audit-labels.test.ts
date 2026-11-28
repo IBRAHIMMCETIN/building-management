@@ -49,7 +49,40 @@ function apiActions(prefixes: readonly string[]): Map<string, string> {
   return found;
 }
 
+/**
+ * Denetim eylemi oldugu kesin olan tum sabitler (on ekten bagimsiz): `action: '<kod>'` ve denetim
+ * yardimcilarina (`vehicleAudit(.., 'gate.vehicle.create')`, `audit(ctx, x, 'assembly.create')`,
+ * `membershipAudit(m, 'membership.update')` ...) verilen ilk sabit.
+ */
+function auditActionLiterals(): Map<string, string> {
+  const found = new Map<string, string>();
+  const patterns = [/\baction:\s*'([a-z_]+(?:\.[a-z_]+)+)'/g, /\b\w*[aA]udit\w*\(\s*(?:[^()';]*?,\s*)?'([a-z_]+(?:\.[a-z_]+)+)'/g];
+  for (const file of sourceFiles(join(root, 'apps/api/src'))) {
+    for (const line of readFileSync(file, 'utf8').split('\n')) {
+      const code = line.trim();
+      if (code.startsWith('*') || code.startsWith('//') || code.startsWith('/*')) continue;
+      for (const re of patterns) for (const m of code.matchAll(re)) if (!found.has(m[1] as string)) found.set(m[1] as string, file.slice(root.length));
+    }
+  }
+  return found;
+}
+
 describe('denetim eylemi etiketleri (web sozlugu)', () => {
+  it('her denetim eylemi sabiti bilinen bir kategori on ekiyle baslar ve etiketlidir (yeni on ek de yakalanir)', () => {
+    const prefixes = categoryPrefixes();
+    const exact = exactLabels();
+    const actions = auditActionLiterals();
+    expect(actions.has('gate.vehicle.create')).toBe(true);
+    expect(actions.has('membership.update')).toBe(true);
+    expect(actions.has('assembly.create')).toBe(true);
+    expect(actions.has('apartment_role.end')).toBe(true);
+    expect(actions.size).toBeGreaterThan(100);
+    const unknownPrefix = [...actions].filter(([a]) => !prefixes.some((p) => a.startsWith(p))).map(([a, file]) => `${a} (${file})`);
+    expect(unknownPrefix).toEqual([]);
+    const unlabeled = [...actions].filter(([a]) => !exact.has(a)).map(([a, file]) => `${a} (${file})`);
+    expect(unlabeled).toEqual([]);
+  });
+
   it('API kaynagindaki her denetim eylemi sabitinin Turkce etiketi var', () => {
     const prefixes = categoryPrefixes();
     expect(prefixes).toContain('gate.');
