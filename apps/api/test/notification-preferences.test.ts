@@ -24,6 +24,7 @@ import {
 } from '../src/modules/notifications/preferences.js';
 import type { UnitMembership } from '../src/modules/portal/types.js';
 import { createNotificationWorker } from '../src/workers/notification-worker.js';
+import { SCHEDULER_EVENT_TYPES } from '../src/workers/scheduler-worker.js';
 import { createFakePreferencesRepo } from './fakes/preferencesRepo.js';
 
 const APT = 'apt-1';
@@ -49,7 +50,10 @@ const SAMPLES: [Notification['template'], NotificationCategory][] = [
 
 describe('kategori cozumleme', () => {
   it('her olay turunun bir kategorisi var; sablon on ekleri ayni kategoriye duser', () => {
-    for (const type of EVENT_TYPES) expect(categoryOfEvent(type), type).toBeDefined();
+    // Bildirim olmayan olaylar (zamanlanmis gorev kuyruguna gider) kategori tasimaz.
+    for (const type of EVENT_TYPES.filter((t) => !(SCHEDULER_EVENT_TYPES as readonly string[]).includes(t))) expect(categoryOfEvent(type), type).toBeDefined();
+    for (const type of SCHEDULER_EVENT_TYPES) expect(categoryOfEvent(type), type).toBeUndefined();
+    expect(categoryOfEvent('BULK_JOB_FINISHED')).toBe('finance');
     expect(categoryOfEvent('POLL_PUBLISHED')).toBe('polls');
     expect(categoryOfEvent('RESERVATION_CANCELLED')).toBe('reservations');
     expect(categoryOfEvent('OPERATIONS_DIGEST')).toBe('tickets');

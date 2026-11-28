@@ -2,8 +2,8 @@ import type { PayableOption, PayableSuggestion } from '@/lib/api/bank';
 
 /*
  * Faz B3.5 - Cikan banka satiriyla tedarikci borcu kapatma (saf yardimcilar).
- * Fazla odeme API'de reddedilir (avans mahsubu sonraki Finans asamasinda); burada da
- * erkenden gosterilir.
+ * Fazla odeme API'de reddedilir (fatura oncesi odeme Tedarikciler sekmesinden avans olarak
+ * kaydedilir); burada da erkenden gosterilir.
  */
 
 /** Diyalogda varsayilan tedarikci: guveni en az 0.5 olan ilk oneri, yoksa bos. */
@@ -18,7 +18,7 @@ export function settleState(lineAmount: number, payable: Pick<PayableOption, 'op
   if (!payable) return { valid: false, error: 'Tedarikçi seçin' };
   if (payable.openBalance <= 0) return { valid: false, error: 'Bu tedarikçinin açık borcu yok' };
   if (lineAmount > payable.openBalance) {
-    return { valid: false, error: 'Ödeme, tedarikçinin açık borcunu aşıyor. Avans mahsubu henüz desteklenmiyor; satırı gider olarak işleyin veya borç kaydını kontrol edin.' };
+    return { valid: false, error: 'Ödeme, tedarikçinin açık borcunu aşıyor. Fatura öncesi ödemeyi Tedarikçiler sekmesinden avans olarak kaydedin veya borç kaydını kontrol edin.' };
   }
   return { valid: true, remaining: payable.openBalance - lineAmount };
 }

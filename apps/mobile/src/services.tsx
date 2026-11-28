@@ -1,12 +1,16 @@
 import type { MeContexts } from '@bm/shared/auth/contextsSchema';
 import { mockContextsFor } from '@bm/shared/auth/mockScenarios';
 import { type AuthAdapter, type AuthSession, apiTokenFor } from '@bm/shared/auth/session';
+import { onlineManager } from '@tanstack/react-query';
 import { type ReactNode, createContext, use } from 'react';
 import type { AppEnv } from '@/config/env';
 import { type ApiClient, createApiClient } from '@/lib/api/createApiClient';
 import { endpoints } from '@/lib/api/endpoints';
 import { createAuthAdapter } from '@/lib/auth/adapter';
 import { SessionManager } from '@/lib/auth/sessionManager';
+import { AUTO_DISABLED_MESSAGE, AppLockService, type LockStorage } from '@/lib/lock/appLock';
+import { biometrics as defaultBiometrics } from '@/lib/lock/biometrics';
+import type { BiometricAdapter } from '@/lib/lock/types';
 import { type NoticeStore, createNoticeStore } from '@/lib/notices';
 import { notificationsAdapter } from '@/lib/push/notificationsAdapter';
 import { PushService } from '@/lib/push/pushService';
@@ -33,6 +37,8 @@ export type Services = {
   notifications: NotificationsAdapter;
   /** Uygulama geneli bilgi notu (ust bant). */
   notices: NoticeStore;
+  /** Face ID / parmak izi ile uygulama kilidi (kullanici basina, istege bagli). */
+  lock: AppLockService;
 };
 
 export type ServiceOverrides = {
@@ -41,6 +47,17 @@ export type ServiceOverrides = {
   notifications?: NotificationsAdapter;
   /** Push cihaz kaydinin deposu (varsayilan: guvenli depo). */
   pushStorage?: KeyValueStorage;
+  biometrics?: BiometricAdapter;
+  /** Kilit tercihinin asil deposu (varsayilan: guvenli depo, Keychain / Keystore). */
+  lockStorage?: LockStorage;
+  /** Gizli olmayan "kilit acik" isareti (varsayilan: AsyncStorage tercihleri). */
+  lockMarker?: LockStorage;
+};
+
+/** Guvenli depoyu kilit deposuna uyarlar (okuma hatasi firlatilir: "kayit yok" sayilmaz). */
+const secureLockStorage: LockStorage = {
+  get: (key) => secureStorage.getItem(key),
+  set: (key, value) => (value === null ? secureStorage.removeItem(key) : secureStorage.setItem(key, value)),
 };
 
 /**
@@ -63,6 +80,8 @@ export function createServices(env: AppEnv, overrides: ServiceOverrides = {}): S
     baseUrl: env.apiMode === 'demo' ? '' : env.apiUrl,
     getToken: (options) => session.getApiToken(options),
     onAuthFailure: () => session.expire(),
+    // Cevrimdisi (NetInfo -> React Query onlineManager; hooks/useNetwork.ts): yazan istekler gonderilmez.
+    isOnline: () => onlineManager.isOnline(),
     fetchImpl,
   });
 
@@ -104,8 +123,26 @@ export function createServices(env: AppEnv, overrides: ServiceOverrides = {}): S
     if (restored) void push.onRestored(restored);
   });
 
+  const notices = createNoticeStore();
+  const lock = new AppLockService({
+    biometrics: overrides.biometrics ?? defaultBiometrics,
+    storage: overrides.lockStorage ?? secureLockStorage,
+    marker: overrides.lockMarker ?? preferences,
+    onAutoDisabled: () => notices.show(AUTO_DISABLED_MESSAGE, 'warning'),
+  });
+  // Kilit: soguk acilista geri yuklenen oturum kilitli baslayabilir; etkilesimli giris kilitsiz; cikis temizler.
+  session.onScopeChange((prev, next) => {
+    if (!next) lock.clear();
+    else if (prev?.claims.sub !== next.claims.sub) void lock.onSignedIn(next.claims.sub);
+  });
+  void session.ready.then(() => {
+    const restored = session.getSession();
+    if (restored) void lock.onRestored(restored.claims.sub);
+    else lock.clear();
+  });
+
   const rawFetch = fetchImpl ?? (((...args: Parameters<typeof fetch>) => fetch(...args)) as typeof fetch);
-  return { env, session, api, fetchContexts, rawFetch, push, notifications, notices: createNoticeStore() };
+  return { env, session, api, fetchContexts, rawFetch, push, notifications, notices, lock };
 }
 
 const ServicesContext = createContext<Services | null>(null);

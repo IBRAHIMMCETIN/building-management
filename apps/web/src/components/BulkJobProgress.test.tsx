@@ -58,4 +58,12 @@ describe('BulkJobProgress tamamlanma metni', () => {
   it('daha once geri alinmis donem', () => {
     expect(render(job({ kind: 'meter_reversal', result: { reversed: 12, written: 0, replayed: true } }))).toContain('12 ters kayıt işlendi (dönem daha önce geri alınmıştı).');
   });
+
+  it('sayac onizlemesi (1.000+ bolum): hazir / engelli ozet ve suren is metni', () => {
+    expect(render(job({ kind: 'meter_calculation', total: 1250, result: { ok: true, unitCount: 1250, chargeCount: 1248 } }))).toContain('Önizleme hazır: 1.250 bölüm, 1.248 tahakkuk.');
+    act(() => root?.unmount());
+    expect(render(job({ kind: 'meter_calculation', result: { ok: false, blockerCount: 3 } }))).toContain('Hesap yapılamadı: 3 engel bulundu.');
+    act(() => root?.unmount());
+    expect(render(job({ kind: 'meter_calculation', status: 'running', phase: undefined, total: 1250, processed: 0, percent: 0 }))).toContain('Dağıtım hesaplanıyor (1.250 bölüm)…');
+  });
 });

@@ -89,7 +89,7 @@ export async function boundaryBalances(deps: BoundaryDeps, apartmentId: string, 
 // ---------------------------------------------------------------------------
 
 /** Ozet bicimi degisirse artirilir (eski kayitlar okunmaz, yeniden uretilir). */
-export const PAYABLE_SUMMARY_SCHEMA = 1;
+export const PAYABLE_SUMMARY_SCHEMA = 2; // 2: avans mahsubu (`advanceApplied`, hedefli faturalar)
 const MAX_PAYABLE_SUMMARY_BYTES = 300_000;
 
 export const payableSummaryKeys = {

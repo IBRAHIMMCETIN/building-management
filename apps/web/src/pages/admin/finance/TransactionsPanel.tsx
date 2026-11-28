@@ -74,6 +74,7 @@ function Details({ tx, labels, link }: { tx: LedgerTransaction; labels: Labels; 
     tx.dueDate ? `Son ödeme ${formatDate(tx.dueDate)}` : undefined,
     // Referans yalnizca giderde fatura numarasidir (mahsup / online tahsilat referanslari teknik).
     tx.reference && (tx.kind === 'expense' || tx.kind === 'payable_payment') ? `Fatura ${tx.reference}` : undefined,
+    tx.kind === 'supplier_advance' ? 'Tedarikçi avansı' : tx.kind === 'supplier_advance_offset' ? 'Avans faturaya mahsup edildi' : undefined,
     tx.reason ? `Neden: ${labels.text(tx.reason)}` : undefined,
     link?.role === 'offset' && link.offset.status === 'reversed' ? 'Ters kayıtla geri alındı' : undefined,
   ].filter(Boolean);

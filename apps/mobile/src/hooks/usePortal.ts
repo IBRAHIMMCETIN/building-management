@@ -63,10 +63,13 @@ export function useMyAnnouncements() {
   });
 }
 
-/** Odenebilir tutar ve online odemenin acik olup olmadigi ("Online öde" dugmesi icin). */
-export function usePaymentQuote() {
+/**
+ * Odenebilir tutar ve online odemenin acik olup olmadigi ("Online öde" dugmesi icin). `featureOn`: site
+ * ozelligi `payments.online` (kapaliyken API 403 doner; istek hic gonderilmez).
+ */
+export function usePaymentQuote(featureOn = true) {
   const { api, apt, userId, unitId, enabled } = useScope();
-  return useQuery({ queryKey: portalKeys.quote(apt, userId, unitId), queryFn: ({ signal }) => endpoints.paymentQuote(api, unitId, signal), enabled, retry });
+  return useQuery({ queryKey: portalKeys.quote(apt, userId, unitId), queryFn: ({ signal }) => endpoints.paymentQuote(api, unitId, signal), enabled: enabled && featureOn, retry });
 }
 
 /** Acik talepler (ana sayfa ozeti). */

@@ -54,6 +54,8 @@ import { type PeriodService, createPeriodService } from './modules/finance/perio
 import { type ReportService, createReportService } from './modules/finance/reportService.js';
 import { type BudgetService, createBudgetService } from './modules/finance/budgets.js';
 import { type PlanService, createPlanService } from './modules/finance/plans.js';
+import { type PlanRequestService, createPlanRequestService } from './modules/finance/planRequests.js';
+import { type SupplierAdvanceService, createSupplierAdvanceService } from './modules/finance/supplierAdvances.js';
 import { type FinanceService, createFinanceService } from './modules/finance/service.js';
 import { healthRoutes } from './modules/health/routes.js';
 import { platformDemoRequestRoutes, publicDemoRequestRoutes } from './modules/demo-requests/routes.js';
@@ -86,6 +88,8 @@ import { meterPortalRoutes, meterReadingRoutes, meterRoutes } from './modules/me
 import { type MeterPortalService, createMeterPortalService } from './modules/meters/portalView.js';
 import { type MeterPostingService, createMeterPostingService } from './modules/meters/posting.js';
 import { bulkJobRoutes } from './modules/bulkjobs/routes.js';
+import { emailSuppressionRoutes } from './modules/notifications/suppressionRoutes.js';
+import { type SuppressionService, createDynamoSuppressionStore, createSuppressionService } from './modules/notifications/suppressions.js';
 import { createDynamoBulkJobRepository } from './modules/bulkjobs/repository.js';
 import { type BulkJobQueue, createInlineBulkJobQueue, loadBulkJobQueueFromEnv } from './modules/bulkjobs/queue.js';
 import { type BulkJobService, createBulkJobService } from './modules/bulkjobs/service.js';
@@ -140,6 +144,9 @@ export type AppConfig = {
   /** Finans 2.2: avans mahsubu ve borc yapilandirma (testlerde sahte depolarla). */
   offsetService?: OffsetService;
   planService?: PlanService;
+  /** Finans 2.2 sonrasi: sakin yapilandirma talebi ve tedarikci avansi (testlerde sahte depolarla). */
+  planRequestService?: PlanRequestService;
+  supplierAdvanceService?: SupplierAdvanceService;
   /** Finans 2.4: mali donem kapanisi. */
   periodService?: PeriodService;
   reportService?: ReportService;
@@ -158,6 +165,10 @@ export type AppConfig = {
   bulkJobService?: BulkJobService;
   /** Finans 2.3-4: toplu geri alma ve duzeltilmis donem. */
   meterReversalService?: MeterReversalService;
+  /** Performans: sayac onizlemesinin arka plan isine alinacagi bolum esigi (testler; varsayilan 1.000). */
+  meterAsyncCalculateUnits?: number;
+  /** Bildirim devami: SES geri donus / sikayet e-posta engelleri (platform). */
+  suppressionService?: SuppressionService;
   /** Finans 2.3-5a: sakin tuketim gecmisi ve dagitim dokumu PDF. */
   meterPortalService?: MeterPortalService;
   portalService?: PortalService;
@@ -260,6 +271,10 @@ export function createApp(config: AppConfig) {
   app.route('/api/site-features', siteFeatureRoutes({ authenticate, service: featureService }));
   app.route('/api/admin/site-features', platformFeatureRoutes({ authenticate, service: featureService }));
   app.route(
+    '/api/admin/email-suppressions',
+    emailSuppressionRoutes({ authenticate, service: config.suppressionService ?? createSuppressionService({ store: createDynamoSuppressionStore() }) }),
+  );
+  app.route(
     '/api/audit',
     auditRoutes({
       authenticate,
@@ -349,6 +364,8 @@ export function createApp(config: AppConfig) {
   const budgetService = config.budgetService ?? (config.financeService ? undefined : createBudgetService({ finance: financeService, core: coreService }));
   const reportService = config.reportService ?? (config.financeService ? undefined : createReportService({ ledger: financeService }));
   const planService = config.planService ?? (config.financeService ? undefined : createPlanService({ finance: financeService, portal: portalService }));
+  const planRequestService = config.planRequestService ?? (planService && !config.financeService ? createPlanRequestService({ plans: planService, portal: portalService }) : undefined);
+  const supplierAdvanceService = config.supplierAdvanceService ?? (config.financeService ? undefined : createSupplierAdvanceService({ finance: financeService }));
   app.route(
     '/api/finance',
     financeRoutes({
@@ -362,6 +379,8 @@ export function createApp(config: AppConfig) {
       ...(budgetService ? { budgets: budgetService } : {}),
       jobs: bulkJobService,
       features: siteFeatures,
+      ...(planRequestService ? { planRequests: planRequestService } : {}),
+      ...(supplierAdvanceService ? { supplierAdvances: supplierAdvanceService } : {}),
     }),
   );
   // Faz B1: banka ekstresi aktarimi (ekstre yukleme, onizleme, satir aktarimi, sutun eslemesi).
@@ -387,6 +406,7 @@ export function createApp(config: AppConfig) {
       posting: meterPostingService,
       jobs: bulkJobService,
       reversal: meterReversalService,
+      ...(config.meterAsyncCalculateUnits !== undefined ? { asyncCalculateUnits: config.meterAsyncCalculateUnits } : {}),
     }),
   );
   app.route('/api/meter-readings', meterReadingRoutes({ authenticate, service: config.meterReadingService ?? createMeterReadingService() }));
@@ -484,6 +504,7 @@ export function createApp(config: AppConfig) {
       paymentReference: (ctx, unitId) => bankMatchService.paymentReference(ctx, unitId),
       ...(offsetService ? { offsets: offsetService } : {}),
       ...(planService ? { plans: planService } : {}),
+      ...(planRequestService ? { planRequests: planRequestService } : {}),
       features: siteFeatures,
       // Adim 3: aylik gider dagilimi (hesap-ay ozetinden; ozet hazir degilse yalnizca o ayin islemleri).
       expenseBreakdown: config.expenseBreakdown ?? ((ctx, month) => loadExpenseBreakdown(financeRepository, ctx.apartmentId, month)),

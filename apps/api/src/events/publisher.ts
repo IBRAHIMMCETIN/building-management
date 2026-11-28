@@ -47,6 +47,11 @@ export const EVENT_TYPES = [
   'TENDER_DECIDED',
   'TENDER_CANCELLED',
   'TENDER_REPLIED',
+  'MEMBERSHIP_ENDED',
+  'BULK_JOB_FINISHED',
+  'RESTRUCTURE_REQUESTED',
+  'RESTRUCTURE_APPROVED',
+  'RESTRUCTURE_REJECTED',
 ] as const;
 export type EventType = (typeof EVENT_TYPES)[number];
 
@@ -287,6 +292,49 @@ export type TenderEventPayload = { tenderId: string };
  */
 export type TenderRepliedPayload = { tenderId: string; commentId: string };
 
+/**
+ * Kapi devami: uyelik yazimi (PATCH / iptal) kullaniciyi bugun itibariyla bolumde oturmayan yapti
+ * (bitis tarihi gecmis, iptal, oturan malik artik oturmuyor). Cari kapama bu olayi yazmaz: geri alma
+ * payi nedeniyle karar gece taramasinindir. Bildirim DEGILDIR: SNS aboneligiyle zamanlanmis
+ * gorev kuyruguna gider (infra/scheduler.tf `scheduler_event_types`) ve worker gece taramasinin
+ * kuraliyla (`gate/departures.ts` `departureCandidates`) o kullanicinin o bolumdeki aktif gecis ve
+ * araclarini hemen pasife alir. `eventId` = `MEMBERSHIP_ENDED:<userId>:<unitId>:<surum>`.
+ */
+export type MembershipEndedPayload = {
+  userId: string;
+  unitId: string;
+  source: 'membership';
+  endDate?: IsoDate;
+};
+
+/**
+ * Bildirim devami: arka plan toplu isi (bulkjobs) bitti (`completed` / `completed_with_errors` /
+ * `failed`). Alici isi baslatan kullanici (sistem baslattiysa kimse); hala apartmanda aktif yonetim
+ * rolu varsa. Sayilar ve baglanti icin is ozeti tasinir, hatali bolum ornekleri tasinmaz.
+ * `eventId` = `BULK_JOB_FINISHED:<jobId>:<is surumu>` (yeniden denenen is yeniden bildirir).
+ */
+export type BulkJobFinishedPayload = {
+  jobId: string;
+  kind: string;
+  status: 'completed' | 'completed_with_errors' | 'failed';
+  startedBy: string;
+  total: number;
+  succeeded: number;
+  failed: number;
+  written: number;
+  periodId?: string;
+  label?: string;
+  errorMessage?: string;
+};
+
+/**
+ * Finans 2.2 sonrasi: sakin yapilandirma talebi (`planRequests.ts`). REQUESTED -> yonetim;
+ * APPROVED / REJECTED -> talebi acan sakin (hala dairenin uyesiyse). Payload yalnizca kimlik
+ * tasir; tutar, taksit ve ret gerekcesi worker'in okudugu guncel talep kaydindan gelir.
+ * `eventId` = `<TUR>:<requestId>`.
+ */
+export type RestructureEventPayload = { requestId: string };
+
 type PayloadByType = {
   DUE_GENERATED: DueGeneratedPayload;
   PAYMENT_RECEIVED: PaymentReceivedPayload;
@@ -311,6 +359,11 @@ type PayloadByType = {
   TENDER_DECIDED: TenderEventPayload;
   TENDER_CANCELLED: TenderEventPayload;
   TENDER_REPLIED: TenderRepliedPayload;
+  MEMBERSHIP_ENDED: MembershipEndedPayload;
+  BULK_JOB_FINISHED: BulkJobFinishedPayload;
+  RESTRUCTURE_REQUESTED: RestructureEventPayload;
+  RESTRUCTURE_APPROVED: RestructureEventPayload;
+  RESTRUCTURE_REJECTED: RestructureEventPayload;
 };
 
 export type DomainEvent<T extends EventType = EventType> = {

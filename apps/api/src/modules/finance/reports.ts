@@ -287,6 +287,8 @@ export type FinanceSummary = {
   advances: number;
   /** Tedarikci borclari. */
   payables: number;
+  /** Tedarikcilere verilen, henuz faturayla mahsup edilmemis avanslar (sakin alacaklarina dahil degil). */
+  supplierAdvances: number;
   overdue: number;
   /** Islemis, henuz deftere yazilmamis gecikme tazminati toplami. */
   accruedLateFees: number;
@@ -298,7 +300,9 @@ export type FinanceSummary = {
 export function buildSummary(accounts: Account[], dues: UnitDuesView[]): FinanceSummary {
   const active = accounts.filter((a) => a.status === 'active' || a.balance !== 0);
   const sum = (type: Account['type']) => active.filter((a) => a.type === type).reduce((s, a) => s + a.balance, 0);
-  const recv = accounts.filter((a) => a.type === 'receivable');
+  // Tedarikci avans alt hesaplari (`supplierAdvanceOf`) sakin carisi degildir.
+  const recv = accounts.filter((a) => a.type === 'receivable' && !a.supplierAdvanceOf);
+  const supplierAdvances = accounts.filter((a) => a.type === 'receivable' && a.supplierAdvanceOf).reduce((s, a) => s + Math.max(a.balance, 0), 0);
   const formerRecv = recv.filter((a) => a.unitId && a.liableParty && !isPrimaryReceivableId(a.accountId, a.unitId, a.liableParty));
   const cash = sum('cash');
   const bank = sum('bank');
@@ -313,6 +317,7 @@ export function buildSummary(accounts: Account[], dues: UnitDuesView[]): Finance
     advances: recv.reduce((s, a) => s + Math.max(-a.balance, 0), 0),
     // Borc hesabinin normal tarafi alacak: bakiye (borc - alacak) negatiftir.
     payables: -sum('payable'),
+    supplierAdvances,
     overdue: dues.reduce((s, d) => s + d.overdue, 0),
     accruedLateFees: dues.reduce((s, d) => s + d.lateFee, 0),
     overdueUnitCount: dues.filter((d) => d.status === 'overdue').length,

@@ -13,6 +13,7 @@ describe('yonetim menusu: platform ve apartman ayrimi', () => {
       '/admin/payments/transfers',
       '/admin/payments/invoices',
       '/admin/users',
+      '/admin/email-suppressions',
       '/admin/demo-requests',
       '/admin/audit',
     ]);
@@ -33,7 +34,7 @@ describe('yonetim menusu: platform ve apartman ayrimi', () => {
     expect(navItemsFor('building_staff').map((n) => n.to)).not.toContain('/admin/audit');
     for (const role of APARTMENT_ADMIN_ROLES) {
       const paths = navItemsFor(role).map((n) => n.to);
-      for (const p of ['/admin/apartments', '/admin/payments', '/admin/payments/transfers', '/admin/payments/invoices', '/admin/users', '/admin/demo-requests']) {
+      for (const p of ['/admin/apartments', '/admin/payments', '/admin/payments/transfers', '/admin/payments/invoices', '/admin/users', '/admin/email-suppressions', '/admin/demo-requests']) {
         expect(paths).not.toContain(p);
       }
       expect(panelTitleFor(role)).toBe('Yönetim Paneli');

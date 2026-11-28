@@ -8,10 +8,9 @@ import { type ReactNode, useEffect, useMemo, useState } from 'react';
 import { Platform, Pressable, StyleSheet, View } from 'react-native';
 import { CalendarCheck, SearchX } from '@/components/icons';
 import { DateField } from '@/components/portal/DateField';
-import { FilterChips } from '@/components/portal/FilterChips';
 import { PortalQueryState } from '@/components/portal/PortalQueryState';
 import { RefetchErrorBanner } from '@/components/portal/RefetchErrorBanner';
-import { Alert, AppText, Button, Card, EmptyState, LoadingBlock, Screen, Skeleton, TextField } from '@/components/ui';
+import { Alert, AppText, Button, Card, ChipGroup, EmptyState, LoadingBlock, Screen, Skeleton, TextField } from '@/components/ui';
 import { usePortalUnit } from '@/context/PortalUnitProvider';
 import { useAvailability, useCreateBooking, usePortalFacilities } from '@/hooks/useReservations';
 import { useIdempotencyKey } from '@/lib/idempotency';
@@ -154,7 +153,7 @@ function SlotPicker({ facility, units, today, banner }: { facility: PortalFacili
           <AppText variant="small" weight="medium">
             Daire
           </AppText>
-          <FilterChips label="Daire" value={unitId} onChange={setUnitId} options={units.map((u) => ({ value: u.unitId, label: u.label }))} />
+          <ChipGroup size="compact" label="Daire" value={unitId} onChange={setUnitId} options={units.map((u) => ({ value: u.unitId, label: u.label }))} />
         </View>
       )}
       <DateField label="Tarih" value={date} min={today} max={lastDate} onChange={setDate} hint={`En geç ${formatDate(lastDate)} için rezervasyon yapılabilir.`} />
@@ -229,7 +228,8 @@ function SlotPicker({ facility, units, today, banner }: { facility: PortalFacili
             <AppText variant="small" weight="medium">
               Süre
             </AppText>
-            <FilterChips
+            <ChipGroup
+              size="compact"
               label="Süre"
               value={String(chosenMinutes)}
               onChange={(m) => setMinutes(Number(m))}

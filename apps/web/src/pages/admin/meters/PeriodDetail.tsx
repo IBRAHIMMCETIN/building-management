@@ -4,6 +4,8 @@ import { Alert, Badge, Button, Card, CardTitle, Dialog, FormField, Skeleton, Tex
 import {
   useApprovePeriod,
   useCalculatePeriod,
+  useCalculationJob,
+  useCalculationResult,
   useCancelPeriod,
   useCreateCorrection,
   useMeterPermissions,
@@ -14,7 +16,7 @@ import {
   useReversePeriod,
 } from '@/hooks/useMeters';
 import { BulkJobProgress } from '@/components/BulkJobProgress';
-import { isTerminalJob } from '@/lib/api/bulkJobs';
+import { type BulkJob, isTerminalJob } from '@/lib/api/bulkJobs';
 import { useOpenDocument } from '@/hooks/useOpenDocument';
 import { type CalculateResult, type DistributionLine, type MeterPeriod, blockersOf, isStaleCalc, metersApi } from '@/lib/api/meters';
 import { errorMessage } from '@/lib/api/errors';
@@ -165,11 +167,14 @@ function DeleteDraftDialog({ period, onClose, onDeleted }: { period: MeterPeriod
 // Hesap onizlemesi + onay (calcHash kilidi)
 // ---------------------------------------------------------------------------
 
-function CalculationCard({ period, unitLabel }: { period: MeterPeriod; unitLabel: UnitLabel }) {
+export function CalculationCard({ period, unitLabel }: { period: MeterPeriod; unitLabel: UnitLabel }) {
   const { canManage } = useMeterPermissions();
   const calculate = useCalculatePeriod();
   const approve = useApprovePeriod();
   const [job, setJob] = usePeriodJob(period.periodId);
+  // Performans: 1.000+ bolumde onizleme arka plan isi; sonuc is bitince bir kez yuklenir.
+  const [calcJob, setCalcJob] = useCalculationJob(period.periodId, period.status);
+  const loadResult = useCalculationResult();
   const refresh = useRefreshAfterPosting();
   const [result, setResult] = useState<CalculateResult | null>(null);
   const [stale, setStale] = useState(false);
@@ -185,10 +190,32 @@ function CalculationCard({ period, unitLabel }: { period: MeterPeriod; unitLabel
     setStale(false);
     setConfirming(false);
     approve.reset();
+    setCalcJob(null);
     try {
-      setResult(await calculate.mutateAsync(period.periodId));
+      const r = await calculate.mutateAsync(period.periodId);
+      if ('mode' in r) {
+        setResult(null);
+        setCalcJob(r.job);
+        return;
+      }
+      setResult(r);
     } catch {
       setResult(null);
+    }
+  }
+
+  /** Onizleme isi bitti: sonuc (senkron yanitla ayni govde) yuklenir; bayatsa yeniden hesap istenir. */
+  async function onCalcSettled(j: BulkJob) {
+    if (j.status !== 'completed') return;
+    try {
+      setResult(await loadResult.mutateAsync({ periodId: period.periodId, jobId: j.jobId }));
+      setCalcJob(null);
+      refresh();
+    } catch (err) {
+      if (isStaleCalc(err)) {
+        setStale(true);
+        setCalcJob(null);
+      }
     }
   }
 
@@ -237,15 +264,17 @@ function CalculationCard({ period, unitLabel }: { period: MeterPeriod; unitLabel
     <Card className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <CardTitle>Dağıtım hesabı</CardTitle>
-        <Button variant="secondary" onClick={() => void runCalc()} loading={calculate.isPending}>
+        <Button variant="secondary" onClick={() => void runCalc()} loading={calculate.isPending || loadResult.isPending} disabled={!!calcJob && !isTerminalJob(calcJob)}>
           <Calculator className="size-4" aria-hidden="true" />
           {result ? 'Yeniden hesapla' : 'Hesapla (önizleme)'}
         </Button>
       </div>
       <p className="text-small text-muted">Önizleme deftere yazmaz. Onay, önizlenen hesabın aynısıyla yapılır; arada okuma veya tutar değişirse onay reddedilir.</p>
 
+      {calcJob && <BulkJobProgress job={calcJob} onSettled={(j) => void onCalcSettled(j)} />}
       {stale && <Alert tone="danger">Önizlemeden sonra okumalar, şablon veya tutar değişti. Lütfen yeniden hesaplayıp kontrol edin.</Alert>}
       {calculate.isError && <Alert tone="danger">{errorMessage(calculate.error)}</Alert>}
+      {loadResult.isError && !isStaleCalc(loadResult.error) && <Alert tone="danger">{errorMessage(loadResult.error)}</Alert>}
 
       {result && !result.ok && (
         <Alert tone="danger">

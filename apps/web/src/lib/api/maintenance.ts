@@ -1,14 +1,18 @@
+import { type CompleteTaskInput, type MaintenanceTask, taskCompleteSchema, taskListSchema, taskOneSchema, taskSchema } from '@bm/shared/api/work';
 import { z } from 'zod';
-import { SCHEDULE_UNITS, TASK_STATUSES, type ScheduleUnit } from '@/lib/maintenance/schedule';
+import { SCHEDULE_UNITS, type ScheduleUnit } from '@/lib/maintenance/schedule';
 import { TICKET_CATEGORIES, type TicketCategory, type TicketPriority } from '@/lib/tickets/model';
 import { apiClient } from './client';
 import { signedDownloadSchema } from './documentModel';
-import { type EstimateInput, type NewCostInput, photoUploadSchema, putPhoto, staffEstimateSchema, ticketSchema, workCostsSchema } from './tickets';
+import { type EstimateInput, type NewCostInput, photoUploadSchema, putPhoto, ticketSchema, workCostsSchema } from './tickets';
 
 /*
  * Faz 3 (O1-3) periyodik bakim - /api/maintenance (yonetim yazar; gorevli gorev akisinda; denetci okur).
  * Gorev kimligi `<dueDate>_<templateId>`. Masraf uclari O1-4 (talep ile ayni sozlesme).
+ * Bakim gorevi semasi ve tamamlama girdisi web + mobil ortak (packages/shared/src/api/work.ts); bu dosya
+ * eski import yollari icin yeniden disa aktarir.
  */
+export { type CompleteTaskInput, type MaintenanceTask, taskSchema };
 
 const checklistItem = z.object({ id: z.string(), text: z.string(), required: z.boolean() });
 const schedule = z.object({ every: z.number().int(), unit: z.enum(SCHEDULE_UNITS), startDate: z.string() });
@@ -47,36 +51,6 @@ export const templateSchema = z.object({
 });
 export type MaintenanceTemplate = z.infer<typeof templateSchema>;
 
-export const taskSchema = z.object({
-  taskId: z.string(),
-  templateId: z.string(),
-  dueDate: z.string(),
-  name: z.string(),
-  kind: z.string(),
-  category: z.enum(TICKET_CATEGORIES),
-  asset: z.string().optional(),
-  equipmentId: z.string().optional(),
-  checklist: z.array(checklistItem),
-  status: z.enum(TASK_STATUSES),
-  assigneeId: z.string().optional(),
-  startedAt: z.string().optional(),
-  completedAt: z.string().optional(),
-  completedBy: z.string().optional(),
-  checklistResults: z.array(z.object({ id: z.string(), ok: z.boolean(), note: z.string().optional() })).optional(),
-  note: z.string().optional(),
-  photoKeys: z.array(z.string()).optional(),
-  skipReason: z.string().optional(),
-  cancelReason: z.string().optional(),
-  ticketIds: z.array(z.string()).default([]),
-  costSummary: z.object({ total: z.number().int(), expenseIds: z.array(z.string()) }).optional(),
-  /** v2: gorevlinin tahmini tutar notu (bilgi amacli). */
-  estimate: staffEstimateSchema.optional(),
-  overdue: z.boolean().default(false),
-  actions: z.array(z.string()).default([]),
-  version: z.number().int(),
-});
-export type MaintenanceTask = z.infer<typeof taskSchema>;
-
 export const calendarSchema = z.object({ month: z.string(), items: z.array(taskSchema), overdue: z.array(taskSchema) });
 export type MaintenanceCalendar = z.infer<typeof calendarSchema>;
 
@@ -96,13 +70,6 @@ export type TemplateInput = {
   leadDays?: number;
 };
 
-export type CompleteTaskInput = {
-  version: number;
-  checklistResults: { id: string; ok: boolean; note?: string }[];
-  note?: string;
-  photos?: string[];
-};
-
 const enc = encodeURIComponent;
 const B = '/api/maintenance';
 
@@ -117,15 +84,15 @@ export const maintenanceApi = {
     apiClient.post(`${B}/templates/${enc(id)}/archive`, { version }, { schema: z.object({ template: templateSchema, tasksChanged: z.number().int() }) }),
 
   tasks: (q: { from?: string; to?: string; status?: string; assignee?: string; templateId?: string; overdue?: 'true' } = {}, signal?: AbortSignal) =>
-    apiClient.get(`${B}/tasks`, { query: q, signal, schema: z.object({ items: z.array(taskSchema) }) }),
+    apiClient.get(`${B}/tasks`, { query: q, signal, schema: taskListSchema }),
   calendar: (month: string, signal?: AbortSignal) => apiClient.get(`${B}/calendar`, { query: { month }, signal, schema: calendarSchema }),
-  task: (id: string, signal?: AbortSignal) => apiClient.get(`${B}/tasks/${enc(id)}`, { signal, schema: z.object({ task: taskSchema }) }),
-  assign: (id: string, input: { version: number; assigneeId: string | null }) => apiClient.post(`${B}/tasks/${enc(id)}/assign`, input, { schema: z.object({ task: taskSchema }) }),
-  start: (id: string, version: number) => apiClient.post(`${B}/tasks/${enc(id)}/start`, { version }, { schema: z.object({ task: taskSchema }) }),
+  task: (id: string, signal?: AbortSignal) => apiClient.get(`${B}/tasks/${enc(id)}`, { signal, schema: taskOneSchema }),
+  assign: (id: string, input: { version: number; assigneeId: string | null }) => apiClient.post(`${B}/tasks/${enc(id)}/assign`, input, { schema: taskOneSchema }),
+  start: (id: string, version: number) => apiClient.post(`${B}/tasks/${enc(id)}/start`, { version }, { schema: taskOneSchema }),
   complete: (id: string, input: CompleteTaskInput) =>
-    apiClient.post(`${B}/tasks/${enc(id)}/complete`, input, { schema: z.object({ task: taskSchema, failedItems: z.number().int(), suggestTicket: z.boolean() }) }),
-  skip: (id: string, input: { version: number; reason: string }) => apiClient.post(`${B}/tasks/${enc(id)}/skip`, input, { schema: z.object({ task: taskSchema }) }),
-  estimate: (id: string, input: EstimateInput) => apiClient.put(`${B}/tasks/${enc(id)}/estimate`, input, { schema: z.object({ task: taskSchema }) }),
+    apiClient.post(`${B}/tasks/${enc(id)}/complete`, input, { schema: taskCompleteSchema }),
+  skip: (id: string, input: { version: number; reason: string }) => apiClient.post(`${B}/tasks/${enc(id)}/skip`, input, { schema: taskOneSchema }),
+  estimate: (id: string, input: EstimateInput) => apiClient.put(`${B}/tasks/${enc(id)}/estimate`, input, { schema: taskOneSchema }),
   openTicket: (id: string, input: { idempotencyKey: string; title?: string; description?: string; priority?: TicketPriority; photos?: string[] }) =>
     apiClient.post(`${B}/tasks/${enc(id)}/ticket`, input, { schema: z.object({ ticket: ticketSchema, replayed: z.boolean() }).loose() }),
   async uploadPhoto(file: File): Promise<string> {

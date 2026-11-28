@@ -222,6 +222,34 @@ export function usePeriodJob(periodId: string, status?: string) {
   return [data ?? null, set] as const;
 }
 
+/**
+ * Performans: taslak / hesaplanmis buyuk donemin onizleme isi (`meter_calculation`). Sayfa yenilense
+ * de suren is (veya donemin guncel hesabini uretmis son is) `/job` ile bulunur; onay isinden ayri tutulur.
+ */
+export function useCalculationJob(periodId: string, status: string) {
+  const qc = useQueryClient();
+  const { apartmentId, canManage } = useMeterPermissions();
+  const key = ['bulk-job', 'meter-calc', apartmentId, periodId] as const;
+  const { data } = useQuery<BulkJob | null>({
+    queryKey: key,
+    queryFn: async ({ signal }) => {
+      const job = (await metersApi.periodJob(periodId, signal)).job;
+      return job?.kind === 'meter_calculation' ? job : null;
+    },
+    enabled: (status === 'draft' || status === 'calculated') && !!apartmentId && !!periodId && canManage,
+    initialData: null,
+    initialDataUpdatedAt: 0,
+    staleTime: 30_000,
+  });
+  const set = (job: BulkJob | null) => qc.setQueryData(key, job);
+  return [data ?? null, set] as const;
+}
+
+/** Biten onizleme isinin sonucu (senkron onizlemeyle ayni govde). */
+export function useCalculationResult() {
+  return useMutation({ mutationFn: ({ periodId, jobId }: { periodId: string; jobId: string }) => metersApi.calculation(periodId, jobId) });
+}
+
 /** Arka plan isi bitince sayac ve finans ekranlari tazelenir. */
 export function useRefreshAfterPosting() {
   const qc = useQueryClient();

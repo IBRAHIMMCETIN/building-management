@@ -65,7 +65,7 @@ describe('Rezervasyon', () => {
       routes: { 'GET /api/portal/reservations/bookings': { upcoming: [myBooking('b1', { status: 'pending' })], history: [] } },
     });
     expect(await screen.findByRole('header', { name: 'Talebiniz alındı, yönetici onayı bekleniyor' })).toBeTruthy();
-    await fireEvent.press(screen.getByRole('button', { name: 'Yeni rezervasyon' }));
+    await fireEvent.press(screen.getByRole('radio', { name: 'Yeni rezervasyon' }));
     expect(screen.queryByText('Talebiniz alındı, yönetici onayı bekleniyor')).toBeNull();
   });
 });

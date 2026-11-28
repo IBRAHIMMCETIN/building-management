@@ -12,6 +12,7 @@ import { type DeliveryResult, type Notification, type Notifier, createLogNotifie
 import { categoryOfTemplate } from './categories.js';
 import { type NotificationPreferences, createDynamoPreferencesRepository } from './preferences.js';
 import { type EmailContext, renderEmail } from './templates.js';
+import { type SuppressionService, createDynamoSuppressionStore, createSuppressionService } from './suppressions.js';
 
 /**
  * E-posta kanali (Amazon SES v2).
@@ -27,6 +28,8 @@ import { type EmailContext, renderEmail } from './templates.js';
  *     kullanicinin o gun AKTIF ekip kaydindaki (`ROLE#`) davet e-postasi kullanilir; bitmis ekip
  *     kaydina gonderilmez. Hicbiri yoksa `no_email`; kisi kaydinda `emailVerified === false` ise
  *     `email_unverified` (guvenli atlama, hata degil).
+ *  3b. SES geri donus / sikayet engeli (suppressions.ts): engelli adrese gonderilmez,
+ *     `skipped: suppressed` + `email_suppressed` logu (adres yok).
  *  4. Sablon (HTML + duz metin) ve SES gonderimi. Kalici alici hatasi (MessageRejected /
  *     BadRequest: gecersiz adres, sandbox'ta dogrulanmamis alici) `skipped: rejected` olarak
  *     kaydedilir ve tekrar denenmez; gecici/yapilandirma hatalari (kisitlama, hesap duraklatma,
@@ -165,6 +168,8 @@ export type EmailNotifierDeps = {
   roles?: Pick<ApartmentRoleRepository, 'list'>;
   core: Pick<CoreRepository, 'getSite' | 'listUnits' | 'listBlocks'>;
   sentLog: SentLog;
+  /** SES geri donus / sikayet engeli (suppressions.ts); engelli aliciya gonderilmez. */
+  suppressions?: Pick<SuppressionService, 'isSuppressed'>;
   /** Sakin portali kok adresi (WEB_APP_URL + /app). */
   portalUrl?: string;
   now: () => Date;
@@ -241,6 +246,12 @@ export function createEmailNotifier(deps: EmailNotifierDeps): Notifier {
       recipientName ??= team?.name;
     }
     if (!to) return { status: 'skipped', reason: 'no_email' };
+    const suppressed = await deps.suppressions?.isSuppressed(to);
+    if (suppressed) {
+      // Adres loga yazilmaz: kimlikler ve engel nedeni.
+      deps.log.info(JSON.stringify({ msg: 'email_suppressed', eventId: n.eventId, userId: n.userId, apartmentId: n.apartmentId, reason: suppressed.reason, bounceType: suppressed.bounceType }));
+      return { status: 'skipped', reason: 'suppressed' };
+    }
 
     const site = await siteContext(n.apartmentId);
     const ctx: EmailContext = {
@@ -302,6 +313,7 @@ export function createNotifierFromEnv(
     roles: overrides.roles ?? apartmentRoleRepository,
     core: overrides.core ?? coreRepository,
     sentLog: overrides.sentLog ?? createDynamoSentLog(now),
+    suppressions: overrides.suppressions ?? createSuppressionService({ store: createDynamoSuppressionStore(), now }),
     portalUrl: overrides.portalUrl ?? (webApp ? `${webApp}/app` : undefined),
     now,
     log: overrides.log ?? console,

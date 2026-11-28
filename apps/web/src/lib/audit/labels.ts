@@ -23,6 +23,10 @@ export const AUDIT_CATEGORIES = [
   { prefix: 'meters.', label: 'Sayaç ve endeks dağıtımı' },
   { prefix: 'poll.', label: 'Anket / oylama' },
   { prefix: 'assembly.', label: 'Genel kurul' },
+  { prefix: 'gate.', label: 'Güvenlik kapısı (araç, misafir geçişi)' },
+  { prefix: 'equipment.', label: 'Ekipman ve sözleşmeler' },
+  { prefix: 'push_device.', label: 'Mobil bildirim cihazları' },
+  { prefix: 'notification_suppression.', label: 'E-posta engelleri (platform)' },
 ] as const;
 
 const EXACT: Record<string, string> = {
@@ -38,6 +42,15 @@ const EXACT: Record<string, string> = {
   'finance.plan_cancel': 'Taksit planı iptal edildi',
   'finance.plan_default': 'Taksit planında temerrüt tespit edildi',
   'finance.plan_default_cleared': 'Taksit planı temerrüdü giderildi',
+  'finance.plan_request': 'Sakin taksit (yapılandırma) talebi',
+  'finance.plan_request_approve': 'Taksit talebi onaylandı (plan oluşturuldu)',
+  'finance.plan_request_reject': 'Taksit talebi reddedildi',
+  'finance.plan_request_withdraw': 'Taksit talebi sakin tarafından geri çekildi',
+  'finance.plan_request_settings': 'Taksit talebi sınırları değişti',
+  'finance.supplier_advance': 'Tedarikçiye avans verildi',
+  'finance.supplier_advance_reverse': 'Tedarikçi avansı iptal edildi',
+  'finance.supplier_advance_offset': 'Tedarikçi avansı faturaya mahsup edildi',
+  'finance.supplier_advance_offset_reverse': 'Tedarikçi avans mahsubu geri alındı',
   'ownership.backfill': 'Mülkiyet sicili oluşturuldu (ilk geçiş)',
   'ownership.register': 'Mülkiyet sicili / hisseler düzeltildi',
   'ownership.billing': 'Malik faturalama modu değişti',
@@ -172,6 +185,40 @@ const EXACT: Record<string, string> = {
   'assembly.call_resend': 'Genel kurul çağrısı yeniden gönderildi',
   'assembly.minutes': 'Genel kurul tutanağı güncellendi',
   'assembly.finalize': 'Genel kurul tutanağı kesinleştirildi',
+  'assembly.create': 'Genel kurul toplantısı oluşturuldu',
+  'assembly.update': 'Genel kurul toplantısı güncellendi',
+  'assembly.quorum': 'Genel kurul toplantı yeter sayısı kaydedildi',
+  'assembly.roll_freeze': 'Genel kurul hazirun listesi donduruldu',
+  'poll.roll_freeze': 'Oylama oy listesi donduruldu',
+  // Guvenlik kapisi (apps/api/src/modules/gate: service.ts, throttle.ts, departures.ts)
+  'gate.vehicle.create': 'Araç kaydedildi',
+  'gate.vehicle.update': 'Araç kaydı güncellendi (not / aktif-pasif)',
+  'gate.pass.revoke': 'Misafir geçişi yönetimce iptal edildi',
+  'gate.lockout': 'Kapı doğrulama deneme sınırı aşıldı',
+  'gate.departure_release': 'Taşınma: geçişler iptal edildi, araçlar pasife alındı',
+  // Ekipman, mobil cihaz ve diger etiketsiz kalanlar
+  'equipment.create': 'Ekipman eklendi',
+  'equipment.update': 'Ekipman güncellendi',
+  'equipment.status': 'Ekipman durumu değişti',
+  'equipment.document_add': 'Ekipmana belge eklendi',
+  'equipment.document_archive': 'Ekipman belgesi arşivlendi',
+  'push_device.register': 'Mobil cihaz bildirimlere kaydedildi',
+  'push_device.remove': 'Mobil cihaz bildirim kaydı kaldırıldı',
+  'reservation.auto_confirm': 'Rezervasyon otomatik onaylandı',
+  'reservation.fee_manual_resolve': 'Rezervasyon ücret iadesi elle sonuçlandırıldı',
+  'ticket.estimate': 'Arıza talebine maliyet tahmini girildi',
+  'maintenance.task_estimate': 'Bakım görevine maliyet tahmini girildi',
+  'ledger.document': 'Finans belgesi güncellendi',
+  'import.in_progress': 'Toplu aktarım işleniyor',
+  'import.completed': 'Toplu aktarım tamamlandı',
+  'import.rolled_back': 'Toplu aktarım geri alındı',
+  'payment.intent.pending': 'Online ödeme bekliyor',
+  'payment.intent.succeeded': 'Online ödeme başarılı',
+  'payment.intent.failed': 'Online ödeme başarısız',
+  'payment.intent.needs_review': 'Online ödeme incelemeye alındı',
+  'payment.intent.refund_pending': 'Online ödeme iadesi sürüyor',
+  'payment.intent.refunded': 'Online ödeme iade edildi',
+  'notification_suppression.clear': 'E-posta engeli kaldırıldı',
 };
 
 /** Sözlükte olmayan anahtarlar için alan adı (ilk parça) karşılıkları. */
@@ -194,6 +241,12 @@ const DOMAIN_LABELS: Record<string, string> = {
   notification_preferences: 'Bildirim tercihi',
   poll: 'Oylama',
   assembly: 'Genel kurul',
+  gate: 'Güvenlik kapısı',
+  equipment: 'Ekipman',
+  push_device: 'Mobil cihaz',
+  reservation: 'Rezervasyon',
+  tender: 'İhale',
+  notification_suppression: 'E-posta engeli',
 };
 
 const humanize = (s: string) => s.replace(/[._]+/g, ' ').trim();
@@ -222,6 +275,8 @@ const LEDGER_KINDS: Record<string, string> = {
   payable_payment: 'tedarikçi ödemesi',
   offset: 'avans mahsubu',
   restructure: 'borç yapılandırma',
+  supplier_advance: 'tedarikçi avansı',
+  supplier_advance_offset: 'tedarikçi avans mahsubu',
 };
 
 /** Gece defter denetimi bulgu kodlari (apps/api/src/modules/finance/audit.ts `AUDIT_CODES`). */
@@ -246,6 +301,7 @@ export const LEDGER_FINDING_LABELS: Record<string, string> = {
   fiscal_lock_mismatch: 'Dönem kilidi tutarsız',
   ticket_cost_mismatch: 'Talep / bakım gideri özeti defterle uyuşmuyor',
   explink_orphan: 'Sahipsiz gider bağlantısı',
+  supplier_advance_mismatch: 'Tedarikçi avansı kaydı defterle uyuşmuyor',
 };
 
 export function findingLabel(code: string): string {

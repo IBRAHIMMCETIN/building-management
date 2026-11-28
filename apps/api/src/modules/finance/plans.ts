@@ -431,10 +431,24 @@ export function createPlanService(overrides: Partial<PlanServiceDeps> & Pick<Pla
   };
 
   async function create(ctx: PlanContext, body: unknown): Promise<{ plan: InstallmentPlan; replayed: boolean }> {
+    return createWith(ctx, body);
+  }
+
+  /**
+   * Sakin yapilandirma talebinin onayi (planRequests.ts): plan AYNI olusturma yoluyla (ayni defter
+   * kayitlari, ayni kurallar) yazilir; talep kaydi, bildirim olayi ve denetim ayrintisi ayni atomik
+   * yazima eklenir. Yeni defter mantigi yoktur.
+   */
+  async function createFromRequest(ctx: PlanContext, body: unknown, extra: PlanCreateExtra): Promise<{ plan: InstallmentPlan; replayed: boolean }> {
+    return createWith(ctx, body, extra);
+  }
+
+  async function createWith(ctx: PlanContext, body: unknown, extra?: PlanCreateExtra): Promise<{ plan: InstallmentPlan; replayed: boolean }> {
     const o = asObject(body);
     const key = reqKey(o);
     const p = parsePlanBody(o);
-    const idemId = `PLN_${key}`;
+    // Talepten olusan plan kendi ad alaninda (sakin / yonetici anahtarlariyla cakismaz).
+    const idemId = extra?.idempotencyId ?? `PLN_${key}`;
     const fp = fingerprint({ op: 'plan', ...p });
     const prior = await replay(ctx, idemId, fp);
     if (prior) return { plan: prior, replayed: true };
@@ -510,19 +524,23 @@ export function createPlanService(overrides: Partial<PlanServiceDeps> & Pick<Pla
       updatedBy: ctx.userId,
       version: 1,
     };
+    const ex = extra?.build(plan);
     try {
       await repo.postBatch({
         transactions,
         idempotency: { id: idemId, fingerprint: fp, recordId: planId, transactionIds: transactions.map((t) => t.transactionId) },
         expectedVersions: { [account.accountId]: account.version },
         newDocs: [plan],
+        ...(ex?.replaceRecords?.length ? { replaceRecords: ex.replaceRecords } : {}),
+        ...(ex?.outbox?.length ? { outbox: ex.outbox } : {}),
         audit: {
           apartmentId: ctx.apartmentId,
-          action: 'finance.plan_create',
-          target: { type: 'plan', id: planId },
+          action: ex?.audit?.action ?? 'finance.plan_create',
+          target: ex?.audit?.target ?? { type: 'plan', id: planId },
           actorId: ctx.userId,
           reason: p.reason,
           details: {
+            ...(ex?.audit ? { planId } : {}),
             accountId: account.accountId,
             selected: plan.selected.map((s) => ({ chargeId: s.chargeId, amount: s.amount })),
             frozenLateFee: plan.frozenLateFee,
@@ -532,6 +550,7 @@ export function createPlanService(overrides: Partial<PlanServiceDeps> & Pick<Pla
             firstDueDate: p.firstDueDate,
             rule: plan.rule,
             transactionIds: plan.transactionIds,
+            ...(ex?.audit?.details ?? {}),
           },
         },
       });
@@ -884,7 +903,18 @@ export function createPlanService(overrides: Partial<PlanServiceDeps> & Pick<Pla
     return { unitId: resolved.unit.unitId, currency: 'TRY' as const, items };
   }
 
-  return { preview, create, get, list, openItems, accelerate, pullForward, cancel, checkDefaults, portalPlans };
+  return { preview, create, createFromRequest, get, list, openItems, accelerate, pullForward, cancel, checkDefaults, portalPlans };
 }
+
+/** Plan olusturmaya ayni atomik yazimda eklenen kayitlar (sakin talebinin onayi). */
+export type PlanCreateExtra = {
+  /** Idempotency kaydi kimligi (varsayilan `PLN_<idempotencyKey>`). */
+  idempotencyId?: string;
+  build(plan: InstallmentPlan): {
+    replaceRecords?: ReplaceRecord[];
+    outbox?: DomainEvent[];
+    audit?: { action: string; target: { type: string; id: string }; details?: Record<string, unknown> };
+  };
+};
 
 export type PlanService = ReturnType<typeof createPlanService>;

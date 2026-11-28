@@ -300,6 +300,9 @@ export const calculateSchema = z.discriminatedUnion('ok', [
 export const approveSyncSchema = z.object({ period: periodSchema, replayed: z.boolean(), posted: z.number().int(), written: z.number().int() });
 /** Kucuk donem: senkron sonuc. Buyuk donem (API `SYNC_POSTING_UNITS` ustu): 202 + arka plan isi. */
 export const approveSchema = z.union([jobAcceptedSchema, approveSyncSchema]);
+/** Performans: buyuk donemin onizlemesi arka plan isi olarak baslar. */
+export const calculateStartSchema = z.union([jobAcceptedSchema, calculateSchema]);
+export type CalculateStart = z.infer<typeof calculateStartSchema>;
 export type ApproveResult = z.infer<typeof approveSchema>;
 
 export const reversePreviewSchema = z.object({
@@ -507,7 +510,11 @@ export const metersApi = {
     apiClient.patch(`${M}/periods/${enc(periodId)}`, input, { schema: periodSchema }),
   cancelPeriod: (periodId: string, version: number, reason: string) =>
     apiClient.post(`${M}/periods/${enc(periodId)}/cancel`, { version, reason }, { schema: periodSchema }),
-  calculate: (periodId: string) => apiClient.post(`${M}/periods/${enc(periodId)}/calculate`, {}, { schema: calculateSchema }),
+  /** Kucuk donem: onizleme govdesi; 1.000+ bolum: 202 `{ mode: 'job', job }` (sonuc `calculation`). */
+  calculate: (periodId: string) => apiClient.post(`${M}/periods/${enc(periodId)}/calculate`, {}, { schema: calculateStartSchema }),
+  /** Biten onizleme isinin sonucu (senkron yanitla ayni govde; bayatsa 409). */
+  calculation: (periodId: string, jobId: string, signal?: AbortSignal) =>
+    apiClient.get(`${M}/periods/${enc(periodId)}/calculation/${enc(jobId)}`, { signal, schema: calculateSchema }),
   approve: (periodId: string, calcHash: string) => apiClient.post(`${M}/periods/${enc(periodId)}/approve`, { calcHash }, { schema: approveSchema }),
   lines: (periodId: string, signal?: AbortSignal) =>
     apiClient.get(`${M}/periods/${enc(periodId)}/lines`, { signal, schema: z.object({ period: periodSchema, lines: z.array(lineSchema), total: kurus }) }),

@@ -20,6 +20,18 @@ import { type AssemblyCallSnapshot, assemblyCallRecipients, isAssemblyEvent, mee
 import { type AssemblyRepository, assemblyRepository } from '../modules/assemblies/repository.js';
 import { type TenderSnapshot, isTenderEvent, tenderRecipients } from '../modules/tenders/notifications.js';
 import { type TenderRepository, tenderRepository } from '../modules/tenders/repository.js';
+import { bulkJobRecipients, isBulkJobEvent } from '../modules/bulkjobs/notifications.js';
+import {
+  type SnsLambdaEvent,
+  type SuppressionService,
+  createDynamoSuppressionStore,
+  createSuppressionService,
+  handleSesFeedback,
+  isSnsEvent,
+} from '../modules/notifications/suppressions.js';
+import { type PlanRequestSnapshot, isRestructureEvent, restructureRecipients } from '../modules/finance/planRequestNotifications.js';
+import { type PlanRequestRepository, planRequestRepository } from '../modules/finance/planRequests.js';
+import { type SiteFeatureReader, createSiteFeatureReader } from '../modules/features/guard.js';
 
 export type { DeliveryResult, Notification, NotificationTemplate, Notifier } from '../modules/notifications/notifier.js';
 export { createLogNotifier } from '../modules/notifications/notifier.js';
@@ -51,6 +63,12 @@ export { createLogNotifier } from '../modules/notifications/notifier.js';
  *       TENDER_PUBLISHED / _DECIDED / _CANCELLED -> apartmanin guncel uyeleri; ihalenin guncel durumu
  *                                 olayla uyusmuyorsa kimse. TENDER_REPLIED -> yanitlanan acik sorularin
  *                                 yazarlari (hala uyeyse) (modules/tenders/notifications.ts)
+ *       BULK_JOB_FINISHED      -> toplu isi baslatan yonetici (o gun aktif yonetim rolu varsa)
+ *                                 (modules/bulkjobs/notifications.ts)
+ *       RESTRUCTURE_REQUESTED  -> yonetim (yonetici + firma); RESTRUCTURE_APPROVED / _REJECTED -> talebi
+ *                                 acan sakin; talebin guncel durumu olayla uyusmuyorsa veya sitede
+ *                                 `admin.debtRestructure` kapaliysa kimse
+ *                                 (modules/finance/planRequestNotifications.ts)
  *  4. Her aliciya `Notifier` ile bildirim gonderilir: NOTIFICATION_CHANNEL=log (yapilandirilmis
  *     log) veya ses (e-posta; tercih, adres ve alici bazli tekrar korumasi kanal icinde, bkz.
  *     modules/notifications/email.ts). SMS / WhatsApp ayni arayuzle eklenecek.
@@ -141,7 +159,14 @@ const receives = (m: UnitMembership, item: { unitId: string; userId?: string }, 
  * Worker'in olay icin ayrica okudugu kayitlar (payload kisisel veri / serbest metin tasimaz).
  * `now`: zamana bagli kurallar (kurye yanit suresi); verilmezse su an.
  */
-export type NotificationRecords = { now?: Date; courier?: CourierSnapshot; booking?: BookingSnapshot; assemblyCall?: AssemblyCallSnapshot; tender?: TenderSnapshot };
+export type NotificationRecords = {
+  now?: Date;
+  courier?: CourierSnapshot;
+  booking?: BookingSnapshot;
+  assemblyCall?: AssemblyCallSnapshot;
+  tender?: TenderSnapshot;
+  planRequest?: PlanRequestSnapshot;
+};
 
 /** Olaydan alici bazli bildirimleri uretir (ayni kullaniciya ayni olay icin tek bildirim). */
 export function buildNotifications(
@@ -162,6 +187,9 @@ export function buildNotifications(
 
   if (event.type === 'OPERATIONS_DIGEST') {
     return operationsDigestRecipients(event, roles, day).map((r) => ({ eventId: event.eventId, apartmentId: event.apartmentId, userId: r.userId, template: r.template, data: r.data }));
+  }
+  if (isBulkJobEvent(event)) {
+    return bulkJobRecipients(event, roles, day).map((r) => ({ eventId: event.eventId, apartmentId: event.apartmentId, userId: r.userId, template: r.template, data: r.data }));
   }
   if (isGateEvent(event)) {
     return gateRecipients(event, memberships, day, { now: records.now ?? new Date(), ...('courier' in records ? { courier: records.courier } : {}) }).map((r) => ({
@@ -192,6 +220,15 @@ export function buildNotifications(
   }
   if (isTenderEvent(event)) {
     return tenderRecipients(event, memberships, day, records.tender).map((r) => ({
+      eventId: event.eventId,
+      apartmentId: event.apartmentId,
+      userId: r.userId,
+      template: r.template,
+      data: r.data,
+    }));
+  }
+  if (isRestructureEvent(event)) {
+    return restructureRecipients(event, memberships, roles, day, records.planRequest).map((r) => ({
       eventId: event.eventId,
       apartmentId: event.apartmentId,
       userId: r.userId,
@@ -352,6 +389,10 @@ export type WorkerDeps = {
   assemblies: Pick<AssemblyRepository, 'get' | 'getCall'>;
   /** Ihale: guncel durum (bayat olay elenir) ve yanit olayinda yorumlar. */
   tenders: Pick<TenderRepository, 'get' | 'listComments'>;
+  /** Yapilandirma talebi: guncel durum (bayat olay elenir), alici ve tutarlar. */
+  planRequests: Pick<PlanRequestRepository, 'get'>;
+  /** Site ozellikleri: `admin.debtRestructure` kapaliysa RESTRUCTURE_* bildirimleri gonderilmez. */
+  features: Pick<SiteFeatureReader, 'resolve'>;
   notifier: Notifier;
   /** Mobil bildirim kanali; null: kapali (PUSH_CHANNEL=off). */
   push: PushChannel | null;
@@ -377,6 +418,8 @@ export function createNotificationWorker(overrides: Partial<WorkerDeps> = {}) {
     reservations: reservationRepository,
     assemblies: assemblyRepository,
     tenders: tenderRepository,
+    planRequests: planRequestRepository,
+    features: overrides.features ?? createSiteFeatureReader({ getSite: (id) => coreRepository.getSite(id) }),
     notifier: overrides.notifier ?? createNotifierFromEnv(),
     push: overrides.push !== undefined ? overrides.push : createPushChannelFromEnv(process.env, { now }),
     isProcessed: async (apt, id) => Boolean(await getTenantItem(processedKey(apt, id))),
@@ -460,6 +503,12 @@ export function createNotificationWorker(overrides: Partial<WorkerDeps> = {}) {
       ]);
       return { now: deps.now(), tender: t && t.apartmentId === event.apartmentId ? { tender: t, ...(comments ? { comments: comments.filter((c) => c.apartmentId === event.apartmentId) } : {}) } : null };
     }
+    if (isRestructureEvent(event)) {
+      // Borc yapilandirma sitede kapatildiysa (sonradan da olsa) talep bildirimi gitmez.
+      if (!(await deps.features.resolve(event.apartmentId))['admin.debtRestructure']) return { now: deps.now(), planRequest: null };
+      const r = await deps.planRequests.get(event.apartmentId, event.payload.requestId);
+      return { now: deps.now(), planRequest: r && r.apartmentId === event.apartmentId ? r : null };
+    }
     return { now: deps.now() };
   }
 
@@ -473,7 +522,7 @@ export function createNotificationWorker(overrides: Partial<WorkerDeps> = {}) {
         ? new Map((await deps.core.listUnits(event.apartmentId)).map((u) => [u.unitId, u.blockId]))
         : new Map<string, string>();
 
-    const roles = isTicketEvent(event) || event.type === 'OPERATIONS_DIGEST' ? await deps.roles.list(event.apartmentId) : [];
+    const roles = isTicketEvent(event) || event.type === 'OPERATIONS_DIGEST' || isBulkJobEvent(event) || event.type === 'RESTRUCTURE_REQUESTED' ? await deps.roles.list(event.apartmentId) : [];
     const records = await recordsFor(event);
     // Yonetim iptalinin hemen ardindaki ucret iadesi henuz yazilmadiysa sonucu beklenir (sinirli).
     if (refundSettling(event, records.booking, deps.now())) throw new DeferredEventError('Ucret iadesi sonucu bekleniyor');
@@ -548,5 +597,26 @@ export function createNotificationWorker(overrides: Partial<WorkerDeps> = {}) {
   };
 }
 
+/**
+ * Lambda giris noktasi: SQS bildirim kuyrugu (event source mapping) ve SES geri bildirim SNS topic'i
+ * (infra/ses_feedback.tf; Lambda aboneligi, asenkron cagri). SNS kaydi gelirse geri donus / sikayet
+ * engeli yazilir (modules/notifications/suppressions.ts), aksi halde bildirim olaylari islenir.
+ */
+export function createWorkerEntry(
+  deps: { sqs?: (e: SqsEvent) => Promise<SqsBatchResponse>; suppressions?: Pick<SuppressionService, 'record'>; sesFeedbackTopicArn?: string } = {},
+) {
+  let sqs = deps.sqs;
+  let suppressions = deps.suppressions;
+  return async (event: SqsEvent | SnsLambdaEvent): Promise<SqsBatchResponse | Awaited<ReturnType<typeof handleSesFeedback>>> => {
+    if (isSnsEvent(event)) {
+      suppressions ??= createSuppressionService({ store: createDynamoSuppressionStore() });
+      // Yalnizca yapilandirilmis SES geri bildirim topic'i (infra/worker.tf SES_FEEDBACK_TOPIC_ARN).
+      return handleSesFeedback(event, { service: suppressions, topicArn: deps.sesFeedbackTopicArn ?? process.env.SES_FEEDBACK_TOPIC_ARN });
+    }
+    sqs ??= createNotificationWorker();
+    return sqs(event as SqsEvent);
+  };
+}
+
 /** Lambda giris noktasi (Terraform: handler = "notification-worker.handler"). */
-export const handler = createNotificationWorker();
+export const handler = createWorkerEntry();
