@@ -11,6 +11,7 @@ import { PayOnlineButton } from '@/components/portal/PayOnlineButton';
 import { PortalQueryState } from '@/components/portal/PortalQueryState';
 import { RefetchErrorBanner } from '@/components/portal/RefetchErrorBanner';
 import { PortalStatusBadge } from '@/components/portal/PortalStatusBadge';
+import { RestructureRequestCard } from '@/components/portal/RestructureRequestCard';
 import { Alert, AppText, Badge, Button, Card, EmptyState, LoadingBlock, Skeleton } from '@/components/ui';
 import { useAuth } from '@/context/AuthProvider';
 import { usePortalUnit } from '@/context/PortalUnitProvider';
@@ -205,6 +206,7 @@ export function DuesScreen() {
         Borçlarım
       </AppText>
       <SummaryCard />
+      <RestructureRequestCard />
       {statement.isPending ? (
         <View accessible accessibilityRole="progressbar" accessibilityLabel="Hareketler yükleniyor" style={styles.gap2}>
           {[0, 1, 2, 3].map((i) => (
