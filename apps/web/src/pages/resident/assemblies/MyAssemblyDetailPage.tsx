@@ -1,5 +1,6 @@
 import { ArrowLeft, CalendarClock, FileText, MapPin } from 'lucide-react';
 import { Link, useParams } from 'react-router';
+import { ElectionResult } from '@/components/assemblies/ElectionResult';
 import { Alert, Badge, Button, Card, CardTitle, Skeleton } from '@/components/ui';
 import { useMyAssembly } from '@/hooks/useAssemblies';
 import { useOpenDocument } from '@/hooks/useOpenDocument';
@@ -59,6 +60,12 @@ function Detail({ assembly: a }: { assembly: PortalAssembly }) {
 
   return (
     <>
+      {a.phase === 'cancelled' && (
+        <Alert tone="danger">
+          Bu toplantı iptal edildi{a.cancelledAt ? ` (${formatDateTime(a.cancelledAt)})` : ''}; {formatDateTime(a.scheduledAt)} tarihinde toplantı yapılmayacak.
+          {a.cancelReason ? ` Gerekçe: ${a.cancelReason}` : ''}
+        </Alert>
+      )}
       <div className="flex flex-col gap-2">
         <h1 className="text-title font-bold break-words">
           {KIND_LABELS[a.kind]}
@@ -122,7 +129,19 @@ function Detail({ assembly: a }: { assembly: PortalAssembly }) {
             </div>
           )}
         </dl>
-        {a.cancelReason && <Alert>Toplantı iptal edildi: {a.cancelReason}</Alert>}
+        {(a.reschedules?.length ?? 0) > 0 && (
+          <div className="flex flex-col gap-1 text-small">
+            <p className="text-xs text-muted">Erteleme / yer değişikliği</p>
+            <ul className="flex flex-col gap-1">
+              {a.reschedules?.map((r) => (
+                <li key={r.at}>
+                  {r.previousScheduledAt !== r.scheduledAt ? `${formatDateTime(r.previousScheduledAt)} tarihli toplantı ${formatDateTime(r.scheduledAt)} tarihine ertelendi` : 'Toplantı yeri değişti'}
+                  {r.placeChanged && r.previousScheduledAt !== r.scheduledAt ? '; yeri de değişti' : ''}. <span className="text-muted">Gerekçe: {r.reason}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
         <p className="text-small text-muted">
           Toplantıya kendiniz katılabilir veya yazılı vekaletnameyle temsil edilebilirsiniz. E-posta ve bu sayfa bilgilendirme amaçlıdır; yasal çağrı yönetiminizce ayrıca yapılır (KMK m.29).
         </p>
@@ -150,7 +169,10 @@ function Detail({ assembly: a }: { assembly: PortalAssembly }) {
               </div>
               {item.description && <p className="text-small whitespace-pre-line break-words text-text-secondary">{item.description}</p>}
               <p className="text-xs text-muted">Gerekli çoğunluk: {MAJORITY_LABELS[item.majority]}</p>
-              {item.decision && (
+              {item.candidates && item.candidates.length > 0 && !item.decision?.election && <p className="text-xs text-muted">Adaylar: {item.candidates.map((c) => c.name).join(', ')}</p>}
+              {item.decision?.election ? (
+                <ElectionResult election={item.decision.election} />
+              ) : item.decision && (
                 <p className="text-xs text-muted tabular-nums">
                   {decisionLine(item.decision)}
                   {item.decision.corrected ? ' · karar kaydı düzeltildi' : ''}

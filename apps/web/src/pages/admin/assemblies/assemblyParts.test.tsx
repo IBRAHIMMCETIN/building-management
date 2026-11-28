@@ -12,7 +12,8 @@ const send = mutation();
 const tally = mutation();
 const saveMinutes = mutation();
 const finalize = mutation();
-vi.mock('@/hooks/useAssemblies', () => ({ useSendCall: () => send, useRecordTally: () => tally, useSaveMinutes: () => saveMinutes, useFinalizeAssembly: () => finalize }));
+const reschedule = mutation();
+vi.mock('@/hooks/useAssemblies', () => ({ useSendCall: () => send, useRecordTally: () => tally, useSaveMinutes: () => saveMinutes, useFinalizeAssembly: () => finalize, useRescheduleAssembly: () => ({ ...reschedule, reset: vi.fn() }) }));
 
 const { AssemblyCallCard } = await import('./AssemblyCallCard');
 const { AgendaDecision } = await import('./AgendaDecision');
@@ -130,5 +131,95 @@ describe('tutanak karti', () => {
     await render(<MinutesCard assembly={held} editable />);
     expect(container.textContent).toContain('Tutanak kaydedildi.');
     saveMinutes.isSuccess = false;
+  });
+});
+
+describe('cok adayli secim', () => {
+  const election = {
+    ...base.agenda[0]!,
+    candidates: [
+      { candidateId: 'c1', name: 'Ali Veli' },
+      { candidateId: 'c2', name: 'Ayşe Kaya' },
+    ],
+  };
+  const pick = async (label: string, value: string) => {
+    const select = container.querySelector(`select[aria-label="${label}"]`) as HTMLSelectElement;
+    await act(async () => {
+      select.value = value;
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+  };
+
+  it('bolum bazinda aday pusulasi: ayni kisinin bolumleri ayni aday; cekimser; bos gonderilmez; `ballots` gider', async () => {
+    const units = [unit('u1', 'user:P'), unit('u2', 'user:P'), unit('u3', 'user:Q'), unit('u4', 'user:R')];
+    await render(<AgendaDecision index={0} item={election} assembly={base} quorum={quorum} units={units} records={[]} canTally canCorrect unitLabel={(u) => u.number} />);
+    expect(container.textContent).toContain('Adaylar: Ali Veli, Ayşe Kaya');
+    expect(container.querySelector('select[aria-label="U1 oyu"]')).toBeNull();
+    const options = [...(container.querySelector('select[aria-label="U1 aday oyu"]') as HTMLSelectElement).options].map((o) => o.textContent);
+    expect(options).toEqual(['Oy kullanmadı', 'Ali Veli', 'Ayşe Kaya', 'Çekimser']);
+    await pick('U1 aday oyu', 'c1');
+    expect((container.querySelector('select[aria-label="U2 aday oyu"]') as HTMLSelectElement).value).toBe('c1');
+    await pick('U3 aday oyu', 'abstain');
+    await act(async () => button('Kararı kaydet')?.click());
+    expect(tally.mutateAsync).toHaveBeenCalledWith({ itemId: 'a1', input: { version: 4, ballots: { u1: 'c1', u2: 'c1', u3: 'abstain' } } });
+  });
+
+  it('sonuc: "Seçim yapılamadı" aciklamasi ve aday toplamlari; duzeltme kayitli pusulayla on dolu', async () => {
+    const result = {
+      rule: 'persons_and_land' as const,
+      candidates: [
+        { candidateId: 'c1', name: 'Ali Veli', votes: 2, persons: 2, units: 2, landShare: null, landShareBps: 2000, elected: false, reasons: [] },
+        { candidateId: 'c2', name: 'Ayşe Kaya', votes: 2, persons: 2, units: 2, landShare: null, landShareBps: 8000, elected: false, reasons: [] },
+      ],
+      winnerCandidateId: null,
+      abstain: { votes: 0, persons: 0, units: 0 },
+      notVoted: { votes: 0, persons: 0, units: 0 },
+      absent: { persons: 0, units: 0 },
+      required: { persons: 3, landShare: null },
+      totalPersons: 4,
+      totalLandShare: null,
+      noWinner: 'Seçim yapılamadı: hiçbir aday bütün kat maliklerinin sayı ve arsa payı çoğunluğuna ulaşmadı (KMK m.34).',
+      warnings: [],
+    };
+    const record = { itemId: 'a1', seq: 1, outcome: { reasons: [], warnings: [] } as never, unitBallots: { u1: 'c1', u2: 'c1' }, election: result, recordedAt: '2026-12-15T17:00:00.000Z' };
+    const item = { ...election, tally: { yes: 2, no: 2, abstain: 0, presentVotes: 4, decision: 'rejected' as const, recordedAt: '2026-12-15T17:00:00.000Z', seq: 1, winnerCandidateId: null } };
+    const units = [unit('u1', 'user:P'), unit('u2', 'user:P')];
+    await render(<AgendaDecision index={0} item={item} assembly={base} quorum={quorum} units={units} records={[record]} canTally={false} canCorrect unitLabel={(u) => u.number} />);
+    expect(container.textContent).toContain('Seçim yapılamadı');
+    expect(container.textContent).toContain('hiçbir aday bütün kat maliklerinin sayı ve arsa payı çoğunluğuna ulaşmadı');
+    expect(container.textContent).toContain('Ayşe Kaya2 oy · 2 kat maliki · 2 bölüm · arsa payı');
+    await act(async () => button('Kararı düzelt')?.click());
+    expect((container.querySelector('select[aria-label="U1 aday oyu"]') as HTMLSelectElement).value).toBe('c1');
+  });
+});
+
+describe('erteleme / yer degisikligi', () => {
+  const called = { ...base, calls: [{ seq: 1, calledAt: '2026-11-27T09:00:00.000Z', recipients: 5, ownersWithoutAccount: 0, daysBefore: 18, lateNotice: false, resend: false }] };
+  const check = { daysBefore: 17, lateNotice: false, recipients: 5, ownersWithoutAccount: 0, warnings: [] };
+
+  it('cagri gonderilmis toplantida gerekceli erteleme: yalnizca degisen alanlar gider; gecmis listelenir', async () => {
+    const withHistory = { ...called, reschedules: [{ seq: 1, previousScheduledAt: '2026-12-10T16:00:00.000Z', scheduledAt: '2026-12-15T16:00:00.000Z', reason: 'Salon dolu', at: '2026-11-28T09:00:00.000Z' }] };
+    await render(<AssemblyCallCard assembly={withHistory} check={check} outdated={false} canWrite />);
+    expect(container.textContent).toContain('Ertelendi:');
+    expect(container.textContent).toContain('Gerekçe: Salon dolu');
+    await act(async () => button('Ertele / yer değiştir')?.click());
+    const location = [...container.querySelectorAll('input')].find((i) => i.value === 'Salon') as HTMLInputElement;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(location, 'Bahçe');
+      location.dispatchEvent(new Event('input', { bubbles: true }));
+      const reason = container.querySelector('textarea') as HTMLTextAreaElement;
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(reason, 'Salon tadilatta');
+      reason.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(async () => button('Kaydet ve bildir')?.click());
+    expect(reschedule.mutate).toHaveBeenCalledWith({ version: 4, reason: 'Salon tadilatta', location: 'Bahçe' }, expect.anything());
+  });
+
+  it('cagri yoksa veya oy listesi dondurulduysa erteleme sunulmaz', async () => {
+    await render(<AssemblyCallCard assembly={base} check={check} outdated={false} canWrite />);
+    expect(button('Ertele / yer değiştir')).toBeUndefined();
+    container.remove();
+    await render(<AssemblyCallCard assembly={{ ...called, roll: { frozenAt: '2026-12-15T16:10:00.000Z', units: 4 } }} check={check} outdated={false} canWrite />);
+    expect(button('Ertele / yer değiştir')).toBeUndefined();
   });
 });

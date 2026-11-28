@@ -1,5 +1,6 @@
 import { CalendarClock, ChevronRight, FileText, Landmark, ListOrdered, Mail, MapPin, Plus } from 'lucide-react';
 import { useState } from 'react';
+import { useSearchParams } from 'react-router';
 import { Alert, Badge, Button, Card, Skeleton } from '@/components/ui';
 import { useAssemblies, useAssemblyPermissions } from '@/hooks/useAssemblies';
 import { useOpenDocument } from '@/hooks/useOpenDocument';
@@ -8,6 +9,7 @@ import { errorMessage } from '@/lib/api/errors';
 import { formatDateTime } from '@/lib/dates';
 import { AssemblyDetailDialog } from './AssemblyDetailDialog';
 import { AssemblyDialog } from './AssemblyDialog';
+import { ConsentsSection } from './ConsentsSection';
 
 type Editor = { item?: Assembly } | null;
 
@@ -17,7 +19,17 @@ export function AssembliesPage() {
   const list = useAssemblies();
   const doc = useOpenDocument();
   const [editor, setEditor] = useState<Editor>(null);
-  const [openId, setOpenId] = useState<string | null>(null);
+  // `?assembly=<id>`: baska ekrandan (ihale karar bagi) dogrudan toplanti ayrintisi.
+  const [params, setParams] = useSearchParams();
+  const [openId, setOpenIdState] = useState<string | null>(() => params.get('assembly'));
+  const setOpenId = (id: string | null) => {
+    setOpenIdState(id);
+    if (!id && params.has('assembly')) {
+      const next = new URLSearchParams(params);
+      next.delete('assembly');
+      setParams(next, { replace: true });
+    }
+  };
   const items = list.data ?? [];
 
   if (!canRead) {
@@ -125,6 +137,8 @@ export function AssembliesPage() {
           })}
         </ul>
       )}
+
+      <ConsentsSection canWrite={canWrite} />
 
       <AssemblyDetailDialog
         assemblyId={openId}

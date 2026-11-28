@@ -5,17 +5,29 @@ import {
   type AssemblyInput,
   type AttendanceInput,
   type AttendanceMode,
+  CONSENT_KINDS,
+  CONSENT_RULES,
+  type ConsentEntryInput,
+  type ConsentInput,
+  type ConsentKind,
   DECISION_KINDS,
+  DECISION_PRESETS,
   type DecisionKind,
   MAJORITY_RULES,
   MAX_AGENDA_ITEMS,
+  MAX_CANDIDATES,
   type MajorityRule,
   type MinutesInput,
   PERSON_RULES,
   QUALIFIED_RULES,
+  type RescheduleInput,
   SECOND_MEETING_MAX_DAYS,
   SECOND_MEETING_MIN_DAYS,
+  type ServiceAttemptInput,
+  type ServiceMethod,
+  type ServiceStatus,
   type VoteChoice,
+  isElectionKind,
   itemKind,
   itemRule,
 } from '@/lib/api/assemblyModel';
@@ -33,9 +45,27 @@ const agendaRow = z.object({
   decisionKind: z.enum(DECISION_KINDS),
   /** Yalnizca `custom` turunde secilir; hazir turde kanundan gelir. */
   majority: z.union([z.enum(MAJORITY_RULES), z.literal('')]),
+  /** Yalnizca yonetici / denetci seciminde: virgulle ayrilmis aday adlari (bos: adaysiz kabul / ret oylamasi). */
+  candidates: z.string().optional(),
 });
 export type AgendaRow = z.infer<typeof agendaRow>;
-export const emptyAgendaRow = (title = ''): AgendaRow => ({ title, decisionKind: 'general', majority: '' });
+export const emptyAgendaRow = (title = ''): AgendaRow => ({ title, decisionKind: 'general', majority: '', candidates: '' });
+
+/** Aday adlari: virgul veya satir sonuyla ayrilir; bosluklar sadelesir. */
+export const candidateNames = (text: string | undefined) =>
+  (text ?? '')
+    .split(/[,\n]/)
+    .map((s) => s.trim().replace(/\s+/g, ' '))
+    .filter(Boolean);
+
+/** Aday listesi kurali (API ile ayni): 2-150 karakter, en fazla 12, ayni ad iki kez yok. */
+export function candidatesIssue(text: string | undefined): string | null {
+  const names = candidateNames(text);
+  if (names.length > MAX_CANDIDATES) return `Bir seçimde en fazla ${MAX_CANDIDATES} aday olabilir`;
+  if (names.some((n) => n.length < 2 || n.length > 150)) return 'Aday adı 2-150 karakter olmalıdır';
+  if (new Set(names.map((n) => n.toLocaleLowerCase('tr'))).size !== names.length) return 'Aynı aday iki kez girilemez';
+  return null;
+}
 
 /** Genel kurul formu: tarih <input type="datetime-local"> (Istanbul), gundem satirlari, ilk toplanti / ikinci toplanti plani. */
 export function makeAssemblyFormSchema(firstMeetings: readonly Pick<Assembly, 'assemblyId' | 'scheduledAt'>[] = []) {
@@ -60,6 +90,10 @@ export function makeAssemblyFormSchema(firstMeetings: readonly Pick<Assembly, 'a
       else if (items.some((a) => !a)) ctx.addIssue({ code: 'custom', path: ['agenda'], message: 'Boş gündem maddesi bırakmayın' });
       else if (items.some((a) => a.length > 300)) ctx.addIssue({ code: 'custom', path: ['agenda'], message: 'Gündem maddesi en fazla 300 karakter olabilir' });
       else if (v.agenda.some((a) => a.decisionKind === 'custom' && !a.majority)) ctx.addIssue({ code: 'custom', path: ['agenda'], message: 'Özel karar türündeki maddeler için gerekli çoğunluğu seçin' });
+      else {
+        const bad = v.agenda.map((a) => (isElectionKind(a.decisionKind) ? candidatesIssue(a.candidates) : null)).find(Boolean);
+        if (bad) ctx.addIssue({ code: 'custom', path: ['agenda'], message: bad });
+      }
       const first = firstMeetings.find((a) => a.assemblyId === v.firstMeetingId);
       if (first && v.scheduledAt) {
         const issue = secondMeetingGapIssue(isoToIstanbulLocal(first.scheduledAt), v.scheduledAt);
@@ -100,7 +134,7 @@ export function formDefaults(a?: Assembly): AssemblyForm {
       agenda: [
         emptyAgendaRow('Açılış ve toplantı başkanlık divanının seçimi'),
         emptyAgendaRow('Yönetici ve denetçi raporlarının görüşülmesi'),
-        { title: 'İşletme projesinin görüşülmesi', decisionKind: 'operating_budget', majority: '' },
+        { title: 'İşletme projesinin görüşülmesi', decisionKind: 'operating_budget', majority: '', candidates: '' },
         emptyAgendaRow('Dilek ve temenniler'),
       ],
     };
@@ -115,7 +149,7 @@ export function formDefaults(a?: Assembly): AssemblyForm {
     planLocation: a.secondMeetingPlan?.location ?? '',
     agenda: a.agenda.map((i) => {
       const kind = itemKind(i);
-      return { title: i.title, decisionKind: kind, majority: kind === 'custom' ? itemRule(i) : '' };
+      return { title: i.title, decisionKind: kind, majority: kind === 'custom' ? itemRule(i) : '', candidates: (i.candidates ?? []).map((c) => c.name).join(', ') };
     }),
   };
 }
@@ -143,11 +177,15 @@ export function toInput(v: AssemblyValues, current?: Assembly): AssemblyInput {
       const title = row.title.trim();
       const prev = current?.agenda[i];
       const kind: DecisionKind = row.decisionKind;
+      const names = isElectionKind(kind) ? candidateNames(row.candidates) : [];
+      // Ayni adli adayin kisi baglantisi (varsa) korunur.
+      const prevUser = new Map((prev?.candidates ?? []).filter((c) => c.userId).map((c) => [c.name, c.userId as string]));
       return {
         title,
         ...(prev?.description && prev.title === title ? { description: prev.description } : {}),
         decisionKind: kind,
         ...(kind === 'custom' && row.majority ? { majority: row.majority as MajorityRule } : {}),
+        ...(names.length ? { candidates: names.map((name) => ({ name, ...(prevUser.get(name) ? { userId: prevUser.get(name) } : {}) })) } : {}),
       };
     }),
   };
@@ -181,13 +219,13 @@ export const needsUnitVotes = (rule: MajorityRule) => QUALIFIED_RULES.includes(r
  * katilan bolumlere de yazilir (kisinin tek oyu vardir; KMK m.31). Kisi sayimli kurallarda ayni
  * kat malikine dusen (ayni `personKey`) bolumler de birlikte isaretlenir (API ayni kurali dogrular).
  */
-export function setUnitVote(
-  votes: Record<string, VoteChoice | ''>,
+export function setUnitVote<C extends string = VoteChoice>(
+  votes: Record<string, C | ''>,
   units: readonly { unitId: string; voterKey?: string; personKey?: string }[],
   unitId: string,
-  choice: VoteChoice | '',
+  choice: C | '',
   rule: MajorityRule = 'attendees',
-): Record<string, VoteChoice | ''> {
+): Record<string, C | ''> {
   const byPerson = PERSON_RULES.includes(rule);
   const next = { ...votes };
   // Ayni kimlige baglanan bolumler zincirleme birlesir (oy kimligi ve kisi kimligi).
@@ -235,3 +273,115 @@ export function minutesInput(s: { version: number; chair: string; clerks: string
 /** Bos secimler atilir (oy kullanmadi). */
 export const unitVotesInput = (votes: Record<string, VoteChoice | ''>): Record<string, VoteChoice> =>
   Object.fromEntries(Object.entries(votes).filter((e): e is [string, VoteChoice] => e[1] !== ''));
+
+/** Secim pusulasi: bos secimler (oy kullanmadi) atilir; deger aday kimligi veya `abstain`. */
+export const ballotsInput = (ballots: Record<string, string>): Record<string, string> => Object.fromEntries(Object.entries(ballots).filter(([, v]) => v !== ''));
+
+/**
+ * Erteleme / yer degisikligi girisi -> API govdesi (yalnizca degisen alanlar). Tarih Istanbul yerel
+ * (`datetime-local`). Sorun varsa `issue`.
+ */
+export function rescheduleInput(
+  a: Pick<Assembly, 'version' | 'scheduledAt' | 'location' | 'onlineUrl'>,
+  v: { reason: string; scheduledAt: string; location: string; onlineUrl: string },
+  nowMs: number = Date.now(),
+): { input: RescheduleInput } | { issue: string } {
+  const reason = v.reason.trim();
+  if (reason.length < 3) return { issue: 'Gerekçe en az 3 karakter olmalı' };
+  if (!v.scheduledAt) return { issue: 'Toplantı tarihini ve saatini seçin' };
+  const scheduledAt = istanbulLocalToIso(v.scheduledAt);
+  if (Date.parse(scheduledAt) <= nowMs) return { issue: 'Yeni toplantı zamanı gelecekte olmalıdır' };
+  const location = v.location.trim();
+  const onlineUrl = v.onlineUrl.trim();
+  if (!location && !onlineUrl) return { issue: 'Toplantı yerini veya çevrim içi bağlantıyı girin' };
+  if (onlineUrl && !/^https:\/\/\S+$/.test(onlineUrl)) return { issue: 'Bağlantı https:// ile başlamalıdır' };
+  const timeChanged = Date.parse(scheduledAt) !== Date.parse(a.scheduledAt);
+  const locChanged = location !== (a.location ?? '');
+  const urlChanged = onlineUrl !== (a.onlineUrl ?? '');
+  if (!timeChanged && !locChanged && !urlChanged) return { issue: 'Tarih, yer veya çevrim içi bağlantıdan en az biri değişmeli' };
+  return {
+    input: {
+      version: a.version,
+      reason,
+      ...(timeChanged ? { scheduledAt } : {}),
+      ...(locChanged ? { location: location || null } : {}),
+      ...(urlChanged ? { onlineUrl: onlineUrl || null } : {}),
+    },
+  };
+}
+
+/**
+ * Tebligat denemesi girisi -> API govdesi. Taahhutlu mektupta gonderi no zorunlu; tarih bugunden ve
+ * toplanti gununden sonra olamaz (API ile ayni).
+ */
+export function serviceAttemptInput(
+  v: { version: number; method: ServiceMethod; sentOn: string; referenceNo: string; status: ServiceStatus | ''; statusOn: string; note: string },
+  limits: { today: string; rollDate: string },
+): { input: ServiceAttemptInput } | { issue: string } {
+  if (!v.sentOn) return { issue: 'Tarihi girin' };
+  if (v.sentOn > limits.today) return { issue: 'Tarih bugünden sonra olamaz' };
+  if (v.sentOn > limits.rollDate) return { issue: 'Gönderim tarihi toplantı gününden sonra olamaz' };
+  const referenceNo = v.referenceNo.trim();
+  if (v.method === 'registered_mail' && !referenceNo) return { issue: 'Taahhütlü mektupta gönderi (barkod) numarasını girin' };
+  if (v.statusOn && (v.statusOn > limits.today || v.statusOn < v.sentOn)) return { issue: 'Teslim / iade tarihi gönderimden önce veya bugünden sonra olamaz' };
+  return {
+    input: {
+      version: v.version,
+      method: v.method,
+      sentOn: v.sentOn,
+      ...(referenceNo ? { referenceNo } : {}),
+      ...(v.status ? { status: v.status } : {}),
+      ...(v.status && v.status !== 'pending' && v.statusOn ? { statusOn: v.statusOn } : {}),
+      ...(v.note.trim() ? { note: v.note.trim() } : {}),
+    },
+  };
+}
+
+/** Yazili riza talebi formu: ozel turde cogunluk secilir (katilanlarin oy coklugu yok). */
+export const consentFormSchema = z
+  .object({
+    title: z.string().trim().min(3, 'Başlık en az 3 karakter olmalı').max(300, 'Başlık en fazla 300 karakter olabilir'),
+    description: z.string().trim().max(2000, 'Açıklama en fazla 2000 karakter olabilir'),
+    decisionKind: z.enum(CONSENT_KINDS),
+    majority: z.union([z.enum(MAJORITY_RULES), z.literal('')]),
+  })
+  .superRefine((v, ctx) => {
+    if (v.decisionKind === 'custom' && (!v.majority || !CONSENT_RULES.includes(v.majority))) ctx.addIssue({ code: 'custom', path: ['majority'], message: 'Gerekli çoğunluğu seçin' });
+  });
+export type ConsentForm = z.input<typeof consentFormSchema>;
+export type ConsentValues = z.output<typeof consentFormSchema>;
+export const CONSENT_FORM_FIELDS = ['title', 'description', 'decisionKind', 'majority'] as const;
+export const consentDefaults = (): ConsentForm => ({ title: '', description: '', decisionKind: 'common_area_change', majority: '' });
+export const toConsentInput = (v: ConsentValues): ConsentInput => ({
+  title: v.title,
+  ...(v.description ? { description: v.description } : {}),
+  decisionKind: v.decisionKind as ConsentKind,
+  ...(v.decisionKind === 'custom' && v.majority ? { majority: v.majority as MajorityRule } : {}),
+});
+/** Turun cogunlugu (formda gosterilir): hazir turde kanundan, ozelde secilen. */
+export const consentRule = (kind: ConsentKind, custom: MajorityRule | ''): MajorityRule | undefined => (kind === 'custom' ? custom || undefined : DECISION_PRESETS[kind].rule);
+
+/**
+ * Riza kaydi girisi -> API govdesi. Hisseli bolumde imzalayan paydas, kayitli bolumde duzeltme
+ * gerekcesi, "Diger" yontemde aciklama zorunlu; imza tarihi bugunden sonra olamaz.
+ */
+export function consentEntryInput(
+  v: { choice: ConsentEntryInput['choice']; signedOn: string; method: ConsentEntryInput['method']; methodNote: string; signerUserId: string; correctionReason: string },
+  ctx: { coOwned: boolean; recorded: boolean; today: string },
+): { input: ConsentEntryInput } | { issue: string } {
+  if (!v.signedOn) return { issue: 'İmza tarihini girin' };
+  if (v.signedOn > ctx.today) return { issue: 'İmza tarihi bugünden sonra olamaz' };
+  if (ctx.coOwned && !v.signerUserId) return { issue: 'Hisseli bölümde rızayı veren paydaşı (temsilci) seçin' };
+  if (v.method === 'other' && !v.methodNote.trim()) return { issue: '"Diğer" yöntemde açıklama girin' };
+  if (ctx.recorded && v.correctionReason.trim().length < 3) return { issue: 'Kayıtlı bölüm için düzeltme gerekçesi en az 3 karakter olmalı' };
+  return {
+    input: {
+      choice: v.choice,
+      signedOn: v.signedOn,
+      method: v.method,
+      ...(v.method === 'other' ? { methodNote: v.methodNote.trim() } : {}),
+      ...(v.signerUserId ? { signerUserId: v.signerUserId } : {}),
+      ...(ctx.recorded ? { correctionReason: v.correctionReason.trim() } : {}),
+    },
+  };
+}

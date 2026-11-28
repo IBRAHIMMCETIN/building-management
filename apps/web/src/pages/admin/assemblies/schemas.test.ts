@@ -3,9 +3,30 @@ vi.mock('@/lib/api/client', () => ({ apiClient: {} }));
 import { navItemsFor } from '@/layouts/adminNav';
 import { type Assembly, type Quorum, assemblyDetailSchema, firstMeetingCandidates, quorumSchema, quorumText } from '@/lib/api/assemblyModel';
 import { actionLabel } from '@/lib/audit/labels';
-import { type AgendaRow, assemblyFormSchema, attendanceInput, formDefaults, makeAssemblyFormSchema, minutesInput, secondMeetingGapIssue, setUnitVote, tallyIssue, toInput, unitVotesInput } from './schemas';
+import {
+  type AgendaRow,
+  assemblyFormSchema,
+  attendanceInput,
+  ballotsInput,
+  candidateNames,
+  candidatesIssue,
+  consentEntryInput,
+  consentFormSchema,
+  consentRule,
+  formDefaults,
+  makeAssemblyFormSchema,
+  minutesInput,
+  rescheduleInput,
+  secondMeetingGapIssue,
+  serviceAttemptInput,
+  setUnitVote,
+  tallyIssue,
+  toConsentInput,
+  toInput,
+  unitVotesInput,
+} from './schemas';
 
-const row = (title: string, decisionKind: AgendaRow['decisionKind'] = 'general', majority: AgendaRow['majority'] = '') => ({ title, decisionKind, majority });
+const row = (title: string, decisionKind: AgendaRow['decisionKind'] = 'general', majority: AgendaRow['majority'] = '', candidates = '') => ({ title, decisionKind, majority, candidates });
 const valid = { kind: 'ordinary' as const, scheduledAt: '2026-12-15T19:00', location: ' Toplantı salonu ', onlineUrl: '', firstMeetingId: '', planAt: '', planLocation: '', agenda: [row(' Açılış '), row('Bütçe')] };
 
 const assembly = (over: Partial<Assembly> = {}): Assembly => ({
@@ -192,5 +213,69 @@ describe('genel kurul devami: karar turu, ikinci toplanti plani, bolum bazinda o
     expect(minutesInput({ version: 3, chair: '', clerks: 'A B, C D, E F, G H', counters: '', notes: {}, general: '' })).toBeNull();
     expect(minutesInput({ version: 3, chair: 'X', clerks: '', counters: '', notes: {}, general: '' })).toBeNull();
     expect(minutesInput({ version: 3, chair: '', clerks: '', counters: '', notes: {}, general: '' })?.chair).toBeNull();
+  });
+});
+
+describe('genel kurul sonrasi formlari', () => {
+  it('secim adaylari: yalnizca yonetici / denetci seciminde gonderilir; tekrar ve uzunluk kurali; duzenlemede geri okunur', () => {
+    const v = assemblyFormSchema.parse({ ...valid, agenda: [row('Yönetici seçimi', 'manager_election', '', ' Ali  Veli , Ayşe Kaya'), row('Bütçe', 'general', '', 'Yok Sayılır')] });
+    expect(toInput(v).agenda).toEqual([
+      { title: 'Yönetici seçimi', decisionKind: 'manager_election', candidates: [{ name: 'Ali Veli' }, { name: 'Ayşe Kaya' }] },
+      { title: 'Bütçe', decisionKind: 'general' },
+    ]);
+    expect(assemblyFormSchema.safeParse({ ...valid, agenda: [row('Y', 'auditor_election', '', 'Ali Veli, ali veli')] }).error?.issues[0]?.message).toBe('Aynı aday iki kez girilemez');
+    expect(candidatesIssue('A')).toContain('2-150');
+    expect(candidateNames('a b,\n c d ,')).toEqual(['a b', 'c d']);
+    const a = assembly({ agenda: [{ itemId: 'a1', title: 'Y', decisionKind: 'manager_election', majority: 'persons_and_land', candidates: [{ candidateId: 'c1', name: 'Ali Veli', userId: 'p1' }] }] });
+    expect(formDefaults(a).agenda[0]?.candidates).toBe('Ali Veli');
+    // Ayni adli adayin kisi baglantisi korunur.
+    expect(toInput(assemblyFormSchema.parse({ ...formDefaults(a), scheduledAt: '2026-12-15T19:00' }), a).agenda[0]?.candidates).toEqual([{ name: 'Ali Veli', userId: 'p1' }]);
+  });
+
+  it('pusula: bos secim atilir; ayni kisinin bolumleri ayni aday', () => {
+    const units = [{ unitId: 'u1', voterKey: 'user:P' }, { unitId: 'u2', voterKey: 'user:P' }, { unitId: 'u3', voterKey: 'user:Q' }];
+    const b = setUnitVote<string>({}, units, 'u1', 'c2');
+    expect(b).toEqual({ u1: 'c2', u2: 'c2' });
+    expect(ballotsInput({ ...b, u3: '' })).toEqual({ u1: 'c2', u2: 'c2' });
+  });
+
+  it('erteleme: yalnizca degisen alanlar; degisiklik, gerekce ve gelecek tarih sarti', () => {
+    const a = assembly();
+    const now = Date.parse('2026-11-27T09:00:00.000Z');
+    expect(rescheduleInput(a, { reason: 'Salon dolu', scheduledAt: '2026-12-20T19:00', location: 'Salon', onlineUrl: '' }, now)).toEqual({ input: { version: 2, reason: 'Salon dolu', scheduledAt: '2026-12-20T19:00:00+03:00' } });
+    expect(rescheduleInput(a, { reason: 'Salon dolu', scheduledAt: '2026-12-15T19:00', location: 'Salon', onlineUrl: '' }, now)).toEqual({ issue: 'Tarih, yer veya çevrim içi bağlantıdan en az biri değişmeli' });
+    expect(rescheduleInput(a, { reason: 'x', scheduledAt: '2026-12-20T19:00', location: 'Salon', onlineUrl: '' }, now)).toMatchObject({ issue: expect.stringContaining('Gerekçe') });
+    expect(rescheduleInput(a, { reason: 'Geçmiş', scheduledAt: '2026-11-20T19:00', location: 'Salon', onlineUrl: '' }, now)).toMatchObject({ issue: expect.stringContaining('gelecekte') });
+    expect(rescheduleInput(a, { reason: 'Çevrim içi', scheduledAt: '2026-12-15T19:00', location: '', onlineUrl: 'https://meet.example/x' }, now)).toEqual({
+      input: { version: 2, reason: 'Çevrim içi', location: null, onlineUrl: 'https://meet.example/x' },
+    });
+  });
+
+  it('tebligat denemesi: taahhutlu mektupta gonderi no zorunlu; gelecek tarih reddedilir', () => {
+    const limits = { today: '2026-11-27', rollDate: '2026-12-15' };
+    const base2 = { version: 0, method: 'hand_signed' as const, sentOn: '2026-11-26', referenceNo: '', status: '' as const, statusOn: '', note: '' };
+    expect(serviceAttemptInput(base2, limits)).toEqual({ input: { version: 0, method: 'hand_signed', sentOn: '2026-11-26' } });
+    expect(serviceAttemptInput({ ...base2, method: 'registered_mail' }, limits)).toMatchObject({ issue: expect.stringContaining('barkod') });
+    expect(serviceAttemptInput({ ...base2, method: 'registered_mail', referenceNo: ' RR1 ', status: 'returned', statusOn: '2026-11-27' }, limits)).toEqual({
+      input: { version: 0, method: 'registered_mail', sentOn: '2026-11-26', referenceNo: 'RR1', status: 'returned', statusOn: '2026-11-27' },
+    });
+    expect(serviceAttemptInput({ ...base2, sentOn: '2026-11-28' }, limits)).toMatchObject({ issue: 'Tarih bugünden sonra olamaz' });
+  });
+
+  it('yazili riza: ozel turde cogunluk zorunlu (katilanlar cogunlugu yok); kayit girisi kurallari', () => {
+    expect(consentFormSchema.safeParse({ title: 'Boya', description: '', decisionKind: 'custom', majority: '' }).success).toBe(false);
+    expect(consentFormSchema.safeParse({ title: 'Boya', description: '', decisionKind: 'custom', majority: 'attendees' }).success).toBe(false);
+    const v = consentFormSchema.parse({ title: ' Dış cephe boyası ', description: '', decisionKind: 'common_area_change', majority: '' });
+    expect(toConsentInput(v)).toEqual({ title: 'Dış cephe boyası', decisionKind: 'common_area_change' });
+    expect(consentRule('common_area_change', '')).toBe('four_fifths_persons');
+    const entry = { choice: 'consent' as const, signedOn: '2026-11-26', method: 'wet_signature' as const, methodNote: '', signerUserId: '', correctionReason: '' };
+    const ctx = { coOwned: false, recorded: false, today: '2026-11-27' };
+    expect(consentEntryInput(entry, ctx)).toEqual({ input: { choice: 'consent', signedOn: '2026-11-26', method: 'wet_signature' } });
+    expect(consentEntryInput(entry, { ...ctx, coOwned: true })).toMatchObject({ issue: expect.stringContaining('paydaşı') });
+    expect(consentEntryInput(entry, { ...ctx, recorded: true })).toMatchObject({ issue: expect.stringContaining('düzeltme gerekçesi') });
+    expect(consentEntryInput({ ...entry, method: 'other' }, ctx)).toMatchObject({ issue: expect.stringContaining('Diğer') });
+    expect(consentEntryInput({ ...entry, signerUserId: 'p2', correctionReason: 'İmza hatalı' }, { ...ctx, coOwned: true, recorded: true })).toEqual({
+      input: { choice: 'consent', signedOn: '2026-11-26', method: 'wet_signature', signerUserId: 'p2', correctionReason: 'İmza hatalı' },
+    });
   });
 });
