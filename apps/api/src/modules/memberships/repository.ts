@@ -1,11 +1,17 @@
-import { auditedPutNew, auditedPutVersioned } from '../audit/log.js';
+import { TransactionCanceledException } from '@aws-sdk/client-dynamodb';
+import { auditedPutNew, auditedPutVersioned, sendWithAudit } from '../audit/log.js';
 import {
+  DataAccessError,
   KEY_SEPARATOR,
+  getDynamo,
   getTenantItem,
   queryTenantAll,
   skKey,
   tenantPk,
+  toDataAccessError,
 } from '../../config/dynamodb.js';
+import { toOutboxItems } from '../../events/outbox.js';
+import type { DomainEvent } from '../../events/publisher.js';
 import type { TableKeys } from '../core/types.js';
 import type { UnitMembership } from '../portal/types.js';
 
@@ -46,7 +52,11 @@ export type MembershipRepository = {
   /** Apartmandaki tum uyelikler; `unitId` verilirse yalnizca o daire. */
   list(apartmentId: string, filter?: { unitId?: string }): Promise<UnitMembership[]>;
   create(membership: UnitMembership): Promise<void>;
-  update(membership: UnitMembership, expectedVersion: number): Promise<void>;
+  /**
+   * `outbox`: ayni atomik yazimda saklanacak domain olaylari (kapi devami: `MEMBERSHIP_ENDED`).
+   * Surum uyusmazsa `DataAccessError('conflict')`.
+   */
+  update(membership: UnitMembership, expectedVersion: number, opts?: { outbox?: DomainEvent[] }): Promise<void>;
 };
 
 function assertKeys(m: UnitMembership): void {
@@ -98,13 +108,41 @@ export function createMembershipRepository(): MembershipRepository {
       await auditedPutNew({ ...stripIndex(membership), ...membershipGsi1(membership) }, membershipAudit(membership, 'membership.create'));
     },
 
-    async update(membership, expectedVersion) {
+    async update(membership, expectedVersion, opts = {}) {
       assertKeys(membership);
-      await auditedPutVersioned(
-        { ...stripIndex(membership), ...membershipGsi1(membership) },
-        expectedVersion,
-        membershipAudit(membership, 'membership.update'),
-      );
+      const item = { ...stripIndex(membership), ...membershipGsi1(membership) };
+      const draft = membershipAudit(membership, 'membership.update');
+      if (!opts.outbox?.length) {
+        await auditedPutVersioned(item, expectedVersion, draft);
+        return;
+      }
+      // Uyelik + outbox olay(lar)i + denetim kaydi tek TransactWriteItems (denetim kapaliysa ikisi).
+      const { client, tableName } = getDynamo();
+      try {
+        await sendWithAudit(
+          client,
+          [
+            {
+              Put: {
+                TableName: tableName,
+                Item: item,
+                ConditionExpression: 'attribute_exists(PK) AND #version = :expectedVersion',
+                ExpressionAttributeNames: { '#version': 'version' },
+                ExpressionAttributeValues: { ':expectedVersion': expectedVersion },
+              },
+            },
+            ...toOutboxItems(opts.outbox, membership.updatedAt, membership.apartmentId).map((o) => ({
+              Put: { TableName: tableName, Item: o, ConditionExpression: 'attribute_not_exists(PK)' },
+            })),
+          ],
+          draft,
+        );
+      } catch (err) {
+        if (err instanceof TransactionCanceledException && err.CancellationReasons?.some((r) => r.Code === 'ConditionalCheckFailed')) {
+          throw new DataAccessError('conflict', 'Kosul saglanmadi (surum catismasi)', { cause: err });
+        }
+        throw toDataAccessError(err);
+      }
     },
   };
 }

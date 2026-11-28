@@ -99,6 +99,15 @@ function ResultSummary({ job }: { job: BulkJob }) {
       </div>
     );
   }
+  if (job.kind === 'meter_calculation') {
+    return (
+      <p className="text-small text-muted">
+        {r.ok === false
+          ? `Hesap yapılamadı: ${(r.blockerCount ?? 0).toLocaleString('tr-TR')} engel bulundu.`
+          : `Önizleme hazır: ${(r.unitCount ?? job.total).toLocaleString('tr-TR')} bölüm, ${(r.chargeCount ?? 0).toLocaleString('tr-TR')} tahakkuk.`}
+      </p>
+    );
+  }
   if (job.kind === 'meter_reversal') {
     return (
       <p className="text-small text-muted">
