@@ -2,10 +2,11 @@ import { ApiError, errorMessage } from '@bm/shared/api/errors';
 import { AUDIENCE_LABELS, PHASE_LABELS, PHASE_TONES, type PortalPoll, WEIGHTING_LABELS, myVoteText } from '@bm/shared/api/polls';
 import { formatDate, formatDateTime } from '@bm/shared/dates';
 import { useState } from 'react';
-import { AccessibilityInfo, Pressable, StyleSheet, View } from 'react-native';
+import { AccessibilityInfo, Platform, Pressable, StyleSheet, View } from 'react-native';
 import { CircleCheck, Lock, Users } from '@/components/icons';
 import { PollResultsView } from '@/components/portal/PollResultsView';
 import { PortalQueryState } from '@/components/portal/PortalQueryState';
+import { RefetchErrorBanner } from '@/components/portal/RefetchErrorBanner';
 import { Alert, AppText, Badge, Button, Card, CardTitle, LoadingBlock, Screen } from '@/components/ui';
 import { useMyPoll, useVote } from '@/hooks/usePolls';
 import { MIN_TOUCH, radii, space, withAlpha } from '@/theme/tokens';
@@ -15,9 +16,19 @@ import { useTheme } from '@/theme/useTheme';
 const confirmText = (label: string, changing: boolean) => (changing ? `Oyunuz “${label}” olarak değiştirilecek.` : `“${label}” seçeneğine oy vereceksiniz.`);
 const confirmLabel = (changing: boolean) => (changing ? 'Değişikliği onayla' : 'Oyu onayla');
 const LAST_VOTE_NOTE = 'Oylama bitene kadar verilen son oy geçerlidir; isterseniz sonra değiştirebilirsiniz.';
+const VOTE_SAVED = 'Oyunuz kaydedildi. Oylama bitene kadar değiştirebilirsiniz.';
+
+/**
+ * iOS'ta canli bolge (accessibilityLiveRegion) okunmaz: onay adimi ve gonderim sonucu VoiceOver'a
+ * ayrica duyurulur. Android'de ayni metin canli bolgeden (Alert / onay kutusu) okunur; tekrar duyurulmaz.
+ */
+function announce(text: string) {
+  if (Platform.OS === 'ios') AccessibilityInfo.announceForAccessibility(text);
+}
 
 /** Oylama sona erdi / henuz baslamadi (API `poll_closed`, 409): ekran guncel durumu yeniden ceker. */
 const isPollClosed = (err: unknown) => err instanceof ApiError && err.status === 409 && err.code === 'poll_closed';
+const voteErrorText = (err: unknown) => (isPollClosed(err) ? `Oyunuz kaydedilmedi: ${errorMessage(err)}.` : errorMessage(err));
 
 /**
  * Sakin oylama ayrintisi (web: pages/resident/polls/MyPollDetailPage.tsx): oy verme / degistirme,
@@ -38,9 +49,10 @@ export function PollDetailScreen({ id }: { id: string }) {
 
   return (
     <Screen refreshing={refreshing} onRefresh={() => void refresh()}>
+      {detail.isError && detail.data && <RefetchErrorBanner error={detail.error} onRetry={() => void detail.refetch()} />}
       {detail.isPending ? (
         <LoadingBlock label="Oylama yükleniyor" lines={5} />
-      ) : detail.isError ? (
+      ) : !detail.data ? (
         <PortalQueryState error={detail.error} onRetry={() => void detail.refetch()} />
       ) : (
         <Detail key={`${detail.data.pollId}-${detail.data.unitId}`} poll={detail.data} />
@@ -67,7 +79,11 @@ function Detail({ poll: p }: { poll: PortalPoll }) {
 
   const send = () => {
     if (!choice) return;
-    vote.mutate(choice, { onSettled: () => setConfirming(false) });
+    vote.mutate(choice, {
+      onSuccess: () => announce(VOTE_SAVED),
+      onError: (err) => announce(voteErrorText(err)),
+      onSettled: () => setConfirming(false),
+    });
   };
 
   return (
@@ -139,7 +155,7 @@ function Detail({ poll: p }: { poll: PortalPoll }) {
               })}
             </View>
 
-            {vote.isSuccess && <Alert tone="success">Oyunuz kaydedildi. Oylama bitene kadar değiştirebilirsiniz.</Alert>}
+            {vote.isSuccess && <Alert tone="success">{VOTE_SAVED}</Alert>}
 
             {confirming && chosen ? (
               <View style={[styles.confirm, { borderColor: withAlpha(colors.accent, 0.3), backgroundColor: withAlpha(colors.accent, 0.05) }]} accessibilityLiveRegion="polite">
@@ -161,8 +177,7 @@ function Detail({ poll: p }: { poll: PortalPoll }) {
                 onPress={() => {
                   vote.reset();
                   setConfirming(true);
-                  // iOS canli bolgeyi okumaz: onay kutusunun metni ve dugmesi ekran okuyucuya ayrica duyurulur.
-                  if (chosen) AccessibilityInfo.announceForAccessibility(`${confirmText(chosen.label, changing)} ${LAST_VOTE_NOTE} ${confirmLabel(changing)} düğmesiyle onaylayın.`);
+                  if (chosen) announce(`${confirmText(chosen.label, changing)} ${LAST_VOTE_NOTE} ${confirmLabel(changing)} düğmesiyle onaylayın.`);
                 }}
               />
             )}
@@ -176,7 +191,7 @@ function Detail({ poll: p }: { poll: PortalPoll }) {
         )}
 
         {/* Gonderim hatasi formun disinda: 409 sonrasi oylama kapanmis gorunse de neden okunur. */}
-        {vote.isError && <Alert tone="danger">{isPollClosed(vote.error) ? `Oyunuz kaydedilmedi: ${errorMessage(vote.error)}.` : errorMessage(vote.error)}</Alert>}
+        {vote.isError && <Alert tone="danger">{voteErrorText(vote.error)}</Alert>}
 
         <View style={styles.rules}>
           <AppText variant="small" tone="muted">
@@ -200,7 +215,11 @@ function Detail({ poll: p }: { poll: PortalPoll }) {
           <PollResultsView results={p.results} highlightOptionId={p.myVote?.castByMe ? p.myVote.optionId : undefined} />
         ) : (
           <AppText variant="small" tone="muted">
-            {p.resultsAfterVote ? 'Ara sonuçlar dairenizin oyu kullanıldıktan sonra görünür.' : 'Sonuçlar oylama bitince açıklanır.'}
+            {p.resultsAvailable
+              ? 'Sonuçlar yükleniyor…'
+              : p.resultsAfterVote
+                ? 'Ara sonuçlar dairenizin oyu kullanıldıktan sonra görünür.'
+                : 'Sonuçlar oylama bitince açıklanır.'}
           </AppText>
         )}
       </Card>

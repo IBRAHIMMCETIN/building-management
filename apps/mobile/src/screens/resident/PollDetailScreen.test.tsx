@@ -1,5 +1,7 @@
 import type { PortalPoll } from '@bm/shared/api/polls';
-import { fireEvent, screen, waitFor } from '@testing-library/react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { act, fireEvent, screen, waitFor } from '@testing-library/react-native';
+import { AccessibilityInfo } from 'react-native';
 import { finalResults, poll } from '@/test/pollFixtures';
 import { renderApp } from '@/test/renderApp';
 import { PollDetailScreen } from './PollDetailScreen';
@@ -134,5 +136,125 @@ describe('Oylama ayrintisi: oy verme', () => {
     expect(screen.getByLabelText('Hayır, kazanan, sizin oyunuz: %70. 1 bölüm (%33,33) · arsa payı 840/1.200 (%70)')).toBeTruthy();
     expect(screen.getByLabelText('Katılım (bölüm): 3 / 3 bölüm · %100')).toBeTruthy();
     expect(screen.queryByRole('radio')).toBeNull();
+  });
+});
+
+describe('Oylama ayrintisi: sonuclar, daire, ekran okuyucu, yenileme hatasi', () => {
+  const liveResults = { ...finalResults, phase: 'open' as const, final: false };
+  const openWithResults = (over: Partial<PortalPoll> = {}) =>
+    poll({ secret: false, resultsVisibleBeforeClose: true, resultsAvailable: true, results: liveResults, myVote: { castByMe: true, optionId: 'o1' }, ...over });
+
+  afterEach(async () => {
+    jest.restoreAllMocks();
+    await AsyncStorage.clear();
+  });
+
+  it('gizli oylama surerken: yalnizca katilim, dagilim yok', async () => {
+    await renderApp(<PollDetailScreen id="p1" />, {
+      routes: { 'GET /api/portal/polls/p1': poll({ resultsAvailable: true, results: { ...liveResults, tallyHidden: true, options: undefined, winnerOptionId: undefined } }) },
+    });
+    expect(await screen.findByText('Gizli oylama sürüyor: seçeneklerin dağılımı oylama bitince açıklanır. Şimdilik yalnızca katılım görünür.')).toBeTruthy();
+    expect(screen.getByLabelText('Katılım (bölüm): 3 / 3 bölüm · %100')).toBeTruthy();
+    expect(screen.queryByLabelText(/^Evet.*: %/)).toBeNull();
+  });
+
+  it('oy degistirme: yanitta sonuc yok, ara sonuc yeniden cekim gelene kadar ekranda kalir', async () => {
+    let voted = false;
+    await renderApp(<PollDetailScreen id="p1" />, {
+      routes: {
+        // Oy sonrasi yeniden cekim bekletilir: ekranda yalnizca oy yaniti + onceki sonuc var.
+        'GET /api/portal/polls/p1': () => (voted ? new Promise(() => undefined) : openWithResults()),
+        'POST /api/portal/polls/p1/vote': () => {
+          voted = true;
+          return openWithResults({ myVote: { castByMe: true, optionId: 'o2' }, results: undefined });
+        },
+      },
+    });
+    await fireEvent.press(await screen.findByRole('radio', { name: 'Hayır' }));
+    await fireEvent.press(button('Oyumu değiştir'));
+    await fireEvent.press(button('Değişikliği onayla'));
+    expect(await screen.findByText('Oyunuz: Hayır')).toBeTruthy();
+    expect(screen.getByLabelText(/^Hayır, önde, sizin oyunuz: %70\./)).toBeTruthy();
+    expect(screen.queryByText('Sonuçlar oylama bitince açıklanır.')).toBeNull();
+  });
+
+  it('ilk oy: sonuc acilir ama yanit sonuc tasimaz -> "yükleniyor", yeniden cekimle sonuc gelir', async () => {
+    let release: () => void = () => undefined;
+    let voted = false;
+    await renderApp(<PollDetailScreen id="p1" />, {
+      routes: {
+        'GET /api/portal/polls/p1': () =>
+          voted
+            ? new Promise((resolve) => {
+                release = () => resolve(openWithResults({ myVote: { castByMe: true, optionId: 'o2' } }));
+              })
+            : poll({ secret: false, resultsVisibleBeforeClose: true, resultsAfterVote: true }),
+        'POST /api/portal/polls/p1/vote': () => {
+          voted = true;
+          return poll({ secret: false, resultsVisibleBeforeClose: true, resultsAvailable: true, myVote: { castByMe: true, optionId: 'o2' } });
+        },
+      },
+    });
+    expect(await screen.findByText('Ara sonuçlar dairenizin oyu kullanıldıktan sonra görünür.')).toBeTruthy();
+    await fireEvent.press(screen.getByRole('radio', { name: 'Hayır' }));
+    await fireEvent.press(button('Oyu gönder'));
+    await fireEvent.press(button('Oyu onayla'));
+    expect(await screen.findByText('Sonuçlar yükleniyor…')).toBeTruthy();
+    await act(async () => release());
+    expect(await screen.findByLabelText(/^Hayır, önde, sizin oyunuz: %70\./)).toBeTruthy();
+  });
+
+  it('secili daire okuma ve oy istegine ?unitId= olarak gider', async () => {
+    await AsyncStorage.setItem('bm.portal-unit.mock-resident.apt-dev-1', 'u-9');
+    const { calls } = await renderApp(<PollDetailScreen id="p1" />, {
+      routes: voteRoutes(poll({ unitId: 'u-9' }), (optionId) => poll({ unitId: 'u-9', myVote: { castByMe: true, optionId } })),
+    });
+    await fireEvent.press(await screen.findByRole('radio', { name: 'Evet' }));
+    await fireEvent.press(button('Oyu gönder'));
+    await fireEvent.press(button('Oyu onayla'));
+    await screen.findByText('Oyunuz: Evet');
+    expect(calls.find((c) => c.method === 'GET' && c.path === '/api/portal/polls/p1')?.query).toEqual({ unitId: 'u-9' });
+    expect(calls.find((c) => c.method === 'POST')).toMatchObject({ path: '/api/portal/polls/p1/vote', query: { unitId: 'u-9' }, body: { optionId: 'o1' } });
+  });
+
+  it("iOS: onay adimi ve gonderim sonucu VoiceOver'a duyurulur (basari ve 409)", async () => {
+    const announce = jest.spyOn(AccessibilityInfo, 'announceForAccessibility').mockImplementation(() => undefined);
+    let closed = false;
+    await renderApp(<PollDetailScreen id="p1" />, {
+      routes: voteRoutes(poll(), (optionId) =>
+        closed ? { status: 409, body: { error: 'poll_closed', message: 'Oylama sona erdi; oy kabul edilmiyor' } } : poll({ myVote: { castByMe: true, optionId } }),
+      ),
+    });
+    await fireEvent.press(await screen.findByRole('radio', { name: 'Evet' }));
+    await fireEvent.press(button('Oyu gönder'));
+    expect(announce).toHaveBeenLastCalledWith(
+      '“Evet” seçeneğine oy vereceksiniz. Oylama bitene kadar verilen son oy geçerlidir; isterseniz sonra değiştirebilirsiniz. Oyu onayla düğmesiyle onaylayın.',
+    );
+    await fireEvent.press(button('Oyu onayla'));
+    await waitFor(() => expect(announce).toHaveBeenLastCalledWith('Oyunuz kaydedildi. Oylama bitene kadar değiştirebilirsiniz.'));
+
+    closed = true;
+    await fireEvent.press(await screen.findByRole('radio', { name: 'Hayır' }));
+    await fireEvent.press(button('Oyumu değiştir'));
+    await fireEvent.press(button('Değişikliği onayla'));
+    await waitFor(() => expect(announce).toHaveBeenLastCalledWith('Oyunuz kaydedilmedi: Oylama sona erdi; oy kabul edilmiyor.'));
+  });
+
+  it('arka plan yenilemesi hata verirse ekran ve secim korunur; satir ici uyari + tekrar dene', async () => {
+    let fail = false;
+    const { queryClient } = await renderApp(<PollDetailScreen id="p1" />, {
+      routes: { 'GET /api/portal/polls/p1': () => (fail ? { status: 503, body: { error: 'unavailable', message: 'Servis geçici olarak kullanılamıyor.' } } : poll()) },
+    });
+    await fireEvent.press(await screen.findByRole('radio', { name: 'Hayır' }));
+    fail = true;
+    await act(async () => {
+      await queryClient.refetchQueries();
+    });
+    expect(await screen.findByText(/^Güncel bilgiler alınamadı; son yüklenen bilgiler gösteriliyor\. Servis geçici/)).toBeTruthy();
+    expect(radio('Hayır').props.accessibilityState).toMatchObject({ checked: true });
+    fail = false;
+    await fireEvent.press(button('Tekrar dene'));
+    await waitFor(() => expect(screen.queryByText(/^Güncel bilgiler alınamadı/)).toBeNull());
+    expect(radio('Hayır').props.accessibilityState).toMatchObject({ checked: true });
   });
 });

@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor } from '@testing-library/react-native';
+import { act, fireEvent, screen, waitFor } from '@testing-library/react-native';
 import { Linking } from 'react-native';
 import { renderApp } from '@/test/renderApp';
 import { tender, tenderSummary } from '@/test/tenderFixtures';
@@ -131,6 +131,47 @@ describe('İhale ayrintisi', () => {
     expect(await screen.findByLabelText(/^Siz, .*: İkinci soru burada$/)).toBeTruthy();
     const last = calls.filter((c) => c.method === 'POST').at(-1)?.body as { idempotencyKey: string };
     expect(last.idempotencyKey).not.toBe(posts[0]?.idempotencyKey);
+  });
+
+  it('soru sonrasi ihale listesi de yenilenir', async () => {
+    let current = tender();
+    const { calls } = await renderApp(
+      <>
+        <TendersScreen />
+        <TenderDetailScreen id="t-1" />
+      </>,
+      {
+        routes: {
+          'GET /api/portal/tenders': { items: [tenderSummary()] },
+          'GET /api/portal/tenders/t-1': () => ({ tender: current }),
+          'POST /api/portal/tenders/t-1/comments': ({ body }: { body: { body: string } }) => {
+            current = tender({ comments: [...current.comments, { commentId: 'c9', body: body.body, authorKind: 'resident', mine: true, createdAt: '2026-11-28T09:00:00.000Z' }] });
+            return { tender: current, replayed: false };
+          },
+        },
+      },
+    );
+    await screen.findByRole('button', { name: /^Dış cephe mantolama, Sakinlerle paylaşıldı/ });
+    const before = calls.filter((c) => c.path === '/api/portal/tenders').length;
+    await fireEvent.changeText(await screen.findByLabelText('Sorunuz'), 'Liste de yenilensin mi?');
+    await fireEvent.press(screen.getByRole('button', { name: 'Soruyu gönder' }));
+    await screen.findByLabelText(/^Siz, .*: Liste de yenilensin mi\?$/);
+    await waitFor(() => expect(calls.filter((c) => c.path === '/api/portal/tenders').length).toBe(before + 1));
+  });
+
+  it('arka plan yenilemesi hata verirse ihale ve soru taslagi korunur', async () => {
+    let fail = false;
+    const { queryClient } = await renderApp(<TenderDetailScreen id="t-1" />, {
+      routes: { 'GET /api/portal/tenders/t-1': () => (fail ? { status: 500, body: { error: 'internal' } } : { tender: tender() }) },
+    });
+    await fireEvent.changeText(await screen.findByLabelText('Sorunuz'), 'Yarım kalan soru');
+    fail = true;
+    await act(async () => {
+      await queryClient.refetchQueries();
+    });
+    expect(await screen.findByText(/^Güncel bilgiler alınamadı; son yüklenen bilgiler gösteriliyor\./)).toBeTruthy();
+    expect(screen.getByLabelText('Sorunuz').props.value).toBe('Yarım kalan soru');
+    expect(screen.getByRole('header', { name: 'Dış cephe mantolama' })).toBeTruthy();
   });
 
   it('karara baglanan ihale: karar, gerekce, referans; soru yazilamaz', async () => {

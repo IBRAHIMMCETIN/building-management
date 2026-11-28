@@ -4,6 +4,7 @@ import { ChevronRight, Megaphone } from '@/components/icons';
 import { useState } from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
 import { PortalQueryState } from '@/components/portal/PortalQueryState';
+import { RefetchErrorBanner } from '@/components/portal/RefetchErrorBanner';
 import { AppText, EmptyState, LoadingBlock, Screen } from '@/components/ui';
 import { useMyAnnouncements } from '@/hooks/usePortal';
 import { radii, space } from '@/theme/tokens';
@@ -33,9 +34,10 @@ export function AnnouncementsScreen() {
 
   return (
     <Screen title="Duyurular" refreshing={refreshing} onRefresh={() => void refresh()}>
+      {list.isError && list.data && <RefetchErrorBanner error={list.error} onRetry={() => void list.refetch()} />}
       {list.isPending ? (
         <LoadingBlock label="Duyurular yükleniyor" />
-      ) : list.isError ? (
+      ) : !list.data ? (
         <PortalQueryState error={list.error} onRetry={() => void list.refetch()} />
       ) : list.data.length === 0 ? (
         <EmptyState icon={Megaphone} title="Güncel duyuru yok" description="Yönetiminiz bir duyuru yayınladığında burada görünecek." />

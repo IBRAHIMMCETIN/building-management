@@ -6,6 +6,7 @@ import { useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 import { Landmark } from '@/components/icons';
 import { PortalQueryState } from '@/components/portal/PortalQueryState';
+import { RefetchErrorBanner } from '@/components/portal/RefetchErrorBanner';
 import { RowLink } from '@/components/portal/RowLink';
 import { AppText, Badge, EmptyState, LoadingBlock, Screen } from '@/components/ui';
 import { useMyAssemblies, useOwnerGate } from '@/hooks/useAssemblies';
@@ -35,23 +36,25 @@ export const assemblyTitle = (a: Pick<PortalAssembly, 'kind' | 'secondMeeting'>)
  * yaklasan toplantilar once, sonra gecmis toplantilar. Kiracida istek gonderilmez.
  */
 export function AssembliesScreen() {
-  const { notOwner } = useOwnerGate();
+  const gate = useOwnerGate();
   const list = useMyAssemblies();
+  const items = list.data;
   const router = useRouter();
   const [refreshing, setRefreshing] = useState(false);
 
   const refresh = async () => {
     setRefreshing(true);
     try {
-      await list.refetch();
+      // Kiracida baglam listesi yenilenir (malik olarak eklendiyse ekran acilir).
+      await (gate.notOwner ? gate.refetch() : list.refetch());
     } finally {
       setRefreshing(false);
     }
   };
 
-  if (notOwner) {
+  if (gate.notOwner) {
     return (
-      <Screen>
+      <Screen refreshing={refreshing} onRefresh={() => void refresh()}>
         <OwnersOnlyState />
       </Screen>
     );
@@ -59,15 +62,16 @@ export function AssembliesScreen() {
 
   return (
     <Screen refreshing={refreshing} onRefresh={() => void refresh()}>
+      {list.isError && items && <RefetchErrorBanner error={list.error} onRetry={() => void list.refetch()} />}
       {list.isPending ? (
         <LoadingBlock label="Toplantılar yükleniyor" />
-      ) : list.isError ? (
+      ) : items === undefined ? (
         <AssemblyQueryState error={list.error} onRetry={() => void list.refetch()} />
-      ) : list.data.length === 0 ? (
+      ) : items.length === 0 ? (
         <EmptyState icon={Landmark} title="Henüz toplantı yok" description="Yönetiminiz bir kat malikleri kurulu toplantısına çağrı yaptığında burada görünecek." />
       ) : (
         <View style={styles.list}>
-          {list.data.map((a) => {
+          {items.map((a) => {
             const meta = `${formatDateTime(a.scheduledAt)} · ${a.location ?? 'Çevrim içi'} · ${a.agenda.length} gündem maddesi`;
             return (
               <RowLink

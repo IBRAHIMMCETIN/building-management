@@ -5,6 +5,7 @@ import { useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 import { Vote } from '@/components/icons';
 import { PortalQueryState } from '@/components/portal/PortalQueryState';
+import { RefetchErrorBanner } from '@/components/portal/RefetchErrorBanner';
 import { RowLink } from '@/components/portal/RowLink';
 import { AppText, Badge, type BadgeTone, EmptyState, LoadingBlock, Screen } from '@/components/ui';
 import { useMyPolls } from '@/hooks/usePolls';
@@ -25,6 +26,7 @@ const when = (p: PortalPoll) => (p.phase === 'open' ? `Bitiş: ${formatDateTime(
  */
 export function PollsScreen() {
   const list = useMyPolls();
+  const items = list.data;
   const router = useRouter();
   const [refreshing, setRefreshing] = useState(false);
 
@@ -39,15 +41,16 @@ export function PollsScreen() {
 
   return (
     <Screen refreshing={refreshing} onRefresh={() => void refresh()}>
+      {list.isError && items && <RefetchErrorBanner error={list.error} onRetry={() => void list.refetch()} />}
       {list.isPending ? (
         <LoadingBlock label="Oylamalar yükleniyor" />
-      ) : list.isError ? (
+      ) : items === undefined ? (
         <PortalQueryState error={list.error} onRetry={() => void list.refetch()} />
-      ) : list.data.length === 0 ? (
+      ) : items.length === 0 ? (
         <EmptyState icon={Vote} title="Açık oylama yok" description="Yönetiminiz bir anket veya oylama başlattığında burada görünecek." />
       ) : (
         <View style={styles.list}>
-          {list.data.map((p) => {
+          {items.map((p) => {
             const status = pollStatus(p);
             const results = p.resultsAvailable && p.phase === 'closed';
             return (

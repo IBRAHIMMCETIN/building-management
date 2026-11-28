@@ -6,6 +6,7 @@ import { Pressable, StyleSheet, View } from 'react-native';
 import { FileDown, Gauge } from '@/components/icons';
 import { BarTrack } from '@/components/portal/BarTrack';
 import { PortalQueryState } from '@/components/portal/PortalQueryState';
+import { RefetchErrorBanner } from '@/components/portal/RefetchErrorBanner';
 import { StatTile } from '@/components/portal/StatTile';
 import { Alert, AppText, Badge, Button, Card, CardTitle, EmptyState, LoadingBlock, Screen, type AppTextProps } from '@/components/ui';
 import { usePortalUnit } from '@/context/PortalUnitProvider';
@@ -68,9 +69,10 @@ export function ConsumptionScreen() {
   return (
     <Screen refreshing={refreshing} onRefresh={() => void refresh()}>
       {intro}
+      {history.isError && history.data && <RefetchErrorBanner error={history.error} onRetry={() => void history.refetch()} />}
       {history.isPending || !unitId ? (
         <LoadingBlock label="Tüketim yükleniyor" lines={4} />
-      ) : history.isError ? (
+      ) : !history.data ? (
         <PortalQueryState error={history.error} onRetry={() => void history.refetch()} />
       ) : periods.length === 0 ? (
         <EmptyState

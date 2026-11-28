@@ -14,6 +14,7 @@ import { formatDateTime } from '@bm/shared/dates';
 import { useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 import { CalendarClock, ExternalLink, FileText, MapPin } from '@/components/icons';
+import { RefetchErrorBanner } from '@/components/portal/RefetchErrorBanner';
 import { Alert, AppText, Badge, Button, Card, CardTitle, LoadingBlock, Screen } from '@/components/ui';
 import { useMyAssembly, useOwnerGate } from '@/hooks/useAssemblies';
 import { useSignedDocument } from '@/hooks/useSignedDocument';
@@ -41,22 +42,22 @@ export function decisionLine(d: PortalDecision): string {
  * PDF'i (5 dk imzali link, sistem goruntuleyicisinde).
  */
 export function AssemblyDetailScreen({ id }: { id: string }) {
-  const { notOwner } = useOwnerGate();
+  const gate = useOwnerGate();
   const detail = useMyAssembly(id);
   const [refreshing, setRefreshing] = useState(false);
 
   const refresh = async () => {
     setRefreshing(true);
     try {
-      await detail.refetch();
+      await (gate.notOwner ? gate.refetch() : detail.refetch());
     } finally {
       setRefreshing(false);
     }
   };
 
-  if (notOwner) {
+  if (gate.notOwner) {
     return (
-      <Screen>
+      <Screen refreshing={refreshing} onRefresh={() => void refresh()}>
         <OwnersOnlyState />
       </Screen>
     );
@@ -64,9 +65,10 @@ export function AssemblyDetailScreen({ id }: { id: string }) {
 
   return (
     <Screen refreshing={refreshing} onRefresh={() => void refresh()}>
+      {detail.isError && detail.data && <RefetchErrorBanner error={detail.error} onRetry={() => void detail.refetch()} />}
       {detail.isPending ? (
         <LoadingBlock label="Toplantı yükleniyor" lines={5} />
-      ) : detail.isError ? (
+      ) : !detail.data ? (
         <AssemblyQueryState error={detail.error} onRetry={() => void detail.refetch()} />
       ) : (
         <Detail key={detail.data.assemblyId} assembly={detail.data} />

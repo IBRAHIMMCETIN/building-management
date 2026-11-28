@@ -1,3 +1,4 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { fireEvent, screen, waitFor } from '@testing-library/react-native';
 import { Linking } from 'react-native';
 import { history, period } from '@/test/consumptionFixtures';
@@ -70,6 +71,26 @@ describe('Tüketimim', () => {
     await fireEvent.press(await screen.findByRole('button', { name: 'Kasım 2026 Sayaç Dağıtım Dökümü (PDF)' }));
     await waitFor(() => expect(open).toHaveBeenCalledWith('https://s3.test/dokum.pdf?sig=1'));
     expect(calls.find((c) => c.path === '/api/portal/meters/statement/mp-11')?.query).toEqual({ unitId: 'u-3' });
+  });
+
+  it('secili daire (birden fazla daire): tuketim ve dokum o daire icin istenir', async () => {
+    jest.spyOn(Linking, 'openURL').mockResolvedValue(undefined);
+    await AsyncStorage.setItem('bm.portal-unit.mock-resident.apt-dev-1', 'u-9');
+    try {
+      const { calls } = await renderApp(<ConsumptionScreen />, {
+        routes: {
+          ...routes(),
+          'GET /api/portal/meters/statement/mp-11': { url: 'https://s3.test/dokum.pdf?sig=2', fileName: 'dokum.pdf', contentType: 'application/pdf', expiresAt: '2026-11-28T09:05:00.000Z' },
+        },
+      });
+      await fireEvent.press(await screen.findByRole('button', { name: 'Kasım 2026 Sayaç Dağıtım Dökümü (PDF)' }));
+      await waitFor(() => expect(calls.some((c) => c.path === '/api/portal/meters/statement/mp-11')).toBe(true));
+      expect(calls.find((c) => c.path === '/api/portal/meters/consumption')?.query).toEqual({ unitId: 'u-9' });
+      expect(calls.find((c) => c.path === '/api/portal/meters/statement/mp-11')?.query).toEqual({ unitId: 'u-9' });
+      expect(calls.find((c) => c.path === '/api/portal/my-summary')?.query).toEqual({ unitId: 'u-9' });
+    } finally {
+      await AsyncStorage.clear();
+    }
   });
 
   it('onaylanmis donem yoksa bos durum', async () => {

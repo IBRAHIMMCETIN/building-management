@@ -21,7 +21,8 @@ export const portalAssemblyKeys = {
 export function useOwnerGate() {
   const contexts = useContexts();
   const isOwner = useIsActiveOwner();
-  return { notOwner: contexts.isSuccess && !isOwner, waiting: contexts.isPending };
+  // Uyelik yeni eklendiyse asagi cekince baglam listesi yenilenir (malik olunca ekran acilir).
+  return { notOwner: contexts.isSuccess && !isOwner, waiting: contexts.isPending, refetch: contexts.refetch };
 }
 
 export function useMyAssemblies() {

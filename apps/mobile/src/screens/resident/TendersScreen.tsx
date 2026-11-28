@@ -6,6 +6,7 @@ import { useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 import { Scale } from '@/components/icons';
 import { PortalQueryState } from '@/components/portal/PortalQueryState';
+import { RefetchErrorBanner } from '@/components/portal/RefetchErrorBanner';
 import { RowLink } from '@/components/portal/RowLink';
 import { AppText, Badge, EmptyState, LoadingBlock, Screen } from '@/components/ui';
 import { useMyTenders } from '@/hooks/useTenders';
@@ -34,6 +35,7 @@ export function tenderCardLines(t: TenderSummary, today: string) {
  */
 export function TendersScreen() {
   const list = useMyTenders();
+  const items = list.data;
   const router = useRouter();
   const [refreshing, setRefreshing] = useState(false);
   const today = istanbulToday();
@@ -52,15 +54,16 @@ export function TendersScreen() {
       <AppText variant="small" tone="muted">
         Büyük tadilat ve bakım işleri için alınan teklifler, belgeleri ve yönetimin kararı.
       </AppText>
+      {list.isError && items && <RefetchErrorBanner error={list.error} onRetry={() => void list.refetch()} />}
       {list.isPending ? (
         <LoadingBlock label="İhaleler yükleniyor" />
-      ) : list.isError ? (
+      ) : items === undefined ? (
         <PortalQueryState error={list.error} onRetry={() => void list.refetch()} />
-      ) : list.data.length === 0 ? (
+      ) : items.length === 0 ? (
         <EmptyState icon={Scale} title="Paylaşılmış ihale yok" description="Yönetim bir iş için aldığı teklifleri paylaştığında burada yan yana görebilirsiniz." />
       ) : (
         <View style={styles.list}>
-          {list.data.map((t) => {
+          {items.map((t) => {
             const l = tenderCardLines(t, today);
             const status = TENDER_STATUS_LABELS[t.status];
             return (

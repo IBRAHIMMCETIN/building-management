@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor } from '@testing-library/react-native';
+import { act, fireEvent, screen, waitFor } from '@testing-library/react-native';
 import { Linking } from 'react-native';
 import { assembly, heldAssembly, residentContexts } from '@/test/assemblyFixtures';
 import { renderApp } from '@/test/renderApp';
@@ -56,6 +56,50 @@ describe('Genel Kurul: yalnizca kat maliki', () => {
       routes: { 'GET /api/me/contexts': { status: 500, body: { error: 'internal' } }, 'GET /api/portal/assemblies': { items: [assembly()] } },
     });
     expect(await screen.findByRole('button', { name: /^Olağan toplantı,/ })).toBeTruthy();
+  });
+
+  it('ayni apartmanda bir dairede malik, digerinde kiraci: malik sayilir (API kurali: aktif malik uyeligi)', async () => {
+    const mixed = residentContexts('tenant');
+    mixed.contexts[0]?.units.push({ unitId: 'u-9', unitNumber: '9', relation: 'owner' });
+    await renderApp(<AssembliesScreen />, { ...asOwner, routes: { 'GET /api/me/contexts': mixed, 'GET /api/portal/assemblies': { items: [assembly()] } } });
+    expect(await screen.findByRole('button', { name: /^Olağan toplantı,/ })).toBeTruthy();
+  });
+
+  it('baska apartmanda malik, aktif apartmanda kiraci: kapali', async () => {
+    const other = residentContexts('tenant');
+    other.contexts.push({ apartmentId: 'apt-dev-2', apartmentName: 'Diğer Site', role: 'resident', units: [{ unitId: 'u-1', unitNumber: '1', relation: 'owner' }] });
+    const { calls } = await renderApp(<AssembliesScreen />, { ...asOwner, routes: { 'GET /api/me/contexts': other, 'GET /api/portal/assemblies': { items: [assembly()] } } });
+    expect(await screen.findByText('Genel kurul bilgileri kat maliklerine açıktır')).toBeTruthy();
+    expect(calls.some((c) => c.path.startsWith('/api/portal/assemblies'))).toBe(false);
+  });
+
+  it('baglam listesi yuklenirken: yukleniyor, istek yok; malik cikinca liste gelir', async () => {
+    let release: () => void = () => undefined;
+    const pending = new Promise((resolve) => {
+      release = () => resolve(residentContexts('owner'));
+    });
+    const { calls } = await renderApp(<AssembliesScreen />, { ...asOwner, routes: { 'GET /api/me/contexts': () => pending, 'GET /api/portal/assemblies': { items: [assembly()] } } });
+    expect(await screen.findByLabelText('Toplantılar yükleniyor')).toBeTruthy();
+    expect(screen.queryByText('Genel kurul bilgileri kat maliklerine açıktır')).toBeNull();
+    expect(calls.some((c) => c.path.startsWith('/api/portal/assemblies'))).toBe(false);
+    await act(async () => release());
+    expect(await screen.findByRole('button', { name: /^Olağan toplantı,/ })).toBeTruthy();
+  });
+
+  it('kiraci: asagi cekince baglam listesi yenilenir (malik olarak eklendiyse ekran acilir)', async () => {
+    let relation: 'owner' | 'tenant' = 'tenant';
+    const { calls, container } = await renderApp(<AssembliesScreen />, {
+      ...asOwner,
+      routes: { 'GET /api/me/contexts': () => residentContexts(relation), 'GET /api/portal/assemblies': { items: [assembly()] } },
+    });
+    expect(await screen.findByText('Genel kurul bilgileri kat maliklerine açıktır')).toBeTruthy();
+    relation = 'owner';
+    const [scroll] = container.queryAll((n) => n.type === 'RCTScrollView' && !!(n.props as { refreshControl?: unknown }).refreshControl);
+    await act(async () => {
+      (scroll?.props as { refreshControl: { props: { onRefresh: () => void } } }).refreshControl.props.onRefresh();
+    });
+    expect(await screen.findByRole('button', { name: /^Olağan toplantı,/ })).toBeTruthy();
+    expect(calls.filter((c) => c.path === '/api/me/contexts')).toHaveLength(2);
   });
 });
 

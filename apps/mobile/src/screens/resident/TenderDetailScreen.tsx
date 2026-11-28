@@ -19,6 +19,7 @@ import { useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 import { CircleCheck, FileText, Trophy } from '@/components/icons';
 import { PortalQueryState } from '@/components/portal/PortalQueryState';
+import { RefetchErrorBanner } from '@/components/portal/RefetchErrorBanner';
 import { Alert, AppText, Badge, Button, Card, CardTitle, LoadingBlock, Screen, TextField } from '@/components/ui';
 import { useSignedDocument } from '@/hooks/useSignedDocument';
 import { useAskTenderQuestion, useIdempotencyKey, useMyTender } from '@/hooks/useTenders';
@@ -62,9 +63,10 @@ export function TenderDetailScreen({ id }: { id: string }) {
 
   return (
     <Screen refreshing={refreshing} onRefresh={() => void refresh()}>
+      {detail.isError && detail.data && <RefetchErrorBanner error={detail.error} onRetry={() => void detail.refetch()} />}
       {detail.isPending ? (
         <LoadingBlock label="İhale yükleniyor" lines={5} />
-      ) : detail.isError ? (
+      ) : !detail.data ? (
         <PortalQueryState error={detail.error} onRetry={() => void detail.refetch()} />
       ) : (
         <Detail key={detail.data.tenderId} tender={detail.data} />
