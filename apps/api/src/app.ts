@@ -58,6 +58,8 @@ import { type PlanRequestService, createPlanRequestService } from './modules/fin
 import { type SupplierAdvanceService, createSupplierAdvanceService } from './modules/finance/supplierAdvances.js';
 import { type FinanceService, createFinanceService } from './modules/finance/service.js';
 import { healthRoutes } from './modules/health/routes.js';
+import { platformDemoRequestRoutes, publicDemoRequestRoutes } from './modules/demo-requests/routes.js';
+import { type DemoRequestService, createDemoRequestService } from './modules/demo-requests/service.js';
 import { meRoutes } from './modules/me/routes.js';
 import { type MeService, createMeService } from './modules/me/service.js';
 import { type PreferencesService, createPreferencesService } from './modules/notifications/preferences.js';
@@ -247,6 +249,8 @@ export type AppConfig = {
   entitlementSource?: EntitlementSource;
   /** Abonelik / lisans: platform plan / abonelik / fatura uclari ve yonetici gorunumu. */
   subscriptionService?: SubscriptionService;
+  /** Tanitim sayfasi demo talepleri (herkese acik POST + platform listesi; testlerde sahte depoyla). */
+  demoRequestService?: DemoRequestService;
 };
 
 /** Testlerin sahte servislerle kurdugu uygulama mi? (production `createApp`'e servis vermez.) */
@@ -296,6 +300,11 @@ export function createApp(config: AppConfig) {
   app.options('/api/*', (c) => c.body(null, 204));
 
   app.route('/api/health', healthRoutes(config));
+
+  // Tanitim sayfasi: kimliksiz demo talebi (API Gateway'de JWT'siz ayri rota) + platform listesi.
+  const demoRequestService = config.demoRequestService ?? createDemoRequestService({ metrics });
+  app.route('/api/public/demo-requests', publicDemoRequestRoutes({ service: demoRequestService }));
+  app.route('/api/platform/demo-requests', platformDemoRequestRoutes({ authenticate, service: demoRequestService }));
 
   // Adim 1 uclari (tum korumali modul rotalarindan once). Yonetici gorunumu plan iznini de yansitir.
   const featureService =
