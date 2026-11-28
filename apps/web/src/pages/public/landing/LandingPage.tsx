@@ -210,14 +210,14 @@ function Trust() {
 function Pilot() {
   const id = SECTION_IDS.pilot;
   return (
-    <section id={id} aria-labelledby={`${id}-baslik`} className="scroll-mt-16 bg-primary text-on-primary">
+    <section id={id} aria-labelledby={`${id}-baslik`} className="scroll-mt-16 bg-band text-on-band">
       <div className={cn(CONTAINER, 'grid gap-10 py-16 lg:grid-cols-12 lg:items-center lg:py-24')}>
         <div className="flex flex-col gap-5 lg:col-span-7">
-          <h2 id={`${id}-baslik`} className="text-title font-bold tracking-tight">
+          <h2 id={`${id}-baslik`} className="text-title font-bold tracking-tight text-balance">
             {PILOT.title}
           </h2>
           <p className="max-w-2xl text-lg">{PILOT.lead}</p>
-          <CheckList items={PILOT.points} iconClass="text-on-primary" />
+          <CheckList items={PILOT.points} iconClass="text-on-band" />
         </div>
         <div className="flex flex-col gap-3 lg:col-span-5 lg:items-start">
           <a href={CONTACT_HREF} className={ctaClass('inverse', 'lg')}>

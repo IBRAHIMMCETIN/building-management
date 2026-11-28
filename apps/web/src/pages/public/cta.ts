@@ -3,14 +3,13 @@ import { cn } from '@/lib/cn';
 /**
  * Buton gibi gorunen baglanti (<a>): tanitim ve hukuki sayfalarda gezinme eylemleri. Gorunum
  * `components/ui/Button` birincil / ikincil varyantlariyla aynidir (o bilesen <button> uretir;
- * sayfa degistiren eylem baglanti olmalidir). `inverse`: birincil renkli (bg-primary) bant uzerindeki
- * birincil eylem; zemin ve yazi rengi yer degistirir, odak cizgisi bant uzerinde gorunsun diye
- * on-primary renginde.
+ * sayfa degistiren eylem baglanti olmalidir). `inverse`: vurgu bandi (bg-band) uzerindeki birincil
+ * eylem; zemin ve yazi rengi yer degistirir, odak cizgisi bant uzerinde gorunsun diye on-band renginde.
  */
 const VARIANTS = {
   primary: 'bg-primary text-on-primary shadow-sm hover:bg-primary-hover',
   secondary: 'border border-border-strong bg-surface-muted/40 text-text hover:bg-surface-muted',
-  inverse: 'bg-on-primary text-primary shadow-sm hover:bg-on-primary/90 focus-visible:outline-on-primary',
+  inverse: 'bg-on-band text-band shadow-sm hover:bg-on-band/90 focus-visible:outline-on-band',
 } as const;
 
 export function ctaClass(variant: keyof typeof VARIANTS = 'primary', size: 'md' | 'lg' = 'md', className?: string) {
