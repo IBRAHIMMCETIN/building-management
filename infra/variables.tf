@@ -487,6 +487,18 @@ variable "payments_callback_rate_limit" {
   description = "Kimliksiz odeme callback/webhook rotalari icin saniyede ortalama istek (rota bazli throttling)."
 }
 
+variable "public_form_route_rate_limit" {
+  type        = number
+  default     = 10
+  description = "Tanitim sayfasi demo talep formu (POST /api/public/demo-requests, kimliksiz) icin saniyede ortalama istek. Platform geneli TEK rota kovasidir: dusuk tutulursa tek bir istemci formu herkese kapatabilir. Istemci basina sinir uygulamadadir (IP basina saatte 5, ag basina saatte 20)."
+}
+
+variable "public_form_route_burst_limit" {
+  type        = number
+  default     = 20
+  description = "Demo talep formu rotasinin anlik (burst) siniri."
+}
+
 variable "aws_region" {
   type        = string
   default     = "eu-north-1"

@@ -1,0 +1,16 @@
+# YÖNESİST: tanitim sayfasi ve hukuki metinler taranabilir; uygulama ekranlari ve misafir
+# gecis baglantilari (adreste jeton tasir) taranmaz. Alan adi alininca adres guncellenir.
+User-agent: *
+Allow: /$
+Allow: /kvkk
+Allow: /gizlilik
+Allow: /kullanim-kosullari
+Disallow: /admin
+Disallow: /app
+Disallow: /gecis/
+Disallow: /login
+Disallow: /forgot-password
+Disallow: /select-context
+Disallow: /mfa-setup
+
+Sitemap: https://building-management-apx.pages.dev/sitemap.xml

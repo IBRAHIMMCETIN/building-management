@@ -1,3 +1,4 @@
+import { type DemoEraseStatus, demoRequestErasedSchema, demoRequestListSchema } from '@bm/shared/api/demoRequests';
 import { z } from 'zod';
 import { apiClient } from './client';
 
@@ -25,6 +26,12 @@ const directorySchema = z.object({ items: z.array(platformSiteSchema) });
 
 export const platformApi = {
   apartments: (signal?: AbortSignal) => apiClient.get('/api/admin/apartments', { signal, schema: directorySchema }),
+  /** Tanitim sayfasindan gelen demo talepleri (en yeni once, sayfali). */
+  demoRequests: (cursor: string | undefined, signal?: AbortSignal) =>
+    apiClient.get('/api/platform/demo-requests', { signal, query: { limit: 25, cursor }, schema: demoRequestListSchema }),
+  /** KVKK silme talebi / spam: kisisel alanlar kaldirilir, kayit listeden duser (platform denetim zinciri). */
+  eraseDemoRequest: (requestId: string, body: { status: DemoEraseStatus; reason: string }) =>
+    apiClient.post(`/api/platform/demo-requests/${encodeURIComponent(requestId)}/erase`, body, { schema: demoRequestErasedSchema }),
 };
 
 /** Ad, il veya ilceye gore arama (Turkce buyuk/kucuk harf duyarsiz). */
