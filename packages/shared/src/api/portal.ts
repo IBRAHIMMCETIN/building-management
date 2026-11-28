@@ -79,6 +79,57 @@ export const myPaymentReferenceSchema = z.object({
 });
 export type MyPaymentReference = z.infer<typeof myPaymentReferenceSchema>;
 
+/** Sakinin makbuzlari (en yeni once): `GET /api/portal/my-receipts` (Adim 2 daire makbuz dizini). */
+export const myReceiptsSchema = z.object({
+  unitId: z.string(),
+  items: z.array(
+    z.object({
+      paymentId: z.string(),
+      receiptNumber: z.string(),
+      paidAt: z.string(),
+      amount: kurus,
+      method: z.enum(['cash', 'bank_transfer', 'card']),
+      liableParty: z.enum(['owner', 'occupant']),
+      status: z.enum(['valid', 'reversed']),
+    }),
+  ),
+});
+export type MyReceipts = z.infer<typeof myReceiptsSchema>;
+
+/**
+ * Adim 3: sitenin aylik gider dagilimi (`GET /api/portal/expense-breakdown?month=YYYY-AA`).
+ * Yalnizca sade kategori adlari ve ikon anahtarlari; kisi / tedarikci adi yok. `shareBp` toplami
+ * tam 10.000 (%100,00).
+ */
+export const EXPENSE_CATEGORIES = ['electricity', 'water', 'heating', 'cleaning', 'maintenance', 'security', 'garden', 'other'] as const;
+export type ExpenseCategory = (typeof EXPENSE_CATEGORIES)[number];
+
+export const expenseBreakdownSchema = z.object({
+  month: z.string(),
+  total: kurus,
+  empty: z.boolean(),
+  items: z.array(
+    z.object({
+      category: z.enum(EXPENSE_CATEGORIES),
+      label: z.string(),
+      icon: z.string(),
+      amount: kurus,
+      shareBp: z.number().int(),
+      percent: z.number(),
+    }),
+  ),
+});
+export type ExpenseBreakdown = z.infer<typeof expenseBreakdownSchema>;
+
+/** Son `count` ay (en yeni once, YYYY-AA), `current` dahil. */
+export function recentMonths(current: string, count: number): string[] {
+  const [y, m] = current.split('-').map(Number) as [number, number];
+  return Array.from({ length: count }, (_, i) => {
+    const d = new Date(Date.UTC(y, m - 1 - i, 1));
+    return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+  });
+}
+
 export type MySummary = z.infer<typeof mySummarySchema>;
 export type MyStatement = z.infer<typeof myStatementSchema>;
 export type StatementRow = z.infer<typeof statementRow> & { liableParty: 'owner' | 'occupant' };
