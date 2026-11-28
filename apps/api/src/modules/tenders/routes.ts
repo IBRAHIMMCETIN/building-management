@@ -45,7 +45,12 @@ const quoteId = (c: Context<Env>) => c.req.param('quoteId') ?? '';
  *   PATCH /:id                               { version, title?, description?, category?, deadline?, minQuotes?, ticketId? }  (taslak / toplama)
  *   POST  /:id/collect                       { version }                          taslak -> teklif toplama
  *   POST  /:id/publish                       { version, shortfallReason? }        -> yayinda (sakinlerle paylasilir)
- *   POST  /:id/decide                        { version, quoteId, reason, reference? }
+ *   GET   /assembly-decisions                ayni apartmanin guncel genel kurul kararlari (karar baglantisi secicisi)
+ *   POST  /:id/decide                        { version, quoteId, reason, reference?, assemblyDecision?: { assemblyId, itemId } }
+ *   POST  /:id/assembly-decision             { version, assemblyDecision: { assemblyId, itemId } | null }  karar bagi
+ *   GET   /:id/supplier-accounts             eslestirme icin Finans tedarikci hesaplari (firma adina benzeyenler once)
+ *   POST  /:id/supplier                      { version, accountId | null }  kazanan firma -> tedarikci hesabi
+ *   POST  /:id/comments/:commentId/hide      { reason }  sakin sorusunu gizle (moderasyon; `tender.comment_hide`)
  *   POST  /:id/cancel                        { version, reason }
  *   POST  /:id/quotes                        { idempotencyKey, supplierName, amountKurus, vatIncluded, vatRate, validUntil?,
  *                                              deliveryDays?, warrantyMonths?, notes?, document?: { uploadId, fileName } }
@@ -53,10 +58,12 @@ const quoteId = (c: Context<Env>) => c.req.param('quoteId') ?? '';
  *   POST  /:id/quotes/:quoteId/withdraw      { version, reason }
  *   GET   /:id/quotes/:quoteId/document      ?history=<sira>  5 dk imzali link (denetci: yalnizca yayinlanmis ihale;
  *                                              `history`: degistirilmis onceki belge, yalnizca yonetim)
- *   POST  /:id/comments                      { idempotencyKey, body }   yonetim yaniti (yalnizca yayinda; `tender.comment` denetimi)
+ *   POST  /:id/comments                      { idempotencyKey, body, replyTo? }   yonetim yaniti (yalnizca yayinda; `tender.comment`
+ *                                              denetimi; `replyTo`: belirli soruya yanit, bildirim yalnizca o sorunun yazarina)
  *   POST  /:id/expense                       { idempotencyKey, expenseAccountId?, creditAccountId?, amount?, date?, description?,
- *                                              supplier?, invoiceNumber?, invoiceUpload? }  karardan Finans gideri (Finans gider
- *                                              servisiyle; ihale basina bir gider, tekrar ayni sonuc; `ledger.expense` denetimi)
+ *                                              supplier?, invoiceNumber?, invoiceUpload?, overrunReason? }  karardan Finans gideri /
+ *                                              hakedis (Finans gider servisiyle; birden fazla, gecerli toplam karar tutarini asarsa
+ *                                              gerekce zorunlu; tekrar ayni sonuc; `ledger.expense` denetimi)
  * Belge yukleme: `POST /api/documents/invoice-uploads` (gider faturasiyla ayni sinirlar).
  */
 export function tenderRoutes({ authenticate, service }: TenderRoutesDeps) {
@@ -66,7 +73,12 @@ export function tenderRoutes({ authenticate, service }: TenderRoutesDeps) {
     const result = await service.create(ctxOf(c), await readJson(c));
     return c.json(result, result.replayed ? 200 : 201);
   });
+  r.get('/assembly-decisions', requireRole(READ_ROLES), async (c) => c.json(await service.assemblyDecisionOptions(ctxOf(c))));
   r.get('/:id', requireRole(READ_ROLES), async (c) => c.json(await service.get(ctxOf(c), id(c))));
+  r.post('/:id/assembly-decision', requireRole(WRITE_ROLES), async (c) => c.json(await service.linkAssemblyDecision(ctxOf(c), id(c), await readJson(c))));
+  r.get('/:id/supplier-accounts', requireRole(WRITE_ROLES), async (c) => c.json(await service.supplierAccounts(ctxOf(c), id(c))));
+  r.post('/:id/supplier', requireRole(WRITE_ROLES), async (c) => c.json(await service.linkSupplier(ctxOf(c), id(c), await readJson(c))));
+  r.post('/:id/comments/:commentId/hide', requireRole(WRITE_ROLES), async (c) => c.json(await service.hideComment(ctxOf(c), id(c), c.req.param('commentId') ?? '', await readJson(c))));
   r.patch('/:id', requireRole(WRITE_ROLES), async (c) => c.json(await service.update(ctxOf(c), id(c), await readJson(c))));
   r.post('/:id/collect', requireRole(WRITE_ROLES), async (c) => c.json(await service.collect(ctxOf(c), id(c), await readJson(c))));
   r.post('/:id/publish', requireRole(WRITE_ROLES), async (c) => c.json(await service.publish(ctxOf(c), id(c), await readJson(c))));

@@ -1,8 +1,9 @@
 /**
- * Ihale devami: karardan Finans'a aktarim. Gider MEVCUT Finans gider servisiyle (recordExpense)
- * kaydedilir; on dolum (KDV dahil toplam, firma, ihale referansi, kategoriye gore gider kalemi),
- * gider + defter + ihale bagi + denetim tek atomik yazim, ihale basina tek gider (ayni anahtar
- * tekrar ayni sonuc, farkli anahtar 409, es zamanli iki istekte biri), roller ve API ucu.
+ * Ihale devami: karardan Finans'a aktarim ve hakedisler. Gider MEVCUT Finans gider servisiyle
+ * (recordExpense) kaydedilir; on dolum (kalan tutar, firma, ihale referansi, kategoriye gore kalem,
+ * eslestirilmis tedarikci hesabi), gider + defter + ihale bagi + denetim tek atomik yazim, ihale basina
+ * birden fazla gider (hakedis) ve gecerli toplam karar tutarini asarsa gerekce, ters kayit farkindaligi,
+ * eski tek gider kaydi uyumu, tedarikci (vadeli borc) hesabi eslestirme, roller ve API ucu.
  */
 import { describe, expect, it } from 'vitest';
 import { createApp } from '../src/app.js';
@@ -21,6 +22,7 @@ const mgr: TenderContext = { apartmentId: APT, userId: 'mgr', role: 'apartment_m
 const firm: TenderContext = { apartmentId: APT, userId: 'firm', role: 'management_company' };
 const observer: TenderContext = { apartmentId: APT, userId: 'obs', role: 'observer' };
 const resident: TenderContext = { apartmentId: APT, userId: 'res-a', role: 'resident' };
+const TOTAL = 108_000_00;
 
 const decided = (id: string, extra: Partial<Tender> = {}): Tender => ({
   PK: `APT#${APT}`,
@@ -38,7 +40,7 @@ const decided = (id: string, extra: Partial<Tender> = {}): Tender => ({
     { quoteId: 'q1', supplierName: 'Cephe Ltd.', amountKurus: 90_000_00, vatIncluded: false, vatRate: 20, status: 'active', createdAt: NOW.toISOString(), createdBy: 'mgr', updatedAt: NOW.toISOString(), updatedBy: 'mgr' },
   ],
   publishedAt: '2026-11-21T07:00:00.000Z',
-  decision: { quoteId: 'q1', reason: 'En düşük teklif', reference: 'KD-2026/14', supplierName: 'Cephe Ltd.', netKurus: 90_000_00, vatKurus: 18_000_00, totalKurus: 108_000_00, decidedAt: '2026-11-25T07:00:00.000Z', decidedBy: 'mgr' },
+  decision: { quoteId: 'q1', reason: 'En düşük teklif', reference: 'KD-2026/14', supplierName: 'Cephe Ltd.', netKurus: 90_000_00, vatKurus: 18_000_00, totalKurus: TOTAL, decidedAt: '2026-11-25T07:00:00.000Z', decidedBy: 'mgr' },
   createdAt: '2026-11-01T07:00:00.000Z',
   createdBy: 'mgr',
   updatedAt: '2026-11-25T07:00:00.000Z',
@@ -65,110 +67,113 @@ function world(opts: { finance?: boolean } = {}) {
     tickets: { get: async () => undefined },
     memberships: { listMemberships: async (apt, u) => memberships.filter((m) => m.apartmentId === apt && m.userId === u) },
     ...(opts.finance === false ? {} : { finance }),
+    assemblies: { get: async () => undefined, list: async () => [], listDecisions: async () => [] },
     now: () => NOW,
     newId: () => `id-${String(++n).padStart(10, '0')}`,
   });
   const tender = (id: string) => structuredClone(fin.docs.get(`APT#${APT}|TENDER#${id}`)) as unknown as Tender;
   const expenses = () => [...fin.expenses.values()];
-  return { fin, finance, service, tender, expenses };
+  return { fin, finance, service, tender, expenses, seed };
 }
 
 describe('karardan gider kaydi: on dolum', () => {
-  it('yonetim gorunumunde on dolum (KDV dahil toplam, firma, referansli aciklama, kategoriye gore kalem); denetci / sakin gormez', async () => {
+  it('yonetim gorunumunde on dolum (kalan tutar, firma, referansli aciklama, kategoriye gore kalem, hakedis sirasi); denetci / sakin gormez', async () => {
     const w = world();
     const t = (await w.service.get(mgr, 'tnd-1')).tender;
-    expect(t.expenseDraft).toEqual({ amountKurus: 108_000_00, supplier: 'Cephe Ltd.', description: 'İhale tnd-1: Dış cephe mantolama · Karar KD-2026/14', expenseAccountId: 'exp-repair', date: '2026-11-27' });
+    expect(t.expenseDraft).toEqual({ amountKurus: TOTAL, supplier: 'Cephe Ltd.', description: 'İhale tnd-1: Dış cephe mantolama · Karar KD-2026/14', expenseAccountId: 'exp-repair', date: '2026-11-27', installment: 1 });
+    expect(t.expenseProgress).toEqual({ decidedTotalKurus: TOTAL, activeTotalKurus: 0, remainingKurus: TOTAL, overrunKurus: 0, percentBps: 0, activeCount: 0, reversedCount: 0 });
     expect((await w.service.get(mgr, 'tnd-2')).tender.expenseDraft).toMatchObject({ expenseAccountId: 'exp-elevator', description: 'İhale tnd-2: Asansör revizyonu' });
     expect((await w.service.get(mgr, 'tnd-3')).tender).not.toHaveProperty('expenseDraft');
     expect((await w.service.get(observer, 'tnd-1')).tender).not.toHaveProperty('expenseDraft');
     expect((await w.service.portalGet(resident, 'tnd-1')).tender).not.toHaveProperty('expenseDraft');
+    expect((await w.service.portalGet(resident, 'tnd-1')).tender).not.toHaveProperty('expenseProgress');
   });
 });
 
-describe('karardan gider kaydi: yazim', () => {
+describe('karardan gider kaydi: hakedisler', () => {
   it('Finans gider servisiyle: gider + defter + ihale bagi + denetim tek atomik yazim; varsayilanlar karardan', async () => {
     const w = world();
     const r = await w.service.createExpense(mgr, 'tnd-1', { idempotencyKey: 'tx-exp-1', creditAccountId: 'payable' });
     expect(r).toMatchObject({ replayed: false, expenseId: expect.any(String), transactionId: expect.any(String) });
-    const [expense] = w.expenses();
     expect(w.expenses()).toHaveLength(1);
-    expect(expense).toMatchObject({
-      expenseId: r.expenseId,
-      amount: 108_000_00,
-      expenseAccountId: 'exp-repair',
-      creditAccountId: 'payable',
-      supplier: 'Cephe Ltd.',
-      description: 'İhale tnd-1: Dış cephe mantolama · Karar KD-2026/14',
-      link: { type: 'tender', id: 'tnd-1', label: 'İhale: Dış cephe mantolama' },
-    });
-    expect(w.tender('tnd-1')).toMatchObject({ version: 6, updatedBy: 'mgr', expense: { expenseId: r.expenseId, transactionId: r.transactionId, amountKurus: 108_000_00, idempotencyKey: 'tx-exp-1', linkedBy: 'mgr' } });
-    // Tek atomik yazim: islem, gider ve ihale ayni postBatch icinde; denetim ihale ayrintisiyla.
+    expect(w.expenses()[0]).toMatchObject({ expenseId: r.expenseId, amount: TOTAL, expenseAccountId: 'exp-repair', creditAccountId: 'payable', supplier: 'Cephe Ltd.', link: { type: 'tender', id: 'tnd-1', label: 'İhale: Dış cephe mantolama' } });
+    const stored = w.tender('tnd-1');
+    expect(stored).toMatchObject({ version: 6, updatedBy: 'mgr', expenses: [{ expenseId: r.expenseId, transactionId: r.transactionId, amountKurus: TOTAL, idempotencyKey: 'tx-exp-1', linkedBy: 'mgr', installment: 1 }] });
     const batch = w.fin.batches.at(-1);
     expect(batch?.transactions).toHaveLength(1);
     expect(batch?.replaceRecords?.map((x) => x.item.SK)).toEqual(['TENDER#tnd-1']);
-    expect(batch?.audit).toMatchObject({ action: 'ledger.expense', details: { tender: { tenderId: 'tnd-1', quoteId: 'q1', decisionTotalKurus: 108_000_00, amountDiffers: false } } });
-    // Yanit: ihale gorunumu bag ile, on dolum artik yok.
-    expect(r.tender).toMatchObject({ expense: { expenseId: r.expenseId, amountKurus: 108_000_00 } });
-    expect(r.tender).not.toHaveProperty('expenseDraft');
-    expect((await w.service.get(observer, 'tnd-1')).tender).toMatchObject({ expense: { expenseId: r.expenseId } });
+    expect(batch?.audit).toMatchObject({ action: 'ledger.expense', details: { tender: { tenderId: 'tnd-1', quoteId: 'q1', decisionTotalKurus: TOTAL, installment: 1, activeBeforeKurus: 0, activeAfterKurus: TOTAL } } });
+    expect(r.tender).toMatchObject({ expenses: [{ expenseId: r.expenseId, reversed: false, installment: 1 }], expense: { expenseId: r.expenseId }, expenseProgress: { activeTotalKurus: TOTAL, remainingKurus: 0, percentBps: 10_000 } });
+    expect(r.tender.expenseDraft).toMatchObject({ amountKurus: 0, installment: 2, description: 'İhale tnd-1: Dış cephe mantolama · Karar KD-2026/14 · Hakediş 2' });
+    expect((await w.service.get(observer, 'tnd-1')).tender).toMatchObject({ expenses: [{ expenseId: r.expenseId }], expenseProgress: { activeTotalKurus: TOTAL } });
   });
 
-  it('idempotent: ayni anahtar ayni sonuc; farkli anahtar 409 (ihale basina tek gider)', async () => {
+  it('birden fazla hakedis; toplam karar tutarini asarsa gerekce zorunlu (422), gerekceyle kaydedilir ve denetime yazilir; tekrar ayni sonuc', async () => {
     const w = world();
-    const first = await w.service.createExpense(mgr, 'tnd-1', { idempotencyKey: 'tx-exp-1', creditAccountId: 'payable' });
-    const again = await w.service.createExpense(mgr, 'tnd-1', { idempotencyKey: 'tx-exp-1', creditAccountId: 'payable' });
-    expect(again).toMatchObject({ replayed: true, expenseId: first.expenseId, transactionId: first.transactionId });
-    await expect(w.service.createExpense(firm, 'tnd-1', { idempotencyKey: 'tx-exp-2', creditAccountId: 'payable' })).rejects.toMatchObject({ code: 'conflict', details: { expenseId: first.expenseId } });
-    expect(w.expenses()).toHaveLength(1);
-    expect(w.fin.transactions.size).toBe(1);
+    const a = await w.service.createExpense(mgr, 'tnd-1', { idempotencyKey: 'h-1', creditAccountId: 'payable', amount: 54_000_00, description: 'Mantolama 1. hakediş' });
+    const b = await w.service.createExpense(firm, 'tnd-1', { idempotencyKey: 'h-2', creditAccountId: 'payable', amount: 50_000_00 });
+    expect((await w.service.createExpense(mgr, 'tnd-1', { idempotencyKey: 'h-1', creditAccountId: 'payable', amount: 54_000_00, description: 'Mantolama 1. hakediş' }))).toMatchObject({ replayed: true, expenseId: a.expenseId });
+    expect(b.tender.expenseProgress).toMatchObject({ activeTotalKurus: 104_000_00, remainingKurus: 4_000_00, activeCount: 2 });
+    expect(b.tender.expenseDraft).toMatchObject({ amountKurus: 4_000_00, installment: 3 });
+    await expect(w.service.createExpense(mgr, 'tnd-1', { idempotencyKey: 'h-3', creditAccountId: 'payable', amount: 5_000_00 })).rejects.toMatchObject({ code: 'unprocessable', details: { overBudget: true, remainingKurus: 4_000_00, overrunKurus: 1_000_00 } });
+    expect(w.expenses()).toHaveLength(2);
+    await expect(w.service.createExpense(mgr, 'tnd-1', { idempotencyKey: 'h-3', creditAccountId: 'payable', amount: 5_000_00, overrunReason: 'kısa' })).rejects.toMatchObject({ field: 'overrunReason' });
+    const c = await w.service.createExpense(mgr, 'tnd-1', { idempotencyKey: 'h-3', creditAccountId: 'payable', amount: 5_000_00, overrunReason: 'Ek iskele kirası (genel kurul onaylı)' });
+    expect(c.tender.expenseProgress).toMatchObject({ activeTotalKurus: 109_000_00, remainingKurus: 0, overrunKurus: 1_000_00, percentBps: 10_092 });
+    expect(w.tender('tnd-1').expenses?.map((e) => [e.installment, e.amountKurus, e.overrunReason])).toEqual([
+      [1, 54_000_00, undefined],
+      [2, 50_000_00, undefined],
+      [3, 5_000_00, 'Ek iskele kirası (genel kurul onaylı)'],
+    ]);
+    expect(w.fin.batches.at(-1)?.audit).toMatchObject({ details: { tender: { installment: 3, activeBeforeKurus: 104_000_00, activeAfterKurus: 109_000_00, overrunKurus: 1_000_00, overrunReason: 'Ek iskele kirası (genel kurul onaylı)' } } });
+    // Kalan sifirken tutarsiz istek: anlamli 422 (Finans dogrulamasina dusmez).
+    await expect(w.service.createExpense(mgr, 'tnd-1', { idempotencyKey: 'h-4', creditAccountId: 'payable' })).rejects.toMatchObject({ code: 'unprocessable', details: { overBudget: true } });
   });
 
-  it('es zamanli iki istek (farkli anahtar): surum kosulu yalnizca birini yazar', async () => {
+  it('es zamanli iki hakedis toplam siniri birlikte asamaz: sinir guncel kayitla yeniden kontrol edilir', async () => {
     const w = world();
     const results = await Promise.allSettled([
-      w.service.createExpense(mgr, 'tnd-1', { idempotencyKey: 'race-a', creditAccountId: 'payable' }),
-      w.service.createExpense(firm, 'tnd-1', { idempotencyKey: 'race-b', creditAccountId: 'payable' }),
+      w.service.createExpense(mgr, 'tnd-1', { idempotencyKey: 'race-a', creditAccountId: 'payable', amount: 60_000_00 }),
+      w.service.createExpense(firm, 'tnd-1', { idempotencyKey: 'race-b', creditAccountId: 'payable', amount: 60_000_00 }),
     ]);
     expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
-    expect((results.find((r) => r.status === 'rejected') as PromiseRejectedResult).reason).toMatchObject({ code: 'conflict' });
+    expect((results.find((r) => r.status === 'rejected') as PromiseRejectedResult).reason).toMatchObject({ code: 'unprocessable', details: { overBudget: true } });
     expect(w.expenses()).toHaveLength(1);
-    expect(w.tender('tnd-1').version).toBe(6);
+    expect(w.tender('tnd-1')).toMatchObject({ version: 6, expenses: [{ amountKurus: 60_000_00 }] });
   });
 
-  it('yonetici on doluma mudahale edebilir (kalem, tutar); Finans kurallari aynen gecerli', async () => {
-    const w = world();
-    await expect(w.service.createExpense(mgr, 'tnd-1', { idempotencyKey: 'k-cash' })).rejects.toMatchObject({ code: 'insufficient_funds' });
-    expect(w.tender('tnd-1')).not.toHaveProperty('expense');
-    await expect(w.service.createExpense(mgr, 'tnd-1', { idempotencyKey: 'k-bad', creditAccountId: 'payable', expenseAccountId: 'yok' })).rejects.toMatchObject({ code: 'not_found' });
-    const r = await w.service.createExpense(mgr, 'tnd-1', { idempotencyKey: 'k-part', creditAccountId: 'payable', expenseAccountId: 'exp-management', amount: 54_000_00, description: 'Mantolama 1. hakediş', invoiceNumber: 'F-77' });
-    expect(w.expenses()[0]).toMatchObject({ amount: 54_000_00, expenseAccountId: 'exp-management', description: 'Mantolama 1. hakediş', invoiceNumber: 'F-77', supplier: 'Cephe Ltd.' });
-    expect(w.fin.batches.at(-1)?.audit).toMatchObject({ details: { tender: { amountDiffers: true } } });
-    expect(r.tender).toMatchObject({ expense: { amountKurus: 54_000_00 } });
-  });
-
-  it('bagli gider Finansta ters kaydedilince: "ters kaydedildi" ve on dolum yeniden; yeni anahtarla yeni gider, eskisi gecmise; denetimli', async () => {
+  it('ters kayit farkindaligi: ters kaydedilen gider ilerlemeye sayilmaz, gecmiste kalir; yerine yenisi gerekcesiz kaydedilir', async () => {
     const w = world();
     const first = await w.service.createExpense(mgr, 'tnd-1', { idempotencyKey: 'k-1', creditAccountId: 'payable' });
     await w.finance.reverseTransaction({ apartmentId: APT, userId: 'mgr' }, first.transactionId, { reason: 'Fatura tutarı hatalı' });
     const view = (await w.service.get(mgr, 'tnd-1')).tender;
-    expect(view.expense).toMatchObject({ expenseId: first.expenseId, reversed: true });
-    expect(view.expenseDraft).toMatchObject({ amountKurus: 108_000_00 });
-    expect((await w.service.get(observer, 'tnd-1')).tender.expense).toMatchObject({ reversed: true });
-    // Eski anahtar: ayni (eski) sonuc, yeni gider yok.
+    expect(view.expenses).toMatchObject([{ expenseId: first.expenseId, reversed: true }]);
+    expect(view.expenseProgress).toMatchObject({ activeTotalKurus: 0, remainingKurus: TOTAL, activeCount: 0, reversedCount: 1 });
+    expect(view.expenseDraft).toMatchObject({ amountKurus: TOTAL, installment: 2 });
     expect(await w.service.createExpense(mgr, 'tnd-1', { idempotencyKey: 'k-1', creditAccountId: 'payable' })).toMatchObject({ replayed: true, expenseId: first.expenseId });
     const second = await w.service.createExpense(mgr, 'tnd-1', { idempotencyKey: 'k-2', creditAccountId: 'payable', amount: 100_000_00 });
-    expect(second).toMatchObject({ replayed: false });
     expect(second.expenseId).not.toBe(first.expenseId);
-    expect(w.tender('tnd-1')).toMatchObject({ expense: { expenseId: second.expenseId, idempotencyKey: 'k-2' }, previousExpenses: [{ expenseId: first.expenseId, idempotencyKey: 'k-1', replacedAt: expect.any(String) }] });
-    expect(w.fin.batches.at(-1)?.audit).toMatchObject({ details: { tender: { tenderId: 'tnd-1', replacesExpenseId: first.expenseId, replacesTransactionId: first.transactionId } } });
-    expect(second.tender).toMatchObject({ expense: { expenseId: second.expenseId, reversed: false } });
-    expect(second.tender).not.toHaveProperty('expenseDraft');
-    // Yeni gider gecerli: ucuncu gider 409; eski anahtarlar hala tekrar sonucunu dondurur.
-    await expect(w.service.createExpense(mgr, 'tnd-1', { idempotencyKey: 'k-3', creditAccountId: 'payable' })).rejects.toMatchObject({ code: 'conflict', details: { expenseId: second.expenseId } });
-    expect(await w.service.createExpense(mgr, 'tnd-1', { idempotencyKey: 'k-1', creditAccountId: 'payable' })).toMatchObject({ replayed: true, expenseId: first.expenseId });
+    expect(w.tender('tnd-1').expenses?.map((e) => e.expenseId)).toEqual([first.expenseId, second.expenseId]);
+    expect(second.tender).toMatchObject({ expense: { expenseId: second.expenseId, reversed: false }, expenseProgress: { activeTotalKurus: 100_000_00, remainingKurus: 8_000_00 } });
   });
 
-  it('kurallar: yalnizca karara baglanmis ihale; yalnizca yonetim; Finans yoksa 503; baska apartman 404', async () => {
+  it('eski tek gider kaydi (expense + previousExpenses) okunur ve yeni hakedisle listeye tasinir; bilgi kaybolmaz', async () => {
+    const w = world();
+    const link = (id: string, amount: number) => ({ expenseId: id, transactionId: `tx-${id}`, amountKurus: amount, date: '2026-11-26', idempotencyKey: `k-${id}`, linkedAt: '2026-11-26T07:00:00.000Z', linkedBy: 'mgr' });
+    w.seed(decided('tnd-9', { expense: link('e2', 30_000_00), previousExpenses: [{ ...link('e1', 20_000_00), replacedAt: '2026-11-26T08:00:00.000Z' }] }));
+    const v = (await w.service.get(mgr, 'tnd-9')).tender;
+    expect(v.expenses?.map((e: any) => [e.expenseId, e.installment])).toEqual([['e1', 1], ['e2', 2]]);
+    // Sahte islemler ters kaydedilmemis sayilir: 50.000 TL gecerli.
+    expect(v.expenseProgress).toMatchObject({ activeTotalKurus: 50_000_00, remainingKurus: 58_000_00 });
+    await w.service.createExpense(mgr, 'tnd-9', { idempotencyKey: 'k-new', creditAccountId: 'payable', amount: 10_000_00 });
+    const stored = w.tender('tnd-9');
+    expect(stored).not.toHaveProperty('expense');
+    expect(stored).not.toHaveProperty('previousExpenses');
+    expect(stored.expenses?.map((e) => e.expenseId)).toEqual(['e1', 'e2', expect.any(String)]);
+    expect(stored.expenses?.[2]).toMatchObject({ installment: 3 });
+  });
+
+  it('kurallar: yalnizca karara baglanmis ihale; yalnizca yonetim; Finans yoksa 503; baska apartman 404; Finans kurallari aynen gecerli', async () => {
     const w = world();
     await expect(w.service.createExpense(mgr, 'tnd-3', { idempotencyKey: 'k1', creditAccountId: 'payable' })).rejects.toMatchObject({ code: 'invalid_state' });
     await expect(w.service.createExpense(observer, 'tnd-1', { idempotencyKey: 'k1', creditAccountId: 'payable' })).rejects.toMatchObject({ code: 'forbidden' });
@@ -176,10 +181,42 @@ describe('karardan gider kaydi: yazim', () => {
     await expect(w.service.createExpense({ ...mgr, apartmentId: 'apt-2' }, 'tnd-1', { idempotencyKey: 'k1', creditAccountId: 'payable' })).rejects.toMatchObject({ code: 'not_found' });
     await expect(w.service.createExpense(mgr, 'tnd-1', {})).rejects.toMatchObject({ field: 'idempotencyKey' });
     await expect(world({ finance: false }).service.createExpense(mgr, 'tnd-1', { idempotencyKey: 'k1', creditAccountId: 'payable' })).rejects.toMatchObject({ code: 'unavailable', httpStatus: 503 });
+    // Kasa bakiyesi yetersiz (varsayilan odeme hesabi kasa): Finans hatasi aynen.
+    await expect(w.service.createExpense(mgr, 'tnd-1', { idempotencyKey: 'k-cash' })).rejects.toMatchObject({ code: 'insufficient_funds' });
+    await expect(w.service.createExpense(mgr, 'tnd-1', { idempotencyKey: 'k-bad', creditAccountId: 'payable', expenseAccountId: 'yok' })).rejects.toMatchObject({ code: 'not_found' });
     expect(w.expenses()).toHaveLength(0);
   });
+});
 
-  it('API: POST /api/tenders/:id/expense 201, tekrar 200; denetci 403; Finans hatasi Finans koduyla', async () => {
+describe('tedarikci (vadeli borc) hesabi eslestirme', () => {
+  it('oneri firma adindan; eslestirme surumlu ve denetimli; gider varsayilan odeme hesabi tedarikci olur (vadeli gider)', async () => {
+    const w = world();
+    const cephe = await w.finance.createAccount({ apartmentId: APT, userId: 'mgr' }, { type: 'payable', name: 'Cephe Yapı Ltd. Şti.' });
+    await w.finance.createAccount({ apartmentId: APT, userId: 'mgr' }, { type: 'payable', name: 'Asansör Servis A.Ş.' });
+    const opts = await w.service.supplierAccounts(mgr, 'tnd-1');
+    expect(opts.items[0]).toMatchObject({ accountId: cephe.accountId, name: 'Cephe Yapı Ltd. Şti.', suggested: true, linked: false });
+    expect(opts.items.filter((a) => a.suggested)).toHaveLength(1);
+    await expect(w.service.linkSupplier(mgr, 'tnd-1', { version: 4, accountId: cephe.accountId })).rejects.toMatchObject({ code: 'conflict' });
+    await expect(w.service.linkSupplier(mgr, 'tnd-1', { version: 5, accountId: 'yok' })).rejects.toMatchObject({ code: 'not_found' });
+    await expect(w.service.linkSupplier(mgr, 'tnd-3', { version: 5, accountId: cephe.accountId })).rejects.toMatchObject({ code: 'invalid_state' });
+    await expect(w.service.linkSupplier(observer, 'tnd-1', { version: 5, accountId: cephe.accountId })).rejects.toMatchObject({ code: 'forbidden' });
+    const linked = await w.service.linkSupplier(mgr, 'tnd-1', { version: 5, accountId: cephe.accountId });
+    expect(linked.tender).toMatchObject({ supplierAccount: { accountId: cephe.accountId, name: 'Cephe Yapı Ltd. Şti.', linkedBy: 'mgr' }, expenseDraft: { creditAccountId: cephe.accountId }, version: 6 });
+    expect(w.fin.docs.size).toBeGreaterThan(0);
+    expect((await w.service.get(observer, 'tnd-1')).tender).toMatchObject({ supplierAccount: { accountId: cephe.accountId } });
+    expect((await w.service.portalGet(resident, 'tnd-1')).tender).not.toHaveProperty('supplierAccount');
+    // Odeme hesabi verilmeden: tedarikci hesabina vadeli gider (kasa bakiyesi gerekmez).
+    const r = await w.service.createExpense(mgr, 'tnd-1', { idempotencyKey: 'v-1', amount: 30_000_00 });
+    expect(w.expenses()[0]).toMatchObject({ expenseId: r.expenseId, creditAccountId: cephe.accountId, amount: 30_000_00 });
+    expect(w.fin.batches.at(-1)?.audit).toMatchObject({ details: { tender: { supplierAccountId: cephe.accountId } } });
+    // Bag kaldirma.
+    const un = await w.service.linkSupplier(mgr, 'tnd-1', { version: w.tender('tnd-1').version, accountId: null });
+    expect(un.tender).not.toHaveProperty('supplierAccount');
+  });
+});
+
+describe('API', () => {
+  it('POST /api/tenders/:id/expense 201, tekrar 200, asim 422 (overBudget); tedarikci uclari; denetci 403', async () => {
     const w = world();
     const app = createApp({
       version: 'test',
@@ -189,19 +226,22 @@ describe('karardan gider kaydi: yazim', () => {
         return raw ? (JSON.parse(raw) as AuthClaims) : null;
       },
     });
-    const call = async (ctx: TenderContext, body: unknown) => {
-      const res = await app.request('/api/tenders/tnd-1/expense', {
-        method: 'POST',
+    const call = async (ctx: TenderContext, method: string, path: string, body?: unknown) => {
+      const res = await app.request(`/api/tenders/tnd-1${path}`, {
+        method,
         headers: { 'content-type': 'application/json', 'x-test-claims': JSON.stringify({ userId: ctx.userId, role: ctx.role, apartmentId: ctx.apartmentId }) },
-        body: JSON.stringify(body),
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       });
       return { status: res.status, json: (await res.json()) as Record<string, any> };
     };
-    expect((await call(observer, { idempotencyKey: 'h1', creditAccountId: 'payable' })).status).toBe(403);
-    expect(await call(mgr, { idempotencyKey: 'h0' })).toMatchObject({ status: 422, json: { error: 'insufficient_funds' } });
-    const created = await call(mgr, { idempotencyKey: 'h1', creditAccountId: 'payable' });
-    expect(created).toMatchObject({ status: 201, json: { replayed: false, tender: { expense: { amountKurus: 108_000_00 } } } });
-    expect(await call(mgr, { idempotencyKey: 'h1', creditAccountId: 'payable' })).toMatchObject({ status: 200, json: { replayed: true, expenseId: created.json.expenseId } });
-    expect(await call(mgr, { idempotencyKey: 'h2', creditAccountId: 'payable' })).toMatchObject({ status: 409, json: { error: 'conflict', expenseId: created.json.expenseId } });
+    expect((await call(observer, 'POST', '/expense', { idempotencyKey: 'h1', creditAccountId: 'payable' })).status).toBe(403);
+    expect(await call(mgr, 'POST', '/expense', { idempotencyKey: 'h0' })).toMatchObject({ status: 422, json: { error: 'insufficient_funds' } });
+    const created = await call(mgr, 'POST', '/expense', { idempotencyKey: 'h1', creditAccountId: 'payable' });
+    expect(created).toMatchObject({ status: 201, json: { replayed: false, tender: { expense: { amountKurus: TOTAL } } } });
+    expect(await call(mgr, 'POST', '/expense', { idempotencyKey: 'h1', creditAccountId: 'payable' })).toMatchObject({ status: 200, json: { replayed: true, expenseId: created.json.expenseId } });
+    expect(await call(mgr, 'POST', '/expense', { idempotencyKey: 'h2', creditAccountId: 'payable', amount: 100 })).toMatchObject({ status: 422, json: { error: 'unprocessable', overBudget: true } });
+    expect((await call(mgr, 'GET', '/supplier-accounts')).status).toBe(200);
+    expect((await call(observer, 'GET', '/supplier-accounts')).status).toBe(403);
+    expect((await call(mgr, 'POST', '/supplier', { version: 1, accountId: 'payable' })).status).toBe(409);
   });
 });
