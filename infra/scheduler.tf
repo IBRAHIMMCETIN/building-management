@@ -172,6 +172,16 @@ data "aws_iam_policy_document" "scheduler_worker" {
     resources = [aws_sqs_queue.jobs.arn]
   }
 
+  # push_receipts: Expo makbuz sorgusu icin erisim anahtari (push.tf).
+  dynamic "statement" {
+    for_each = local.push_enabled ? [1] : []
+    content {
+      sid       = "ReadExpoAccessToken"
+      actions   = ["secretsmanager:GetSecretValue"]
+      resources = [aws_secretsmanager_secret.expo_access_token[0].arn]
+    }
+  }
+
   # payment_reconcile: saglayicidan sonuc sorgulamak icin anahtar okuma.
   dynamic "statement" {
     for_each = local.payments_enabled ? [values(local.payments_secret_arns)] : []

@@ -32,15 +32,6 @@ locals {
     },
     var.ses_configuration_set != "" ? { SES_CONFIGURATION_SET = var.ses_configuration_set } : {},
     local.web_app_url != "" ? { WEB_APP_URL = local.web_app_url } : {},
-    local.push_env,
-  )
-
-  # Mobil bildirim (push): worker ve scheduler (makbuz kontrolu) ayni degerleri alir.
-  push_enabled = var.push_channel == "expo"
-  push_env = merge(
-    { PUSH_CHANNEL = var.push_channel },
-    # Yalnizca "anahtar var mi" bilgisi acik: anahtar yoksa ortam haritasi hassas isaretlenmez.
-    nonsensitive(var.expo_access_token != "") ? { EXPO_ACCESS_TOKEN = var.expo_access_token } : {},
   )
 }
 
@@ -63,12 +54,38 @@ data "aws_iam_policy_document" "notification_worker" {
 
   # Okuma: uyelikler, daireler, kisi (e-posta), ekip kayitlari (talep bildirimi alicilari ve kisi
   # kaydi olmayan ekip uyesinin yedek e-postasi), kullanici tercihi ve push cihazlari. Yazma: NOTIF#
-  # isleme kaydi, NOTIFSENT# / NOTIFPUSH# gonderim kayitlari ve PUSHRCPT# makbuz kovalari; push
-  # acikken UpdateItem yalnizca olu cihazi (DeviceNotRegistered) pasife almak icin. Silme yok.
+  # isleme kaydi, NOTIFSENT# / NOTIFPUSH# gonderim kayitlari ve PUSHRCPT# makbuz kovalari. Silme yok.
   statement {
     sid       = "DynamoDb"
-    actions   = concat(["dynamodb:GetItem", "dynamodb:Query", "dynamodb:PutItem"], local.push_enabled ? ["dynamodb:UpdateItem"] : [])
+    actions   = ["dynamodb:GetItem", "dynamodb:Query", "dynamodb:PutItem"]
     resources = [aws_dynamodb_table.main.arn]
+  }
+
+  # Push: olu / yabanci cihazi pasife alma ve sahiplik kaydina TTL. Yalnizca USER# / PUSHTOKEN#
+  # bolumleri; apartman verisini guncelleyemez.
+  dynamic "statement" {
+    for_each = local.push_enabled ? [1] : []
+    content {
+      sid       = "PushDeviceUpdate"
+      actions   = ["dynamodb:UpdateItem"]
+      resources = [aws_dynamodb_table.main.arn]
+
+      condition {
+        test     = "ForAllValues:StringLike"
+        variable = "dynamodb:LeadingKeys"
+        values   = ["USER#*", "PUSHTOKEN#*"]
+      }
+    }
+  }
+
+  # Expo erisim anahtari (push.tf): yalnizca bu secret.
+  dynamic "statement" {
+    for_each = local.push_enabled ? [1] : []
+    content {
+      sid       = "ReadExpoAccessToken"
+      actions   = ["secretsmanager:GetSecretValue"]
+      resources = [aws_secretsmanager_secret.expo_access_token[0].arn]
+    }
   }
 
   statement {
@@ -122,7 +139,9 @@ resource "aws_lambda_function" "notification_worker" {
     variables = merge({
       NODE_ENV            = "production"
       DYNAMODB_TABLE_NAME = aws_dynamodb_table.main.name
-    }, local.notification_env)
+      # EMF metriklerinin `Stack` boyutu (push.tf alarmlari ayni degeri bekler).
+      METRICS_STACK = local.name
+    }, local.notification_env, local.push_worker_env)
   }
 
   depends_on = [

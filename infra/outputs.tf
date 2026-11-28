@@ -101,6 +101,11 @@ output "documents_bucket" {
   value       = aws_s3_bucket.documents.id
 }
 
+output "expo_access_token_secret_arn" {
+  description = "Istege bagli Expo push erisim anahtari secret'i (deger elle girilir: aws secretsmanager put-secret-value). Push kapaliysa null."
+  value       = local.push_enabled ? aws_secretsmanager_secret.expo_access_token[0].arn : null
+}
+
 output "payments_secret_arns" {
   description = "Saglayici basina odeme anahtari secret'i (deger elle girilir: aws secretsmanager put-secret-value). Odeme kapaliysa null."
   value       = local.payments_enabled ? local.payments_secret_arns : null

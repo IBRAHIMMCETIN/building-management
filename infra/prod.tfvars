@@ -59,7 +59,8 @@ notification_channel      = "log"
 notification_from_address = "YÖNESİST <bildirim@yonetimsistemim.com>"
 # Mobil bildirim (Expo push): varsayilan acik (push_channel = "expo"); kayitli cihaz yokken dis istek
 # yapilmaz. Kapatmak icin push_channel = "off". Istege bagli Expo erisim anahtari tfvars'a YAZILMAZ:
-# TF_VAR_expo_access_token (CI secret) ile verilir.
+# apply sonrasi `terraform output expo_access_token_secret_arn` secret'ina elle girilir (push.tf).
+# Karisik proje token'larini pasife almak icin: expo_project_id = "@sahip/slug".
 
 # --- Online odeme: GUVENLI BASLANGIC (kapali) -------------------------------------
 # Pazaryeri yetkisi, ticari sozlesmeler ve sandbox uctan uca testi tamamlanana kadar kapali.

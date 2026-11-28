@@ -122,17 +122,17 @@ variable "push_channel" {
   }
 }
 
-# Expo projesinde "Enhanced Security for Push Notifications" acilirsa zorunlu; bos ise istekler
-# basliksiz gider. Repoya / tfvars'a YAZILMAZ: TF_VAR_expo_access_token (CI secret) ile verilir.
-variable "expo_access_token" {
+# Karisik proje hatasinda (PUSH_TOO_MANY_EXPERIENCE_IDS) bizim projemiz: Expo hata ayrintisindaki proje
+# anahtari (or. "@sahip/yonesist"). Verilirse baska projelerin token'lari pasife alinir; bos ise hicbiri.
+# Expo erisim anahtari Terraform degiskeni DEGILDIR: push.tf'teki secret'a elle girilir.
+variable "expo_project_id" {
   type        = string
   default     = ""
-  sensitive   = true
-  description = "Istege bagli Expo push erisim anahtari (EXPO_ACCESS_TOKEN). Bos: anahtarsiz gonderim."
+  description = "Istege bagli Expo proje anahtari (EXPO_PROJECT_ID), or. @sahip/yonesist."
 
   validation {
-    condition     = var.expo_access_token == "" || can(regex("^[A-Za-z0-9_-]{20,200}$", var.expo_access_token))
-    error_message = "expo_access_token Expo erisim anahtari biciminde olmalidir (harf, rakam, - _)."
+    condition     = var.expo_project_id == "" || can(regex("^(@[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+|[0-9a-f-]{36})$", var.expo_project_id))
+    error_message = "expo_project_id \"@sahip/slug\" veya proje UUID'si olmalidir."
   }
 }
 
