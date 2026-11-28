@@ -5,7 +5,7 @@ import { useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 import { AppText, Button, Card, CardTitle, Screen } from '@/components/ui';
 import { useAuth } from '@/context/AuthProvider';
-import { useFeature } from '@/context/SiteFeaturesProvider';
+import { useFeature, useSiteFeatures } from '@/context/SiteFeaturesProvider';
 import { useActiveApartmentName, useContexts } from '@/hooks/useContexts';
 import { space } from '@/theme/tokens';
 import { useTheme } from '@/theme/useTheme';
@@ -40,7 +40,11 @@ export function AccountScreen({ showTitle = true }: { showTitle?: boolean }) {
   const canSwitch = (contexts.data?.contexts.length ?? 0) > 1;
   // Adim 1: sakinde bildirim tercihleri site ozelligine bagli (kapaliyken API de 403 doner); diger roller etkilenmez.
   const residentPrefsOn = useFeature('resident.notificationPrefs');
-  const showPrefs = user?.role !== 'resident' || residentPrefsOn;
+  const featuresStatus = useSiteFeatures().status;
+  const isResident = user?.role === 'resident';
+  const showPrefs = !isResident || residentPrefsOn;
+  // Sakinde ozellikler okunurken bildirim bolumu cizilmez (sade kart -> tercih kartlari sicramasi yok).
+  const prefsPending = isResident && featuresStatus === 'loading';
 
   if (!user) return null;
 
@@ -59,7 +63,7 @@ export function AccountScreen({ showTitle = true }: { showTitle?: boolean }) {
 
       <AppLockCard />
 
-      {showPrefs ? (
+      {prefsPending ? null : showPrefs ? (
         <>
           <NotificationPreferencesCard />
           <NotificationPreferencesCard channel="push">

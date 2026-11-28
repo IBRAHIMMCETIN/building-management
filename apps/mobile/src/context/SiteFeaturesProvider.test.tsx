@@ -1,10 +1,11 @@
 import { FEATURE_KEYS, type FeatureKey, featureMapOf } from '@bm/shared/features/catalog';
-import { fireEvent, screen, waitFor } from '@testing-library/react-native';
+import { act, fireEvent, screen, waitFor } from '@testing-library/react-native';
 import { Text } from 'react-native';
 import { FEATURE_KEYS as API_KEYS } from '../../../api/src/modules/features/catalog';
 import { FEATURE_KEYS as WEB_KEYS } from '../../../web/src/lib/features/catalog';
 import { FeatureGate } from '@/components/FeatureGate';
 import { CalendarDays, Gauge } from '@/components/icons';
+import { PayOnlineButton } from '@/components/portal/PayOnlineButton';
 import { type WebFeature, moreItemForRoute, residentMoreFor } from '@/lib/nav';
 import { AccountScreen } from '@/screens/account/AccountScreen';
 import { DuesScreen } from '@/screens/resident/DuesScreen';
@@ -68,6 +69,25 @@ describe('site ozellikleri (Adim 1)', () => {
     await waitFor(() => expect(calls.some((c) => c.path === '/api/site-features')).toBe(true));
     expect(screen.queryByRole('link', { name: 'Online öde' })).toBeNull();
     expect(calls.some((c) => c.path === '/api/portal/payments/quote')).toBe(false);
+  });
+
+  it('ozellikler okunurken: ne not ne dugme (sicrama yok), tutar sorgusu beklemeden gider', async () => {
+    let release: (v: unknown) => void = () => undefined;
+    const pending = new Promise((r) => (release = r));
+    const { calls } = await renderApp(<PayOnlineButton hint />, { siteFeatures: true, routes: { ...duesRoutes, 'GET /api/site-features': () => pending } });
+    await waitFor(() => expect(calls.some((c) => c.path === '/api/portal/payments/quote')).toBe(true));
+    expect(screen.queryByText(/elden veya banka havalesiyle/)).toBeNull();
+    expect(screen.queryByRole('link', { name: 'Online öde' })).toBeNull();
+    await act(async () => release(siteFeatures()));
+    expect(await screen.findByRole('link', { name: 'Online öde' })).toBeTruthy();
+  });
+
+  it('sakin Hesabım: ozellikler okunurken bildirim bolumu cizilmez', async () => {
+    const { calls } = await renderApp(<AccountScreen />, { siteFeatures: true, routes: { ...prefsRoute, 'GET /api/site-features': () => new Promise(() => undefined) } });
+    expect(await screen.findByRole('header', { name: 'Profil' })).toBeTruthy();
+    expect(screen.queryByRole('header', { name: 'Bildirimler' })).toBeNull();
+    expect(screen.queryByRole('switch', { name: 'E-posta bildirimleri' })).toBeNull();
+    expect(calls.some((c) => c.path === '/api/me/notification-preferences')).toBe(false);
   });
 
   it('online odeme acik: dugme gorunur', async () => {
