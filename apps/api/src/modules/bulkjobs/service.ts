@@ -102,6 +102,17 @@ export type BulkJobDeps = {
   log?: Pick<Console, 'info' | 'error'>;
 };
 
+/**
+ * Metni en fazla `size` kod noktasi (UTF-16 birimi degil) parcalara boler: vekil ciftler (emoji,
+ * BMP disi karakterler) parca sinirinda bolunmez; parcalarin birlesimi metnin kendisidir.
+ */
+export function splitCodePoints(text: string, size: number): string[] {
+  const points = Array.from(text);
+  const out: string[] = [];
+  for (let i = 0; i < points.length; i += size) out.push(points.slice(i, i + size).join(''));
+  return out;
+}
+
 /** Bitisinde baslatana ozet bildirimi giden is turleri (defter yazan isler). */
 export const NOTIFY_KINDS: readonly BulkJob['kind'][] = ['dues_bulk', 'meter_posting', 'meter_reversal'];
 
@@ -710,18 +721,34 @@ export function createBulkJobService(deps: BulkJobDeps) {
     if (period.status !== 'draft' && period.status !== 'calculated') {
       throw new MeterError('unprocessable', 'Yalnızca taslak dönem hesaplanabilir; onaylı dönemin satırları için /lines kullanın');
     }
-    if (repo.listByPrefix) {
-      const running = (await repo.listByPrefix(ctx.apartmentId, calcJobPrefix(periodId))).filter((j) => !isTerminal(j.status)).sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
-      if (running && !isStale(running)) return { job: running, created: false };
-    }
-    // Zaman sirali + rastgele ek: her baslatma ayri is (kisa omurlu kayit).
-    const jobId = `${calcJobPrefix(periodId)}${now().getTime().toString(36)}${newToken().replace(/[^A-Za-z0-9]/g, '').slice(0, 4)}`;
+    const existing = repo.listByPrefix ? await repo.listByPrefix(ctx.apartmentId, calcJobPrefix(periodId)) : [];
+    const running = existing.filter((j) => !isTerminal(j.status) && !isStale(j)).sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+    if (running) return { job: running, created: false };
+    // Kimlik donem surumu + o surumdeki is sirasindan: es zamanli iki baslatma ayni kimligi uretir,
+    // biri kosullu yazimda kaybeder ve kazananin isini doner (cift is yok). Ayni surumde yeniden
+    // hesaplama (or. engeller donem disinda giderildi) sirayla yeni is acar.
+    const seq = existing.filter((j) => (j.params as MeterCalcJobParams).periodVersion === period.version).length;
+    const jobId = `${calcJobPrefix(periodId)}v${period.version}-${seq}`;
     const params: MeterCalcJobParams = { periodId, periodVersion: period.version, unitCount, ...(period.name ? { periodName: period.name } : {}) };
     const job: BulkJob = { ...baseJob(ctx, jobId, 'meter_calculation', params, unitCount, fingerprintOf({ periodId, jobId })), ttl: Math.floor(now().getTime() / 1000) + CALC_JOB_TTL_DAYS * 86_400 };
     delete job.phase;
-    await repo.create(job, []);
+    try {
+      await repo.create(job, []);
+    } catch (err) {
+      if (err instanceof DataAccessError && err.code === 'conflict') {
+        const raced = await repo.get(ctx.apartmentId, jobId);
+        if (raced) return { job: raced, created: false };
+      }
+      throw err;
+    }
     await enqueue(job);
     return { job, created: true };
+  }
+
+  /** Donemin suren onizleme isi (onay, hesap bitmeden baslatilamaz). */
+  async function activeMeterCalculation(ctx: BulkJobContext, periodId: string): Promise<BulkJob | undefined> {
+    if (!repo.listByPrefix) return undefined;
+    return (await repo.listByPrefix(ctx.apartmentId, calcJobPrefix(periodId))).find((j) => !isTerminal(j.status) && !isStale(j));
   }
 
   async function runMeterCalculation(job: Get, _save: Save, finish: Save, _shouldStop: () => boolean, count: (n: number) => void): Promise<boolean> {
@@ -733,9 +760,7 @@ export function createBulkJobService(deps: BulkJobDeps) {
     // Senkron yolla ayni fonksiyon: ayni girdiyle ayni cetvel ve calcHash.
     const out = await calculate(ctx, params.periodId);
     const { period: _p, ...rest } = out;
-    const json = JSON.stringify(rest);
-    const chunks: string[] = [];
-    for (let i = 0; i < json.length; i += OUTPUT_CHUNK_CHARS) chunks.push(json.slice(i, i + OUTPUT_CHUNK_CHARS));
+    const chunks = splitCodePoints(JSON.stringify(rest), OUTPUT_CHUNK_CHARS);
     await repo.putOutput(j.apartmentId, j.jobId, chunks, j.ttl);
     const units = out.ok ? out.lines.length : params.unitCount;
     count(units);
@@ -807,7 +832,7 @@ export function createBulkJobService(deps: BulkJobDeps) {
     return undefined;
   }
 
-  return { startDues, startMeterPosting, startMeterReversal, startMeterCalculation, meterCalculationOutput, findMeterJob, get, retry, handle };
+  return { startDues, startMeterPosting, startMeterReversal, startMeterCalculation, activeMeterCalculation, meterCalculationOutput, findMeterJob, get, retry, handle };
 }
 
 export type BulkJobService = ReturnType<typeof createBulkJobService>;

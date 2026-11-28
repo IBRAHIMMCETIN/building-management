@@ -12,7 +12,7 @@ import { createApp } from '../src/app.js';
 import type { AuthClaims } from '../src/auth/claims.js';
 import { createMemoryBulkJobQueue } from '../src/modules/bulkjobs/queue.js';
 import { createMemoryBulkJobRepository } from '../src/modules/bulkjobs/repository.js';
-import { createBulkJobService } from '../src/modules/bulkjobs/service.js';
+import { createBulkJobService, splitCodePoints } from '../src/modules/bulkjobs/service.js';
 import { OUTPUT_CHUNK_CHARS } from '../src/modules/bulkjobs/types.js';
 import { meterPostingWorld } from './fakes/meterPostingWorld.js';
 import { APT, manager } from './fakes/ownershipWorld.js';
@@ -123,6 +123,34 @@ describe('sayac onizlemesi: arka plan isi', () => {
     expect(s.q.messages).toHaveLength(0);
     // Tenant izolasyonu: is yalnizca JWT apartmaninda aranir.
     expect((await s.call('GET', `/api/metering/periods/${p.periodId}/calculation/${second}`, undefined, { ...manager, apartmentId: 'apt-x' })).status).toBe(404);
+  });
+
+  it('es zamanli iki /calculate tek is acar; is surerken onay 409; bitince onay gecer', async () => {
+    const s = setup(2);
+    const p = await period(s);
+    const [a, b] = await Promise.all([s.call('POST', `/api/metering/periods/${p.periodId}/calculate`), s.call('POST', `/api/metering/periods/${p.periodId}/calculate`)]);
+    expect([a.status, b.status]).toEqual([202, 202]);
+    expect(a.json.job.jobId).toBe(b.json.job.jobId);
+    expect([a.json.created, b.json.created].sort()).toEqual([false, true]);
+    expect(s.q.messages).toHaveLength(1);
+    expect(s.jobs.jobs.size).toBe(1);
+
+    // Is surerken onay: eski / herhangi bir hash ile reddedilir, is acilmaz.
+    const blocked = await s.call('POST', `/api/metering/periods/${p.periodId}/approve`, { calcHash: '0'.repeat(32) });
+    expect(blocked.status).toBe(409);
+    expect(blocked.json.message).toMatch(/hesaplanıyor/);
+    await s.drain();
+    const out = await s.call('GET', `/api/metering/periods/${p.periodId}/calculation/${a.json.job.jobId}`);
+    expect((await s.call('POST', `/api/metering/periods/${p.periodId}/approve`, { calcHash: out.json.calcHash })).status).toBe(200);
+  });
+
+  it('kod noktasi parcalama: vekil cift bolunmez, birlesim ayni metin', () => {
+    const text = `${'a'.repeat(4)}😀${'b'.repeat(3)}ğ😀`;
+    const parts = splitCodePoints(text, 5);
+    expect(parts.join('')).toBe(text);
+    expect(parts.every((x) => !/[\uD800-\uDBFF]$/.test(x) && !/^[\uDC00-\uDFFF]/.test(x))).toBe(true);
+    expect(parts.map((x) => Array.from(x).length)).toEqual([5, 5]);
+    expect(parts[0]).toBe('aaaa😀');
   });
 
   it('cikti parcalara bolunur ve yeniden birlestirilir', async () => {

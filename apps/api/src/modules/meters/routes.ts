@@ -5,6 +5,7 @@ import { MANAGE_ROLES, type MeterContext, READING_READ_ROLES, READING_WRITE_ROLE
 import type { MeterPortalService } from './portalView.js';
 import { type BulkJobService, jobView } from '../bulkjobs/service.js';
 import { asObject, assertId, reqString } from '../core/validation.js';
+import { MeterError } from './errors.js';
 import { ASYNC_CALCULATE_UNITS, type MeterPostingService, SYNC_POSTING_UNITS } from './posting.js';
 import type { MeterReadingService } from './readings.js';
 import type { MeterReversalService } from './reversal.js';
@@ -30,7 +31,8 @@ export type MeterRoutesDeps = {
   reversal?: MeterReversalService;
   portal?: MeterPortalService;
   /** Buyuk donem onayi arka plan isi (SQS). Verilmezse onay senkron calisir. */
-  jobs?: Pick<BulkJobService, 'startMeterPosting'> & Partial<Pick<BulkJobService, 'startMeterReversal' | 'findMeterJob' | 'startMeterCalculation' | 'meterCalculationOutput'>>;
+  jobs?: Pick<BulkJobService, 'startMeterPosting'> &
+    Partial<Pick<BulkJobService, 'startMeterReversal' | 'findMeterJob' | 'startMeterCalculation' | 'activeMeterCalculation' | 'meterCalculationOutput'>>;
   /** Onizlemenin arka plan isine alinacagi bolum sayisi esigi (varsayilan `ASYNC_CALCULATE_UNITS`). */
   asyncCalculateUnits?: number;
 };
@@ -161,6 +163,10 @@ export function meterRoutes({ authenticate, service, posting, reversal, portal, 
     r.post('/periods/:periodId/approve', manage, async (c) => {
       const body = await readJson(c);
       const periodId = p(c, 'periodId');
+      // Suren onizleme isi donemi yeniden yazacak: onay hesap bitmeden baslatilmaz.
+      if (jobs?.activeMeterCalculation && (await jobs.activeMeterCalculation(ctxOf(c), periodId))) {
+        throw new MeterError('conflict', 'Dağıtım önizlemesi hesaplanıyor; bitince sonucu kontrol edip onaylayın');
+      }
       // Buyuk donem (onizlemedeki bolum sayisi > SYNC_POSTING_UNITS): arka plan isi + 202.
       if (jobs) {
         const period = await posting.getPeriod(ctxOf(c), periodId);

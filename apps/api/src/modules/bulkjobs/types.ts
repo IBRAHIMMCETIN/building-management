@@ -48,7 +48,7 @@ export type MeterReversalJobParams = { periodId: string; key: string; reason?: s
  */
 export type MeterCalcJobParams = { periodId: string; periodVersion: number; unitCount: number; periodName?: string };
 
-/** Onizleme ciktisi parca boyutu (karakter): 4 bayt/karakterde bile 400 KB oge sinirinin altinda. */
+/** Onizleme ciktisi parca boyutu (kod noktasi): 4 bayt/kod noktasinda bile 400 KB oge sinirinin altinda. */
 export const OUTPUT_CHUNK_CHARS = 90_000;
 export type JobOutputChunk = { PK: string; SK: string; entityType: 'BULK_JOB_OUTPUT'; jobId: string; index: number; data: string; ttl: number };
 
