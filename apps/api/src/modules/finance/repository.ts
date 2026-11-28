@@ -29,6 +29,7 @@ import type { DomainEvent } from '../../events/publisher.js';
 import type { IsoDate, TableKeys } from '../core/types.js';
 import type { AccountSummaryItem } from './accountSummary.js';
 import { type MonthDelta, type MonthSummaryItem, type MonthSummaryState, monthDeltas } from './monthSummary.js';
+import { type UnitPaymentIndexState, createDynamoUnitPaymentStore, withPaymentIndex } from './unitPayments.js';
 import type {
   Account,
   Expense,
@@ -445,12 +446,13 @@ export async function postBatch(input: PostBatchInput): Promise<void> {
     );
   }
 
+  // Adim 2-1: makbuz (`PAYMENT`) kayitlari daire dizini anahtarlarini (GSI1 `UPAY#`) ayni yazimda alir.
   for (const record of records) {
-    add({ kind: 'record' }, { Put: { TableName: tableName, Item: record, ConditionExpression: notExists } });
+    add({ kind: 'record' }, { Put: { TableName: tableName, Item: withPaymentIndex(record), ConditionExpression: notExists } });
   }
 
   for (const doc of newDocs) {
-    add({ kind: 'record' }, { Put: { TableName: tableName, Item: doc, ConditionExpression: notExists } });
+    add({ kind: 'record' }, { Put: { TableName: tableName, Item: withPaymentIndex(doc), ConditionExpression: notExists } });
   }
 
   for (const r of replaceRecords) {
@@ -645,6 +647,8 @@ export type FinanceRepository = {
   getMonthSummaryState?(apartmentId: string): Promise<MonthSummaryState | undefined>;
   /** Siteyi `ready` isaretler; `onlyIfAbsent` ile var olan isaret degismez. Yazildiysa true. */
   markMonthSummaryReady?(apartmentId: string, source: MonthSummaryState['source'], opts?: { onlyIfAbsent?: boolean }): Promise<boolean>;
+  /** Adim 2-1: daire makbuz dizinini `ready` isaretler (yeni site: `new_site`, `onlyIfAbsent`). */
+  markUnitPaymentsReady?(apartmentId: string, source: UnitPaymentIndexState['source'], opts?: { onlyIfAbsent?: boolean }): Promise<boolean>;
 
   postTransaction(input: PostInput): Promise<void>;
   postBatch(input: PostBatchInput): Promise<void>;
@@ -1086,6 +1090,7 @@ export function createFinanceRepository(): FinanceRepository {
       }
     },
     getMonthSummaryState: (apartmentId) => getTenantItem<MonthSummaryState>(monthSummaryKeys.state(apartmentId)),
+    markUnitPaymentsReady: (apartmentId, source, opts) => createDynamoUnitPaymentStore().markReady(apartmentId, source, opts),
     async markMonthSummaryReady(apartmentId, source, opts = {}) {
       const { client, tableName } = getDynamo();
       const item: MonthSummaryState = { ...monthSummaryKeys.state(apartmentId), entityType: 'MONTH_SUMMARY_STATE', siteId: apartmentId, ready: true, source, readyAt: new Date().toISOString() };

@@ -29,8 +29,8 @@ import {
   suggestPayables,
   validateAllocations,
 } from './matching.js';
-import { payableSummary } from '../payables.js';
-import { addLines, emptyBreakdown, ledgerBalanceThrough, pendingNetThrough, pickStatements } from './reconciliation.js';
+import { type PayableSummaryStore, boundaryBalances, createDynamoPayableSummaryStore, loadPayableSummary } from '../boundedReads.js';
+import { addLines, emptyBreakdown, pendingNetThrough, pickStatements } from './reconciliation.js';
 import { type BankRepository, bankRepository } from './repository.js';
 import { publicLine } from './service.js';
 import {
@@ -84,7 +84,10 @@ export type BankMatchContext = { apartmentId: string; userId: string; role: Role
 export type BankMatchDeps = {
   repo: BankRepository;
   finance: Pick<FinanceService, 'recordBankPayment' | 'reverseBankPayments' | 'recordBankExpense' | 'recordBankPayablePayment'>;
-  accounts: Pick<FinanceRepository, 'getAccount' | 'listAccounts' | 'listTransactions'>;
+  /** Adim 2-3: `listAccountEntries` varsa mutabakat bakiyeleri tarih aralikli sinirli okumayla. */
+  accounts: Pick<FinanceRepository, 'getAccount' | 'listAccounts' | 'listTransactions'> & Partial<Pick<FinanceRepository, 'listAccountEntries'>>;
+  /** Adim 2-3: tedarikci ozeti onbellegi (`PSUM#`, hesap surumune muhurlu). Verilmezse her seferinde hesaplanir. */
+  payableSummaries?: PayableSummaryStore;
   ledger: Pick<PortalRepository, 'listLedgerEntries' | 'getTransactions'>;
   core: Pick<CoreRepository, 'getSite' | 'getUnit' | 'listUnits' | 'listBlocks'>;
   memberships: Pick<MembershipRepository, 'list'>;
@@ -154,6 +157,8 @@ export function createBankMatchService(overrides: Partial<BankMatchDeps> & Pick<
     memberships: membershipRepository,
     people: personRepository,
     now: () => new Date(),
+    // Varsayilan depolarla calisirken (uygulama) tedarikci ozeti onbellegi DynamoDB'de.
+    ...(overrides.accounts ? {} : { payableSummaries: createDynamoPayableSummaryStore() }),
     ...overrides,
     // `documents: undefined` acikca verilirse (test) ortamdan okunmaz.
     documents: 'documents' in overrides ? overrides.documents : createDocumentStoreFromEnv(),
@@ -626,10 +631,16 @@ export function createBankMatchService(overrides: Partial<BankMatchDeps> & Pick<
     const accounts = (await deps.accounts.listAccounts(apartmentId)).filter((a) => a.type === 'payable' && a.status === 'active' && a.balance < 0);
     return Promise.all(
       accounts.map(async (a) => {
-        const entries = (await deps.ledger.listLedgerEntries(apartmentId, a.accountId)).filter((e) => e.siteId === apartmentId && e.accountId === a.accountId);
-        const ids = [...new Set(entries.map((e) => e.transactionId))];
-        const txs = ids.length ? await deps.ledger.getTransactions(apartmentId, ids) : [];
-        const sum = payableSummary(a.accountId, entries, new Map(txs.map((t) => [t.transactionId, t])));
+        // Adim 2-3: hesap surumune muhurlu ozet; surum tutmuyorsa eski yolla bir kez yeniden uretilir.
+        const { summary: sum } = await loadPayableSummary(
+          {
+            ...(deps.payableSummaries ? { store: deps.payableSummaries } : {}),
+            listAllEntries: (apt, acc) => deps.ledger.listLedgerEntries(apt, acc),
+            getTransactions: (apt, ids) => deps.ledger.getTransactions(apt, ids),
+            now: deps.now,
+          },
+          a,
+        );
         return {
           accountId: a.accountId,
           name: a.name,
@@ -685,7 +696,6 @@ export function createBankMatchService(overrides: Partial<BankMatchDeps> & Pick<
     if (!account || account.type !== 'bank') throw new BankError('not_found', 'Banka hesabi bulunamadi');
     const statements = await deps.repo.listStatements(ctx.apartmentId);
     const { opening, closing } = pickStatements(statements, bankAccountId, range);
-    const entries = (await deps.ledger.listLedgerEntries(ctx.apartmentId, bankAccountId)).filter((e) => e.accountId === bankAccountId);
 
     // Tum satirlar sayfalanarak (bekleyen net etki araliktan bagimsiz, kapanis gunune kadar birikimlidir).
     const lines: BankLine[] = [];
@@ -701,13 +711,22 @@ export function createBankMatchService(overrides: Partial<BankMatchDeps> & Pick<
 
     const asOf = closing?.period?.to;
     const closingBalance = closing?.closingBalance;
-    const ledgerAtEnd = asOf ? ledgerBalanceThrough(entries, bankAccountId, asOf) : undefined;
+    const openFrom = opening?.period?.from;
+    // Adim 2-3: hesabin tum `LE#` satirlari yerine kesim gunlerinden sonraki satirlar (bakiye - sonrasi).
+    const bounds = await boundaryBalances(
+      {
+        getAccount: (apt, acc) => deps.accounts.getAccount(apt, acc),
+        ...(deps.accounts.listAccountEntries ? { listAccountEntries: deps.accounts.listAccountEntries.bind(deps.accounts) } : {}),
+        listAllEntries: (apt, acc) => deps.ledger.listLedgerEntries(apt, acc),
+      },
+      ctx.apartmentId,
+      bankAccountId,
+      { ...(asOf ? { through: asOf } : {}), ...(openFrom ? { before: openFrom } : {}) },
+    );
+    const ledgerAtEnd = asOf ? bounds.through : undefined;
     const diff = closingBalance !== undefined && ledgerAtEnd !== undefined ? closingBalance - ledgerAtEnd : undefined;
     const pendingNet = asOf ? pendingNetThrough(lines, asOf) : undefined;
-    const openFrom = opening?.period?.from;
-    const ledgerAtStart = openFrom
-      ? entries.filter((e) => e.date < openFrom).reduce((t, e) => t + (e.side === 'debit' ? e.amount : -e.amount), 0)
-      : undefined;
+    const ledgerAtStart = openFrom ? bounds.before : undefined;
     const inRangeStatements = statements.filter(
       (st) =>
         st.bankAccountId === bankAccountId &&

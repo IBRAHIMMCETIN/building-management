@@ -62,7 +62,8 @@ import type { MembershipRepository } from '../memberships/repository.js';
 import type { OwnershipReader } from '../ownership/reader.js';
 import { splitAmountByShares } from '../ownership/shares.js';
 import { type PortalRepository, portalRepository } from '../portal/repository.js';
-import { type PayableSummary, payableSummary } from './payables.js';
+import type { PayableSummary } from './payables.js';
+import { type PayableSummaryStore, createDynamoPayableSummaryStore, loadPayableSummary } from './boundedReads.js';
 import { type Occupancy, VACANT_SUFFIX, liablePartyFor, occupancyOn } from './occupancy.js';
 
 // ---------------------------------------------------------------------------
@@ -409,6 +410,8 @@ export type FinanceServiceDeps = {
   ownership?: Pick<OwnershipReader, 'ownerSplitOn'>;
   /** Faz B3.5: tedarikci acik kalemleri icin hesap hareketleri (varsayilan portal deposu). */
   ledger: Pick<PortalRepository, 'listLedgerEntries' | 'getTransactions'>;
+  /** Adim 2-3: tedarikci ozeti onbellegi (`PSUM#`, hesap surumune muhurlu). Verilmezse her seferinde hesaplanir. */
+  payableSummaries?: PayableSummaryStore;
   attachments?: {
     promote(
       apartmentId: string,
@@ -539,6 +542,8 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
     ledger: portalRepository,
     now: () => new Date(),
     newId: () => randomUUID(),
+    // Varsayilan depoyla (uygulama) tedarikci ozeti onbellegi DynamoDB'de; sahte depolu testlerde yok.
+    ...(overrides.repository ? {} : { payableSummaries: createDynamoPayableSummaryStore() }),
     ...overrides,
   };
   const repo = deps.repository;
@@ -610,7 +615,11 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
       ...DEFAULT_EXPENSE_ACCOUNTS.map((e) => newAccount(ctx, { ...e, type: 'expense' })),
       ...DEFAULT_INCOME_ACCOUNTS.map((e) => newAccount(ctx, { ...e, type: 'income' })),
     ]);
-    if (fresh) await repo.markMonthSummaryReady?.(ctx.apartmentId, 'new_site', { onlyIfAbsent: true });
+    if (fresh) {
+      await repo.markMonthSummaryReady?.(ctx.apartmentId, 'new_site', { onlyIfAbsent: true });
+      // Adim 2-1: yeni sitede dizinsiz makbuz yoktur; daire makbuz dizini dogrudan kullanilabilir.
+      await repo.markUnitPaymentsReady?.(ctx.apartmentId, 'new_site', { onlyIfAbsent: true });
+    }
     ensuredSystem.add(ctx.apartmentId);
   }
 
@@ -2773,11 +2782,21 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
   /** Acik tedarikci borcu (alacak-normal hesap; depoda borc - alacak tutulur). */
   const openOf = (a: Pick<Account, 'balance'>) => Math.max(0, -a.balance);
 
-  async function summaryOf(apartmentId: string, accountId: string): Promise<PayableSummary> {
-    const entries = (await deps.ledger.listLedgerEntries(apartmentId, accountId)).filter((e) => e.siteId === apartmentId && e.accountId === accountId);
-    const ids = [...new Set(entries.map((e) => e.transactionId))];
-    const txs = ids.length ? await deps.ledger.getTransactions(apartmentId, ids) : [];
-    return payableSummary(accountId, entries, new Map(txs.map((t) => [t.transactionId, t])));
+  /**
+   * Adim 2-3: `account` satirlardan ONCE (tutarli `listAccounts`) okunmustur; ozet bu surume
+   * muhurlu saklanir ve surum tutarken defter okunmaz.
+   */
+  async function summaryOf(account: Account): Promise<PayableSummary> {
+    const { summary } = await loadPayableSummary(
+      {
+        ...(deps.payableSummaries ? { store: deps.payableSummaries } : {}),
+        listAllEntries: (apt, acc) => deps.ledger.listLedgerEntries(apt, acc),
+        getTransactions: (apt, ids) => deps.ledger.getTransactions(apt, ids),
+        now: deps.now,
+      },
+      account,
+    );
+    return summary;
   }
 
   /**
@@ -2789,7 +2808,7 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
     const accounts = (await repo.listAccounts(ctx.apartmentId)).filter((a) => a.type === 'payable' && (a.status === 'active' || a.balance !== 0));
     const items = await Promise.all(
       accounts.map(async (a) => {
-        const sum = q.includeItems === false ? undefined : await summaryOf(ctx.apartmentId, a.accountId);
+        const sum = q.includeItems === false ? undefined : await summaryOf(a);
         return {
           accountId: a.accountId,
           name: a.name,

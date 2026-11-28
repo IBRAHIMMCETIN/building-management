@@ -136,9 +136,10 @@ export function createDocumentsService(overrides: Partial<DocumentsServiceDeps> 
     const tx = await deps.finance.getTransaction(apartmentId, transactionId);
     if (!tx || tx.siteId !== apartmentId || tx.kind !== 'payment') throw new DocumentError('not_found', 'Tahsilat islemi bulunamadi');
     const unitId = tx.lines.find((l) => l.unitId)?.unitId;
-    const payment = unitId
-      ? (await deps.payments.listUnitPayments(apartmentId, unitId)).find((p) => p.transactionId === transactionId)
-      : undefined;
+    // Daire dizini nihai tutarlidir: az once yazilmis tahsilat bulunamazsa tutarli eski yola dusulur.
+    const find = async (consistent: boolean) =>
+      unitId ? (await deps.payments.listUnitPayments(apartmentId, unitId, consistent ? { consistent: true } : undefined)).find((p) => p.transactionId === transactionId) : undefined;
+    const payment = (await find(false)) ?? (await find(true));
     if (!payment) throw new DocumentError('not_found', 'Bu islemin makbuz kaydi bulunamadi');
     return receiptForPayment(apartmentId, payment);
   }
