@@ -163,9 +163,13 @@ export function meterRoutes({ authenticate, service, posting, reversal, portal, 
     r.post('/periods/:periodId/approve', manage, async (c) => {
       const body = await readJson(c);
       const periodId = p(c, 'periodId');
-      // Suren onizleme isi donemi yeniden yazacak: onay hesap bitmeden baslatilmaz.
-      if (jobs?.activeMeterCalculation && (await jobs.activeMeterCalculation(ctxOf(c), periodId))) {
-        throw new MeterError('conflict', 'Dağıtım önizlemesi hesaplanıyor; bitince sonucu kontrol edip onaylayın');
+      // Suren onizleme isi donemi yeniden yazacak: onay hesap bitmeden baslatilmaz. Onizleme isi
+      // yalnizca esigi asan donemde acilir; kucuk donemde is kaydi aranmaz.
+      if (jobs?.activeMeterCalculation) {
+        const { units } = await posting.scopeUnitCount(ctxOf(c), periodId);
+        if (units > (asyncCalculateUnits ?? ASYNC_CALCULATE_UNITS) && (await jobs.activeMeterCalculation(ctxOf(c), periodId))) {
+          throw new MeterError('conflict', 'Dağıtım önizlemesi hesaplanıyor; bitince sonucu kontrol edip onaylayın');
+        }
       }
       // Buyuk donem (onizlemedeki bolum sayisi > SYNC_POSTING_UNITS): arka plan isi + 202.
       if (jobs) {
