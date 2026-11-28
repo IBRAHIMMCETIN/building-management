@@ -69,3 +69,39 @@ resource "aws_cloudwatch_metric_alarm" "push_retry" {
   treat_missing_data  = "notBreaching"
   alarm_actions       = [aws_sns_topic.alerts.arn]
 }
+
+# Expo makbuzlarinda olu cihaz (DeviceNotRegistered) disindaki hatalar: InvalidCredentials (APNs / FCM
+# anahtari), MessageTooBig, MessageRateExceeded... Gonderim kabul edilmis ama cihaza ulasmamistir;
+# yapilandirma / icerik sorunudur. Scheduler `push_receipts` isi (saatte bir) tek satir yazar:
+#   {"level":"error","msg":"push_receipt_errors","errors":{"<kod>":<adet>}}
+resource "aws_cloudwatch_log_metric_filter" "push_receipt_errors" {
+  count = local.push_enabled ? 1 : 0
+
+  name           = "${local.name}-push-receipt-errors"
+  log_group_name = aws_cloudwatch_log_group.scheduler_worker.name
+  pattern        = "\"push_receipt_errors\""
+
+  metric_transformation {
+    name      = "PushReceiptErrors"
+    namespace = "BuildingManagement/${local.name}"
+    value     = "1"
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "push_receipt_errors" {
+  count = local.push_enabled ? 1 : 0
+
+  alarm_name          = "${local.name}-push-receipt-errors"
+  alarm_description   = "Expo push makbuzlarinda olu cihaz disinda hata var (APNs / FCM kimlik bilgisi, icerik boyutu, kisitlama): bildirimler cihaza ulasmamis olabilir. Ayrinti: scheduler-worker loglarinda msg=push_receipt_errors (hata kodu ve adedi)."
+  namespace           = "BuildingManagement/${local.name}"
+  metric_name         = "PushReceiptErrors"
+  statistic           = "Sum"
+  period              = 3600
+  evaluation_periods  = 1
+  threshold           = 1
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+
+  depends_on = [aws_cloudwatch_log_metric_filter.push_receipt_errors]
+}

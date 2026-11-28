@@ -1,45 +1,63 @@
+import * as sharedDesk from '@bm/shared/api/gate';
 import * as shared from '@bm/shared/api/portalGate';
+import * as sharedWork from '@bm/shared/api/work';
+import * as sharedPlate from '@bm/shared/gate/plate';
 import { describe, expect, it, vi } from 'vitest';
-import { z } from 'zod';
 vi.mock('./client', () => ({ apiClient: {} }));
 const web = await import('./gate');
 const plate = await import('@/lib/gate/plate');
 const pass = await import('@/lib/gate/pass');
+const maintenance = await import('./maintenance');
+const schedule = await import('@/lib/maintenance/schedule');
+const myWork = await import('@/lib/tickets/myWork');
+const tickets = await import('./tickets');
+const dialog = await import('@/pages/admin/tickets/MaintenanceTaskDialog');
 
 /*
- * Gecici esitlik testi: sakin kapi semalari ve yardimcilari su an web (lib/api/gate.ts, lib/gate/*) ve
- * ortak pakette (packages/shared/src/api/portalGate.ts, mobil kullanir) iki kopya. Tek kaynaga
- * indirilene kadar sekil veya davranis ayrilirsa bu test kirilir.
+ * Tek kaynak korumasi: web'deki eski yollar (lib/api/gate.ts, lib/gate/*, bakim / Islerim) ortak paketin
+ * AYNI nesnelerini yeniden disa aktarir. Biri yeniden yerel bir kopya yazarsa (sekli ayni olsa bile) bu
+ * test kirilir; davranis testleri (gate.test.ts, tickets.test.tsx) sonucu ayrica dogrular.
  */
 
-const json = (s: z.ZodType) => z.toJSONSchema(s);
-
-describe('sakin kapi: web ve ortak paket esit', () => {
-  it('semalar ayni sekilde', () => {
-    expect(json(shared.gateUnitSchema)).toEqual(json(web.unitOptionSchema));
-    expect(json(shared.vehicleSchema)).toEqual(json(web.vehicleSchema));
-    expect(json(shared.myPassSchema)).toEqual(json(web.myPassSchema));
-    expect(json(shared.courierSchema)).toEqual(json(web.courierSchema));
-    expect(json(shared.gateLogSchema)).toEqual(json(web.gateLogSchema));
-    expect(json(shared.gateLogPageSchema)).toEqual(json(web.gateLogPageSchema));
-    expect(json(shared.portalGateOverviewSchema)).toEqual(json(web.portalOverviewSchema));
+describe('kapi ve bakim: web eski yollari ortak paketin nesneleri', () => {
+  it('sakin ve gorevli kapi semalari', () => {
+    expect(web.vehicleSchema).toBe(shared.vehicleSchema);
+    expect(web.myPassSchema).toBe(shared.myPassSchema);
+    expect(web.courierSchema).toBe(shared.courierSchema);
+    expect(web.gateLogSchema).toBe(shared.gateLogSchema);
+    expect(web.gateLogPageSchema).toBe(shared.gateLogPageSchema);
+    expect(web.portalOverviewSchema).toBe(shared.portalGateOverviewSchema);
+    expect(web.unitOptionSchema).toBe(sharedDesk.unitOptionSchema);
+    expect(web.deskPassSchema).toBe(sharedDesk.deskPassSchema);
+    expect(web.plateLookupSchema).toBe(sharedDesk.plateLookupSchema);
+    expect(web.plateHitSchema).toBe(sharedDesk.plateHitSchema);
   });
 
-  it('yardimcilar ayni sonucu verir', () => {
-    for (const input of ['34 abc 123', '06ıi1234', '99 Q 1', '', '35-AB-12', '01 A 1234']) {
-      expect(shared.normalizePlate(input)).toBe(plate.normalizePlate(input));
-      expect(shared.plateError(input)).toBe(plate.plateError(input));
-      expect(shared.formatPlate(shared.normalizePlate(input))).toBe(plate.formatPlate(plate.normalizePlate(input)));
-    }
-    expect(shared.formatShortCode('K7M2PQ4X')).toBe(plate.formatShortCode('K7M2PQ4X'));
-    expect(shared.passLink('https://w.test/', 'tok', 'K7M2PQ4X')).toBe(plate.passLink('https://w.test/', 'tok', 'K7M2PQ4X'));
-    expect(shared.validityText('2026-11-28', '2026-11-30')).toBe(plate.validityText('2026-11-28', '2026-11-30'));
-    expect(shared.VERDICT_TEXT).toEqual(plate.VERDICT_TEXT);
-    expect(shared.LOG_KIND_TEXT).toEqual(plate.LOG_KIND_TEXT);
-    expect(shared.DIRECTION_TEXT).toEqual(plate.DIRECTION_TEXT);
-    const base = { guestName: 'Ayşe', validFrom: '2026-11-28', validUntil: '', today: '2026-11-28', maxPassDays: 31, maxPassLeadDays: 90 };
-    for (const f of [base, { ...base, guestName: 'A' }, { ...base, validFrom: '2026-11-27' }, { ...base, validFrom: '2027-03-01' }, { ...base, validUntil: '2026-11-27' }, { ...base, validUntil: '2026-12-29' }]) {
-      expect(shared.passFormError(f)).toBe(pass.passFormError(f));
-    }
+  it('plaka, kisa kod, okutma, kurye durumu ve misafir formu yardimcilari', () => {
+    expect(plate.normalizePlate).toBe(shared.normalizePlate);
+    expect(plate.plateError).toBe(shared.plateError);
+    expect(plate.formatPlate).toBe(shared.formatPlate);
+    expect(plate.isTurkishPlate).toBe(shared.isTurkishPlate);
+    expect(plate.formatShortCode).toBe(shared.formatShortCode);
+    expect(plate.passLink).toBe(shared.passLink);
+    expect(plate.validityText).toBe(shared.validityText);
+    expect(plate.VERDICT_TEXT).toBe(shared.VERDICT_TEXT);
+    expect(plate.LOG_KIND_TEXT).toBe(shared.LOG_KIND_TEXT);
+    expect(plate.DIRECTION_TEXT).toBe(shared.DIRECTION_TEXT);
+    expect(plate.parseScan).toBe(sharedPlate.parseScan);
+    expect(plate.normalizeShortCode).toBe(sharedPlate.normalizeShortCode);
+    expect(plate.courierState).toBe(sharedPlate.courierState);
+    expect(plate.COURIER_TEXT).toBe(sharedPlate.COURIER_TEXT);
+    expect(pass.passFormError).toBe(shared.passFormError);
+  });
+
+  it('bakim gorevi semasi, durum etiketleri, Islerim gruplamasi ve kontrol listesi dogrulamasi', () => {
+    expect(maintenance.taskSchema).toBe(sharedWork.taskSchema);
+    expect(schedule.TASK_STATUSES).toBe(sharedWork.TASK_STATUSES);
+    expect(schedule.TASK_STATUS_LABELS).toBe(sharedWork.TASK_STATUS_LABELS);
+    expect(schedule.TASK_STATUS_TONES).toBe(sharedWork.TASK_STATUS_TONES);
+    expect(myWork.groupMyWork).toBe(sharedWork.groupMyWork);
+    expect(tickets.assigneesSchema).toBe(sharedWork.assigneesSchema);
+    expect(dialog.checklistErrors).toBe(sharedWork.checklistErrors);
   });
 });

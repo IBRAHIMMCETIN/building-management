@@ -63,6 +63,7 @@ export function useResendInvite() {
 
 export const accountKeys = {
   notifications: (userId: string | undefined) => ['me', 'notification-preferences', userId] as const,
+  devices: (userId: string | undefined) => ['me', 'devices', userId] as const,
 };
 
 export function useNotificationPreferences() {
@@ -72,6 +73,20 @@ export function useNotificationPreferences() {
   return useQuery({
     queryKey: accountKeys.notifications(user?.sub),
     queryFn: ({ signal }) => notificationPreferencesApi.get(signal),
+    enabled: !!user && (user.role !== 'resident' || residentPrefs),
+  });
+}
+
+/**
+ * Kullanicinin aktif mobil cihazlari (`GET /api/me/devices`): Hesabım'daki "Mobil bildirim" bolumu yalnizca
+ * en az bir telefon varsa gosterilir. Tercih karti ile ayni kosulda okunur.
+ */
+export function useMyDevices() {
+  const { user } = useAuth();
+  const residentPrefs = useFeature('resident.notificationPrefs');
+  return useQuery({
+    queryKey: accountKeys.devices(user?.sub),
+    queryFn: ({ signal }) => notificationPreferencesApi.devices(signal),
     enabled: !!user && (user.role !== 'resident' || residentPrefs),
   });
 }

@@ -10,7 +10,7 @@
     "userInterfaceStyle": "automatic",
     "ios": {
       "bundleIdentifier": "com.yonesist.app",
-      "supportsTablet": false,
+      "supportsTablet": true,
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
       }
@@ -21,7 +21,9 @@
         "foregroundImage": "./assets/mark.png",
         "backgroundColor": "#ffffff"
       },
-      "blockedPermissions": ["android.permission.RECORD_AUDIO"]
+      "blockedPermissions": [
+        "android.permission.RECORD_AUDIO"
+      ]
     },
     "web": {
       "bundler": "metro",
@@ -32,12 +34,11 @@
       "expo-router",
       "expo-secure-store",
       "expo-web-browser",
+      "expo-dev-client",
       [
-        "expo-image-picker",
+        "expo-local-authentication",
         {
-          "photosPermission": "Arıza / talep bildirirken fotoğraf eklemek için fotoğraflarınıza erişim gerekir.",
-          "cameraPermission": "Arıza / talep bildirirken fotoğraf çekmek için kamera erişimi gerekir.",
-          "microphonePermission": false
+          "faceIDPermission": "Uygulama kilidini açmak için Face ID kullanılır (Hesabım'dan açılıp kapatılır)."
         }
       ],
       [

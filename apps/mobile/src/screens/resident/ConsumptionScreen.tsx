@@ -2,20 +2,20 @@ import { CATEGORY_LABELS, type PortalPeriod, type TemplateCategory, formatConsum
 import { formatDate } from '@bm/shared/dates';
 import { formatTRY } from '@bm/shared/money';
 import { useMemo, useState } from 'react';
-import { Pressable, StyleSheet, View } from 'react-native';
+import { StyleSheet, View } from 'react-native';
 import { FileDown, Gauge } from '@/components/icons';
 import { BarTrack } from '@/components/portal/BarTrack';
 import { PortalQueryState } from '@/components/portal/PortalQueryState';
 import { RefetchErrorBanner } from '@/components/portal/RefetchErrorBanner';
 import { StatTile } from '@/components/portal/StatTile';
-import { Alert, AppText, Badge, Button, Card, CardTitle, EmptyState, LoadingBlock, Screen, type AppTextProps } from '@/components/ui';
+import { Alert, AppText, Badge, Button, Card, CardTitle, ChipGroup, EmptyState, LoadingBlock, Screen, type AppTextProps } from '@/components/ui';
 import { usePortalUnit } from '@/context/PortalUnitProvider';
 import { useMyConsumption } from '@/hooks/useConsumption';
 import { useMySummary } from '@/hooks/usePortal';
 import { useSignedDocument } from '@/hooks/useSignedDocument';
 import { metersApi } from '@/lib/api/meters';
 import { useServices } from '@/services';
-import { MIN_TOUCH, radii, space, withAlpha } from '@/theme/tokens';
+import { space, withAlpha } from '@/theme/tokens';
 import { useTheme } from '@/theme/useTheme';
 
 /** Ortalamaya gore fark rengi (web ile ayni esik: %10). */
@@ -82,7 +82,10 @@ export function ConsumptionScreen() {
         />
       ) : (
         <>
-          {categories.length > 1 && <CategoryChips value={active as TemplateCategory} options={categories} onChange={setCategory} />}
+          {categories.length > 1 && (
+            // Gider turu secimi (web: FilterChips "Gider türü"); tek secim.
+            <ChipGroup size="compact" label="Gider türü" value={active as TemplateCategory} options={categories.map((c) => ({ value: c, label: CATEGORY_LABELS[c] }))} onChange={setCategory} />
+          )}
           {latest && <Comparison period={latest} />}
           {list.length > 1 && <Trend periods={list} />}
           {doc.error && <Alert tone="danger">{doc.error}</Alert>}
@@ -92,36 +95,6 @@ export function ConsumptionScreen() {
         </>
       )}
     </Screen>
-  );
-}
-
-/** Gider turu secimi (web: FilterChips "Gider türü"); tek secim. Gorunen en az 36 pt, dokunma alani 44 pt (UnitPicker gibi). */
-function CategoryChips({ value, options, onChange }: { value: TemplateCategory; options: TemplateCategory[]; onChange: (c: TemplateCategory) => void }) {
-  const { colors } = useTheme();
-  return (
-    <View accessibilityRole="radiogroup" accessibilityLabel="Gider türü" style={styles.chips}>
-      {options.map((c) => {
-        const on = c === value;
-        return (
-          <Pressable
-            key={c}
-            accessibilityRole="radio"
-            accessibilityLabel={CATEGORY_LABELS[c]}
-            accessibilityState={{ checked: on }}
-            hitSlop={{ top: 4, bottom: 4 }}
-            onPress={() => onChange(c)}
-            style={({ pressed }) => [
-              styles.chip,
-              { borderColor: on ? colors.accent : colors.borderStrong, backgroundColor: on ? withAlpha(colors.accent, 0.1) : pressed ? colors.surfaceMuted : colors.surface },
-            ]}
-          >
-            <AppText variant="small" weight="medium" tone={on ? 'accent' : 'text'}>
-              {CATEGORY_LABELS[c]}
-            </AppText>
-          </Pressable>
-        );
-      })}
-    </View>
   );
 }
 
@@ -298,8 +271,6 @@ function PeriodCard({ period: p, loading, onPdf }: { period: PortalPeriod; loadi
 const styles = StyleSheet.create({
   flex: { flex: 1 },
   gap1: { gap: space(1) },
-  chips: { flexDirection: 'row', flexWrap: 'wrap', gap: space(2) },
-  chip: { minHeight: MIN_TOUCH - 8, justifyContent: 'center', borderRadius: radii.full, borderWidth: StyleSheet.hairlineWidth * 2, paddingHorizontal: space(4), paddingVertical: space(1.5) },
   grid: { flexDirection: 'row', flexWrap: 'wrap', gap: space(3) },
   wide: { flexBasis: '100%' },
   half: { flexGrow: 1, flexBasis: '45%' },

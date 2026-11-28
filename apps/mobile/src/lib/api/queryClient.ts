@@ -11,6 +11,8 @@ export function shouldRetry(failureCount: number, error: unknown): boolean {
 export function createQueryClient(): QueryClient {
   return new QueryClient({
     defaultOptions: {
+      // Cevrimdisi (onlineManager, NetInfo): sorgular bekler ve baglanti gelince kendiliginden yenilenir;
+      // ekrandaki veri silinmez.
       queries: {
         staleTime: 30_000,
         retry: shouldRetry,
@@ -19,6 +21,9 @@ export function createQueryClient(): QueryClient {
       mutations: {
         // Finansal yazimlar otomatik tekrarlanmaz.
         retry: false,
+        // Cevrimdisiyken yazim sessizce kuyrukta beklemez (sonra kendiliginden gitmez): API istemcisi
+        // hemen `OfflineError` ("Çevrimdışısınız: işlem gönderilmedi...") ile reddeder.
+        networkMode: 'always',
       },
     },
   });

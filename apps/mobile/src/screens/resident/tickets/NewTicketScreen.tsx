@@ -5,10 +5,9 @@ import { useRouter } from 'expo-router';
 import { useState } from 'react';
 import { Platform, StyleSheet, View } from 'react-native';
 import { ArrowLeft, Building2, Check, Circle, House, Info } from '@/components/icons';
-import { FilterChips } from '@/components/portal/FilterChips';
 import { TicketStatusBadge } from '@/components/tickets/TicketBadges';
 import { PhotoPicker } from '@/components/tickets/PhotoPicker';
-import { Alert, AppText, Button, Card, CardTitle, ListRow, Screen, Skeleton, TextField } from '@/components/ui';
+import { Alert, AppText, Button, Card, CardTitle, ChipGroup, ListRow, Screen, Skeleton, TextField } from '@/components/ui';
 import { usePortalUnit } from '@/context/PortalUnitProvider';
 import { useMySummary } from '@/hooks/usePortal';
 import { useCreateMyTicket, usePhotoUploader, useSimilarTickets } from '@/hooks/useTickets';
@@ -251,7 +250,8 @@ function CategoryStep({ where, value, onChange, onNext }: { where: Where; value:
     <Card>
       <CardTitle>Ne tür bir sorun?</CardTitle>
       <View style={styles.field}>
-        <FilterChips
+        <ChipGroup
+          size="compact"
           label="Kategori"
           value={value ?? undefined}
           onChange={(c) => {

@@ -1,6 +1,7 @@
 import { ApiError, AuthRequiredError, NetworkError, isApiErrorBody } from '@bm/shared/api/errors';
 import type { z } from 'zod';
 import { isAuthRejection, isNetworkFailure } from '../auth/errors';
+import { OfflineError } from './offline';
 
 /*
  * Web istemcisinin (apps/web/src/lib/api/createApiClient.ts) React Native kopyasi; ayni hata
@@ -34,6 +35,8 @@ export type ApiClientConfig = {
   /** Yenileme sonrasi da 401 alinirsa cagrilir (oturumu kapatip girise yonlendirmek icin). */
   onAuthFailure?: () => void;
   fetchImpl?: typeof fetch;
+  /** false donerse yazan istekler gonderilmez (`OfflineError`); okumalar React Query'de bekler. */
+  isOnline?: () => boolean;
 };
 
 export type ApiClient = ReturnType<typeof createApiClient>;
@@ -94,6 +97,8 @@ export function createApiClient(config: ApiClientConfig) {
 
   async function request<T>(path: string, options: RequestOptions<T> = {}): Promise<T> {
     const useAuth = options.auth ?? true;
+    // Cevrimdisi: degisiklik gonderilmez, acik mesajla hemen doner (yarida kalan / sessizce bekleyen islem yok).
+    if ((options.method ?? 'GET') !== 'GET' && config.isOnline && !config.isOnline()) throw new OfflineError();
 
     let token: string | null = null;
     if (useAuth) {

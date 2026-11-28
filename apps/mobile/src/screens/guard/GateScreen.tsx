@@ -5,7 +5,7 @@ import { StyleSheet, View, useWindowDimensions } from 'react-native';
 import { ChipGroup, Screen } from '@/components/ui';
 import { useAuth } from '@/context/AuthProvider';
 import { deskKeys, useDeskCouriers } from '@/hooks/useGateDesk';
-import { space } from '@/theme/tokens';
+import { WIDE_CONTENT_MAX_WIDTH, space } from '@/theme/tokens';
 import { CourierDesk } from './CourierDesk';
 import { GateLog } from './GateLog';
 import { PassDesk } from './PassDesk';
@@ -13,8 +13,18 @@ import { PlateDesk } from './PlateDesk';
 
 export type GateTab = 'pass' | 'plate' | 'courier' | 'log';
 
-/** Genis ekran (yatay tablet): bolum secimi tek satir, misafir masasi iki sutun. */
+/** Genis ekran (yatay tablet / iPad): bolum secimi tek satir, misafir masasi iki sutun. */
 export const WIDE_MIN = 768;
+/** Dikeyde de bu kadar genis pencere (12,9 inc iPad) iki sutun kaldirir. */
+const WIDE_PORTRAIT_MIN = 1000;
+
+/**
+ * Iki sutunlu kapi masasi: yatay ve en az 768 pt pencere (iPad / Android tablet yatay) ya da cok genis dikey
+ * pencere. Telefon, dikey tablet ve iPad bolunmus ekraninda (dar pencere) tek sutun.
+ */
+export function isWideGate(width: number, height: number): boolean {
+  return width >= WIDE_MIN && (width > height || width >= WIDE_PORTRAIT_MIN);
+}
 
 /**
  * Kapı (web: pages/admin/gate/GatePage.tsx gorevli gorunumu): misafir QR / kisa kod, plaka sorgusu,
@@ -25,8 +35,8 @@ export function GateScreen({ active = true, initialTab = 'pass' }: { active?: bo
   const router = useRouter();
   const queryClient = useQueryClient();
   const { user } = useAuth();
-  const { width } = useWindowDimensions();
-  const wide = width >= WIDE_MIN;
+  const { width, height } = useWindowDimensions();
+  const wide = isWideGate(width, height);
   const [tab, setTab] = useState<GateTab>(initialTab);
   const [refreshing, setRefreshing] = useState(false);
   const couriers = useDeskCouriers('open', active);
@@ -45,8 +55,8 @@ export function GateScreen({ active = true, initialTab = 'pass' }: { active?: bo
   const manualEntry = (plate?: string) => router.push({ pathname: '/guard/manual-entry', params: plate ? { plate } : {} });
 
   return (
-    <Screen title="Kapı" refreshing={refreshing} onRefresh={() => void refresh()}>
-      <View style={[styles.body, wide && styles.bodyWide]}>
+    <Screen title="Kapı" refreshing={refreshing} onRefresh={() => void refresh()} maxContentWidth={wide ? WIDE_CONTENT_MAX_WIDTH : undefined}>
+      <View style={styles.body}>
         <ChipGroup
           label="Kapı işlemleri"
           size="large"
@@ -71,5 +81,4 @@ export function GateScreen({ active = true, initialTab = 'pass' }: { active?: bo
 
 const styles = StyleSheet.create({
   body: { gap: space(4) },
-  bodyWide: { width: '100%', maxWidth: 960, alignSelf: 'center' },
 });
