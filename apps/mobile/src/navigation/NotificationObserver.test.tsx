@@ -32,7 +32,7 @@ describe('bildirime dokunma', () => {
     await renderApp(<Harness />, { email: 'resident@dev.local', withUnit: false, notifications });
     await act(async () => notifications.tap(tap('n1', { url: '/duyurular/an-1', apartmentId: 'apt-dev-1' })));
     await tick();
-    expect(mockNavigate).toHaveBeenCalledWith('/duyurular/an-1');
+    expect(mockNavigate).toHaveBeenCalledWith('/duyurular/an-1', { withAnchor: true });
     expect(notifications.state.lastTapCleared).toBe(1);
     // Ayni bildirim (ornek: soguk acilis + dinleyici) ikinci kez acilmaz.
     await act(async () => notifications.tap(tap('n1', { url: '/duyurular/an-1', apartmentId: 'apt-dev-1' })));
@@ -45,7 +45,7 @@ describe('bildirime dokunma', () => {
     notifications.setLastTap(tap('cold', { url: '/borclar' }));
     await renderApp(<Harness />, { email: 'resident@dev.local', withUnit: false, notifications });
     await tick();
-    expect(mockNavigate).toHaveBeenCalledWith('/borclar');
+    expect(mockNavigate).toHaveBeenCalledWith('/borclar', { withAnchor: true });
     expect(notifications.state.lastTapCleared).toBe(1);
   });
 
@@ -59,7 +59,7 @@ describe('bildirime dokunma', () => {
       await services.session.signIn({ email: 'resident@dev.local', password: 'Mock123456' });
     });
     await tick();
-    expect(mockNavigate).toHaveBeenLastCalledWith('/borclar');
+    expect(mockNavigate).toHaveBeenLastCalledWith('/borclar', { withAnchor: true });
   });
 
   it('baglamlarda olmayan apartman (baska kullanicinin bildirimi): gecis yok, ana sayfa + bilgi notu', async () => {
@@ -82,7 +82,7 @@ describe('bildirime dokunma', () => {
     await act(async () => notifications.tap(tap('n4', { url: '/duyurular/an-2', apartmentId: 'apt-dev-2' })));
     await waitFor(() => expect(services.session.getSession()?.claims).toMatchObject({ apartmentId: 'apt-dev-2', role: 'resident' }));
     await tick();
-    expect(mockNavigate).toHaveBeenLastCalledWith('/duyurular/an-2');
+    expect(mockNavigate).toHaveBeenLastCalledWith('/duyurular/an-2', { withAnchor: true });
   });
 
   it('baglam degisimi basarisiz: bilgi notu, ana sayfa, aktif baglam degismez', async () => {
