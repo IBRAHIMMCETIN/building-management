@@ -2,7 +2,7 @@ import { MailX, Search, ShieldOff } from 'lucide-react';
 import { type FormEvent, useEffect, useState } from 'react';
 import { Alert, Badge, Button, Card, CardTitle, Dialog, FilterChips, FormField, Input, Skeleton, Spinner, Textarea } from '@/components/ui';
 import { useClearSuppression, useEmailSuppressions, useLookupSuppression } from '@/hooks/useEmailSuppressions';
-import { type EmailSuppression, clearReasonError, suppressionReasonText, suppressionTone } from '@/lib/api/emailSuppressions';
+import { type EmailSuppression, clearReasonError, suppressionBadgeText, suppressionReasonText, suppressionTone } from '@/lib/api/emailSuppressions';
 import { errorMessage } from '@/lib/api/errors';
 import { formatDateTime } from '@/lib/dates';
 
@@ -79,7 +79,7 @@ function SuppressionRow({ s, onClear }: { s: EmailSuppression; onClear: () => vo
       <div className="min-w-0">
         <div className="flex flex-wrap items-center gap-2">
           <p className="font-mono font-medium">{s.emailMasked}</p>
-          <Badge tone={suppressionTone(s)}>{s.active ? suppressionReasonText(s) : 'Kaldırıldı'}</Badge>
+          <Badge tone={suppressionTone(s)}>{suppressionBadgeText(s)}</Badge>
         </div>
         <p className="text-small text-muted">
           SES olayı {formatDateTime(s.at)}
@@ -193,8 +193,8 @@ export function PlatformEmailSuppressionsPage() {
           E-posta Engelleri
         </h1>
         <p className="text-small text-muted">
-          Kalıcı geri dönen veya şikâyet edilen adreslere bildirim e-postası gönderilmez; geçici geri dönüşler 7 gün sonra kendiliğinden kalkar. Adresler
-          maskeli gösterilir; tam adresle aramak için e-postayı girin.
+          Kalıcı geri dönen veya şikâyet edilen adreslere bildirim e-postası gönderilmez. Geçici geri dönüş 72 saatte 3 kez olursa adres 7 gün engellenir.
+          Adresler maskeli gösterilir; tam adresle aramak için e-postayı girin.
         </p>
       </div>
       <LookupCard onClear={setTarget} {...(cleared ? { cleared } : {})} />

@@ -18,11 +18,13 @@ export const suppressionSchema = z.object({
   feedbackType: z.string().optional(),
   at: z.string(),
   recordedAt: z.string(),
-  status: z.enum(['active', 'cleared']),
+  /** `observing`: 72 saatte 3'ten az gecici geri donus; engel yok, yalnizca izleniyor. */
+  status: z.enum(['active', 'cleared', 'observing']),
   clearedAt: z.string().optional(),
   clearedBy: z.string().optional(),
   clearReason: z.string().optional(),
   expiresAt: z.string().optional(),
+  softBounceCount: z.number().int().optional(),
   active: z.boolean(),
 });
 export type EmailSuppression = z.infer<typeof suppressionSchema>;
@@ -43,6 +45,13 @@ export const emailSuppressionsApi = {
 export function suppressionReasonText(s: Pick<EmailSuppression, 'reason' | 'bounceType' | 'feedbackType'>): string {
   if (s.reason === 'complaint') return s.feedbackType ? `Şikâyet (${s.feedbackType})` : 'Şikâyet';
   return s.bounceType === 'Permanent' ? 'Kalıcı geri dönüş' : 'Geçici geri dönüş';
+}
+
+/** Rozet: etkin engelde neden; kaldirilmis / izlenen kayitta durum. */
+export function suppressionBadgeText(s: Pick<EmailSuppression, 'reason' | 'bounceType' | 'feedbackType' | 'active' | 'status' | 'softBounceCount'>): string {
+  if (s.active) return suppressionReasonText(s);
+  if (s.status === 'observing') return `İzleniyor (${s.softBounceCount ?? 0} geçici geri dönüş)`;
+  return s.status === 'cleared' ? 'Kaldırıldı' : 'Süresi doldu';
 }
 
 export function suppressionTone(s: Pick<EmailSuppression, 'reason' | 'bounceType' | 'active'>): 'danger' | 'warning' | 'neutral' {

@@ -3,7 +3,7 @@ import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { EmailSuppression } from '@/lib/api/emailSuppressions';
-import { clearReasonError, suppressionReasonText, suppressionTone } from '@/lib/api/emailSuppressions';
+import { clearReasonError, suppressionBadgeText, suppressionReasonText, suppressionTone } from '@/lib/api/emailSuppressions';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -98,6 +98,8 @@ describe('engel metinleri', () => {
     expect(suppressionTone({ reason: 'bounce', bounceType: 'Transient', active: true })).toBe('warning');
     expect(suppressionTone({ reason: 'complaint', active: true })).toBe('danger');
     expect(suppressionTone({ reason: 'complaint', active: false })).toBe('neutral');
+    expect(suppressionBadgeText({ reason: 'bounce', bounceType: 'Transient', active: false, status: 'observing', softBounceCount: 2 })).toBe('İzleniyor (2 geçici geri dönüş)');
+    expect(suppressionBadgeText({ reason: 'bounce', active: false, status: 'cleared' })).toBe('Kaldırıldı');
     expect(clearReasonError('  abc ')).toBeDefined();
     expect(clearReasonError('Adres düzeltildi')).toBeUndefined();
   });

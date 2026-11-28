@@ -39,9 +39,11 @@ const complaint = (email: string) => ({
   complaint: { complainedRecipients: [{ emailAddress: email }], complaintFeedbackType: 'abuse', timestamp: '2026-11-28T08:58:00.000Z', feedbackId: 'fb-c' },
   mail: { messageId: 'ses-2' },
 });
+const TOPIC = 'arn:aws:sns:eu-north-1:1:bm-ses-feedback';
 const snsEvent = (...messages: unknown[]) => ({
-  Records: messages.map((m, i) => ({ EventSource: 'aws:sns', Sns: { MessageId: `sns-${i}`, TopicArn: 'arn:aws:sns:eu-north-1:1:bm-ses-feedback', Message: typeof m === 'string' ? m : JSON.stringify(m) } })),
+  Records: messages.map((m, i) => ({ EventSource: 'aws:sns', Sns: { MessageId: `sns-${i}`, TopicArn: TOPIC, Message: typeof m === 'string' ? m : JSON.stringify(m) } })),
 });
+const hours = (h: number) => new Date(NOW.getTime() + h * 3600_000);
 
 function service(now = () => NOW) {
   const mem = createMemorySuppressionStore();
@@ -61,6 +63,18 @@ describe('SES geri bildirim ayristirma', () => {
     expect(maskEmail(' Ayse.Kaya@Ornek.com ')).toBe('a***@ornek.com');
     expect(emailHash('A@B.com ')).toBe(emailHash('a@b.com'));
   });
+
+  it('icerik kaynakli geri donus yok sayilir; tek alicili iletide destination da engellenir', () => {
+    for (const sub of ['ContentRejected', 'MessageTooLarge', 'AttachmentRejected']) {
+      expect(parseSesFeedback({ notificationType: 'Bounce', bounce: { bounceType: 'Transient', bounceSubType: sub, bouncedRecipients: [{ emailAddress: 'a@example.com' }] } }, NOW)).toEqual([]);
+    }
+    const forwarded = { ...bounce('final@other.com'), mail: { destination: ['Ali@Example.com'] } };
+    expect(parseSesFeedback(forwarded, NOW).map((e) => e.email)).toEqual(['final@other.com', 'Ali@Example.com']);
+    // Ayni adres veya cok alicili ileti: ek kayit yok.
+    expect(parseSesFeedback({ ...bounce('ali@example.com'), mail: { destination: ['ALI@example.com'] } }, NOW)).toHaveLength(1);
+    expect(parseSesFeedback({ ...bounce('a@example.com'), mail: { destination: ['x@example.com', 'y@example.com'] } }, NOW)).toHaveLength(1);
+    expect(parseSesFeedback({ ...complaint('final@other.com'), mail: { destination: ['ali@example.com'] } }, NOW).map((e) => e.email)).toEqual(['final@other.com', 'ali@example.com']);
+  });
 });
 
 describe('engel kaydi', () => {
@@ -76,39 +90,106 @@ describe('engel kaydi', () => {
     expect(await s.service.isSuppressed('ALI@example.com')).toBeTruthy();
   });
 
-  it('gecici geri donus 7 gun sonra duser; etkin kalici engeli zayiflatmaz', async () => {
+  it('gecici geri donus: 72 saatte 3. olayda 7 gunluk engel, oncesi yalnizca izlenir; pencere disi sayilmaz', async () => {
     let now = NOW;
     const s = service(() => now);
-    await s.service.record(parseSesFeedback(bounce('soft@example.com', 'Transient'), now));
-    expect(s.items.get(emailHash('soft@example.com'))?.ttl).toBe(Math.floor(NOW.getTime() / 1000) + SOFT_BOUNCE_DAYS * 86_400);
+    const soft = () => s.service.record(parseSesFeedback(bounce('soft@example.com', 'Transient'), now));
+    await soft();
+    expect(s.items.get(emailHash('soft@example.com'))).toMatchObject({ status: 'observing', softBounces: [NOW.toISOString()] });
+    expect(await s.service.isSuppressed('soft@example.com')).toBeUndefined();
+    now = hours(80); // ilki pencere disinda kalir
+    await soft();
+    now = hours(90);
+    await soft();
+    expect(s.items.get(emailHash('soft@example.com'))).toMatchObject({ status: 'observing' });
+    expect(s.items.get(emailHash('soft@example.com'))?.softBounces).toHaveLength(2);
+    now = hours(100);
+    await soft();
+    expect(s.items.get(emailHash('soft@example.com'))).toMatchObject({ status: 'active', ttl: Math.floor(hours(100).getTime() / 1000) + SOFT_BOUNCE_DAYS * 86_400 });
     expect(await s.service.isSuppressed('soft@example.com')).toBeTruthy();
-    now = new Date(NOW.getTime() + (SOFT_BOUNCE_DAYS * 86_400 + 1) * 1000);
+    now = new Date(hours(100).getTime() + (SOFT_BOUNCE_DAYS * 86_400 + 1) * 1000);
     // TTL silmesi gecikse de okuma sureyi kontrol eder.
     expect(await s.service.isSuppressed('soft@example.com')).toBeUndefined();
+  });
 
-    now = NOW;
-    await s.service.record(parseSesFeedback(complaint('hard@example.com'), now));
-    expect(await s.service.record(parseSesFeedback(bounce('hard@example.com', 'Transient'), now))).toEqual({ recorded: 0, skipped: 1 });
-    expect(s.items.get(emailHash('hard@example.com'))).toMatchObject({ reason: 'complaint' });
+  it('kalici geri donus / sikayet hemen; gecici geri donus etkin kalici engeli zayiflatmaz', async () => {
+    const s = service();
+    await s.service.record(parseSesFeedback(complaint('hard@example.com'), NOW));
+    expect(await s.service.isSuppressed('hard@example.com')).toBeTruthy();
+    expect(await s.service.record(parseSesFeedback(bounce('hard@example.com', 'Transient'), NOW))).toEqual({ recorded: 0, skipped: 1 });
+    expect(s.items.get(emailHash('hard@example.com'))).toMatchObject({ reason: 'complaint', status: 'active', version: 1 });
     expect(s.items.get(emailHash('hard@example.com'))?.ttl).toBeUndefined();
   });
 
-  it('SNS isleyicisi: bozuk mesaj atlanir, gecerliler kaydedilir; worker girisi SNS / SQS ayrimi', async () => {
+  it('yaris: gecici geri donusun yazimi sirasinda kalici engel gelirse yeniden okur ve ustune yazmaz', async () => {
     const s = service();
-    const out = await handleSesFeedback(snsEvent(bounce('a@example.com'), 'bozuk', { notificationType: 'Delivery' }, complaint('c@example.com')) as never, { service: s.service, now: () => NOW, log: quiet });
-    expect(out).toEqual({ recorded: 2, skipped: 0, ignored: 2 });
+    const hash = emailHash('race@example.com');
+    let injected = false;
+    s.hooks.beforeWrite = (item) => {
+      // Gecici yazimdan hemen once baska bir isleyici kalici engeli yazdi.
+      if (!injected && item.status === 'observing') {
+        injected = true;
+        s.items.set(hash, { PK: 'EMAILSUP', SK: `H#${hash}`, entityType: 'EMAIL_SUPPRESSION', emailHash: hash, emailMasked: 'r***@example.com', reason: 'bounce', bounceType: 'Permanent', at: NOW.toISOString(), recordedAt: NOW.toISOString(), status: 'active', version: 1 });
+      }
+    };
+    expect(await s.service.record(parseSesFeedback(bounce('race@example.com', 'Transient'), NOW))).toEqual({ recorded: 0, skipped: 1 });
+    expect(s.items.get(hash)).toMatchObject({ status: 'active', bounceType: 'Permanent', version: 1 });
+    expect(s.items.get(hash)?.ttl).toBeUndefined();
+  });
+
+  it('yaris: kaldirma okuduktan sonra yeni kalici geri donus gelirse 409, engel silinmez', async () => {
+    const s = service();
+    await s.service.record(parseSesFeedback(bounce('ali@example.com', 'Transient'), NOW));
+    await s.service.record(parseSesFeedback(bounce('ali@example.com', 'Transient'), NOW));
+    await s.service.record(parseSesFeedback(bounce('ali@example.com', 'Transient'), NOW));
+    const hash = emailHash('ali@example.com');
+    s.hooks.beforeWrite = (item) => {
+      if (item.status === 'cleared') {
+        s.hooks.beforeWrite = undefined;
+        // Arada kalici geri donus islendi (surum artti).
+        const cur = s.items.get(hash);
+        if (cur) s.items.set(hash, { ...cur, bounceType: 'Permanent', ttl: undefined, version: cur.version + 1 });
+      }
+    };
+    await expect(s.service.clear('p1', hash, { reason: 'Adres düzeltildi' })).rejects.toMatchObject({ httpStatus: 409 });
+    expect(await s.service.isSuppressed('ali@example.com')).toBeTruthy();
+    expect(s.audits).toEqual([]);
+  });
+
+  it('SNS isleyicisi: yalnizca yapilandirilmis topic; bozuk mesaj atlanir; worker girisi SNS / SQS ayrimi', async () => {
+    const s = service();
+    const out = await handleSesFeedback(snsEvent(bounce('a@example.com'), 'bozuk', { notificationType: 'Delivery' }, complaint('c@example.com')) as never, { service: s.service, topicArn: TOPIC, now: () => NOW, log: quiet });
+    expect(out).toEqual({ recorded: 2, skipped: 0, ignored: 2, foreign: 0 });
+    // Baska topic veya yapilandirma yok: hicbir sey yazilmaz.
+    const other = service();
+    expect(await handleSesFeedback(snsEvent(bounce('a@example.com')) as never, { service: other.service, topicArn: 'arn:aws:sns:eu-north-1:1:baska', log: quiet })).toMatchObject({ recorded: 0, foreign: 1 });
+    expect(await handleSesFeedback(snsEvent(bounce('a@example.com')) as never, { service: other.service, topicArn: undefined, log: quiet })).toMatchObject({ recorded: 0, foreign: 1 });
+    expect(other.items.size).toBe(0);
     expect(isSnsEvent(snsEvent())).toBe(false);
     expect(isSnsEvent(snsEvent(bounce('a@example.com')))).toBe(true);
     expect(isSnsEvent({ Records: [{ messageId: 'm1', body: '{}' }] })).toBe(false);
 
     const sqs = vi.fn(async () => ({ batchItemFailures: [] }));
     const record = vi.fn(async () => ({ recorded: 1, skipped: 0 }));
-    const entry = createWorkerEntry({ sqs, suppressions: { record } });
+    const entry = createWorkerEntry({ sqs, suppressions: { record }, sesFeedbackTopicArn: TOPIC });
     await entry(snsEvent(bounce('x@example.com')) as never);
     expect(record).toHaveBeenCalledTimes(1);
     expect(sqs).not.toHaveBeenCalled();
     await entry({ Records: [{ messageId: 'm1', body: '{}' }] });
     expect(sqs).toHaveBeenCalledTimes(1);
+  });
+
+  it('liste: etkin olmayanlar sorguda elenir; sayfa dolana kadar devam eder, bos sayfa + imlec yok', async () => {
+    const mem = createMemorySuppressionStore();
+    const svc = createSuppressionService({ store: mem.store, now: () => NOW, log: quiet });
+    // 5 izlenen (engel degil) + 2 etkin kayit; depo sayfasi 2'ser.
+    for (let i = 0; i < 5; i++) await svc.record(parseSesFeedback(bounce(`o${i}@example.com`, 'Transient'), NOW));
+    await svc.record(parseSesFeedback(bounce('h1@example.com'), NOW));
+    await svc.record(parseSesFeedback(complaint('h2@example.com'), NOW));
+    const page = await svc.list({ limit: 2 });
+    expect(page.items.map((i) => i.status)).toEqual(['active', 'active']);
+    const all = await svc.list({ limit: 100, status: 'all' });
+    expect(all.items.filter((i) => i.status === 'observing').map((i) => i.softBounceCount)).toEqual([1, 1, 1, 1, 1]);
   });
 });
 

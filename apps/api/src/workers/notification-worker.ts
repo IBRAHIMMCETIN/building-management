@@ -567,13 +567,16 @@ export function createNotificationWorker(overrides: Partial<WorkerDeps> = {}) {
  * (infra/ses_feedback.tf; Lambda aboneligi, asenkron cagri). SNS kaydi gelirse geri donus / sikayet
  * engeli yazilir (modules/notifications/suppressions.ts), aksi halde bildirim olaylari islenir.
  */
-export function createWorkerEntry(deps: { sqs?: (e: SqsEvent) => Promise<SqsBatchResponse>; suppressions?: Pick<SuppressionService, 'record'> } = {}) {
+export function createWorkerEntry(
+  deps: { sqs?: (e: SqsEvent) => Promise<SqsBatchResponse>; suppressions?: Pick<SuppressionService, 'record'>; sesFeedbackTopicArn?: string } = {},
+) {
   let sqs = deps.sqs;
   let suppressions = deps.suppressions;
-  return async (event: SqsEvent | SnsLambdaEvent): Promise<SqsBatchResponse | { recorded: number; skipped: number; ignored: number }> => {
+  return async (event: SqsEvent | SnsLambdaEvent): Promise<SqsBatchResponse | Awaited<ReturnType<typeof handleSesFeedback>>> => {
     if (isSnsEvent(event)) {
       suppressions ??= createSuppressionService({ store: createDynamoSuppressionStore() });
-      return handleSesFeedback(event, { service: suppressions });
+      // Yalnizca yapilandirilmis SES geri bildirim topic'i (infra/worker.tf SES_FEEDBACK_TOPIC_ARN).
+      return handleSesFeedback(event, { service: suppressions, topicArn: deps.sesFeedbackTopicArn ?? process.env.SES_FEEDBACK_TOPIC_ARN });
     }
     sqs ??= createNotificationWorker();
     return sqs(event as SqsEvent);
