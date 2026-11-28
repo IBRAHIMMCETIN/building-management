@@ -304,6 +304,37 @@ run "prod_plan" {
     error_message = "Toplu tahakkuk ozet olayi bildirim kuyruguna ulasmali"
   }
 
+  # --- Mobil bildirim (push, Expo): varsayilan acik, erisim anahtari yok ---
+  assert {
+    condition = (
+      aws_lambda_function.notification_worker.environment[0].variables.PUSH_CHANNEL == "expo" &&
+      aws_lambda_function.scheduler_worker.environment[0].variables.PUSH_CHANNEL == "expo" &&
+      !contains(keys(aws_lambda_function.notification_worker.environment[0].variables), "EXPO_ACCESS_TOKEN") &&
+      !contains(keys(aws_lambda_function.scheduler_worker.environment[0].variables), "EXPO_ACCESS_TOKEN")
+    )
+    error_message = "Push kanali varsayilan expo olmali; anahtar verilmediyse EXPO_ACCESS_TOKEN tanimlanmamali"
+  }
+  assert {
+    condition     = toset(one([for st in data.aws_iam_policy_document.notification_worker.statement : st.actions if st.sid == "DynamoDb"])) == toset(["dynamodb:GetItem", "dynamodb:Query", "dynamodb:PutItem", "dynamodb:UpdateItem"])
+    error_message = "Push acikken worker yalnizca okuma, PutItem ve (olu cihaz icin) UpdateItem yetkisine sahip olmali; silme yok"
+  }
+  assert {
+    condition = (
+      aws_scheduler_schedule.jobs["push_receipts"].schedule_expression == "cron(20 * * * ? *)" &&
+      jsondecode(aws_scheduler_schedule.jobs["push_receipts"].target[0].input).job == "push_receipts"
+    )
+    error_message = "Push makbuz kontrolu saatte bir (:20) calismali"
+  }
+  assert {
+    condition     = aws_lambda_function.notification_worker.timeout == 60 && aws_sqs_queue.notification.visibility_timeout_seconds == 360
+    error_message = "Worker zaman asimi push parcalari icin 60 sn, kuyruk gorunurlugu 6 kati olmali"
+  }
+  # Expo'ya HTTPS cikisi: worker ve scheduler VPC'de degil (NAT gerektirmez).
+  assert {
+    condition     = length(aws_lambda_function.notification_worker.vpc_config) == 0 && length(aws_lambda_function.scheduler_worker.vpc_config) == 0
+    error_message = "Bildirim worker'i ve scheduler VPC'ye baglanmamali (Expo push icin internet cikisi)"
+  }
+
   # --- Zamanlanmis gorevler ---
   assert {
     condition = (
@@ -1410,6 +1441,66 @@ run "rejects_unknown_notification_channel" {
   }
 
   expect_failures = [var.notification_channel]
+}
+
+run "push_disabled" {
+  command = plan
+
+  variables {
+    push_channel = "off"
+  }
+
+  assert {
+    condition = (
+      aws_lambda_function.notification_worker.environment[0].variables.PUSH_CHANNEL == "off" &&
+      aws_lambda_function.scheduler_worker.environment[0].variables.PUSH_CHANNEL == "off"
+    )
+    error_message = "push_channel=off worker ve scheduler'a iletilmeli"
+  }
+  assert {
+    condition     = !contains(keys(aws_scheduler_schedule.jobs), "push_receipts")
+    error_message = "Push kapaliyken makbuz isi zamanlanmamali"
+  }
+  assert {
+    condition     = !contains(one([for st in data.aws_iam_policy_document.notification_worker.statement : st.actions if st.sid == "DynamoDb"]), "dynamodb:UpdateItem")
+    error_message = "Push kapaliyken worker'a UpdateItem verilmemeli"
+  }
+}
+
+run "push_access_token" {
+  command = plan
+
+  variables {
+    expo_access_token = "test_expo_access_token_0123456789"
+  }
+
+  assert {
+    condition = (
+      nonsensitive(aws_lambda_function.notification_worker.environment[0].variables.EXPO_ACCESS_TOKEN == "test_expo_access_token_0123456789") &&
+      nonsensitive(aws_lambda_function.scheduler_worker.environment[0].variables.EXPO_ACCESS_TOKEN == "test_expo_access_token_0123456789")
+    )
+    error_message = "Expo erisim anahtari worker ve scheduler ortamina iletilmeli"
+  }
+}
+
+run "rejects_unknown_push_channel" {
+  command = plan
+
+  variables {
+    push_channel = "fcm"
+  }
+
+  expect_failures = [var.push_channel]
+}
+
+run "rejects_invalid_expo_access_token" {
+  command = plan
+
+  variables {
+    expo_access_token = "bad token with spaces"
+  }
+
+  expect_failures = [var.expo_access_token]
 }
 
 run "mfa_enforce_mode" {

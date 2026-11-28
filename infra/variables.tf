@@ -108,6 +108,34 @@ variable "notification_channel" {
   }
 }
 
+# --- Mobil bildirim (push, Expo) -------------------------------------------------
+# expo: notification worker alicinin kayitli Expo cihazlarina push gonderir (cihaz yoksa dis istek
+#       yok) ve scheduler saatte bir makbuzlari kontrol eder. off: push yok, makbuz isi yok.
+variable "push_channel" {
+  type        = string
+  default     = "expo"
+  description = "Mobil bildirim kanali: expo | off."
+
+  validation {
+    condition     = contains(["expo", "off"], var.push_channel)
+    error_message = "push_channel expo veya off olmalidir."
+  }
+}
+
+# Expo projesinde "Enhanced Security for Push Notifications" acilirsa zorunlu; bos ise istekler
+# basliksiz gider. Repoya / tfvars'a YAZILMAZ: TF_VAR_expo_access_token (CI secret) ile verilir.
+variable "expo_access_token" {
+  type        = string
+  default     = ""
+  sensitive   = true
+  description = "Istege bagli Expo push erisim anahtari (EXPO_ACCESS_TOKEN). Bos: anahtarsiz gonderim."
+
+  validation {
+    condition     = var.expo_access_token == "" || can(regex("^[A-Za-z0-9_-]{20,200}$", var.expo_access_token))
+    error_message = "expo_access_token Expo erisim anahtari biciminde olmalidir (harf, rakam, - _)."
+  }
+}
+
 variable "mfa_enforcement_mode" {
   type        = string
   default     = "warn"

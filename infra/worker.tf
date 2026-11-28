@@ -6,12 +6,16 @@
 #   yeniden denenir; 5 denemeden sonra DLQ'ya duser (sns_sqs.tf) ve alarm calar.
 # - Es zamanli calisma 2 ile sinirli: SMS/WhatsApp saglayicilarinin hiz sinirlarini asmamak
 #   ve DynamoDB'yi korumak icin.
-# - Kuyruk gorunurluk zaman asimi (180 sn) = 6 x Lambda zaman asimi (30 sn): AWS onerisi.
+# - Kuyruk gorunurluk zaman asimi (360 sn) = 6 x Lambda zaman asimi (60 sn): AWS onerisi. 60 sn:
+#   bir SQS partisinde (10 olay) e-posta + Expo push parcalari (100 mesaj / istek, istek basina en
+#   fazla 10 sn) icin pay.
+# - Mobil bildirim (push_channel = expo): Expo push API'sine (exp.host) giden HTTPS. Lambda VPC'ye
+#   baglanmaz (vpc_config yok): AWS'nin varsayilan internet cikisi kullanilir, NAT gerekmez.
 # ---------------------------------------------------------------------------
 
 locals {
   worker_function        = "${local.name}-notification-worker"
-  worker_timeout_seconds = 30
+  worker_timeout_seconds = 60
 
   # E-posta kanali (Asama 4): gonderen adres, alan adi ve SES izin kapsamlari.
   notification_ses         = var.notification_channel == "ses"
@@ -28,6 +32,15 @@ locals {
     },
     var.ses_configuration_set != "" ? { SES_CONFIGURATION_SET = var.ses_configuration_set } : {},
     local.web_app_url != "" ? { WEB_APP_URL = local.web_app_url } : {},
+    local.push_env,
+  )
+
+  # Mobil bildirim (push): worker ve scheduler (makbuz kontrolu) ayni degerleri alir.
+  push_enabled = var.push_channel == "expo"
+  push_env = merge(
+    { PUSH_CHANNEL = var.push_channel },
+    # Yalnizca "anahtar var mi" bilgisi acik: anahtar yoksa ortam haritasi hassas isaretlenmez.
+    nonsensitive(var.expo_access_token != "") ? { EXPO_ACCESS_TOKEN = var.expo_access_token } : {},
   )
 }
 
@@ -49,11 +62,12 @@ data "aws_iam_policy_document" "notification_worker" {
   }
 
   # Okuma: uyelikler, daireler, kisi (e-posta), ekip kayitlari (talep bildirimi alicilari ve kisi
-  # kaydi olmayan ekip uyesinin yedek e-postasi) ve kullanici tercihi. Yazma: yalnizca NOTIF#
-  # isleme kaydi ve NOTIFSENT# alici bazli gonderim kaydi.
+  # kaydi olmayan ekip uyesinin yedek e-postasi), kullanici tercihi ve push cihazlari. Yazma: NOTIF#
+  # isleme kaydi, NOTIFSENT# / NOTIFPUSH# gonderim kayitlari ve PUSHRCPT# makbuz kovalari; push
+  # acikken UpdateItem yalnizca olu cihazi (DeviceNotRegistered) pasife almak icin. Silme yok.
   statement {
     sid       = "DynamoDb"
-    actions   = ["dynamodb:GetItem", "dynamodb:Query", "dynamodb:PutItem"]
+    actions   = concat(["dynamodb:GetItem", "dynamodb:Query", "dynamodb:PutItem"], local.push_enabled ? ["dynamodb:UpdateItem"] : [])
     resources = [aws_dynamodb_table.main.arn]
   }
 
@@ -94,7 +108,7 @@ resource "aws_iam_role_policy" "notification_worker" {
 
 resource "aws_lambda_function" "notification_worker" {
   function_name    = local.worker_function
-  description      = "SQS bildirim kuyrugu tuketicisi (DUE_GENERATED, PAYMENT_RECEIVED, ANNOUNCEMENT_PUBLISHED)"
+  description      = "SQS bildirim kuyrugu tuketicisi: e-posta / log ve Expo mobil bildirim (push)"
   role             = aws_iam_role.notification_worker.arn
   runtime          = var.lambda_runtime
   architectures    = ["arm64"]
