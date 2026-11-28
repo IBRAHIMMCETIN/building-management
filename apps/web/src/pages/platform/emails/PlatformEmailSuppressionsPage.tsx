@@ -1,6 +1,6 @@
 import { MailX, Search, ShieldOff } from 'lucide-react';
 import { type FormEvent, useEffect, useState } from 'react';
-import { Alert, Badge, Button, Card, CardTitle, Dialog, FilterChips, FormField, Input, Skeleton, Textarea } from '@/components/ui';
+import { Alert, Badge, Button, Card, CardTitle, Dialog, FilterChips, FormField, Input, Skeleton, Spinner, Textarea } from '@/components/ui';
 import { useClearSuppression, useEmailSuppressions, useLookupSuppression } from '@/hooks/useEmailSuppressions';
 import { type EmailSuppression, clearReasonError, suppressionReasonText, suppressionTone } from '@/lib/api/emailSuppressions';
 import { errorMessage } from '@/lib/api/errors';
@@ -115,18 +115,21 @@ function LookupCard({ onClear, cleared }: { onClear: (s: EmailSuppression) => vo
   };
 
   return (
-    <Card className="flex flex-col gap-3">
-      <form className="flex flex-col gap-3 sm:flex-row sm:items-end" onSubmit={submit} aria-label="E-posta engeli ara">
-        <div className="flex-1">
-          <FormField label="E-posta">
-            <Input type="email" autoComplete="off" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="ornek@site.com" />
-          </FormField>
-        </div>
-        <Button type="submit" loading={lookup.isPending}>
-          <Search className="size-4" aria-hidden="true" />
-          Ara
-        </Button>
-      </form>
+    <>
+      <Card>
+        <form className="flex flex-col gap-3 sm:flex-row sm:items-end" onSubmit={submit} aria-label="E-posta engeli ara">
+          <div className="flex-1">
+            <FormField label="E-posta">
+              <Input type="email" autoComplete="off" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="ornek@site.com" />
+            </FormField>
+          </div>
+          <Button type="submit" loading={lookup.isPending}>
+            <Search className="size-4" aria-hidden="true" />
+            Ara
+          </Button>
+        </form>
+      </Card>
+      {lookup.isPending && <Spinner label="Aranıyor…" />}
       {lookup.isError && <Alert tone="danger">{errorMessage(lookup.error)}</Alert>}
       {lookup.data && !lookup.data.suppression && <Alert tone="info">Bu adres için e-posta engeli yok.</Alert>}
       {found && (
@@ -134,7 +137,7 @@ function LookupCard({ onClear, cleared }: { onClear: (s: EmailSuppression) => vo
           <SuppressionRow s={found} onClear={() => onClear(found)} />
         </ul>
       )}
-    </Card>
+    </>
   );
 }
 
@@ -166,8 +169,8 @@ function ListCard({ onClear }: { onClear: (s: EmailSuppression) => void }) {
         </ul>
       )}
       {list.hasNextPage && (
-        <Button variant="secondary" size="sm" className="self-start" loading={list.isFetchingNextPage} onClick={() => void list.fetchNextPage()}>
-          Daha fazla göster
+        <Button variant="secondary" className="self-center" loading={list.isFetchingNextPage} onClick={() => void list.fetchNextPage()}>
+          Daha fazla yükle
         </Button>
       )}
     </Card>

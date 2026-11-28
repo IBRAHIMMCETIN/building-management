@@ -1,9 +1,9 @@
 import { Car } from 'lucide-react';
 import { Badge, Button } from '@/components/ui';
-import type { Vehicle } from '@/lib/api/gate';
+import type { ManagerVehicle } from '@/lib/api/gate';
 
 /** Pasif aracin nedeni (yonetim): sistem tasinmada otomatik pasife alir. */
-export function inactiveReasonText(v: Pick<Vehicle, 'status' | 'inactiveReason'>): string | undefined {
+export function inactiveReasonText(v: Pick<ManagerVehicle, 'status' | 'inactiveReason'>): string | undefined {
   if (v.status !== 'inactive' || !v.inactiveReason) return undefined;
   return v.inactiveReason === 'taşınma' ? 'Sahibi taşındığı için otomatik pasife alındı' : `Pasif nedeni: ${v.inactiveReason}`;
 }
@@ -20,8 +20,8 @@ export function VehicleList({
   showUnit = true,
   showReason = false,
 }: {
-  items: Vehicle[];
-  onToggle?: (v: Vehicle) => void;
+  items: ManagerVehicle[];
+  onToggle?: (v: ManagerVehicle) => void;
   pendingId?: string;
   showUnit?: boolean;
   showReason?: boolean;
