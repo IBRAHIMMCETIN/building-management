@@ -3,8 +3,9 @@
  * (`/api/me/notification-preferences`, `email.<kategori>: false`). Web'deki liste ayni kimlikleri
  * kullanir (apps/web/src/lib/api/notificationPreferences.ts).
  *
- *   finance        aidat / tahsilat: tahakkuk, toplu ozet, geri alma, makbuz, gecikme tazminati, hatirlatma;
- *                  yonetime arka plan toplu isinin (toplu aidat, sayac onayi / geri alma) bitis ozeti
+ *   finance        aidat / tahsilat: tahakkuk, toplu ozet, geri alma, makbuz, gecikme tazminati, hatirlatma,
+ *                  yapilandirma (taksit) talebi ve sonucu; yonetime arka plan toplu isinin (toplu aidat,
+ *                  sayac onayi / geri alma) bitis ozeti
  *   announcements  duyurular
  *   tickets        ariza / talep ve gunluk operasyon ozeti
  *   gate           ziyaretci / kurye (kurye onay istegi, misafir girisi)
@@ -32,6 +33,7 @@ const EVENT_PREFIXES: [prefix: string, category: NotificationCategory][] = [
   ['LATE_FEE_', 'finance'],
   ['METER_PERIOD_', 'finance'],
   ['BULK_JOB_', 'finance'],
+  ['RESTRUCTURE_', 'finance'],
   ['ANNOUNCEMENT_', 'announcements'],
   ['TICKET_', 'tickets'],
   ['OPERATIONS_DIGEST', 'tickets'],
@@ -49,6 +51,7 @@ const TEMPLATE_PREFIXES: [prefix: string, category: NotificationCategory][] = [
   ['payment_', 'finance'],
   ['late_fee_', 'finance'],
   ['bulk_job_', 'finance'],
+  ['restructure_', 'finance'],
   ['announcement_', 'announcements'],
   ['ticket_', 'tickets'],
   ['operations_digest', 'tickets'],

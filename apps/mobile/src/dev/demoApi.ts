@@ -1,6 +1,7 @@
 import type { NotificationPreferences } from '@bm/shared/api/notificationPreferences';
 import { mockContextsFor } from '@bm/shared/auth/mockScenarios';
 import { type SessionClaims, decodeClaims } from '@bm/shared/auth/session';
+import { FEATURE_KEYS } from '@bm/shared/features/catalog';
 import { createGateDemo } from './demo/gate';
 import { createGateDeskDemo } from './demo/gateDesk';
 import { createReservationsDemo } from './demo/reservations';
@@ -11,6 +12,7 @@ import { createAssembliesDemo } from './demoAssemblies';
 import { createConsumptionDemo } from './demoConsumption';
 import { createPollsDemo } from './demoPolls';
 import { createTendersDemo } from './demoTenders';
+import { createPlanRequestsDemo } from './demoPlanRequests';
 
 /*
  * DEMO veri (EXPO_PUBLIC_API_MODE=demo, yalnizca mock kimlikle): API calismadan web onizlemesinde
@@ -149,6 +151,7 @@ export function createDemoFetch({ now = () => new Date() }: DemoFetchOptions = {
     createAssembliesDemo(),
     createConsumptionDemo(),
     createTendersDemo(),
+    createPlanRequestsDemo(),
     // Saha rolleri (M3): guvenlik kapisi ve bina gorevlisi.
     createGateDeskDemo(),
     createWorkDemo(),
@@ -181,6 +184,12 @@ export function createDemoFetch({ now = () => new Date() }: DemoFetchOptions = {
         contexts: contexts.map((c) => (c.role === 'resident' && !c.units ? { ...c, units: [DEMO_UNIT] } : c)),
         active: claims.role ? { role: claims.role, apartmentId: claims.apartmentId } : null,
       });
+    }
+    if (path === '/api/site-features') {
+      // Adim 1 oncesi acilmis site (`legacy`): mevcut ozellikler acik, gelistirilmemis kancalar kapali.
+      const upcoming = new Set(['resident.expenseChart', 'channels.whatsapp', 'auth.phoneOtp']);
+      const features = Object.fromEntries(FEATURE_KEYS.map((k) => [k, !upcoming.has(k)]));
+      return respond(200, { apartmentId: claims.apartmentId ?? '', version: 1, profile: 'legacy', inherited: true, overrides: {}, features, catalog: [] });
     }
     if (path === '/api/me/notification-preferences') {
       if (method === 'PUT') {

@@ -54,6 +54,8 @@ import { type PeriodService, createPeriodService } from './modules/finance/perio
 import { type ReportService, createReportService } from './modules/finance/reportService.js';
 import { type BudgetService, createBudgetService } from './modules/finance/budgets.js';
 import { type PlanService, createPlanService } from './modules/finance/plans.js';
+import { type PlanRequestService, createPlanRequestService } from './modules/finance/planRequests.js';
+import { type SupplierAdvanceService, createSupplierAdvanceService } from './modules/finance/supplierAdvances.js';
 import { type FinanceService, createFinanceService } from './modules/finance/service.js';
 import { healthRoutes } from './modules/health/routes.js';
 import { meRoutes } from './modules/me/routes.js';
@@ -154,6 +156,9 @@ export type AppConfig = {
   /** Finans 2.2: avans mahsubu ve borc yapilandirma (testlerde sahte depolarla). */
   offsetService?: OffsetService;
   planService?: PlanService;
+  /** Finans 2.2 sonrasi: sakin yapilandirma talebi ve tedarikci avansi (testlerde sahte depolarla). */
+  planRequestService?: PlanRequestService;
+  supplierAdvanceService?: SupplierAdvanceService;
   /** Finans 2.4: mali donem kapanisi. */
   periodService?: PeriodService;
   reportService?: ReportService;
@@ -396,6 +401,8 @@ export function createApp(config: AppConfig) {
   const budgetService = config.budgetService ?? (config.financeService ? undefined : createBudgetService({ finance: financeService, core: coreService }));
   const reportService = config.reportService ?? (config.financeService ? undefined : createReportService({ ledger: financeService }));
   const planService = config.planService ?? (config.financeService ? undefined : createPlanService({ finance: financeService, portal: portalService }));
+  const planRequestService = config.planRequestService ?? (planService && !config.financeService ? createPlanRequestService({ plans: planService, portal: portalService }) : undefined);
+  const supplierAdvanceService = config.supplierAdvanceService ?? (config.financeService ? undefined : createSupplierAdvanceService({ finance: financeService }));
   app.route(
     '/api/finance',
     financeRoutes({
@@ -409,6 +416,8 @@ export function createApp(config: AppConfig) {
       ...(budgetService ? { budgets: budgetService } : {}),
       jobs: bulkJobService,
       features: siteFeatures,
+      ...(planRequestService ? { planRequests: planRequestService } : {}),
+      ...(supplierAdvanceService ? { supplierAdvances: supplierAdvanceService } : {}),
     }),
   );
   // Faz B1: banka ekstresi aktarimi (ekstre yukleme, onizleme, satir aktarimi, sutun eslemesi).
@@ -533,6 +542,7 @@ export function createApp(config: AppConfig) {
       paymentReference: (ctx, unitId) => bankMatchService.paymentReference(ctx, unitId),
       ...(offsetService ? { offsets: offsetService } : {}),
       ...(planService ? { plans: planService } : {}),
+      ...(planRequestService ? { planRequests: planRequestService } : {}),
       features: siteFeatures,
       // Adim 3: aylik gider dagilimi (hesap-ay ozetinden; ozet hazir degilse yalnizca o ayin islemleri).
       expenseBreakdown: config.expenseBreakdown ?? ((ctx, month) => loadExpenseBreakdown(financeRepository, ctx.apartmentId, month)),

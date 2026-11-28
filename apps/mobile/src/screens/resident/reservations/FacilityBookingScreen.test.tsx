@@ -28,8 +28,8 @@ describe('Rezervasyon: tarih ve saat', () => {
 
     await fireEvent.press(screen.getByRole('button', { name: '10:00, Boş' }));
     // 10:00'dan bitisik bos dilimler: 1 saat ve 2 saat (12:00 dolu).
-    expect(screen.getByRole('button', { name: '1 saat (10:00–11:00)', selected: true })).toBeTruthy();
-    await fireEvent.press(screen.getByRole('button', { name: '2 saat (10:00–12:00)' }));
+    expect(screen.getByRole('radio', { name: '1 saat (10:00–11:00)', checked: true })).toBeTruthy();
+    await fireEvent.press(screen.getByRole('radio', { name: '2 saat (10:00–12:00)' }));
     expect(screen.getByText('Ücret: ₺150,00 — onaylanınca dairenizin borcuna eklenir. Rezervasyon yönetici onayından sonra kesinleşir. Başlangıçtan en geç 24 saat önce iptal edebilirsiniz.')).toBeTruthy();
 
     await fireEvent.changeText(screen.getByLabelText('Kişi sayısı (isteğe bağlı)'), '25');

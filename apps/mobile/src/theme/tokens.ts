@@ -92,6 +92,14 @@ export const space = (n: number) => n * 4;
 /** Erisilebilir en kucuk dokunma alani (Apple HIG 44 pt; Android 48 dp onerisi). */
 export const MIN_TOUCH = 44;
 
+/**
+ * Genis ekranda (iPad / tablet) icerik genisligi: telefon ekranlari tablette uzayip satirlar okunmaz
+ * hale gelmesin diye ortalanmis en fazla 720 pt (web `max-w-3xl` karsiligi). Kapı masasi gibi iki
+ * sutunlu saha ekranlari 960 pt'ye kadar.
+ */
+export const CONTENT_MAX_WIDTH = 720;
+export const WIDE_CONTENT_MAX_WIDTH = 960;
+
 /** "#rrggbb" + saydamlik -> "rgba(...)" (web'deki `bg-success/10` karsiligi). */
 export function withAlpha(hex: string, alpha: number): string {
   const m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex);

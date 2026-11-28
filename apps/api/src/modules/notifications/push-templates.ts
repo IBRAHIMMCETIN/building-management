@@ -166,6 +166,13 @@ function spec(n: Notification, now: Date): Spec | undefined {
       const title = d.status === 'failed' ? 'Toplu işlem tamamlanamadı' : d.status === 'completed_with_errors' ? 'Toplu işlem hatalarla bitti' : 'Toplu işlem tamamlandı';
       return { title, body: `${kind}${str(d.label) ? ` (${str(d.label)})` : ''}: ${fmt(d.succeeded)} başarılı, ${fmt(d.failed)} hatalı`, path: withId('/islemler', d.jobId) };
     }
+    // Yapilandirma talebi: tutar / gerekce kilit ekranina girmez (ayrinti uygulamada ve e-postada).
+    case 'restructure_requested':
+      return { title: 'Yeni yapılandırma talebi', body: `Bir bağımsız bölüm için ${num(d.installments)} taksitlik plan istendi.`, path: '/borclar' };
+    case 'restructure_approved':
+      return { title: 'Yapılandırma talebiniz onaylandı', body: `${num(d.installments)} taksitlik planınız oluşturuldu.`, path: '/borclar' };
+    case 'restructure_rejected':
+      return { title: 'Yapılandırma talebiniz reddedildi', body: 'Gerekçeyi Borçlarım ekranında görebilirsiniz.', path: '/borclar' };
     default:
       return undefined;
   }

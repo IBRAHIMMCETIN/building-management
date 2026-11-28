@@ -207,6 +207,7 @@ run "prod_plan" {
       "TENDER_PUBLISHED", "TENDER_DECIDED", "TENDER_CANCELLED", "TENDER_REPLIED",
       "SUBSCRIPTION_TRIAL_ENDING", "SUBSCRIPTION_INVOICE_ISSUED", "SUBSCRIPTION_PAST_DUE", "SUBSCRIPTION_SUSPENDED", "SUBSCRIPTION_REACTIVATED", "SUBSCRIPTION_CANCELLED",
       "BULK_JOB_FINISHED",
+      "RESTRUCTURE_REQUESTED", "RESTRUCTURE_APPROVED", "RESTRUCTURE_REJECTED",
     ]
     error_message = "Bildirim kuyrugu worker'in isledigi tum olay turlerine abone olmali (ariza/talep, gunluk operasyon ozeti, oylama yayini ve abonelik dahil)"
   }
@@ -385,6 +386,21 @@ run "prod_plan" {
       aws_cloudwatch_metric_alarm.push_rejected[0].alarm_actions == toset(["arn:aws:sns:eu-central-1:123456789012:building-management-alerts"])
     )
     error_message = "Kalici push hatasi ve uzun Expo kesintisi alarm uretmeli"
+  }
+  assert {
+    condition = (
+      aws_cloudwatch_log_metric_filter.push_receipt_errors[0].log_group_name == aws_cloudwatch_log_group.scheduler_worker.name &&
+      aws_cloudwatch_log_metric_filter.push_receipt_errors[0].pattern == "\"push_receipt_errors\"" &&
+      one(aws_cloudwatch_log_metric_filter.push_receipt_errors[0].metric_transformation).name == "PushReceiptErrors" &&
+      one(aws_cloudwatch_log_metric_filter.push_receipt_errors[0].metric_transformation).namespace == aws_cloudwatch_metric_alarm.push_receipt_errors[0].namespace &&
+      aws_cloudwatch_metric_alarm.push_receipt_errors[0].metric_name == "PushReceiptErrors" &&
+      aws_cloudwatch_metric_alarm.push_receipt_errors[0].threshold == 1 &&
+      aws_cloudwatch_metric_alarm.push_receipt_errors[0].comparison_operator == "GreaterThanOrEqualToThreshold" &&
+      aws_cloudwatch_metric_alarm.push_receipt_errors[0].period == 3600 &&
+      aws_cloudwatch_metric_alarm.push_receipt_errors[0].treat_missing_data == "notBreaching" &&
+      aws_cloudwatch_metric_alarm.push_receipt_errors[0].alarm_actions == toset(["arn:aws:sns:eu-central-1:123456789012:building-management-alerts"])
+    )
+    error_message = "Scheduler loglarindaki push_receipt_errors satiri metrige donusmeli ve ilk bulguda alarm uretmeli"
   }
   assert {
     condition = (
@@ -1557,6 +1573,8 @@ run "push_disabled" {
       length([for st in data.aws_iam_policy_document.notification_worker.statement : st if contains(["PushDeviceUpdate", "ReadExpoAccessToken"], st.sid)]) == 0 &&
       length(aws_secretsmanager_secret.expo_access_token) == 0 &&
       length(aws_cloudwatch_metric_alarm.push_rejected) == 0 &&
+      length(aws_cloudwatch_metric_alarm.push_receipt_errors) == 0 &&
+      length(aws_cloudwatch_log_metric_filter.push_receipt_errors) == 0 &&
       !contains(keys(aws_lambda_function.notification_worker.environment[0].variables), "EXPO_ACCESS_TOKEN_SECRET_ARN")
     )
     error_message = "Push kapaliyken UpdateItem / secret yetkisi, secret ve alarm olmamali"

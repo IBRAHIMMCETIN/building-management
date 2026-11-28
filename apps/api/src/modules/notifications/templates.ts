@@ -325,6 +325,10 @@ function spec(n: Notification, ctx: EmailContext): Spec | undefined {
     case 'billing_reactivated':
     case 'billing_cancelled':
       return billingSpec(n);
+    case 'restructure_requested':
+    case 'restructure_approved':
+    case 'restructure_rejected':
+      return restructureSpec(n, ctx);
     default:
       return undefined;
   }
@@ -417,6 +421,73 @@ function billingSpec(n: Notification): Spec {
         cta,
       };
   }
+}
+
+/** Yapilandirma talebi: yeni talep (yonetim), onay / ret (talebi acan sakin). Sakin adi ve notu yok. */
+function restructureSpec(n: Notification, ctx: EmailContext): Spec {
+  const d = n.data;
+  const unit = ctx.unitLabel(str(d.unitId));
+  const party = d.liableParty === 'owner' ? 'Kat maliki' : 'Sakin (oturan)';
+  if (n.template === 'restructure_requested') {
+    return {
+      subject: `Yeni yapılandırma talebi - ${unit}`,
+      heading: 'Yeni borç yapılandırma talebi',
+      preheader: `${unit}: ${num(d.installments)} taksit, yaklaşık ${formatTL(num(d.total))}`,
+      blocks: [
+        { kind: 'p', text: `${unit} için gecikmiş borcun taksitlendirilmesi talep edildi. Talebi olduğu gibi veya değişiklikle onaylayabilir ya da gerekçe yazarak reddedebilirsiniz.` },
+        {
+          kind: 'rows',
+          rows: [
+            ['Bağımsız bölüm', unit],
+            ['Cari', party],
+            ['İstenen taksit', `${num(d.installments)} taksit`],
+            ['Tahmini toplam', formatTL(num(d.total))],
+            ['Tahmini aylık taksit', formatTL(num(d.installmentAmount))],
+          ],
+        },
+        { kind: 'note', text: 'Tutarlar talep anındaki tahmindir; onayda plan güncel borçtan yeniden hesaplanır. Vade farkı uygulanmaz.' },
+      ],
+      cta: { label: 'Talebi incele', path: '../admin/finance?tab=plans' },
+    };
+  }
+  if (n.template === 'restructure_approved') {
+    const changed = d.changed === 'true';
+    return {
+      subject: 'Yapılandırma talebiniz onaylandı',
+      heading: 'Taksit planınız oluşturuldu',
+      preheader: `${num(d.installments)} taksit${d.firstDueDate ? `, ilk taksit ${formatDate(d.firstDueDate)}` : ''}`,
+      blocks: [
+        {
+          kind: 'p',
+          text: changed
+            ? `${unit} için yapılandırma talebiniz yönetim tarafından değişiklikle onaylandı (istenen ${num(d.requestedInstallments)} taksit).`
+            : `${unit} için yapılandırma talebiniz onaylandı.`,
+        },
+        {
+          kind: 'rows',
+          rows: [
+            ['Taksit sayısı', `${num(d.installments)} taksit`],
+            ...(d.firstDueDate ? [['İlk taksit vadesi', formatDate(d.firstDueDate)] as [string, string]] : []),
+            ...(typeof d.total === 'number' ? [['Plan toplamı', formatTL(d.total)] as [string, string]] : []),
+          ],
+        },
+        { kind: 'note', text: 'Taksitlerinizi vadesinde ödediğiniz sürece yeni gecikme tazminatı yalnızca geciken taksitin anapara payına işler. Planın ayrıntıları Borçlarım ekranındadır.' },
+      ],
+      cta: { label: 'Taksit planımı görüntüle', path: 'dues' },
+    };
+  }
+  const reason = str(d.reason);
+  return {
+    subject: 'Yapılandırma talebiniz reddedildi',
+    heading: 'Yapılandırma talebiniz reddedildi',
+    preheader: unit,
+    blocks: [
+      { kind: 'p', text: `${unit} için yapılandırma talebiniz yönetim tarafından reddedildi.` },
+      ...(reason ? [{ kind: 'p' as const, text: `Gerekçe: ${reason}` }] : []),
+      { kind: 'note', text: 'Sorularınız için yönetimle iletişime geçebilir veya Borçlarım ekranından yeni bir talep oluşturabilirsiniz.' },
+    ],
+    cta: { label: 'Borçlarımı görüntüle', path: 'dues' },
+  };
 }
 
 /** Ihale: sakinlerle paylasim, karar ve yayindan sonra iptal (uyeler); soruya yonetim yaniti (soran sakin). */

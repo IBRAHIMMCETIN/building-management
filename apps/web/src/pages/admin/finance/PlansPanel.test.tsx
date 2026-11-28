@@ -45,6 +45,14 @@ vi.mock('@/hooks/useRestructure', () => ({
   usePlanAction: () => action,
   useApproveOffsetRequest: () => approve,
   useRejectOffsetRequest: () => reject,
+  // Sakin taksit talepleri bolumu (PlanRequestsSection.test.tsx ayrica sinar).
+  usePlanRequests: () => ({ isPending: false, isError: false, isSuccess: true, data: { items: [], pendingCount: 0 } }),
+  usePlanRequestDetail: () => ({ isPending: true }),
+  usePlanPreview: () => ({ isError: false }),
+  useApprovePlanRequest: () => m(),
+  useRejectPlanRequest: () => m(),
+  usePlanRequestSettings: () => ({ isPending: true }),
+  useSavePlanRequestSettings: () => m(),
 }));
 
 const inst = (no: number, dueDate: string, remaining: number, overdue: boolean) => ({

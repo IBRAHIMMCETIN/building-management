@@ -1,4 +1,5 @@
 import { Stack } from 'expo-router';
+import { ResidentRouteGate } from '@/components/FeatureGate';
 import { PortalUnitProvider } from '@/context/PortalUnitProvider';
 import { PortalForegroundRefresh } from '@/hooks/useAppForeground';
 import { headerOptions } from '@/navigation/options';
@@ -19,7 +20,15 @@ export default function ResidentLayout() {
   return (
     <PortalUnitProvider>
       <PortalForegroundRefresh />
-      <Stack screenOptions={{ ...headerOptions(colors), contentStyle: { backgroundColor: colors.bg } }}>
+      <Stack
+        screenOptions={{ ...headerOptions(colors), contentStyle: { backgroundColor: colors.bg } }}
+        // Adim 1: kapali site ozelligine bagli ekrana (bildirim / derin baglanti) gelinirse not.
+        screenLayout={({ route, children }) => (
+          <ResidentRouteGate routeName={route.name} params={route.params}>
+            {children}
+          </ResidentRouteGate>
+        )}
+      >
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
         <Stack.Screen name="announcements/[id]" options={{ title: 'Duyuru' }} />
         <Stack.Screen name="tickets/[id]" options={{ title: 'Talep' }} />

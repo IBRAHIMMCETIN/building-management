@@ -1,26 +1,15 @@
-/** Faz 3 (O1-3) periyodik bakim - saf takvim ve etiket yardimcilari (API: apps/api/src/modules/maintenance). */
+/**
+ * Faz 3 (O1-3) periyodik bakim - saf takvim ve etiket yardimcilari (API: apps/api/src/modules/maintenance).
+ * Gorev durumlari, etiketleri ve tonlari web + mobil ortak (packages/shared/src/api/work.ts).
+ */
+import type { TaskStatus } from '@bm/shared/api/work';
+
+export { TASK_STATUSES, TASK_STATUS_LABELS, TASK_STATUS_TONES, type TaskStatus } from '@bm/shared/api/work';
 
 export const SCHEDULE_UNITS = ['week', 'month', 'year'] as const;
 export type ScheduleUnit = (typeof SCHEDULE_UNITS)[number];
 
-export const TASK_STATUSES = ['scheduled', 'in_progress', 'done', 'skipped', 'cancelled'] as const;
-export type TaskStatus = (typeof TASK_STATUSES)[number];
 export const OPEN_TASK_STATUSES: readonly TaskStatus[] = ['scheduled', 'in_progress'];
-
-export const TASK_STATUS_LABELS: Record<TaskStatus, string> = {
-  scheduled: 'Planlandı',
-  in_progress: 'Yapılıyor',
-  done: 'Tamamlandı',
-  skipped: 'Atlandı',
-  cancelled: 'İptal',
-};
-export const TASK_STATUS_TONES: Record<TaskStatus, 'neutral' | 'success' | 'warning' | 'accent' | 'danger'> = {
-  scheduled: 'neutral',
-  in_progress: 'accent',
-  done: 'success',
-  skipped: 'warning',
-  cancelled: 'neutral',
-};
 
 const UNIT_WORD: Record<ScheduleUnit, string> = { week: 'hafta', month: 'ay', year: 'yıl' };
 const UNIT_ADVERB: Record<ScheduleUnit, string> = { week: 'Haftalık', month: 'Aylık', year: 'Yıllık' };
