@@ -1,18 +1,19 @@
 import {
   BatteryFull,
   ClipboardCheck,
+  ClipboardList,
+  ClipboardPen,
   Clock,
   Copy,
-  DoorOpen,
   Ellipsis,
   House,
-  ListChecks,
   LogIn,
   type LucideIcon,
   Megaphone,
   Play,
   Plus,
   Receipt,
+  ScanLine,
   Signal,
   UserRound,
   Wrench,
@@ -21,7 +22,7 @@ import type { ReactNode } from 'react';
 import { BrandWordmark } from '@/components/BrandMark';
 import { Badge, Card } from '@/components/ui';
 import { cn } from '@/lib/cn';
-import { MOBILE } from './content';
+import { MOBILE, type MobileRoleId } from './content';
 
 /*
  * Telefon gorselleri: uygulamanin kendi token'lari ve tip olcegiyle (theme.css; mobil tokens.ts ayni
@@ -56,16 +57,18 @@ export const RESIDENT_TABS: readonly Tab[] = [
   { label: 'Duyurular', icon: Megaphone },
   { label: 'Diğer', icon: Ellipsis },
 ];
+/** Saha rolleri: mobil FieldRoleTabs (rolun sekmeleri + en sonda Hesabım). */
 const GUARD_TABS: readonly Tab[] = [
-  { label: 'Kapı', icon: DoorOpen },
+  { label: 'Kapı', icon: ScanLine },
   { label: 'Hesabım', icon: UserRound },
 ];
 const STAFF_TABS: readonly Tab[] = [
-  { label: 'İşlerim', icon: ListChecks },
+  { label: 'İşlerim', icon: ClipboardList },
+  { label: 'Sayaç okuma', icon: ClipboardPen },
   { label: 'Hesabım', icon: UserRound },
 ];
 
-const TAB_COLUMNS: Record<number, string> = { 2: 'grid-cols-2', 5: 'grid-cols-5' };
+const TAB_COLUMNS: Record<number, string> = { 2: 'grid-cols-2', 3: 'grid-cols-3', 5: 'grid-cols-5' };
 
 /**
  * Telefon cercevesi: durum cubugu, uygulama ust cubugu (marka + ornek veri), icerik, alt sekmeler.
@@ -123,7 +126,7 @@ export function ResidentPortalScreen() {
         </div>
         <p className="text-4xl font-bold text-text tabular-nums">₺1.500,50</p>
         <p className="text-small text-muted">
-          Son ödeme günü: <strong className="text-text">10.12.2026</strong>
+          Son ödeme günü: <strong className="text-text">ayın 10’u</strong>
         </p>
       </ScreenCard>
       <ScreenCard className="gap-3">
@@ -177,7 +180,7 @@ function ResidentAppScreen() {
         </div>
         <p className="text-title font-bold text-text tabular-nums">₺1.500,50</p>
         <p className="text-small text-muted">
-          Kasım aidatı · son ödeme <strong className="text-text">10.12.2026</strong>
+          Aylık aidat · son ödeme <strong className="text-text">ayın 10’u</strong>
         </p>
         <p className="text-small text-muted">Ödemelerinizi apartman yöneticinize elden veya banka havalesiyle yapabilirsiniz.</p>
         <p className="border-t border-border pt-2 text-small font-medium text-accent">Hesap hareketlerim</p>
@@ -281,26 +284,27 @@ function StaffWorkScreen() {
         <Chip>Havuz 1</Chip>
       </div>
       <WorkItem icon={Wrench} meta="Asansör" title="Asansör kapısı geç kapanıyor" where="B Blok, ortak alan" />
-      <WorkItem icon={ClipboardCheck} meta="Bakım, 28.11.2026" title="Hidrofor periyodik kontrolü" where="4 kontrol maddesi" />
+      <WorkItem icon={ClipboardCheck} meta="Bakım, bugün" title="Hidrofor periyodik kontrolü" where="4 kontrol maddesi" />
     </>
   );
 }
 
-const ROLE_SCREENS: readonly { tabs: readonly Tab[]; screen: ReactNode; phoneClass: string }[] = [
-  { tabs: RESIDENT_TABS, screen: <ResidentAppScreen />, phoneClass: '' },
-  // Dar ekranda yalnizca sakin telefonu: diger rollerin aciklamasi gorunur, telefonu gizli.
-  { tabs: GUARD_TABS, screen: <GuardGateScreen />, phoneClass: 'hidden sm:block' },
-  { tabs: STAFF_TABS, screen: <StaffWorkScreen />, phoneClass: 'hidden sm:block' },
-];
+/** Rol kimligine gore ekran. Dar ekranda yalnizca sakin telefonu: diger rollerin aciklamasi gorunur, telefonu gizli. */
+const ROLE_SCREENS: Record<MobileRoleId, { tabs: readonly Tab[]; screen: ReactNode; phoneClass: string; itemClass?: string }> = {
+  resident: { tabs: RESIDENT_TABS, screen: <ResidentAppScreen />, phoneClass: '' },
+  guard: { tabs: GUARD_TABS, screen: <GuardGateScreen />, phoneClass: 'hidden sm:block' },
+  // Iki sutunlu orta genislikte tek kalan ucuncu oge ortalanir.
+  staff: { tabs: STAFF_TABS, screen: <StaffWorkScreen />, phoneClass: 'hidden sm:block', itemClass: 'sm:col-span-2 lg:col-span-1' },
+};
 
 /** Mobil bolumu: sakin, guvenlik ve bina gorevlisi ekranlari, her biri kendi aciklamasiyla. */
 export function MobileVisual() {
   return (
     <ul className="grid gap-x-8 gap-y-10 sm:grid-cols-2 lg:grid-cols-3">
-      {MOBILE.roles.map((role, i) => {
-        const { tabs, screen, phoneClass } = ROLE_SCREENS[i]!;
+      {MOBILE.roles.map((role) => {
+        const { tabs, screen, phoneClass, itemClass } = ROLE_SCREENS[role.id];
         return (
-          <li key={role.title} className={cn(i === 2 && 'sm:col-span-2 lg:col-span-1')}>
+          <li key={role.id} className={itemClass}>
             <figure className="flex flex-col items-center gap-5">
               <div aria-hidden="true" className={phoneClass}>
                 <PhoneFrame tabs={tabs} className="[zoom:0.85] sm:[zoom:0.8] lg:[zoom:0.9]">
