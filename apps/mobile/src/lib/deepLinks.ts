@@ -3,7 +3,7 @@ import type { RoleArea } from './auth/flow';
 /*
  * Bildirim baglantilari (push `data.url`; API: apps/api/src/modules/notifications/push-templates.ts).
  * Kokteki kisa yollar (app/borclar.tsx, app/duyurular/[id].tsx ...) burada role gore uygulama ici
- * ekrana cevrilir; henuz mobilde olmayan ozellikler yer tutucuya (web'de ac, ayni kayda) gider.
+ * ekrana cevrilir (sakinde tum ozellikler M2a / M2b ile yerel ekrandir).
  *   /borclar  /duyurular[/<id>]  /oylamalar[/<id>]  /talepler[/<id>]  /kapi  /rezervasyonlar
  *   /genel-kurul[/<id>]  /ihaleler[/<id>]
  * Cok apartmanli kullanicida `data.apartmentId` baglamina gecis bildirime dokunma isleyicisinin
@@ -11,12 +11,6 @@ import type { RoleArea } from './auth/flow';
  */
 
 export type DeepLinkTarget = string | { pathname: string; params: Record<string, string> };
-
-/** Sakin icin hala yer tutucu olan ozellikler: bildirim yolu -> "Diğer" anahtari (lib/nav.ts). */
-const RESIDENT_WEB_FEATURES: Record<string, string> = {
-  kapi: 'ziyaretci',
-  rezervasyonlar: 'rezervasyon',
-};
 
 /** Sakin icin yerel ekrani olan ozellikler (M2b): bildirim yolu -> liste ekrani (ayrinti: `<liste>/[id]`). */
 const RESIDENT_NATIVE: Record<string, '/resident/polls' | '/resident/assemblies' | '/resident/tenders'> = {
@@ -50,7 +44,6 @@ export function deepLinkTarget(path: string, area: RoleArea | null): DeepLinkTar
   const [root, rawId] = segments(path);
   const id = rawId ?? undefined;
   if (!root || !(DEEP_LINK_ROOTS as readonly string[]).includes(root) || !area) return null;
-  const withId = (params: Record<string, string>) => (id ? { ...params, id } : params);
 
   if (area === 'guard') return '/guard';
   if (area === 'staff') return '/staff';
@@ -62,12 +55,15 @@ export function deepLinkTarget(path: string, area: RoleArea | null): DeepLinkTar
     case 'duyurular':
       return id ? { pathname: '/resident/announcements/[id]', params: { id } } : '/resident/announcements';
     case 'talepler':
-      return id ? { pathname: '/resident/tickets', params: { id } } : '/resident/tickets';
+      return id ? { pathname: '/resident/tickets/[id]', params: { id } } : '/resident/tickets';
+    case 'kapi':
+      return '/resident/gate';
+    case 'rezervasyonlar':
+      return { pathname: '/resident/reservations', params: { tab: 'mine' } };
     default: {
       const native = RESIDENT_NATIVE[root];
-      if (native) return id ? { pathname: `${native}/[id]`, params: { id } } : native;
-      const feature = RESIDENT_WEB_FEATURES[root];
-      return feature ? { pathname: '/resident/web/[feature]', params: withId({ feature }) } : null;
+      if (!native) return null;
+      return id ? { pathname: `${native}/[id]`, params: { id } } : native;
     }
   }
 }

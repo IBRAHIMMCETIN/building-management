@@ -2,10 +2,12 @@ import { z } from 'zod';
 import { TICKET_CATEGORIES, TICKET_PRIORITIES, TICKET_STATUSES } from '../tickets/model';
 
 /*
- * Faz 3 (O1) ariza / talep (apps/api/src/modules/tickets): talep ve liste semalari (web + mobil ortak).
+ * Faz 3 (O1) ariza / talep (apps/api/src/modules/tickets): talep, liste, olay / ayrinti, foto yukleme
+ * ve benzer talep semalari (web + mobil ortak).
  *   /api/tickets          yonetim, gorevli, guvenlik, denetci (ince yetki serviste; `actions`)
  *   /api/portal/tickets   sakin
- * Olay, pano, masraf semalari ve uclar: apps/web/src/lib/api/tickets.ts, portalTickets.ts.
+ * Pano, masraf semalari ve uclar: apps/web/src/lib/api/tickets.ts, portalTickets.ts; sakin
+ * yardimcilari: ./portalTickets.ts.
  */
 
 const location = z.discriminatedUnion('kind', [
@@ -61,6 +63,37 @@ export const ticketSchema = z.object({
 export type Ticket = z.infer<typeof ticketSchema>;
 
 export const ticketListSchema = z.object({ items: z.array(ticketSchema), total: z.number().int(), nextCursor: z.string().optional() });
+
+export const ticketEventSchema = z.object({
+  eventId: z.string(),
+  kind: z.string(),
+  visibility: z.enum(['public', 'internal']),
+  at: z.string(),
+  by: z.string().optional(),
+  byRole: z.string().optional(),
+  mine: z.boolean().optional(),
+  from: z.enum(TICKET_STATUSES).optional(),
+  to: z.enum(TICKET_STATUSES).optional(),
+  assigneeId: z.string().optional(),
+  body: z.string().optional(),
+  changes: z.record(z.string(), z.tuple([z.unknown(), z.unknown()])).optional(),
+  photoKeys: z.array(z.string()).optional(),
+  rating: z.number().optional(),
+  amount: z.number().optional(),
+  expenseId: z.string().optional(),
+  transactionId: z.string().optional(),
+});
+export type TicketEvent = z.infer<typeof ticketEventSchema>;
+
+export const ticketDetailSchema = z.object({ ticket: ticketSchema, events: z.array(ticketEventSchema) });
+export type TicketDetail = z.infer<typeof ticketDetailSchema>;
+
+export const photoUploadSchema = z.object({ uploadId: z.string(), uploadUrl: z.string(), headers: z.record(z.string(), z.string()).default({}) });
+
+export const similarSchema = z.object({
+  items: z.array(z.object({ number: z.string(), category: z.enum(TICKET_CATEGORIES), area: z.string(), blockId: z.string().optional(), status: z.enum(TICKET_STATUSES), createdAt: z.string(), mine: z.boolean() })),
+});
+export type SimilarTicket = z.infer<typeof similarSchema>['items'][number];
 
 /** Sakin listesi: acik (cozum bekleyen + onay bekleyen) ve kapanan. */
 export const PORTAL_OPEN_STATUSES = 'open,assigned,in_progress,on_hold,resolved';

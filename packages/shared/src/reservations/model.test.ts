@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { AvailabilitySlot } from '@/lib/api/reservations';
+import type { AvailabilitySlot } from '../api/reservations';
 import { addClock, addDays, dayLabel, durationOptions, formatMinutes, groupByDate, hoursSummary, istanbulToday, weekOf, weekdayOf } from './model';
 
 const slot = (start: string, end: string, state: AvailabilitySlot['state'] = 'free'): AvailabilitySlot => ({ start, end, startAt: '', state });

@@ -32,6 +32,14 @@
       "expo-secure-store",
       "expo-web-browser",
       [
+        "expo-image-picker",
+        {
+          "photosPermission": "Arıza / talep bildirirken fotoğraf eklemek için fotoğraflarınıza erişim gerekir.",
+          "cameraPermission": "Arıza / talep bildirirken fotoğraf çekmek için kamera erişimi gerekir.",
+          "microphonePermission": false
+        }
+      ],
+      [
         "expo-splash-screen",
         {
           "image": "./assets/mark.png",
