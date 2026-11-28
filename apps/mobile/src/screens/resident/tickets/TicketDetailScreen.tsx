@@ -194,6 +194,7 @@ function CommentCard({ ticket }: { ticket: Ticket }) {
   const [body, setBody] = useState('');
   const [photos, setPhotos] = useState<PreparedPhoto[]>([]);
   const [busy, setBusy] = useState(false);
+  const [preparing, setPreparing] = useState(false);
   const [fieldError, setFieldError] = useState<string>();
   const [error, setError] = useState<string | null>(null);
 
@@ -219,9 +220,9 @@ function CommentCard({ ticket }: { ticket: Ticket }) {
     <Card>
       <CardTitle>Mesaj ekle</CardTitle>
       <TextField label="Mesaj" value={body} onChangeText={setBody} error={fieldError} maxLength={2000} multiline numberOfLines={3} textAlignVertical="top" editable={!busy} />
-      <PhotoPicker photos={photos} onChange={setPhotos} disabled={busy} />
+      <PhotoPicker photos={photos} onChange={setPhotos} disabled={busy} onBusyChange={setPreparing} />
       {error && <Alert tone="danger">{error}</Alert>}
-      <Button label="Gönder" block loading={busy} onPress={() => void submit()} />
+      <Button label="Gönder" block loading={busy} disabled={preparing} onPress={() => void submit()} />
     </Card>
   );
 }

@@ -1,8 +1,7 @@
-import type { PortalCreateTicketInput } from '@bm/shared/api/portalTickets';
+import type { PhotoUpload, PortalCreateTicketInput } from '@bm/shared/api/portalTickets';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCallback } from 'react';
 import { useAuth } from '@/context/AuthProvider';
-import { demoPut } from '@/dev/demo/tickets';
 import { portalTicketsApi } from '@/lib/api/portalTickets';
 import { type PreparedPhoto, putToSignedUrl } from '@/lib/photos';
 import { useServices } from '@/services';
@@ -71,6 +70,15 @@ export function useMyTicketActions(id: string) {
     reopen: useMutation({ mutationFn: (v: { version: number; note: string }) => portalTicketsApi.reopen(api, id, v), ...opts }),
     cancel: useMutation({ mutationFn: (v: { version: number }) => portalTicketsApi.cancel(api, id, v), ...opts }),
   };
+}
+
+/**
+ * Demo modunda (EXPO_PUBLIC_API_MODE=demo) imzali link sahtedir, PUT yapilmaz. Demo kodu yalnizca o
+ * modda yuklenir (kosullu require; services.tsx'teki demo fetch ile ayni yaklasim).
+ */
+function demoPut(upload: PhotoUpload): Promise<string> {
+  const demo = require('@/dev/demo/tickets') as typeof import('@/dev/demo/tickets');
+  return demo.demoPut(upload);
 }
 
 /** Tek fotografi yukler: `upload-url` (tur + boyut) ve imzali linke PUT; yukleme kimligini dondurur. */

@@ -1,5 +1,5 @@
 import { PORTAL_CLOSED_STATUSES, PORTAL_OPEN_STATUSES, awaitsMyConfirmation } from '@bm/shared/api/tickets';
-import { formatDate, isoToIstanbulLocal } from '@bm/shared/dates';
+import { formatDate } from '@bm/shared/dates';
 import { CATEGORY_LABELS } from '@bm/shared/tickets/model';
 import { useRouter } from 'expo-router';
 import { useState } from 'react';
@@ -62,7 +62,7 @@ export function TicketsScreen() {
         <View style={styles.list}>
           {items.map((t) => {
             const waiting = awaitsMyConfirmation(t);
-            const meta = `${t.number} · ${CATEGORY_LABELS[t.category]} · ${formatDate(isoToIstanbulLocal(t.createdAt).slice(0, 10))}`;
+            const meta = `${t.number} · ${CATEGORY_LABELS[t.category]} · ${formatDate(t.createdAt)}`;
             return (
               <Pressable
                 key={t.ticketId}
@@ -80,7 +80,7 @@ export function TicketsScreen() {
                     <AppText variant="caption" tone="muted" style={styles.mono}>
                       {t.number}
                     </AppText>
-                    {` · ${CATEGORY_LABELS[t.category]} · ${formatDate(isoToIstanbulLocal(t.createdAt).slice(0, 10))}`}
+                    {` · ${CATEGORY_LABELS[t.category]} · ${formatDate(t.createdAt)}`}
                   </AppText>
                   <AppText weight="semibold">{t.title}</AppText>
                   <View style={styles.meta}>

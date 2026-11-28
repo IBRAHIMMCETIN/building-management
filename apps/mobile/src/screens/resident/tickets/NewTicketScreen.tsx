@@ -43,6 +43,8 @@ export function NewTicketScreen() {
   const [photos, setPhotos] = useState<PreparedPhoto[]>([]);
   const [errors, setErrors] = useState<Partial<Record<string, string>>>({});
   const [busy, setBusy] = useState(false);
+  /** Secilen fotograf henuz hazirlaniyor: gonderim bekler (yoksa fotograf talebe girmezdi). */
+  const [preparing, setPreparing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   // Konum degisince (ortak alan -> daire ici) o konumda gecersiz kalan kategori secimi temizlenir.
@@ -116,9 +118,9 @@ export function NewTicketScreen() {
               </AppText>
             )}
           </View>
-          <PhotoPicker photos={photos} onChange={setPhotos} disabled={busy} />
+          <PhotoPicker photos={photos} onChange={setPhotos} disabled={busy} onBusyChange={setPreparing} />
           {error && <Alert tone="danger">{error}</Alert>}
-          <Button label="Talebi gönder" block loading={busy} onPress={() => void submit()} />
+          <Button label="Talebi gönder" block loading={busy} disabled={preparing} onPress={() => void submit()} />
         </Card>
       )}
 

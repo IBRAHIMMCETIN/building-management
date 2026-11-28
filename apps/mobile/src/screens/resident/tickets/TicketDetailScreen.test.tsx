@@ -139,6 +139,25 @@ describe('Talep ayrintisi', () => {
     expect(screen.queryByRole('button', { name: 'Gönder' })).toBeNull();
   });
 
+  it('fotograf penceresi kapatildiktan sonra gelen imzali link pencereyi yeniden acmaz', async () => {
+    let release: (v: unknown) => void = () => undefined;
+    await renderApp(<TicketDetailScreen id="7" />, {
+      routes: {
+        'GET /api/portal/tickets/7': detail('closed', []),
+        'GET /api/portal/tickets/7/photos/abc_jpg': () =>
+          new Promise((resolve) => {
+            release = resolve;
+          }),
+      },
+    });
+    await fireEvent.press(await screen.findByRole('button', { name: 'Fotoğraf 1' }));
+    expect(await screen.findByRole('header', { name: 'Fotoğraf 1' })).toBeTruthy();
+    await fireEvent.press(screen.getByRole('button', { name: 'Kapat' }));
+    expect(screen.queryByRole('header', { name: 'Fotoğraf 1' })).toBeNull();
+    await act(async () => release({ url: 'https://s3.test/abc.jpg?sig=1', fileName: 'abc.jpg', contentType: 'image/jpeg', expiresAt: '2026-11-28T09:05:00.000Z' }));
+    expect(screen.queryByRole('header', { name: 'Fotoğraf 1' })).toBeNull();
+  });
+
   it('bulunamayan talep', async () => {
     await renderApp(<TicketDetailScreen id="yok" />, { routes: {} });
     expect(await screen.findByText('Talep bulunamadı')).toBeTruthy();

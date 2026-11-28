@@ -4,7 +4,7 @@ import { ticketEventAuthor, ticketEventTitle } from '@bm/shared/api/portalTicket
 import type { TicketEvent } from '@bm/shared/api/tickets';
 import { formatDateTime } from '@bm/shared/dates';
 import { photoIdOf } from '@bm/shared/tickets/model';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { Image, Pressable, StyleSheet, View } from 'react-native';
 import { ImageIcon, Star } from '@/components/icons';
 import { Sheet } from '@/components/portal/Sheet';
@@ -36,6 +36,8 @@ export function Stars({ value, size = 14 }: { value: number; size?: number }) {
 export function TicketTimeline({ events, loadPhoto }: Props) {
   const { colors } = useTheme();
   const [open, setOpen] = useState<{ index: number; url?: string; error?: string } | null>(null);
+  /** Son istek: gec gelen eski yanit (kapatilmis pencere veya baska fotograf) yok sayilir. */
+  const request = useRef(0);
 
   if (!events.length) {
     return (
@@ -46,13 +48,18 @@ export function TicketTimeline({ events, loadPhoto }: Props) {
   }
 
   const show = async (key: string, index: number) => {
+    const id = ++request.current;
     setOpen({ index });
     try {
       const r = await loadPhoto(photoIdOf(key));
-      setOpen({ index, url: r.url });
+      if (request.current === id) setOpen({ index, url: r.url });
     } catch (err) {
-      setOpen({ index, error: errorMessage(err) });
+      if (request.current === id) setOpen({ index, error: errorMessage(err) });
     }
+  };
+  const close = () => {
+    request.current++;
+    setOpen(null);
   };
 
   return (
@@ -95,7 +102,7 @@ export function TicketTimeline({ events, loadPhoto }: Props) {
           </View>
         );
       })}
-      <Sheet open={!!open} title={`Fotoğraf ${(open?.index ?? 0) + 1}`} onClose={() => setOpen(null)}>
+      <Sheet open={!!open} title={`Fotoğraf ${(open?.index ?? 0) + 1}`} onClose={close}>
         {open?.error ? (
           <Alert tone="danger">{open.error}</Alert>
         ) : open?.url ? (
