@@ -56,6 +56,12 @@ export const MAX_POSTING_UNITS = 5000;
  * olarak acilir ve parca parca yazilir. Kucuk donemler (ve testler) senkron yolu kullanir.
  */
 export const SYNC_POSTING_UNITS = 60;
+/**
+ * Performans: kapsamdaki bolum sayisi bunu asan donemin onizlemesi (`/calculate`) HTTP isteginde
+ * degil arka plan isi (`meter_calculation`) olarak calisir; kucuk donemler senkron yolda kalir.
+ * Hesap ayni fonksiyondur (`calculate`), sonuc ve `calcHash` ayni.
+ */
+export const ASYNC_CALCULATE_UNITS = 1000;
 /** Borclu cozumleme ve kalem yazimindaki eszamanlilik (sicak gelir hesabi icin sinirli). */
 const RESOLVE_CONCURRENCY = 16;
 /** Kalem basina gecici hata (cekisme / kisitlama) denemesi; is mantigi hatasi tekrar denenmez. */
@@ -292,6 +298,13 @@ export function createMeterPostingService(overrides: Partial<MeterPostingService
     chargeCount: plan.lines.filter((l) => l.amount > 0).length,
     warningCodes: [...new Set(plan.warnings)],
   });
+
+  /** Donemin kapsamindaki aktif bolum sayisi (onizlemenin senkron / arka plan karari; tek liste sorgusu). */
+  async function scopeUnitCount(ctx: MeterContext, periodId: string): Promise<{ period: MeterPeriod; units: number }> {
+    const period = await loadPeriod(ctx, periodId);
+    const units = (await deps.core.listUnits(ctx.apartmentId)).filter((u) => unitInScope(u, period.template.scope, period.endDate)).length;
+    return { period, units };
+  }
 
   /**
    * Onizleme: dagitim cetveli, borclular ve `calcHash`. Donem taslaksa hesap ozeti donem kaydina
@@ -570,7 +583,7 @@ export function createMeterPostingService(overrides: Partial<MeterPostingService
   /** Arka plan isi icin: donemi (guncel surumuyla) okur. */
   const getPeriod = loadPeriod;
 
-  return { calculate, approve, listLines, computePlan, prepareApproval, postStep, finalizePosting, getPeriod };
+  return { calculate, scopeUnitCount, approve, listLines, computePlan, prepareApproval, postStep, finalizePosting, getPeriod };
 }
 
 export type MeterPostingService = ReturnType<typeof createMeterPostingService>;

@@ -4,8 +4,8 @@ import { type Env, authenticateWith, handleError, publicView, readJson, requireR
 import { MANAGE_ROLES, type MeterContext, READING_READ_ROLES, READING_WRITE_ROLES, READ_ROLES } from './common.js';
 import type { MeterPortalService } from './portalView.js';
 import { type BulkJobService, jobView } from '../bulkjobs/service.js';
-import { asObject, reqString } from '../core/validation.js';
-import { type MeterPostingService, SYNC_POSTING_UNITS } from './posting.js';
+import { asObject, assertId, reqString } from '../core/validation.js';
+import { ASYNC_CALCULATE_UNITS, type MeterPostingService, SYNC_POSTING_UNITS } from './posting.js';
 import type { MeterReadingService } from './readings.js';
 import type { MeterReversalService } from './reversal.js';
 import type { MeterService } from './service.js';
@@ -30,7 +30,9 @@ export type MeterRoutesDeps = {
   reversal?: MeterReversalService;
   portal?: MeterPortalService;
   /** Buyuk donem onayi arka plan isi (SQS). Verilmezse onay senkron calisir. */
-  jobs?: Pick<BulkJobService, 'startMeterPosting'> & Partial<Pick<BulkJobService, 'startMeterReversal' | 'findMeterJob'>>;
+  jobs?: Pick<BulkJobService, 'startMeterPosting'> & Partial<Pick<BulkJobService, 'startMeterReversal' | 'findMeterJob' | 'startMeterCalculation' | 'meterCalculationOutput'>>;
+  /** Onizlemenin arka plan isine alinacagi bolum sayisi esigi (varsayilan `ASYNC_CALCULATE_UNITS`). */
+  asyncCalculateUnits?: number;
 };
 
 /**
@@ -61,7 +63,8 @@ export type MeterRoutesDeps = {
  *   GET    /periods/:periodId
  *   PATCH  /periods/:periodId              { version, name?, startDate?, endDate?, dueDate?, totalAmount?, refreshTemplate? }
  *   POST   /periods/:periodId/cancel       { version, reason }
- *   POST   /periods/:periodId/calculate    onizleme: dagitim cetveli, borclular, calcHash
+ *   POST   /periods/:periodId/calculate    onizleme: dagitim cetveli, borclular, calcHash (1.000+ bolum: 202 + is)
+ *   GET    /periods/:periodId/calculation/:jobId   biten onizleme isinin sonucu (calculate yanitiyla ayni govde)
  *   POST   /periods/:periodId/approve      { calcHash } -> toplu tahakkuk (yarida kalan onay ayni komutla tamamlanir)
  *   GET    /periods/:periodId/lines        dondurulmus dagitim satirlari
  *   GET    /periods/:periodId/reverse/preview   kalemler, engeller (plan / mahsup / kapama / daha yeni donem), tazminat uyarisi
@@ -69,7 +72,7 @@ export type MeterRoutesDeps = {
  *   POST   /periods/:periodId/correction   { name? } -> geri alinan donemden duzeltilmis taslak (okumalar kopyalanir)
  *   GET    /periods/:periodId/lines/:unitId/statement   daire Sayac Dagitim Dokumu PDF (imzali link)
  */
-export function meterRoutes({ authenticate, service, posting, reversal, portal, jobs }: MeterRoutesDeps) {
+export function meterRoutes({ authenticate, service, posting, reversal, portal, jobs, asyncCalculateUnits }: MeterRoutesDeps) {
   const r = new Hono<Env>();
   r.onError(handleError);
   r.use('*', authenticateWith(authenticate));
@@ -137,8 +140,23 @@ export function meterRoutes({ authenticate, service, posting, reversal, portal, 
   // Hesap, onay ve toplu tahakkuk (2.3-3)
   if (posting) {
     r.post('/periods/:periodId/calculate', manage, async (c) => {
-      const out = await posting.calculate(ctxOf(c), p(c, 'periodId'));
+      const periodId = p(c, 'periodId');
+      // Performans: buyuk donem (kapsamda `asyncCalculateUnits`+ bolum) -> arka plan isi + 202;
+      // ilerleme /api/jobs/:id, sonuc /periods/:id/calculation/:jobId (senkron yanitla ayni govde).
+      if (jobs?.startMeterCalculation) {
+        const { period, units } = await posting.scopeUnitCount(ctxOf(c), periodId);
+        if (units > (asyncCalculateUnits ?? ASYNC_CALCULATE_UNITS) && (period.status === 'draft' || period.status === 'calculated')) {
+          const { job, created } = await jobs.startMeterCalculation(ctxOf(c), periodId, units);
+          return c.json({ mode: 'job', created, job: jobView(job) }, 202);
+        }
+      }
+      const out = await posting.calculate(ctxOf(c), periodId);
       return c.json({ ...out, period: publicView(out.period) });
+    });
+    r.get('/periods/:periodId/calculation/:jobId', manage, async (c) => {
+      if (!jobs?.meterCalculationOutput) return c.json({ error: 'not_found', message: 'Önizleme işi bulunamadı' }, 404);
+      const { output, period } = await jobs.meterCalculationOutput(ctxOf(c), p(c, 'periodId'), assertId(p(c, 'jobId'), 'jobId'));
+      return c.json({ ...output, period: publicView(period) });
     });
     r.post('/periods/:periodId/approve', manage, async (c) => {
       const body = await readJson(c);

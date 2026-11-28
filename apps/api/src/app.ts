@@ -158,6 +158,8 @@ export type AppConfig = {
   bulkJobService?: BulkJobService;
   /** Finans 2.3-4: toplu geri alma ve duzeltilmis donem. */
   meterReversalService?: MeterReversalService;
+  /** Performans: sayac onizlemesinin arka plan isine alinacagi bolum esigi (testler; varsayilan 1.000). */
+  meterAsyncCalculateUnits?: number;
   /** Bildirim devami: SES geri donus / sikayet e-posta engelleri (platform). */
   suppressionService?: SuppressionService;
   /** Finans 2.3-5a: sakin tuketim gecmisi ve dagitim dokumu PDF. */
@@ -386,6 +388,7 @@ export function createApp(config: AppConfig) {
       posting: meterPostingService,
       jobs: bulkJobService,
       reversal: meterReversalService,
+      ...(config.meterAsyncCalculateUnits !== undefined ? { asyncCalculateUnits: config.meterAsyncCalculateUnits } : {}),
     }),
   );
   app.route('/api/meter-readings', meterReadingRoutes({ authenticate, service: config.meterReadingService ?? createMeterReadingService() }));

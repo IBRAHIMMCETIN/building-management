@@ -4,7 +4,7 @@ import { DataAccessError, getDynamo, getTenantItem, putVersionedItem, queryTenan
 import { toOutboxItems } from '../../events/outbox.js';
 import type { DomainEvent } from '../../events/publisher.js';
 import type { BulkDuesLine, BulkDuesLineResult } from '../finance/service.js';
-import type { BulkJob, DuesLineChunk, DuesResultChunk } from './types.js';
+import type { BulkJob, DuesLineChunk, DuesResultChunk, JobOutputChunk } from './types.js';
 
 /**
  * Is kaydi deposu. Tum guncellemeler surum kosullu (`version`): kira alma, ilerleme ve bitis ayni
@@ -25,6 +25,9 @@ export type BulkJobRepository = {
   listResults(apartmentId: string, jobId: string): Promise<BulkDuesLineResult[]>;
   /** P1-c: kimligi `jobIdPrefix` ile baslayan is kayitlari (satir / sonuc parcalari haric). */
   listByPrefix?(apartmentId: string, jobIdPrefix: string): Promise<BulkJob[]>;
+  /** Sayac onizlemesi: is ciktisi (JSON metni parcalari; ayni is icin tekrar yazim ustune yazar). */
+  putOutput?(apartmentId: string, jobId: string, chunks: readonly string[], ttl: number): Promise<void>;
+  getOutput?(apartmentId: string, jobId: string, count: number): Promise<string[]>;
 };
 
 export const bulkJobKeys = {
@@ -32,6 +35,7 @@ export const bulkJobKeys = {
   lines: (apartmentId: string, jobId: string, index: number) => ({ PK: tenantPk(apartmentId), SK: `${skKey('BULKJOB', jobId)}#L#${String(index).padStart(4, '0')}` }),
   results: (apartmentId: string, jobId: string, start: number) => ({ PK: tenantPk(apartmentId), SK: `${skKey('BULKJOB', jobId)}#R#${String(start).padStart(5, '0')}` }),
   resultsPrefix: (jobId: string) => `${skKey('BULKJOB', jobId)}#R#`,
+  output: (apartmentId: string, jobId: string, index: number) => ({ PK: tenantPk(apartmentId), SK: `${skKey('BULKJOBOUT', jobId)}#${String(index).padStart(4, '0')}` }),
 };
 
 /** Ayni bolum birden fazla sonuc parcasinda olabilir (yeniden deneme); son yazilan gecerlidir. */
@@ -125,6 +129,24 @@ export function createDynamoBulkJobRepository(): BulkJobRepository {
       const items = await queryTenantAll<DuesResultChunk>(apartmentId, bulkJobKeys.resultsPrefix(jobId), { ConsistentRead: true });
       return mergeResults(items);
     },
+    async putOutput(apartmentId, jobId, chunks, ttl) {
+      const { client, tableName } = getDynamo();
+      try {
+        // Parca basina tek oge (her biri 400 KB altinda); is bitisi ancak tumu yazildiktan sonra.
+        for (const [index, data] of chunks.entries()) {
+          const item: JobOutputChunk = { ...bulkJobKeys.output(apartmentId, jobId, index), entityType: 'BULK_JOB_OUTPUT', jobId, index, data, ttl };
+          await client.send(new PutCommand({ TableName: tableName, Item: item }));
+        }
+      } catch (err) {
+        throw toDataAccessError(err);
+      }
+    },
+    async getOutput(apartmentId, jobId, count) {
+      const items = await queryTenantAll<JobOutputChunk>(apartmentId, `${skKey('BULKJOBOUT', jobId)}#`, { ConsistentRead: true });
+      const parts = items.filter((i) => i.entityType === 'BULK_JOB_OUTPUT' && i.jobId === jobId && i.index < count).sort((a, b) => a.index - b.index);
+      if (parts.length !== count) throw new DataAccessError('not_found', 'Onizleme ciktisi eksik');
+      return parts.map((p) => p.data);
+    },
   };
 }
 
@@ -135,6 +157,7 @@ export function createMemoryBulkJobRepository() {
   const results = new Map<string, DuesResultChunk>();
   /** Is kaydiyla ayni yazimda saklanan olaylar (yazim sirasiyla). */
   const outbox: DomainEvent[] = [];
+  const outputs = new Map<string, string[]>();
   const k = (apartmentId: string, jobId: string) => `${apartmentId}|${jobId}`;
   const clone = <T>(v: T): T => structuredClone(v);
   const repository: BulkJobRepository = {
@@ -169,6 +192,14 @@ export function createMemoryBulkJobRepository() {
       const prefix = `${k(apartmentId, jobId)}|`;
       return mergeResults([...results.entries()].filter(([key]) => key.startsWith(prefix)).map(([, v]) => v));
     },
+    async putOutput(apartmentId, jobId, chunks) {
+      outputs.set(k(apartmentId, jobId), [...chunks]);
+    },
+    async getOutput(apartmentId, jobId, count) {
+      const parts = outputs.get(k(apartmentId, jobId)) ?? [];
+      if (parts.length < count) throw new DataAccessError('not_found', 'Onizleme ciktisi eksik');
+      return parts.slice(0, count);
+    },
   };
-  return { repository, jobs, lines, results, outbox };
+  return { repository, jobs, lines, results, outbox, outputs };
 }

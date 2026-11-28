@@ -6,13 +6,15 @@
  *   PK = APT#<apartmentId>, SK = BULKJOB#<jobId>               is kaydi (durum, sayaclar, kira)
  *   PK = APT#<apartmentId>, SK = BULKJOB#<jobId>#L#<0000>      dondurulmus aidat satirlari (250'ser)
  *   PK = APT#<apartmentId>, SK = BULKJOB#<jobId>#R#<00000>     yazilan aidat kalemlerinin sonucu
+ *   PK = APT#<apartmentId>, SK = BULKJOBOUT#<jobId>#<0000>     sayac onizleme ciktisi (JSON parcalari; is
+ *                                                              kimligi on ekiyle listelenen is kayitlarina karismaz)
  * Tum kayitlar `ttl` (90 gun) tasir; defter kayitlari (TX/LE) bu kayitlardan bagimsizdir ve
  * idempotency anahtarlariyla korunur.
  */
 import type { Role } from '../../auth/claims.js';
 import type { BulkDuesLine, BulkDuesLineResult, BulkDuesSpec } from '../finance/service.js';
 
-export const BULK_JOB_KINDS = ['dues_bulk', 'meter_posting', 'meter_reversal'] as const;
+export const BULK_JOB_KINDS = ['dues_bulk', 'meter_posting', 'meter_reversal', 'meter_calculation'] as const;
 export type BulkJobKind = (typeof BULK_JOB_KINDS)[number];
 
 export const BULK_JOB_STATUSES = ['pending', 'running', 'completed', 'completed_with_errors', 'failed'] as const;
@@ -40,6 +42,15 @@ export type DuesJobParams = {
 export type MeterJobParams = { periodId: string; calcHash: string; periodName?: string };
 /** P1-b: buyuk sayac doneminin toplu geri alinmasi (ters kayit). Neden / tarih donemde sabitlenir. */
 export type MeterReversalJobParams = { periodId: string; key: string; reason?: string; notify: boolean; periodName?: string };
+/**
+ * Performans: buyuk donemin (1.000+ bolum) dagitim onizlemesi (`/calculate`). Worker senkron yolla
+ * AYNI fonksiyonu (`posting.calculate`) calistirir; cikti (donem haric) `BULKJOBOUT#` parcalarinda saklanir.
+ */
+export type MeterCalcJobParams = { periodId: string; periodVersion: number; unitCount: number; periodName?: string };
+
+/** Onizleme ciktisi parca boyutu (karakter): 4 bayt/karakterde bile 400 KB oge sinirinin altinda. */
+export const OUTPUT_CHUNK_CHARS = 90_000;
+export type JobOutputChunk = { PK: string; SK: string; entityType: 'BULK_JOB_OUTPUT'; jobId: string; index: number; data: string; ttl: number };
 
 export type BulkJobResult = {
   batchId?: string;
@@ -55,6 +66,14 @@ export type BulkJobResult = {
   /** Bu isle yeni yazilan (replay olmayan) kalem sayisi. */
   written?: number;
   replayed?: boolean;
+  /** Sayac onizlemesi: hesap yapildi mi (engel yoksa), `calcHash`, bolum / tahakkuk / engel sayisi. */
+  ok?: boolean;
+  calcHash?: string;
+  unitCount?: number;
+  chargeCount?: number;
+  blockerCount?: number;
+  /** Saklanan cikti parca sayisi (`BULKJOBOUT#<is>#0000`...). */
+  outputChunks?: number;
 };
 
 export type BulkJob = {
@@ -78,7 +97,7 @@ export type BulkJob = {
   failures: BulkJobFailure[];
   /** Aidat: sonraki islenecek satirin sirasi (dondurulmus satirlar uzerinde). */
   cursor: number;
-  params: DuesJobParams | MeterJobParams | MeterReversalJobParams;
+  params: DuesJobParams | MeterJobParams | MeterReversalJobParams | MeterCalcJobParams;
   /** Ayni anahtarla farkli icerikli is acilmasini engeller. */
   fingerprint: string;
   result?: BulkJobResult;
