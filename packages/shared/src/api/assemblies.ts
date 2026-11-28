@@ -144,6 +144,8 @@ export const rescheduleSchema = z.object({
   scheduledAt: z.string(),
   location: z.string().optional(),
   onlineUrl: z.string().optional(),
+  previousSecondMeetingPlan: z.object({ scheduledAt: z.string(), location: z.string().optional(), onlineUrl: z.string().optional() }).optional(),
+  secondMeetingPlan: z.object({ scheduledAt: z.string(), location: z.string().optional(), onlineUrl: z.string().optional() }).optional(),
   reason: z.string(),
   at: z.string(),
 });
@@ -160,6 +162,10 @@ export const callSummarySchema = z.object({
   lateNotice: z.boolean(),
   resend: z.boolean(),
   reason: z.string().optional(),
+  /** Cagrida bildirilen toplanti zamani (eski kayitta yok). */
+  scheduledAt: z.string().optional(),
+  /** Buyuk sitede bildirim parca sayisi. */
+  parts: z.number().int().optional(),
 });
 export type CallSummary = z.infer<typeof callSummarySchema>;
 
@@ -381,10 +387,18 @@ export const SERVICE_METHOD_LABELS: Record<ServiceMethod, string> = { hand_signe
 export const SERVICE_STATUSES = ['pending', 'delivered', 'returned'] as const;
 export type ServiceStatus = (typeof SERVICE_STATUSES)[number];
 export const SERVICE_STATUS_LABELS: Record<ServiceStatus, string> = { pending: 'Bekliyor', delivered: 'Teslim edildi', returned: 'İade' };
-export const SERVICE_STATES = ['served', 'served_late', 'pending', 'returned', 'none'] as const;
+/** `late_delivery`: zamaninda postalandi, son gunden sonra teslim edildi (zamanlilik teslim tarihiyle). */
+export const SERVICE_STATES = ['served', 'late_delivery', 'served_late', 'pending', 'returned', 'none'] as const;
 export type ServiceState = (typeof SERVICE_STATES)[number];
-export const SERVICE_STATE_LABELS: Record<ServiceState, string> = { served: 'Tebliğ edildi', served_late: 'Süre sonrası tebliğ', pending: 'Teslim bekleniyor', returned: 'İade döndü', none: 'Tebligat yok' };
-export const SERVICE_STATE_TONES = { served: 'success', served_late: 'warning', pending: 'accent', returned: 'danger', none: 'neutral' } as const satisfies Record<ServiceState, string>;
+export const SERVICE_STATE_LABELS: Record<ServiceState, string> = {
+  served: 'Tebliğ edildi',
+  late_delivery: 'Zamanında postalandı, geç teslim',
+  served_late: 'Süre sonrası tebliğ',
+  pending: 'Teslim bekleniyor',
+  returned: 'İade döndü',
+  none: 'Tebligat yok',
+};
+export const SERVICE_STATE_TONES = { served: 'success', late_delivery: 'warning', served_late: 'warning', pending: 'accent', returned: 'danger', none: 'neutral' } as const satisfies Record<ServiceState, string>;
 
 export const serviceAttemptSchema = z.object({
   seq: z.number().int(),
@@ -397,6 +411,10 @@ export const serviceAttemptSchema = z.object({
   voidedAt: z.string().optional(),
   voidedBy: z.string().optional(),
   voidReason: z.string().optional(),
+  /** Kaydedildigi andaki toplanti zamani / erteleme sirasi; `stale`: son ertelemeden once (yeni tarih icin gecersiz). */
+  meetingAt: z.string().optional(),
+  rescheduleSeq: z.number().int().optional(),
+  stale: z.boolean().optional(),
   recordedAt: z.string(),
   recordedBy: z.string(),
 });
@@ -407,9 +425,23 @@ export const serviceReportSchema = z.object({
   kind: z.enum(ASSEMBLY_KINDS),
   secondMeeting: z.boolean(),
   rollFrozen: z.boolean(),
+  scheduledAt: z.string().optional(),
+  /** Guvenli okuma (tebligat gunu sayilmaz): son teslim gunu = toplanti - 16 gun. */
   deadline: z.string(),
+  /** Tebligat gunu sayilirsa: toplanti - 15 gun. */
+  deadlineLenient: z.string().optional(),
   daysToDeadline: z.number().int(),
-  summary: z.object({ owners: z.number().int(), served: z.number().int(), servedLate: z.number().int(), pending: z.number().int(), returned: z.number().int(), none: z.number().int(), unserved: z.number().int() }),
+  summary: z.object({
+    owners: z.number().int(),
+    served: z.number().int(),
+    lateDelivery: z.number().int().optional(),
+    servedLate: z.number().int(),
+    pending: z.number().int(),
+    returned: z.number().int(),
+    none: z.number().int(),
+    staleAttempts: z.number().int().optional(),
+    unserved: z.number().int(),
+  }),
   warnings: z.array(z.string()),
   rows: z.array(
     z.object({
@@ -436,8 +468,14 @@ export type ServiceUpdateInput = { version: number; status: 'delivered' | 'retur
 /** Yazili rizaya acik karar turleri (API `CONSENT_KINDS`; dayanak ve not API yanitinda). */
 export const CONSENT_KINDS = ['common_area_change', 'management_plan_change', 'use_change', 'central_heating_conversion', 'major_disposition', 'additional_floor', 'custom'] as const satisfies readonly DecisionKind[];
 export type ConsentKind = (typeof CONSENT_KINDS)[number];
-/** Ozel turde secilebilen cogunluklar (katilanlarin oy coklugu toplanti disinda anlamsiz). */
-export const CONSENT_RULES: readonly MajorityRule[] = MAJORITY_RULES.filter((r) => r !== 'attendees');
+/**
+ * Ozel turde secilebilen cogunluklar (API ile ayni): yalnizca nitelikli. Basit cogunluk toplanti karari
+ * ister (m.30, m.42/1); yazili rizayla toplanti atlanamaz.
+ */
+export const CONSENT_RULES: readonly MajorityRule[] = ['four_fifths_persons', 'four_fifths_votes', 'four_fifths_persons_and_land', 'two_thirds_votes', 'unanimous'];
+/** Hisseli bolumde butun paydaslarin imzasi gereken (tasarruf niteligindeki) oybirligi turleri. */
+export const ALL_COOWNER_KINDS: readonly DecisionKind[] = ['major_disposition', 'additional_floor', 'use_change'];
+export const CONSENT_MAX_DAYS = 90;
 export const CONSENT_STATUSES = ['open', 'closed', 'cancelled'] as const;
 export type ConsentStatus = (typeof CONSENT_STATUSES)[number];
 export const CONSENT_STATUS_LABELS: Record<ConsentStatus, string> = { open: 'İmza toplanıyor', closed: 'Sonuç kesinleşti', cancelled: 'İptal edildi' };
@@ -456,8 +494,11 @@ export const consentSchema = z.object({
   decisionKind: z.enum(DECISION_KINDS),
   rule: z.enum(MAJORITY_RULES),
   rollDate: z.string(),
+  /** Son kayit gunu (acilis + 90 gun). */
+  expiresOn: z.string().optional(),
   roll: z.object({ units: z.number().int() }).passthrough(),
   status: z.enum(CONSENT_STATUSES),
+  entryCount: z.number().int().optional(),
   result: outcomeSchema.optional(),
   closedAt: z.string().optional(),
   cancelledAt: z.string().optional(),
@@ -472,6 +513,8 @@ export const consentEntrySchema = z.object({
   seq: z.number().int(),
   choice: z.enum(CONSENT_CHOICES),
   signerUserId: z.string(),
+  /** Butun paydaslarin imzasi gereken turlerde imzalayanlar. */
+  signerUserIds: z.array(z.string()).optional(),
   signerName: z.string().optional(),
   signedOn: z.string(),
   method: z.enum(CONSENT_METHODS),
@@ -497,13 +540,18 @@ export const consentDetailSchema = z.object({
       owners: z.array(z.object({ userId: z.string(), name: z.string().optional() })),
       entry: consentEntrySchema.optional(),
       records: z.number().int().optional(),
+      /** Talep acildiktan sonra malik degisti. */
+      ownerChanged: z.boolean().optional(),
     }),
   ),
+  warnings: z.array(z.string()).default([]),
+  /** Bu turde hisseli bolumun butun paydaslari imzalar. */
+  allCoOwners: z.boolean().optional(),
 });
 export type ConsentDetail = z.infer<typeof consentDetailSchema>;
 export type ConsentRow = ConsentDetail['rows'][number];
 export const consentCreatedSchema = z.object({ consent: consentSchema, legal: legalSchema });
-export const consentRecordSchema = z.object({ entry: consentEntrySchema, outcome: outcomeSchema });
+export const consentRecordSchema = z.object({ entry: consentEntrySchema, outcome: outcomeSchema, documentPending: z.boolean().optional() });
 
 export type ConsentInput = { title: string; description?: string; decisionKind: ConsentKind; majority?: MajorityRule };
 export type ConsentEntryInput = {
@@ -512,6 +560,8 @@ export type ConsentEntryInput = {
   method: ConsentMethod;
   methodNote?: string;
   signerUserId?: string;
+  /** Butun paydaslarin imzasi gereken turlerde hisseli bolumun imzalayan paydaslari. */
+  signerUserIds?: string[];
   document?: { uploadId: string; fileName: string };
   correctionReason?: string;
 };
@@ -618,7 +668,15 @@ export type AttendanceInput = { mode: AttendanceMode; attendeeUserId?: string; p
 export type TallyInput = { version: number; correctionReason?: string } & ({ yes: number; no: number; abstain: number } | { votes: Record<string, VoteChoice> } | { ballots: Record<string, string> });
 
 /** Cagrisi gonderilmis toplantinin ertelenmesi / yer degisikligi (maliklere bildirim gider). */
-export type RescheduleInput = { version: number; reason: string; scheduledAt?: string; location?: string | null; onlineUrl?: string | null };
+export type RescheduleInput = {
+  version: number;
+  reason: string;
+  scheduledAt?: string;
+  location?: string | null;
+  onlineUrl?: string | null;
+  /** Ilk toplanti ertelenince ikinci toplanti plani yeniden bildirilir (KMK m.29/3); `null` kaldirir. */
+  secondMeetingPlan?: SecondMeetingPlanInput | null;
+};
 
 export type MinutesInput = { version: number; chair?: string | null; clerks?: string[]; voteCounters?: string[]; notes?: Record<string, string>; generalNotes?: string };
 

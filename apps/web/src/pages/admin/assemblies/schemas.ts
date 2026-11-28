@@ -282,8 +282,8 @@ export const ballotsInput = (ballots: Record<string, string>): Record<string, st
  * (`datetime-local`). Sorun varsa `issue`.
  */
 export function rescheduleInput(
-  a: Pick<Assembly, 'version' | 'scheduledAt' | 'location' | 'onlineUrl'>,
-  v: { reason: string; scheduledAt: string; location: string; onlineUrl: string },
+  a: Pick<Assembly, 'version' | 'scheduledAt' | 'location' | 'onlineUrl' | 'secondMeetingPlan'>,
+  v: { reason: string; scheduledAt: string; location: string; onlineUrl: string; secondAt?: string; secondLocation?: string },
   nowMs: number = Date.now(),
 ): { input: RescheduleInput } | { issue: string } {
   const reason = v.reason.trim();
@@ -298,7 +298,20 @@ export function rescheduleInput(
   const timeChanged = Date.parse(scheduledAt) !== Date.parse(a.scheduledAt);
   const locChanged = location !== (a.location ?? '');
   const urlChanged = onlineUrl !== (a.onlineUrl ?? '');
-  if (!timeChanged && !locChanged && !urlChanged) return { issue: 'Tarih, yer veya çevrim içi bağlantıdan en az biri değişmeli' };
+  // Ilk cagrida bildirilen ikinci toplanti (KMK m.29/3) tarih degisince yeniden bildirilir.
+  let plan: RescheduleInput['secondMeetingPlan'];
+  if (a.secondMeetingPlan) {
+    if (!v.secondAt) {
+      if (timeChanged) return { issue: 'İlk toplantının tarihi değişince ikinci toplantının tarihini de yeniden girin (KMK m.29/3)' };
+    } else {
+      const secondAt = istanbulLocalToIso(v.secondAt);
+      const secondLocation = (v.secondLocation ?? '').trim() || location;
+      const gap = secondMeetingGapIssue(v.scheduledAt, v.secondAt);
+      if (gap) return { issue: gap };
+      if (Date.parse(secondAt) !== Date.parse(a.secondMeetingPlan.scheduledAt) || secondLocation !== (a.secondMeetingPlan.location ?? '')) plan = { scheduledAt: secondAt, ...(secondLocation ? { location: secondLocation } : {}) };
+    }
+  }
+  if (!timeChanged && !locChanged && !urlChanged && !plan) return { issue: 'Tarih, yer veya çevrim içi bağlantıdan en az biri değişmeli' };
   return {
     input: {
       version: a.version,
@@ -306,6 +319,7 @@ export function rescheduleInput(
       ...(timeChanged ? { scheduledAt } : {}),
       ...(locChanged ? { location: location || null } : {}),
       ...(urlChanged ? { onlineUrl: onlineUrl || null } : {}),
+      ...(plan ? { secondMeetingPlan: plan } : {}),
     },
   };
 }
@@ -366,12 +380,27 @@ export const consentRule = (kind: ConsentKind, custom: MajorityRule | ''): Major
  * gerekcesi, "Diger" yontemde aciklama zorunlu; imza tarihi bugunden sonra olamaz.
  */
 export function consentEntryInput(
-  v: { choice: ConsentEntryInput['choice']; signedOn: string; method: ConsentEntryInput['method']; methodNote: string; signerUserId: string; correctionReason: string },
-  ctx: { coOwned: boolean; recorded: boolean; today: string },
+  v: {
+    choice: ConsentEntryInput['choice'];
+    signedOn: string;
+    method: ConsentEntryInput['method'];
+    methodNote: string;
+    signerUserId: string;
+    correctionReason: string;
+    /** Butun paydaslarin imzasi gereken turde isaretlenen paydaslar. */
+    signerUserIds?: string[];
+  },
+  ctx: { coOwned: boolean; recorded: boolean; today: string; openedOn?: string; allCoOwners?: boolean; owners?: string[] },
 ): { input: ConsentEntryInput } | { issue: string } {
   if (!v.signedOn) return { issue: 'İmza tarihini girin' };
   if (v.signedOn > ctx.today) return { issue: 'İmza tarihi bugünden sonra olamaz' };
-  if (ctx.coOwned && !v.signerUserId) return { issue: 'Hisseli bölümde rızayı veren paydaşı (temsilci) seçin' };
+  if (ctx.openedOn && v.signedOn < ctx.openedOn) return { issue: 'İmza tarihi talebin açıldığı günden önce olamaz' };
+  // Tasarruf niteliginde oybirligi (m.45, m.44, m.24/2): hisseli bolumde rizaya butun paydaslar imza atar.
+  const everyone = ctx.coOwned && ctx.allCoOwners && v.choice === 'consent';
+  if (everyone) {
+    const picked = v.signerUserIds ?? [];
+    if (!(ctx.owners ?? []).every((u) => picked.includes(u))) return { issue: 'Bu karar türünde hisseli bölümün bütün paydaşları imzalamalıdır' };
+  } else if (ctx.coOwned && !v.signerUserId) return { issue: 'Hisseli bölümde rızayı veren paydaşı (temsilci) seçin' };
   if (v.method === 'other' && !v.methodNote.trim()) return { issue: '"Diğer" yöntemde açıklama girin' };
   if (ctx.recorded && v.correctionReason.trim().length < 3) return { issue: 'Kayıtlı bölüm için düzeltme gerekçesi en az 3 karakter olmalı' };
   return {
@@ -380,7 +409,7 @@ export function consentEntryInput(
       signedOn: v.signedOn,
       method: v.method,
       ...(v.method === 'other' ? { methodNote: v.methodNote.trim() } : {}),
-      ...(v.signerUserId ? { signerUserId: v.signerUserId } : {}),
+      ...(everyone ? { signerUserIds: [...(v.signerUserIds ?? [])] } : v.signerUserId ? { signerUserId: v.signerUserId } : {}),
       ...(ctx.recorded ? { correctionReason: v.correctionReason.trim() } : {}),
     },
   };

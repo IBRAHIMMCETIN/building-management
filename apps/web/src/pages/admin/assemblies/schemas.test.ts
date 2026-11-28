@@ -278,4 +278,27 @@ describe('genel kurul sonrasi formlari', () => {
       input: { choice: 'consent', signedOn: '2026-11-26', method: 'wet_signature', signerUserId: 'p2', correctionReason: 'İmza hatalı' },
     });
   });
+
+  it('yazili riza: ozel turde basit cogunluk yok; acilistan once imza yok; tasarruf turunde hisseli bolumde butun paydaslar', () => {
+    expect(consentFormSchema.safeParse({ title: 'Boya', description: '', decisionKind: 'custom', majority: 'persons_and_land' }).success).toBe(false);
+    expect(consentFormSchema.safeParse({ title: 'Boya', description: '', decisionKind: 'custom', majority: 'two_thirds_votes' }).success).toBe(true);
+    const entry = { choice: 'consent' as const, signedOn: '2026-11-26', method: 'wet_signature' as const, methodNote: '', signerUserId: '', correctionReason: '' };
+    const ctx = { coOwned: true, recorded: false, today: '2026-11-27', openedOn: '2026-11-25', allCoOwners: true, owners: ['p1', 'p2'] };
+    expect(consentEntryInput({ ...entry, signedOn: '2026-11-24' }, ctx)).toMatchObject({ issue: expect.stringContaining('açıldığı günden önce') });
+    expect(consentEntryInput({ ...entry, signerUserIds: ['p1'] }, ctx)).toMatchObject({ issue: expect.stringContaining('bütün paydaşları') });
+    expect(consentEntryInput({ ...entry, signerUserIds: ['p2', 'p1'] }, ctx)).toEqual({ input: { choice: 'consent', signedOn: '2026-11-26', method: 'wet_signature', signerUserIds: ['p2', 'p1'] } });
+    // Itiraz icin tek paydas (temsilci) yeter.
+    expect(consentEntryInput({ ...entry, choice: 'object', signerUserId: 'p1' }, ctx)).toEqual({ input: { choice: 'object', signedOn: '2026-11-26', method: 'wet_signature', signerUserId: 'p1' } });
+  });
+
+  it('erteleme: ikinci toplanti plani olan ilk toplantida tarih degisince yeni plan zorunlu ve 7-15 gun kontrolu', () => {
+    const a = { ...assembly(), secondMeetingPlan: { scheduledAt: '2026-12-29T16:00:00.000Z', location: 'Bahçe' } };
+    const now = Date.parse('2026-11-27T09:00:00.000Z');
+    const base = { reason: 'Salon dolu', scheduledAt: '2026-12-20T19:00', location: 'Salon', onlineUrl: '' };
+    expect(rescheduleInput(a, base, now)).toMatchObject({ issue: expect.stringContaining('ikinci toplantının tarihini de yeniden girin') });
+    expect(rescheduleInput(a, { ...base, secondAt: '2026-12-22T19:00', secondLocation: 'Bahçe' }, now)).toMatchObject({ issue: expect.stringContaining('en az 7 gün') });
+    expect(rescheduleInput(a, { ...base, secondAt: '2027-01-03T19:00', secondLocation: 'Bahçe' }, now)).toEqual({
+      input: { version: 2, reason: 'Salon dolu', scheduledAt: '2026-12-20T19:00:00+03:00', secondMeetingPlan: { scheduledAt: '2027-01-03T19:00:00+03:00', location: 'Bahçe' } },
+    });
+  });
 });

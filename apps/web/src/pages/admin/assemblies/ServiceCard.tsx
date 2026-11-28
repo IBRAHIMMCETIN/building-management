@@ -67,9 +67,11 @@ export function ServiceCard({ assembly: a, canWrite }: Props) {
           <>
             <p className="text-small tabular-nums">
               {r.summary.served}/{r.summary.owners} kat maliki tebliğ edildi
+              {r.summary.lateDelivery ? ` · ${r.summary.lateDelivery} zamanında postalandı, geç teslim` : ''}
               {r.summary.servedLate ? ` · ${r.summary.servedLate} süre sonrası` : ''}
               {r.summary.pending ? ` · ${r.summary.pending} teslim bekleniyor` : ''}
-              {r.summary.returned ? ` · ${r.summary.returned} iade` : ''} · 15 gün sınırı {formatDate(r.deadline)}
+              {r.summary.returned ? ` · ${r.summary.returned} iade` : ''} · son teslim günü {formatDate(r.deadline)}
+              {r.deadlineLenient ? ` (tebligat günü sayılırsa ${formatDate(r.deadlineLenient)})` : ''}
               {r.daysToDeadline >= 0 ? ` (${r.daysToDeadline} gün kaldı)` : ' (geçti)'}
             </p>
             {r.warnings.length > 0 && <Alert>{r.warnings.join(' ')}</Alert>}
@@ -120,6 +122,11 @@ export function ServiceCard({ assembly: a, canWrite }: Props) {
                                 {x.referenceNo ? ` · ${x.referenceNo}` : ''} · {SERVICE_STATUS_LABELS[x.status]}
                                 {x.statusOn ? ` (${formatDate(x.statusOn)})` : ''}
                                 {x.voidedAt && <span className="no-underline"> · iptal: {x.voidReason}</span>}
+                                {x.stale && !x.voidedAt && (
+                                  <Badge tone="warning" className="ml-1">
+                                    Ertelemeden önce: yeni tarih için geçersiz
+                                  </Badge>
+                                )}
                                 {writable && !x.voidedAt && (
                                   <span className="mt-1 flex flex-wrap gap-1">
                                     {x.status === 'pending' && (

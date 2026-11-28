@@ -63,7 +63,7 @@ export function AssemblyCallCard({ assembly: a, check, outdated, canWrite }: Pro
         <ul className="flex flex-col gap-1.5 text-small">
           {a.reschedules?.map((r) => (
             <li key={r.seq}>
-              {r.previousScheduledAt !== r.scheduledAt ? 'Ertelendi' : 'Yer değişti'}: {formatDateTime(r.at)} · {formatDateTime(r.previousScheduledAt)}
+              {r.previousScheduledAt === r.scheduledAt ? 'Yer değişti' : r.scheduledAt < r.previousScheduledAt ? 'Tarihi değişti' : 'Ertelendi'}: {formatDateTime(r.at)} · {formatDateTime(r.previousScheduledAt)}
               {r.previousScheduledAt !== r.scheduledAt ? ` yerine ${formatDateTime(r.scheduledAt)}` : ''}
               {(r.previousLocation ?? '') !== (r.location ?? '') ? ` · yeni yer: ${r.location ?? 'çevrim içi'}` : ''}
               <span className="text-muted"> · Gerekçe: {r.reason}</span>
@@ -127,10 +127,17 @@ export function AssemblyCallCard({ assembly: a, check, outdated, canWrite }: Pro
 function RescheduleBox({ assembly: a }: { assembly: Assembly }) {
   const reschedule = useRescheduleAssembly(a.assemblyId);
   const [open, setOpen] = useState(false);
-  const [form, setForm] = useState({ reason: '', scheduledAt: '', location: '', onlineUrl: '' });
+  const [form, setForm] = useState({ reason: '', scheduledAt: '', location: '', onlineUrl: '', secondAt: '', secondLocation: '' });
   const [issue, setIssue] = useState<string | null>(null);
   const start = () => {
-    setForm({ reason: '', scheduledAt: isoToIstanbulLocal(a.scheduledAt), location: a.location ?? '', onlineUrl: a.onlineUrl ?? '' });
+    setForm({
+      reason: '',
+      scheduledAt: isoToIstanbulLocal(a.scheduledAt),
+      location: a.location ?? '',
+      onlineUrl: a.onlineUrl ?? '',
+      secondAt: a.secondMeetingPlan ? isoToIstanbulLocal(a.secondMeetingPlan.scheduledAt) : '',
+      secondLocation: a.secondMeetingPlan?.location ?? '',
+    });
     setIssue(null);
     reschedule.reset();
     setOpen(true);
@@ -167,6 +174,16 @@ function RescheduleBox({ assembly: a }: { assembly: Assembly }) {
           <FormField label="Çevrim içi bağlantı (isteğe bağlı)">
             <Input type="url" autoComplete="off" maxLength={500} placeholder="https://" value={form.onlineUrl} onChange={(e) => setForm({ ...form, onlineUrl: e.target.value })} />
           </FormField>
+          {a.secondMeetingPlan && (
+            <div className="grid gap-3 sm:grid-cols-2">
+              <FormField label="İkinci toplantı tarihi" hint="İlk toplantı tarihi değişince ikinci toplantı yeniden bildirilir (KMK m.29/3; 7-15 gün sonra).">
+                <Input type="datetime-local" value={form.secondAt} onChange={(e) => setForm({ ...form, secondAt: e.target.value })} />
+              </FormField>
+              <FormField label="İkinci toplantı yeri">
+                <Input autoComplete="off" maxLength={300} value={form.secondLocation} onChange={(e) => setForm({ ...form, secondLocation: e.target.value })} />
+              </FormField>
+            </div>
+          )}
           <FormField label="Erteleme / değişiklik gerekçesi" hint="Gerekçe denetim günlüğüne ve maliklere giden bildirime yazılır.">
             <Textarea maxLength={500} value={form.reason} onChange={(e) => setForm({ ...form, reason: e.target.value })} />
           </FormField>

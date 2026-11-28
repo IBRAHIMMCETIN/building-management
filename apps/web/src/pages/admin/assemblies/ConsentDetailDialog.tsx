@@ -85,6 +85,12 @@ export function ConsentDetailDialog({ consentId, canWrite, onClose }: Props) {
               )}
               <p className="text-muted">Oy listesi {formatDate(c.rollDate)} itibarıyla donduruldu ({c.roll.units} bölüm); payda bütün kat malikleridir.</p>
               {c.cancelReason && <p className="text-muted">İptal gerekçesi: {c.cancelReason}</p>}
+              {c.expiresOn && c.status === 'open' && <p className="text-muted">Son kayıt günü: {formatDate(c.expiresOn)} (en fazla 90 gün).</p>}
+              {data.warnings.map((w) => (
+                <Alert key={w}>
+                  {w}
+                </Alert>
+              ))}
               <div className="flex flex-wrap gap-2 pt-1">
                 <Button size="sm" variant="secondary" loading={doc.pendingId === 'pdf'} onClick={() => void doc.open('pdf', () => assembliesApi.consentPdf(c.consentId))}>
                   <FileText className="size-4" aria-hidden="true" />
@@ -144,7 +150,14 @@ export function ConsentDetailDialog({ consentId, canWrite, onClose }: Props) {
                     {data.rows.map((r) => (
                       <tr key={r.unitId} className="align-top">
                         <td className="px-3 py-2">{unitLabel(r)}</td>
-                        <td className="px-3 py-2">{r.owners.length ? r.owners.map((o) => o.name ?? 'Kayıtlı kişi').join(', ') : <span className="text-muted">Malik kaydı yok</span>}</td>
+                        <td className="px-3 py-2">
+                          {r.owners.length ? r.owners.map((o) => o.name ?? 'Kayıtlı kişi').join(', ') : <span className="text-muted">Malik kaydı yok</span>}
+                          {r.ownerChanged && (
+                            <Badge tone="warning" className="ml-2">
+                              Malik değişti
+                            </Badge>
+                          )}
+                        </td>
                         <td className="px-3 py-2">
                           {r.entry ? (
                             <div className="flex flex-col gap-1">
@@ -184,7 +197,16 @@ export function ConsentDetailDialog({ consentId, canWrite, onClose }: Props) {
                 </table>
               </div>
             </Card>
-            {canWrite && open && <RecordDialog consentId={c.consentId} row={recording} unitLabel={recording ? unitLabel(recording) : ''} onClose={() => setRecording(null)} />}
+            {canWrite && open && (
+              <RecordDialog
+                consentId={c.consentId}
+                row={recording}
+                unitLabel={recording ? unitLabel(recording) : ''}
+                openedOn={c.rollDate}
+                allCoOwners={Boolean(data.allCoOwners)}
+                onClose={() => setRecording(null)}
+              />
+            )}
           </div>
         )
       )}
@@ -225,13 +247,28 @@ function CancelConsentBox({ detail, onDone }: { detail: ConsentDetail; onDone: (
   );
 }
 
-function RecordDialog({ consentId, row, unitLabel, onClose }: { consentId: string; row: ConsentRow | null; unitLabel: string; onClose: () => void }) {
+function RecordDialog({
+  consentId,
+  row,
+  unitLabel,
+  openedOn,
+  allCoOwners,
+  onClose,
+}: {
+  consentId: string;
+  row: ConsentRow | null;
+  unitLabel: string;
+  openedOn: string;
+  allCoOwners: boolean;
+  onClose: () => void;
+}) {
   const record = useRecordConsent(consentId);
   const [choice, setChoice] = useState<ConsentChoice>('consent');
   const [signedOn, setSignedOn] = useState('');
   const [method, setMethod] = useState<ConsentMethod>('wet_signature');
   const [methodNote, setMethodNote] = useState('');
   const [signer, setSigner] = useState('');
+  const [signers, setSigners] = useState<string[]>([]);
   const [correctionReason, setCorrectionReason] = useState('');
   const [file, setFile] = useState<File | null>(null);
   const [issue, setIssue] = useState<string | null>(null);
@@ -247,6 +284,7 @@ function RecordDialog({ consentId, row, unitLabel, onClose }: { consentId: strin
     setMethod(row.entry?.method ?? 'wet_signature');
     setMethodNote(row.entry?.methodNote ?? '');
     setSigner(coOwned ? (row.entry?.signerUserId ?? '') : '');
+    setSigners(row.entry?.signerUserIds ?? []);
     setCorrectionReason('');
     setFile(null);
     setIssue(null);
@@ -256,7 +294,10 @@ function RecordDialog({ consentId, row, unitLabel, onClose }: { consentId: strin
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     if (!row) return;
-    const r = consentEntryInput({ choice, signedOn, method, methodNote, signerUserId: signer, correctionReason }, { coOwned, recorded: Boolean(row.entry), today });
+    const r = consentEntryInput(
+      { choice, signedOn, method, methodNote, signerUserId: signer, correctionReason, signerUserIds: signers },
+      { coOwned, recorded: Boolean(row.entry), today, openedOn, allCoOwners, owners: row.owners.map((o) => o.userId) },
+    );
     if ('issue' in r) return setIssue(r.issue);
     if (file && invoiceFileError(file)) return setIssue(invoiceFileError(file));
     setIssue(null);
@@ -295,10 +336,25 @@ function RecordDialog({ consentId, row, unitLabel, onClose }: { consentId: strin
             </Select>
           </FormField>
           <FormField label="İmza tarihi">
-            <Input type="date" max={today} value={signedOn} onChange={(e) => setSignedOn(e.target.value)} />
+            <Input type="date" min={openedOn} max={today} value={signedOn} onChange={(e) => setSignedOn(e.target.value)} />
           </FormField>
         </div>
-        {coOwned && (
+        {coOwned && allCoOwners && choice === 'consent' ? (
+          <fieldset className="flex flex-col gap-2 text-small">
+            <legend className="font-medium">İmzalayan paydaşlar</legend>
+            <span className="text-xs text-muted">Bu karar türünde hisseli bölümün bütün paydaşlarının imzası gerekir (TMK m.692 yorumu).</span>
+            {row?.owners.map((o) => (
+              <label key={o.userId} className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={signers.includes(o.userId)}
+                  onChange={(e) => setSigners((cur) => (e.target.checked ? [...new Set([...cur, o.userId])] : cur.filter((u) => u !== o.userId)))}
+                />
+                {o.name ?? 'Kayıtlı kişi'}
+              </label>
+            ))}
+          </fieldset>
+        ) : coOwned && (
           <FormField label="İmzalayan paydaş (temsilci)" hint="Hisseli bölümde rıza paydaşların temsilcisinden alınır.">
             <Select value={signer} invalid={!signer} onChange={(e) => setSigner(e.target.value)}>
               <option value="">Paydaş seçin (zorunlu)</option>
