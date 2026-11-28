@@ -34,6 +34,7 @@ const TeamPage = lazyPage(() => import('@/pages/admin/team/TeamPage'), 'TeamPage
 const SecurityPage = lazyPage(() => import('@/pages/admin/security/SecurityPage'), 'SecurityPage');
 const SettingsPage = lazyPage(() => import('@/pages/admin/settings/SettingsPage'), 'SettingsPage');
 const PlatformUsersPage = lazyPage(() => import('@/pages/platform/users/PlatformUsersPage'), 'PlatformUsersPage');
+const PlatformEmailSuppressionsPage = lazyPage(() => import('@/pages/platform/emails/PlatformEmailSuppressionsPage'), 'PlatformEmailSuppressionsPage');
 const UnitsPage = lazyPage(() => import('@/pages/admin/units/UnitsPage'), 'UnitsPage');
 const ForgotPasswordPage = lazyPage(() => import('@/pages/auth/ForgotPasswordPage'), 'ForgotPasswordPage');
 const MfaSetupPage = lazyPage(() => import('@/pages/auth/MfaSetupPage'), 'MfaSetupPage');
@@ -178,6 +179,7 @@ export const router = createBrowserRouter([
                   { path: 'payments/transfers', element: <PlatformPayoutsPage /> },
                   { path: 'payments/invoices', element: <PlatformInvoicesPage /> },
                   { path: 'users', element: <PlatformUsersPage /> },
+                  { path: 'email-suppressions', element: <PlatformEmailSuppressionsPage /> },
                 ],
               },
             ],

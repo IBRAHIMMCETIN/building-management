@@ -84,6 +84,8 @@ import { meterPortalRoutes, meterReadingRoutes, meterRoutes } from './modules/me
 import { type MeterPortalService, createMeterPortalService } from './modules/meters/portalView.js';
 import { type MeterPostingService, createMeterPostingService } from './modules/meters/posting.js';
 import { bulkJobRoutes } from './modules/bulkjobs/routes.js';
+import { emailSuppressionRoutes } from './modules/notifications/suppressionRoutes.js';
+import { type SuppressionService, createDynamoSuppressionStore, createSuppressionService } from './modules/notifications/suppressions.js';
 import { createDynamoBulkJobRepository } from './modules/bulkjobs/repository.js';
 import { type BulkJobQueue, createInlineBulkJobQueue, loadBulkJobQueueFromEnv } from './modules/bulkjobs/queue.js';
 import { type BulkJobService, createBulkJobService } from './modules/bulkjobs/service.js';
@@ -156,6 +158,8 @@ export type AppConfig = {
   bulkJobService?: BulkJobService;
   /** Finans 2.3-4: toplu geri alma ve duzeltilmis donem. */
   meterReversalService?: MeterReversalService;
+  /** Bildirim devami: SES geri donus / sikayet e-posta engelleri (platform). */
+  suppressionService?: SuppressionService;
   /** Finans 2.3-5a: sakin tuketim gecmisi ve dagitim dokumu PDF. */
   meterPortalService?: MeterPortalService;
   portalService?: PortalService;
@@ -250,6 +254,10 @@ export function createApp(config: AppConfig) {
   const featureService = config.featureService ?? createFeatureService({ reader: siteFeatures });
   app.route('/api/site-features', siteFeatureRoutes({ authenticate, service: featureService }));
   app.route('/api/admin/site-features', platformFeatureRoutes({ authenticate, service: featureService }));
+  app.route(
+    '/api/admin/email-suppressions',
+    emailSuppressionRoutes({ authenticate, service: config.suppressionService ?? createSuppressionService({ store: createDynamoSuppressionStore() }) }),
+  );
   app.route(
     '/api/audit',
     auditRoutes({

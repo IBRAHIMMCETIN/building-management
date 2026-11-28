@@ -222,6 +222,15 @@ run "prod_plan" {
     condition     = aws_sns_topic_subscription.jobs_events.raw_message_delivery && aws_sns_topic_subscription.jobs_events.protocol == "sqs"
     error_message = "Olay aboneligi SQS'e raw delivery ile olmali"
   }
+  # Bildirim devami: SES geri bildirimleri bildirim worker'ina (Lambda aboneligi).
+  assert {
+    condition     = aws_sns_topic_subscription.ses_feedback.protocol == "lambda" && aws_lambda_permission.ses_feedback.principal == "sns.amazonaws.com"
+    error_message = "SES geri bildirim topic'i bildirim worker'ina Lambda aboneligiyle baglanmali"
+  }
+  assert {
+    condition     = aws_sns_topic.ses_feedback.name == "building-management-ses-feedback"
+    error_message = "SES geri bildirim topic'i yigin adiyla olmali (dagitim politikasi <proje>* kapsami)"
+  }
   assert {
     condition     = aws_sqs_queue.notification.sqs_managed_sse_enabled && aws_sqs_queue.notification_dlq.sqs_managed_sse_enabled
     error_message = "Kuyruklar SSE-SQS ile sifrelenmeli"

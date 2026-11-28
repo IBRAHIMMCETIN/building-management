@@ -61,7 +61,8 @@ export type Notification = {
   data: NotificationData;
 };
 
-export type SkipReason = 'already_sent' | 'opted_out' | 'no_email' | 'email_unverified' | 'rejected' | 'no_template';
+/** `suppressed`: alici SES geri donus / sikayet nedeniyle engelli (suppressions.ts). */
+export type SkipReason = 'already_sent' | 'opted_out' | 'no_email' | 'email_unverified' | 'rejected' | 'no_template' | 'suppressed';
 
 export type DeliveryResult = { status: 'sent' } | { status: 'skipped'; reason: SkipReason };
 
