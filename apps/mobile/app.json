@@ -5,7 +5,7 @@
     "scheme": "yonesist",
     "version": "0.1.0",
     "description": "Bina ve toplu konut yönetim sistemi: sakin, bina görevlisi ve güvenlik uygulaması.",
-    "orientation": "portrait",
+    "orientation": "default",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
     "ios": {
@@ -20,7 +20,8 @@
       "adaptiveIcon": {
         "foregroundImage": "./assets/mark.png",
         "backgroundColor": "#ffffff"
-      }
+      },
+      "blockedPermissions": ["android.permission.RECORD_AUDIO"]
     },
     "web": {
       "bundler": "metro",
@@ -42,6 +43,36 @@
             "image": "./assets/mark-dark.png",
             "backgroundColor": "#09090b"
           }
+        }
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Kapıda misafir geçiş QR kodunu okutmak için kamera kullanılır.",
+          "microphonePermission": false,
+          "recordAudioAndroid": false,
+          "barcodeScannerEnabled": true
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "cameraPermission": "Arıza, bakım ve sayaç okumasına fotoğraf eklemek için kamera kullanılır.",
+          "photosPermission": "Arıza, bakım ve sayaç okumasına galeriden fotoğraf eklemek için kullanılır.",
+          "microphonePermission": false
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "color": "#122a4e",
+          "defaultChannel": "default"
+        }
+      ],
+      [
+        "expo-screen-orientation",
+        {
+          "initialOrientation": "PORTRAIT_UP"
         }
       ]
     ]
