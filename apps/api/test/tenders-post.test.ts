@@ -112,12 +112,12 @@ describe('genel kurul karari bagi', () => {
   it('secici: ayni apartmanin madde basina guncel karari (duzeltme dahil), iptal edilmis / baska apartman yok; denetci okur, sakin okuyamaz', async () => {
     const w = world();
     const { items } = await w.service.assemblyDecisionOptions(ctx.mgr);
+    // Yalnizca tutanagi kesinlesmis toplantilar (asm2 planli: listede yok).
     expect(items.map((d) => [d.assemblyId, d.itemId, d.seq, d.decision, d.assemblyStatus])).toEqual([
       ['asm1', 'a1', 1, 'accepted', 'held'],
       ['asm1', 'a2', 2, 'rejected', 'held'],
-      ['asm2', 'a1', 1, 'accepted', 'planned'],
     ]);
-    expect((await w.service.assemblyDecisionOptions(ctx.obs)).items).toHaveLength(3);
+    expect((await w.service.assemblyDecisionOptions(ctx.obs)).items).toHaveLength(2);
     await expect(w.service.assemblyDecisionOptions(ctx.a)).rejects.toMatchObject({ code: 'forbidden' });
   });
 
@@ -127,6 +127,8 @@ describe('genel kurul karari bagi', () => {
     const decide = (assemblyDecision: unknown) => w.service.decide(ctx.mgr, t.tenderId, { version: t.version, quoteId: t.quotes[0]!.quoteId, reason: 'Tek teklif, kurul onaylı', assemblyDecision });
     await expect(decide({ assemblyId: 'asm1', itemId: 'a2' })).rejects.toMatchObject({ code: 'unprocessable' });
     await expect(decide({ assemblyId: 'asm3', itemId: 'a1' })).rejects.toMatchObject({ code: 'unprocessable' });
+    // Tutanagi kesinlesmemis toplanti karari baglanamaz.
+    await expect(decide({ assemblyId: 'asm2', itemId: 'a1' })).rejects.toMatchObject({ code: 'unprocessable', message: expect.stringContaining('kesinleşmemiş') });
     await expect(decide({ assemblyId: 'asmX', itemId: 'a1' })).rejects.toMatchObject({ code: 'not_found' });
     await expect(decide({ assemblyId: 'asm1', itemId: 'a9' })).rejects.toMatchObject({ code: 'not_found' });
     const r = await decide({ assemblyId: 'asm1', itemId: 'a1' });
@@ -147,12 +149,11 @@ describe('genel kurul karari bagi', () => {
     // Karar sonradan duzeltildi (yeni sira): bag eski kaydi gosterir, ekranda belirtilir.
     w.decisions.push(decision('asm1', 'a1', 2, 'rejected'));
     expect((await w.service.portalGet(ctx.a, t.tenderId)).tender.assemblyDecision).toMatchObject({ corrected: true, currentDecision: 'rejected' });
-    // Kesinlesmemis toplanti: malike de baglanti yok (portalda karar henuz gosterilmez).
-    const re = await w.service.linkAssemblyDecision(ctx.mgr, t.tenderId, { version: linked.tender.version, assemblyDecision: { assemblyId: 'asm2', itemId: 'a1' } });
-    expect((await w.service.portalGet(ctx.a, t.tenderId)).tender.assemblyDecision).toMatchObject({ assemblyId: 'asm2', portalLink: false });
-    const un = await w.service.linkAssemblyDecision(ctx.mgr, t.tenderId, { version: re.tender.version, assemblyDecision: null });
+    // Kesinlesmemis toplanti karari baglanamaz.
+    await expect(w.service.linkAssemblyDecision(ctx.mgr, t.tenderId, { version: linked.tender.version, assemblyDecision: { assemblyId: 'asm2', itemId: 'a1' } })).rejects.toMatchObject({ code: 'unprocessable' });
+    const un = await w.service.linkAssemblyDecision(ctx.mgr, t.tenderId, { version: linked.tender.version, assemblyDecision: null });
     expect(un.tender).not.toHaveProperty('assemblyDecision');
-    expect(w.fake.audits.at(-1)).toMatchObject({ details: { removed: true, previousAssemblyId: 'asm2' } });
+    expect(w.fake.audits.at(-1)).toMatchObject({ details: { removed: true, previousAssemblyId: 'asm1' } });
   });
 });
 

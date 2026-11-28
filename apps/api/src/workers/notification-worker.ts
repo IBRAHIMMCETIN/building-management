@@ -545,6 +545,7 @@ export function createNotificationWorker(overrides: Partial<WorkerDeps> = {}) {
                 ...(a.location ? { location: a.location } : {}),
                 ...(a.onlineUrl ? { onlineUrl: a.onlineUrl } : {}),
                 ...(a.cancelReason ? { cancelReason: a.cancelReason } : {}),
+                ...(a.secondMeetingPlan ? { secondMeetingPlan: a.secondMeetingPlan } : {}),
                 reschedules: a.reschedules ?? [],
                 currentMeetingHash: meetingHash(a),
                 recipientUserIds: [...new Set(calls.filter((c) => c.apartmentId === event.apartmentId).flatMap((c) => c.recipientUserIds))],

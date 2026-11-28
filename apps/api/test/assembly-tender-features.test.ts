@@ -60,6 +60,28 @@ describe('ozellik anahtarlari', () => {
     expect((await get(a, '/api/assemblies')).status).toBe(200);
   });
 
+  it('ihale: genel kurul kapaliysa karar secicisi bos, karar bagi kurulamaz (403)', async () => {
+    const calls: string[] = [];
+    const tenderService = {
+      assemblyDecisionOptions: async () => (calls.push('options'), { items: [{ assemblyId: 'asm1' }] }),
+      decide: async () => (calls.push('decide'), { tender: {} }),
+      linkAssemblyDecision: async () => (calls.push('link'), { tender: {} }),
+    } as unknown as TenderService;
+    const build = (on: boolean) =>
+      createApp({ version: 'test', authenticate: createMockAuthenticator(), assemblyService: stub<AssemblyService>(), tenderService, siteFeatures: staticSiteFeatureReader({ 'admin.assemblies': on }) });
+    const post = async (a: ReturnType<typeof build>, path: string, body: unknown) =>
+      (await a.request(path, { method: 'POST', headers: { authorization: tok('apartment_manager'), 'content-type': 'application/json' }, body: JSON.stringify(body) })).status;
+    const off = build(false);
+    expect((await get(off, '/api/tenders/assembly-decisions')).body).toEqual({ items: [] });
+    expect(await post(off, '/api/tenders/t1/decide', { version: 1, quoteId: 'q', reason: 'Uygun teklif seçildi', assemblyDecision: { assemblyId: 'asm1', itemId: 'a1' } })).toBe(403);
+    expect(await post(off, '/api/tenders/t1/assembly-decision', { version: 1, assemblyDecision: { assemblyId: 'asm1', itemId: 'a1' } })).toBe(403);
+    // Bagsiz karar ve bag kaldirma etkilenmez.
+    expect(await post(off, '/api/tenders/t1/decide', { version: 1, quoteId: 'q', reason: 'Uygun teklif seçildi' })).toBe(200);
+    expect(await post(off, '/api/tenders/t1/assembly-decision', { version: 1, assemblyDecision: null })).toBe(200);
+    expect(calls).toEqual(['decide', 'link']);
+    expect((await get(build(true), '/api/tenders/assembly-decisions')).body).toEqual({ items: [{ assemblyId: 'asm1' }] });
+  });
+
   it('ihale portali: genel kurul kapaliysa karar baglantisi (portalLink) verilmez', async () => {
     const tenderService = { portalGet: async () => ({ tender: { tenderId: 't1', assemblyDecision: { assemblyId: 'asm1', portalLink: true } } }) } as unknown as TenderService;
     const build = (off: boolean) =>

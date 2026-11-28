@@ -301,12 +301,15 @@ export function createAssemblyRepository(): AssemblyRepository {
       const { client, tableName } = getDynamo();
       const items: TransactItem[] = [
         {
-          ConditionCheck: {
+          // Talep acik olmali; sayac ve surum ayni islemde artar: okuyup kapatan islem bu kaydi
+          // gormediyse surum kosulunda 409 alir (son kayit sonuctan disarida kalamaz).
+          Update: {
             TableName: tableName,
             Key: assemblyKeys.consent(entry.apartmentId, entry.consentId),
-            ConditionExpression: '#status = :open',
-            ExpressionAttributeNames: { '#status': 'status' },
-            ExpressionAttributeValues: { ':open': 'open' },
+            ConditionExpression: 'attribute_exists(PK) AND #status = :open',
+            UpdateExpression: 'SET #version = #version + :one, #count = if_not_exists(#count, :zero) + :one, #updatedAt = :at, #updatedBy = :by',
+            ExpressionAttributeNames: { '#status': 'status', '#version': 'version', '#count': 'entryCount', '#updatedAt': 'updatedAt', '#updatedBy': 'updatedBy' },
+            ExpressionAttributeValues: { ':open': 'open', ':one': 1, ':zero': 0, ':at': entry.recordedAt, ':by': entry.recordedBy },
           },
         },
         { Put: { TableName: tableName, Item: entry, ConditionExpression: 'attribute_not_exists(PK)' } },

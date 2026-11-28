@@ -268,23 +268,39 @@ export function createDocumentsService(overrides: Partial<DocumentsServiceDeps> 
   }
 
   /**
-   * Genel kurul sonrasi: yazili riza kaydi sirasinda (genel kurul servisi cagirir) gider faturasi
-   * akisiyla yuklenen tarama `apartments/{apt}/assemblies/consents/{consentId}/{unitId}/...` altina.
+   * Genel kurul sonrasi: yazili riza kaydi (genel kurul servisi cagirir). Iki asama: `prepare` gider
+   * faturasi akisiyla yuklenen gecici dosyayi dogrular ve kalici anahtari
+   * (`apartments/{apt}/assemblies/consents/{consentId}/{unitId}/{uploadId}.{ext}`) dondurur; `commit`
+   * kayit yazildiktan SONRA kopyalar (cakismada sahipsiz kalici dosya kalmaz).
    */
-  async function promoteAssemblyConsent(
+  async function prepareAssemblyConsent(
     apartmentId: string,
     upload: { uploadId: string; fileName: string },
     target: { consentId: string; unitId: string },
-  ): Promise<InvoiceAttachment> {
+  ): Promise<InvoiceAttachment & { uploadId: string }> {
     assertId(target.consentId, 'consentId');
     assertId(target.unitId, 'unitId');
-    return promotePending(apartmentId, upload, 'document.uploadId', 'riza', 'Rıza belgesi', (ext, uploadId) => assemblyConsentDocumentKey(apartmentId, target.consentId, target.unitId, uploadId, ext));
+    const store = requireStore();
+    const uploadId = assertId(upload.uploadId, 'document.uploadId');
+    const head = await store.head(pendingUploadKey(apartmentId, uploadId));
+    if (!head) throw new DocumentError('unprocessable', 'Rıza belgesi bulunamadi (yukleme tamamlanmamis veya suresi dolmus); tekrar yukleyin');
+    if (head.size > MAX_INVOICE_BYTES) throw new DocumentError('unprocessable', 'Dosya en fazla 10 MB olabilir');
+    if (!isInvoiceContentType(head.contentType)) throw new DocumentError('unprocessable', 'Desteklenmeyen dosya turu');
+    const key = assemblyConsentDocumentKey(apartmentId, target.consentId, target.unitId, uploadId, INVOICE_CONTENT_TYPES[head.contentType]);
+    return { key, fileName: safeFileName(upload.fileName, 'riza'), contentType: head.contentType, size: head.size, uploadId };
   }
 
-  /** Yazili riza belgesi icin imzali link; anahtar bu apartmanin genel kurul on ekinde olmali. */
-  async function signAssemblyDocument(apartmentId: string, doc: Pick<InvoiceAttachment, 'key' | 'fileName' | 'contentType'>): Promise<SignedDownload> {
-    const prefix = `apartments/${apartmentId}/assemblies/`;
-    if (!doc.key.startsWith(prefix) || doc.key.includes('..')) throw new DocumentError('not_found', 'Belge bulunamadi');
+  const assemblyPrefix = (apartmentId: string) => `apartments/${apartmentId}/assemblies/`;
+
+  async function commitAssemblyConsent(apartmentId: string, doc: { key: string; uploadId?: string }): Promise<void> {
+    if (!doc.key.startsWith(assemblyPrefix(apartmentId)) || doc.key.includes('..') || !doc.uploadId) throw new DocumentError('not_found', 'Belge bulunamadi');
+    await requireStore().copy(pendingUploadKey(apartmentId, assertId(doc.uploadId, 'uploadId')), doc.key);
+  }
+
+  /** Yazili riza belgesi icin imzali link; anahtar bu apartmanin genel kurul on ekinde olmali. Kopya eksikse tamamlanir. */
+  async function signAssemblyDocument(apartmentId: string, doc: Pick<InvoiceAttachment, 'key' | 'fileName' | 'contentType'> & { uploadId?: string }): Promise<SignedDownload> {
+    if (!doc.key.startsWith(assemblyPrefix(apartmentId)) || doc.key.includes('..')) throw new DocumentError('not_found', 'Belge bulunamadi');
+    if (doc.uploadId && !(await requireStore().head(doc.key))) await commitAssemblyConsent(apartmentId, doc);
     return sign(doc.key, doc.fileName, doc.contentType);
   }
 
@@ -309,7 +325,8 @@ export function createDocumentsService(overrides: Partial<DocumentsServiceDeps> 
     invoiceForTransaction,
     promoteTenderQuote,
     signTenderDocument,
-    promoteAssemblyConsent,
+    prepareAssemblyConsent,
+    commitAssemblyConsent,
     signAssemblyDocument,
   };
 }

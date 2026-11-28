@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest';
 import { consentOutcome, latestEntries } from '../src/modules/assemblies/consents.js';
 import { APT, T0, ls, owner, setup, unit } from './fakes/assemblyWorld.js';
 
-const sign = { signedOn: '2026-11-26', method: 'wet_signature' };
+const sign = { signedOn: '2026-11-27', method: 'wet_signature' };
 
 async function open(decisionKind = 'common_area_change', extra: Record<string, unknown> = {}, opts: Parameters<typeof setup>[0] = {}) {
   const w = setup({ now: T0, ...opts });
@@ -27,6 +27,9 @@ describe('talep', () => {
     }
     expect((await w.call('POST', '/consents', { title: 'Özel', decisionKind: 'custom' })).status).toBe(400);
     expect((await w.call('POST', '/consents', { title: 'Özel', decisionKind: 'custom', majority: 'attendees' })).status).toBe(400);
+    // Basit cogunluk (m.30 / m.42/1) toplanti karari ister: ozel turde de secilemez.
+    expect((await w.call('POST', '/consents', { title: 'Özel', decisionKind: 'custom', majority: 'persons_and_land' })).status).toBe(400);
+    expect(res.body.consent).toMatchObject({ expiresOn: '2027-02-25', entryCount: 0 });
     expect((await w.call('POST', '/consents', { title: 'Özel', decisionKind: 'custom', majority: 'two_thirds_votes' })).body.consent.rule).toBe('two_thirds_votes');
     expect((await w.call('POST', '/consents', { title: 'Boya', decisionKind: 'common_area_change', majority: 'unanimous' })).status).toBe(400);
     expect((await w.call('GET', '/consents')).body.items).toHaveLength(2);
@@ -47,6 +50,8 @@ describe('riza kaydi ve sayim', () => {
     expect((await put('u2', { choice: 'consent' })).status).toBe(400);
     expect((await put('u2', { choice: 'consent', signerUserId: 'own-1' })).status).toBe(400);
     expect((await put('u1', { choice: 'consent', signedOn: '2026-11-28' })).status).toBe(400);
+    // Talep acilmadan once atilan imza sayilmaz.
+    expect((await put('u1', { choice: 'consent', signedOn: '2026-11-26' })).status).toBe(400);
     expect((await put('u1', { choice: 'consent', method: 'other' })).status).toBe(400);
     await put('u1', { choice: 'consent' });
     await put('u2', { choice: 'consent', signerUserId: 'own-2a' });
@@ -97,7 +102,12 @@ describe('riza kaydi ve sayim', () => {
     const una = await open('use_change');
     const u = (unitId: string, body: Record<string, unknown>) => una.w.call('PUT', `/consents/${una.id}/units/${unitId}`, { ...sign, ...body });
     await u('u1', { choice: 'consent' });
-    await u('u2', { choice: 'consent', signerUserId: 'own-2b' });
+    // Tasarruf niteliginde oybirligi: hisseli bolumde temsilci yetmez, butun paydaslar imzalar (TMK m.692 yorumu).
+    const rep = await u('u2', { choice: 'consent', signerUserId: 'own-2b' });
+    expect(rep.status).toBe(400);
+    expect(rep.body.message).toContain('bütün paydaşlarının imzası');
+    const both = await u('u2', { choice: 'consent', signerUserIds: ['own-2b', 'own-2a'] });
+    expect(both.body.entry).toMatchObject({ signerUserId: 'own-2a', signerUserIds: ['own-2a', 'own-2b'] });
     const o3 = await u('u3', { choice: 'consent' });
     expect(o3.body.outcome).toMatchObject({ rule: 'unanimous', decision: 'rejected' });
     expect(o3.body.outcome.reasons[0]).toContain('bölümün rızası kayıtlı değil');
@@ -129,15 +139,58 @@ describe('kapatma, belge, PDF, roller', () => {
     const interim = await w.call('GET', `/consents/${id}/pdf`);
     expect(interim.body).toMatchObject({ interim: true, contentType: 'application/pdf' });
     expect(interim.body.url).toMatch(/assembly-consent-cns-asm1-[0-9a-f]{16}\.pdf/);
-    expect((await w.call('POST', `/consents/${id}/close`, { version: 2 })).status).toBe(409);
-    const closed = await w.call('POST', `/consents/${id}/close`, { version: 1 });
+    // Her kayit talebin surumunu artirir: kayittan once okunan surumle kapanis 409.
+    expect((await w.call('POST', `/consents/${id}/close`, { version: 1 })).status).toBe(409);
+    const closed = await w.call('POST', `/consents/${id}/close`, { version: 2 });
     expect(closed.body).toMatchObject({ consent: { status: 'closed', result: { decision: 'rejected' } }, outcome: { decision: 'rejected', persons: { yes: 1 } } });
     expect(w.audits.at(-1)).toMatchObject({ action: 'assembly.consent_close', details: { decision: 'rejected', records: 1, entriesHash: expect.any(String) } });
     expect((await w.call('PUT', `/consents/${id}/units/u2`, { ...sign, choice: 'consent', signerUserId: 'own-2a' })).status).toBe(409);
     const final = await w.call('GET', `/consents/${id}/pdf`);
     expect(final.body.interim).toBe(false);
     expect(final.body.url).not.toBe(interim.body.url);
-    expect((await w.call('POST', `/consents/${id}/cancel`, { version: 2, reason: 'Geç kaldı' })).status).toBe(409);
+    expect((await w.call('POST', `/consents/${id}/cancel`, { version: 3, reason: 'Geç kaldı' })).status).toBe(409);
+    // Belge kalici yere yalnizca kayit yazildiktan sonra kopyalandi.
+    expect(w.committed).toEqual([`apartments/${APT}/assemblies/consents/${id}/u1/up-77.pdf`]);
+  });
+
+  it('kapanis yarisi: kapanis okuduktan sonra yazilan son kayit sonuctan disarida kalamaz (409, yeniden kapatinca dahil)', async () => {
+    const { w, id } = await open();
+    await w.call('PUT', `/consents/${id}/units/u1`, { ...sign, choice: 'consent' });
+    // Kapanis kayitlari okuduktan hemen sonra baska bir istek u3 icin kayit yazar.
+    w.hooks.afterListConsentEntries = async () => {
+      const r = await w.call('PUT', `/consents/${id}/units/u3`, { ...sign, choice: 'consent' });
+      expect(r.status).toBe(200);
+    };
+    const raced = await w.call('POST', `/consents/${id}/close`, { version: 2 });
+    expect(raced.status).toBe(409);
+    expect(w.consents.get(`${APT}|${id}`)).toMatchObject({ status: 'open', entryCount: 2, version: 3 });
+    const closed = await w.call('POST', `/consents/${id}/close`, { version: 3 });
+    expect(closed.body.outcome).toMatchObject({ persons: { yes: 2 } });
+  });
+
+  it('cakismada belge kalici yere kopyalanmaz; talep en fazla 90 gun acik; malik degisimi uyarisi; imzalayan imza gunu malik olmali', async () => {
+    const { w, id } = await open();
+    await w.call('POST', `/consents/${id}/cancel`, { version: 1, reason: 'Proje değişti' });
+    expect((await w.call('PUT', `/consents/${id}/units/u1`, { ...sign, choice: 'consent', document: { uploadId: 'up-9', fileName: 'r.pdf' } })).status).toBe(409);
+    expect(w.committed).toEqual([]);
+
+    const b = await open();
+    // u3 sonradan el degistirdi: own-3 1.12'de cikti, own-9 2.12'de malik oldu.
+    b.w.members.splice(b.w.members.findIndex((m) => m.userId === 'own-3'), 1, owner('own-3', 'u3', { endDate: '2026-12-01' }), owner('own-9', 'u3', { startDate: '2026-12-02' }));
+    b.w.clock.set('2026-12-05T09:00:00.000Z');
+    const late = await b.w.call('PUT', `/consents/${b.id}/units/u3`, { ...sign, signedOn: '2026-12-04', choice: 'consent' });
+    expect(late.status).toBe(422);
+    expect(late.body.message).toContain('maliki değil');
+    expect((await b.w.call('PUT', `/consents/${b.id}/units/u3`, { ...sign, signedOn: '2026-11-30', choice: 'consent' })).status).toBe(200);
+    const d = (await b.w.call('GET', `/consents/${b.id}`)).body;
+    expect(d.warnings.join(' ')).toContain('1 bölümde talep açıldıktan sonra malik değişti');
+    expect(d.rows.find((r: any) => r.unitId === 'u3')).toMatchObject({ ownerChanged: true });
+    b.w.clock.set('2027-02-26T09:00:00.000Z');
+    const expired = await b.w.call('PUT', `/consents/${b.id}/units/u1`, { ...sign, signedOn: '2027-02-20', choice: 'consent' });
+    expect(expired.status).toBe(409);
+    expect(expired.body.message).toContain('90 günlük süresi doldu');
+    expect((await b.w.call('GET', `/consents/${b.id}`)).body.warnings.join(' ')).toContain('süresi 2027-02-25 tarihinde doldu');
+    expect((await b.w.call('POST', `/consents/${b.id}/close`, { version: b.w.consents.get(`${APT}|${b.id}`)!.version })).status).toBe(200);
   });
 
   it('iptal gerekceli; roller: denetci okur yazamaz; sakin 403; baska apartman 404', async () => {

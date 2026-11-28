@@ -91,6 +91,20 @@ const electionWord = (e: ElectionResult) => {
   return winner ? `SEÇİLDİ: ${winner.name}` : 'SEÇİM YAPILAMADI';
 };
 
+/**
+ * KVKK (sakin portali): secilmeyen adaylarin adi sira etiketiyle ("Aday 2"); uyarilardaki adlar da.
+ * Secilenin adi kalir (yoneticinin adi KMK m.34 son fikra uyarinca girise asilir).
+ */
+export function anonymizeElection(e: ElectionResult): ElectionResult {
+  const label = new Map(e.candidates.map((c, i) => [c.name, c.candidateId === e.winnerCandidateId ? c.name : `Aday ${i + 1}`]));
+  const scrub = (text: string) => [...label].reduce((t, [name, l]) => (name === l ? t : t.split(name).join(l)), text);
+  return {
+    ...e,
+    candidates: e.candidates.map(({ userId: _u, ...c }) => ({ ...c, name: label.get(c.name) ?? c.name })),
+    warnings: e.warnings.map(scrub),
+  };
+}
+
 /** Secim sonucunun tek satir ozeti (duzeltilen kayit, karar defteri). */
 export function electionText(e: ElectionResult): string {
   const winner = e.candidates.find((c) => c.candidateId === e.winnerCandidateId);
@@ -169,8 +183,11 @@ export function minutesReport(input: {
   quorum: Quorum;
   decisions: readonly AssemblyDecision[];
   preview: boolean;
+  /** Sakin portali: secilmeyen adaylarin adi yok (yonetim tutanagi tam). */
+  anonymizeLosers?: boolean;
 }): ReportContent {
   const { assembly: a, quorum: q, preview } = input;
+  const shown = (e: ElectionResult) => (input.anonymizeLosers ? anonymizeElection(e) : e);
   const rec: QuorumRecord | undefined = a.quorumRecord;
   const m = a.minutes;
   const calls = a.calls ?? [];
@@ -221,11 +238,11 @@ export function minutesReport(input: {
     }
     const corrections = [
       ...(records[0]?.legacyTally ? [`Düzeltilen Y1 sayımı (${formatDateTime(records[0].legacyTally.recordedAt)}): ${legacyText(records[0].legacyTally)}.`] : []),
-      ...records.slice(0, -1).map((old) => `Düzeltilen kayıt (${formatDateTime(old.recordedAt)}): ${old.election ? electionText(old.election) : `kabul ${old.outcome.votes.yes}, ret ${old.outcome.votes.no}, çekimser ${old.outcome.votes.abstain} oy; ${decisionWord(old.outcome.decision).toLocaleLowerCase('tr')}`}.`),
+      ...records.slice(0, -1).map((old) => `Düzeltilen kayıt (${formatDateTime(old.recordedAt)}): ${old.election ? electionText(shown(old.election)) : `kabul ${old.outcome.votes.yes}, ret ${old.outcome.votes.no}, çekimser ${old.outcome.votes.abstain} oy; ${decisionWord(old.outcome.decision).toLocaleLowerCase('tr')}`}.`),
       ...(latest.correctionReason ? [`Düzeltme gerekçesi (${formatDateTime(latest.recordedAt)}): ${latest.correctionReason}`] : []),
     ].map(pdfSafe);
     if (latest.election) {
-      const e = latest.election;
+      const e = shown(latest.election);
       const winner = e.candidates.find((c) => c.candidateId === e.winnerCandidateId);
       return {
         title,

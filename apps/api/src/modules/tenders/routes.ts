@@ -1,7 +1,7 @@
 import { type Context, Hono } from 'hono';
 import type { Authenticator, Role } from '../../auth/claims.js';
 import { type Env, authenticateWith, handleError, readJson, requireRole } from '../../http/helpers.js';
-import { type SiteFeatureReader, featureAllowed, requireFeature } from '../features/guard.js';
+import { type SiteFeatureReader, featureAllowed, featureDisabledBody, requireFeature } from '../features/guard.js';
 import { TenderError } from './errors.js';
 import type { TenderContext, TenderService } from './service.js';
 
@@ -76,16 +76,26 @@ export function tenderRoutes({ authenticate, service, features }: TenderRoutesDe
     const result = await service.create(ctxOf(c), await readJson(c));
     return c.json(result, result.replayed ? 200 : 201);
   });
-  r.get('/assembly-decisions', requireRole(READ_ROLES), async (c) => c.json(await service.assemblyDecisionOptions(ctxOf(c))));
+  // Genel kurul modulu kapaliysa karar bagi kurulamaz; secici bos doner.
+  const assembliesOn = (c: Context<Env>) => featureAllowed(features, c.get('claims'), 'admin.assemblies');
+  r.get('/assembly-decisions', requireRole(READ_ROLES), async (c) => c.json((await assembliesOn(c)) ? await service.assemblyDecisionOptions(ctxOf(c)) : { items: [] }));
   r.get('/:id', requireRole(READ_ROLES), async (c) => c.json(await service.get(ctxOf(c), id(c))));
-  r.post('/:id/assembly-decision', requireRole(WRITE_ROLES), async (c) => c.json(await service.linkAssemblyDecision(ctxOf(c), id(c), await readJson(c))));
+  r.post('/:id/assembly-decision', requireRole(WRITE_ROLES), async (c) => {
+    const body = await readJson(c);
+    if ((body as { assemblyDecision?: unknown } | null)?.assemblyDecision && !(await assembliesOn(c))) return c.json(featureDisabledBody('admin.assemblies'), 403);
+    return c.json(await service.linkAssemblyDecision(ctxOf(c), id(c), body));
+  });
   r.get('/:id/supplier-accounts', requireRole(WRITE_ROLES), async (c) => c.json(await service.supplierAccounts(ctxOf(c), id(c))));
   r.post('/:id/supplier', requireRole(WRITE_ROLES), async (c) => c.json(await service.linkSupplier(ctxOf(c), id(c), await readJson(c))));
   r.post('/:id/comments/:commentId/hide', requireRole(WRITE_ROLES), async (c) => c.json(await service.hideComment(ctxOf(c), id(c), c.req.param('commentId') ?? '', await readJson(c))));
   r.patch('/:id', requireRole(WRITE_ROLES), async (c) => c.json(await service.update(ctxOf(c), id(c), await readJson(c))));
   r.post('/:id/collect', requireRole(WRITE_ROLES), async (c) => c.json(await service.collect(ctxOf(c), id(c), await readJson(c))));
   r.post('/:id/publish', requireRole(WRITE_ROLES), async (c) => c.json(await service.publish(ctxOf(c), id(c), await readJson(c))));
-  r.post('/:id/decide', requireRole(WRITE_ROLES), async (c) => c.json(await service.decide(ctxOf(c), id(c), await readJson(c))));
+  r.post('/:id/decide', requireRole(WRITE_ROLES), async (c) => {
+    const body = await readJson(c);
+    if ((body as { assemblyDecision?: unknown } | null)?.assemblyDecision && !(await assembliesOn(c))) return c.json(featureDisabledBody('admin.assemblies'), 403);
+    return c.json(await service.decide(ctxOf(c), id(c), body));
+  });
   r.post('/:id/cancel', requireRole(WRITE_ROLES), async (c) => c.json(await service.cancel(ctxOf(c), id(c), await readJson(c))));
   r.post('/:id/quotes', requireRole(WRITE_ROLES), async (c) => {
     const result = await service.addQuote(ctxOf(c), id(c), await readJson(c));

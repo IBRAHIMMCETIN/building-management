@@ -435,7 +435,9 @@ export function createApp(config: AppConfig) {
   const pollService = config.pollService ?? createPollService({ portal: portalService });
   app.route('/api/polls', pollRoutes({ authenticate, service: pollService }));
   const assemblyService =
-    config.assemblyService ?? createAssemblyService({ documents: { promote: documentsService.promoteAssemblyConsent, sign: documentsService.signAssemblyDocument } });
+    config.assemblyService ?? createAssemblyService({
+      documents: { prepare: documentsService.prepareAssemblyConsent, commit: documentsService.commitAssemblyConsent, sign: documentsService.signAssemblyDocument },
+    });
   app.route('/api/assemblies', assemblyRoutes({ authenticate, service: assemblyService, features: siteFeatures }));
 
   // Faz 3 (O1): ariza / talep (yonetim, gorevli, guvenlik, denetci).
@@ -460,6 +462,7 @@ export function createApp(config: AppConfig) {
   const portfolioService =
     config.portfolioService ??
     createPortfolioService({
+      features: siteFeatures,
       sources: createPortfolioSources({
         core: coreRepository,
         ledger: financeRepository,

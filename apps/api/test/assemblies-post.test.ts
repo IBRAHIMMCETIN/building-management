@@ -6,7 +6,7 @@
 import { describe, expect, it } from 'vitest';
 import type { DomainEvent } from '../src/events/publisher.js';
 import type { ApartmentRole } from '../src/modules/apartment-roles/types.js';
-import { decisionBookReport } from '../src/modules/assemblies/minutes.js';
+import { decisionBookReport, minutesReport } from '../src/modules/assemblies/minutes.js';
 import { resolveCall } from '../src/modules/assemblies/repository.js';
 import { CALL_RECIPIENTS_PER_BUCKET, type AssemblyCall, type AssemblyCallRecipients, type AssemblyDecision } from '../src/modules/assemblies/types.js';
 import type { Unit } from '../src/modules/core/types.js';
@@ -138,6 +138,49 @@ describe('erteleme / yer degisikligi bildirimi', () => {
     ]);
   });
 
+  it('ikinci toplanti plani olan ilk toplanti: tarih degisince yeni plan zorunlu ve 7-15 gun yeniden dogrulanir; bildirimde yeni plan', async () => {
+    const w = setup({ now: T0 });
+    await w.call('POST', '', { ...meeting, secondMeetingPlan: { scheduledAt: '2026-12-29T19:00:00+03:00', location: 'Bahçe' } });
+    await w.call('POST', '/asm1/call', { version: w.version() });
+    const missing = await w.call('POST', '/asm1/reschedule', { version: w.version(), scheduledAt: '2026-12-20T19:00:00+03:00', reason: 'Salon dolu' });
+    expect(missing.status).toBe(400);
+    expect(missing.body.message).toContain('ikinci toplantının yeri ve zamanı da yeniden bildirilmelidir');
+    // Eski plan yeni tarihle 7 gunden az (9 gun degil: 20.12 -> 29.12 = 9 gun gecerli); 22.12 -> 3 gun gecersiz.
+    expect((await w.call('POST', '/asm1/reschedule', { version: w.version(), scheduledAt: '2026-12-26T19:00:00+03:00', reason: 'Salon dolu', secondMeetingPlan: { scheduledAt: '2026-12-29T19:00:00+03:00', location: 'Bahçe' } })).status).toBe(400);
+    const ok = await w.call('POST', '/asm1/reschedule', { version: w.version(), scheduledAt: '2026-12-20T19:00:00+03:00', reason: 'Salon dolu', secondMeetingPlan: { scheduledAt: '2027-01-03T19:00:00+03:00', location: 'Bahçe' } });
+    expect(ok.status).toBe(200);
+    expect(ok.body.assembly.secondMeetingPlan).toMatchObject({ scheduledAt: '2027-01-03T16:00:00.000Z' });
+    expect(ok.body.reschedule).toMatchObject({ previousSecondMeetingPlan: { scheduledAt: '2026-12-29T16:00:00.000Z' }, secondMeetingPlan: { scheduledAt: '2027-01-03T16:00:00.000Z' } });
+    expect(w.audits.at(-1)).toMatchObject({ details: { secondMeetingPlanChanged: true } });
+    const sent: Notification[] = [];
+    await workerFor(w, sent)(sqs([w.outbox.at(-1)!]));
+    const mail = renderEmail(sent[0]!, { siteName: 'Lale', unitLabel: () => '', portalUrl: 'https://x/app' })!;
+    expect(mail.text).toContain('ikinci toplantı 03.01.2027 19:00 tarihinde (Bahçe)');
+  });
+
+  it('bagli ikinci toplanti varken ilk toplantinin yeni tarihi araligi bozarsa 409; one alinan tarih "tarihi degisti"; onceki tarih maliklere en son bildirilen', async () => {
+    const w = await called();
+    // Savunma: ilk toplantiya bagli (iptal edilmemis) ikinci toplanti kaydi.
+    const first = w.docs.get(`${APT}|asm1`)!;
+    w.docs.set(`${APT}|asm9`, { ...first, SK: 'ASSEMBLY#asm9', assemblyId: 'asm9', firstMeetingId: 'asm1', secondMeeting: true, scheduledAt: '2026-12-26T16:00:00.000Z', calls: [] });
+    const bad = await w.call('POST', '/asm1/reschedule', { version: w.version(), scheduledAt: '2026-12-22T19:00:00+03:00', reason: 'Salon dolu' });
+    expect(bad.status).toBe(409);
+    expect(bad.body.message).toContain('bağlı ikinci toplantı');
+    w.docs.set(`${APT}|asm9`, { ...w.docs.get(`${APT}|asm9`)!, status: 'cancelled' });
+    await w.call('POST', '/asm1/reschedule', { version: w.version(), scheduledAt: '2026-12-20T19:00:00+03:00', reason: 'Salon dolu' });
+    const earlier = await w.call('POST', '/asm1/reschedule', { version: w.version(), scheduledAt: '2026-12-12T19:00:00+03:00', reason: 'Bayram' });
+    // Onceki tarih: son bildirim (20.12), cagridaki ilk tarih (15.12) degil.
+    expect(earlier.body.reschedule.previousScheduledAt).toBe('2026-12-20T16:00:00.000Z');
+    expect(w.audits.at(-1)).toMatchObject({ details: { movedEarlier: true, timeChanged: true } });
+    const sent: Notification[] = [];
+    await workerFor(w, sent)(sqs([w.outbox.at(-1)!]));
+    expect(sent[0]).toMatchObject({ data: { movedEarlier: 'true', previousScheduledAt: '2026-12-20T16:00:00.000Z' } });
+    const mail = renderEmail(sent[0]!, { siteName: 'Lale', unitLabel: () => '', portalUrl: 'https://x/app' })!;
+    expect(mail.subject).toContain('Tarihi değişti: kat malikleri kurulu toplantısı - 12.12.2026 19:00');
+    expect(mail.subject).not.toContain('Ertelendi');
+    expect(renderPush(sent[0]!)).toMatchObject({ title: 'Kat malikleri kurulu toplantısının tarihi değişti' });
+  });
+
   it('kurallar: cagrisiz toplantida 409 (duzenleme kullanilir), cagri sonrasi duzenlemeyle tarih degismez, alan kisiti, degisiklik sarti, gecmis tarih, baslamis toplanti, denetci 403', async () => {
     const w = setup({ now: T0 });
     await w.call('POST', '', meeting);
@@ -179,10 +222,23 @@ describe('cagri alici kovalari (buyuk site)', () => {
     const resolved = await w.repo.getCall(APT, 'asm1', 1);
     expect(resolved?.recipientUserIds).toHaveLength(n);
     expect(new Set(resolved?.recipientUserIds).size).toBe(n);
-    expect(w.audits.at(-1)).toMatchObject({ details: { recipients: n, buckets: 11 } });
+    expect(w.audits.at(-1)).toMatchObject({ details: { recipients: n, buckets: 11, parts: 11 } });
+    // Bildirim 11 parcaya bolunur: worker mesaj basina ~1.000 alici (60 sn icinde).
+    expect(w.outbox.map((e) => e.eventId)).toEqual(Array.from({ length: 11 }, (_, k) => `ASSEMBLY_CALLED:asm1:1:p${k}`));
+    const perPart: number[] = [];
     const sent: Notification[] = [];
-    await workerFor(w, sent)(sqs(w.outbox));
+    for (const ev of w.outbox) {
+      const part: Notification[] = [];
+      await workerFor(w, part)(sqs([ev]));
+      perPart.push(part.length);
+      sent.push(...part);
+    }
     expect(sent).toHaveLength(n);
+    expect(new Set(sent.map((x) => x.userId)).size).toBe(n);
+    expect(Math.max(...perPart)).toBeLessThan(1_400);
+    // Iptal bildirimi de parcali (tum cagrilarin alici birlesimi).
+    await w.call('POST', '/asm1/cancel', { version: w.version(), reason: 'Salon yok' });
+    expect(w.outbox.filter((e) => e.type === 'ASSEMBLY_CANCELLED').map((e) => e.eventId)).toHaveLength(11);
   }, 60_000);
 
   it('eski (kovasiz) cagri kaydi aynen okunur', () => {
@@ -285,6 +341,17 @@ describe('cok adayli secim (m.34 / m.41)', () => {
     expect(aud.body.decision.election.warnings.join(' ')).toContain('Dış Denetçi');
     expect(aud.body.decision.election.warnings.join(' ')).not.toContain('Mehmet Demir');
     expect((await w.call('GET', '/asm1/minutes')).status).toBe(200);
+    // Tutanak icerigi: yonetim tam, sakin portali secilmeyen adayi "Aday N" ile.
+    const decisions = [...w.extra.values()].filter((x): x is AssemblyDecision => x.entityType === 'ASSEMBLY_DECISION');
+    const q = { met: true } as never;
+    const full = JSON.stringify(minutesReport({ apartmentName: 'Lale', assembly: w.docs.get(`${APT}|asm1`)!, quorum: q, decisions, preview: false }));
+    const anon = JSON.stringify(minutesReport({ apartmentName: 'Lale', assembly: w.docs.get(`${APT}|asm1`)!, quorum: q, decisions, preview: false, anonymizeLosers: true }));
+    expect(full).toContain('Ayşe Kaya');
+    expect(full).toContain('Mehmet Demir');
+    expect(anon).not.toContain('Ayşe Kaya');
+    expect(anon).not.toContain('Mehmet Demir');
+    expect(anon).toContain('Ali Veli');
+    expect(anon).toContain('Aday 2');
     await w.call('PUT', '/asm1/minutes', { version: w.version(), chair: 'Ayşe Yılmaz', clerks: ['Mehmet Kaya'] });
     await w.call('POST', '/asm1/finalize', { version: w.version() });
     const p = await w.portal('/asm1', w.token('own-3', 'resident'));
@@ -293,11 +360,15 @@ describe('cok adayli secim (m.34 / m.41)', () => {
     expect(JSON.stringify(p.body)).not.toContain('own-');
     expect(JSON.stringify(p.body)).not.toContain('Ayşe Kaya');
     expect(JSON.stringify(p.body)).not.toContain('Mehmet Demir');
+    // Sakin tutanak PDF'i yonetiminkinden ayri (anonim) dosya.
+    const residentPdf = await w.portal('/asm1/minutes', w.token('own-3', 'resident'));
+    expect(residentPdf.status).toBe(200);
+    expect(residentPdf.body.url).not.toBe((await w.call('GET', '/asm1/minutes')).body.url);
   });
 });
 
 describe('yasal cagri teslim takibi (m.29)', () => {
-  /** Olaganustu toplanti 15.12.2026: son gun 30.11.2026; 27.11 itibariyla 3 gun kaldi. */
+  /** Olaganustu toplanti 15.12.2026: guvenli son teslim gunu 29.11.2026 (tebligat gunu sayilmaz); 27.11 itibariyla 2 gun kaldi. */
   async function extraordinary() {
     const w = setup({ now: T0 });
     await w.call('POST', '', { ...meeting, kind: 'extraordinary' });
@@ -307,10 +378,11 @@ describe('yasal cagri teslim takibi (m.29)', () => {
   it('malik basina rapor (hisseli bolumde her paydas), son gun ve riskte uyarisi; e-posta bilgilendirme tebligat sayilmaz', async () => {
     const w = await extraordinary();
     const r0 = (await w.call('GET', '/asm1/service')).body;
-    expect(r0).toMatchObject({ deadline: '2026-11-30', daysToDeadline: 3, rollFrozen: false, summary: { owners: 5, served: 0, unserved: 5, none: 5 } });
+    expect(r0).toMatchObject({ deadline: '2026-11-29', deadlineLenient: '2026-11-30', daysToDeadline: 2, rollFrozen: false, summary: { owners: 5, served: 0, unserved: 5, none: 5 } });
     expect(r0.rows.map((x: any) => x.ownerId).sort()).toEqual(['own-1', 'own-2a', 'own-2b', 'own-3', 'own-4']);
     expect(r0.rows.find((x: any) => x.ownerId === 'own-2a')).toMatchObject({ name: 'Kişi own-2a', units: [{ unitId: 'u2' }], state: 'none', version: 0 });
-    expect(r0.warnings.join(' ')).toContain('KMK m.29/2 süresi riskte: 5 kat malikine en geç 2026-11-30');
+    expect(r0.warnings.join(' ')).toContain('KMK m.29/2 süresi riskte: 5 kat malikine en geç 2026-11-29');
+    expect(r0.warnings.join(' ')).toContain('tebligat günü sayılırsa son gün 2026-11-30');
 
     const a = await w.call('POST', '/asm1/service/own-1', { version: 0, method: 'hand_signed', sentOn: '2026-11-26' });
     expect(a.status).toBe(201);
@@ -349,6 +421,42 @@ describe('yasal cagri teslim takibi (m.29)', () => {
     const ord = setup({ now: T0 });
     await ord.call('POST', '', meeting);
     expect((await ord.call('GET', '/asm1/service')).body.warnings[0]).toContain('KMK m.29/1');
+  });
+
+  it('zamanlilik teslim tarihiyle: zamaninda postalanip gec teslim edilen ayri durum; guvenli son gun teslimi zamaninda', async () => {
+    const w = await extraordinary();
+    w.clock.set('2026-12-03T09:00:00.000Z');
+    // Zamaninda postalandi (27.11 <= 29.11), 1.12'de teslim: gec teslim.
+    await w.call('POST', '/asm1/service/own-3', { version: 0, method: 'registered_mail', sentOn: '2026-11-27', referenceNo: 'RR1' });
+    await w.call('PATCH', '/asm1/service/own-3/1', { version: 1, status: 'delivered', statusOn: '2026-12-01' });
+    // Son gun (29.11) teslim: zamaninda; 30.11 teslim yalnizca tebligat gunu sayilirsa zamaninda -> gec teslim.
+    await w.call('POST', '/asm1/service/own-1', { version: 0, method: 'registered_mail', sentOn: '2026-11-26', referenceNo: 'RR2', status: 'delivered', statusOn: '2026-11-29' });
+    await w.call('POST', '/asm1/service/own-4', { version: 0, method: 'hand_signed', sentOn: '2026-11-30' });
+    const r = (await w.call('GET', '/asm1/service')).body;
+    const state = (id: string) => r.rows.find((x: any) => x.ownerId === id);
+    expect(state('own-3')).toMatchObject({ state: 'late_delivery', servedOn: '2026-12-01' });
+    expect(state('own-1')).toMatchObject({ state: 'served', servedOn: '2026-11-29' });
+    expect(state('own-4')).toMatchObject({ state: 'served_late', servedOn: '2026-11-30' });
+    expect(r.summary).toMatchObject({ served: 1, lateDelivery: 1, servedLate: 1, unserved: 2 });
+    expect(r.warnings.join(' ')).toContain('zamanında postalandı ancak 2026-11-29 tarihinden sonra teslim edildi');
+  });
+
+  it('erteleme sonrasi onceki tarih icin yapilan tebligat eskir (durum hesabina girmez, uyari)', async () => {
+    const w = await extraordinary();
+    await w.call('POST', '/asm1/service/own-1', { version: 0, method: 'hand_signed', sentOn: '2026-11-26' });
+    expect((await w.call('GET', '/asm1/service')).body.rows.find((x: any) => x.ownerId === 'own-1').state).toBe('served');
+    await w.call('POST', '/asm1/call', { version: w.version() });
+    await w.call('POST', '/asm1/reschedule', { version: w.version(), scheduledAt: '2027-01-10T19:00:00+03:00', reason: 'Tebligat yetişmedi' });
+    const r = (await w.call('GET', '/asm1/service')).body;
+    const own1 = r.rows.find((x: any) => x.ownerId === 'own-1');
+    expect(own1).toMatchObject({ state: 'none', attempts: [{ seq: 1, stale: true, meetingAt: '2026-12-15T16:00:00.000Z', rescheduleSeq: 0 }] });
+    expect(r.summary).toMatchObject({ staleAttempts: 1, served: 0 });
+    expect(r.deadline).toBe('2026-12-25');
+    expect(r.warnings.join(' ')).toContain('önceki tarih için kaydedilen 1 teslim denemesi');
+    // Yeni tarih icin yeni deneme gecerli.
+    const again = await w.call('POST', '/asm1/service/own-1', { version: 1, method: 'hand_signed', sentOn: '2026-11-27' });
+    expect(again.body.record.attempts.map((x: any) => [x.seq, x.rescheduleSeq, x.stale ?? false])).toEqual([[1, 0, true], [2, 1, false]]);
+    expect((await w.call('GET', '/asm1/service')).body.rows.find((x: any) => x.ownerId === 'own-1').state).toBe('served');
   });
 
   it('kurallar: surum, oy listesi disi kisi, gelecek tarih, iptal edilen toplanti, denetci yazamaz, tenant izolasyonu', async () => {

@@ -86,6 +86,7 @@ export function setup(opts: { store?: boolean; units?: Unit[]; members?: UnitMem
   const consentEntries = new Map<string, ConsentEntry>();
   const outbox: DomainEvent[] = [];
   const audits: AuditDraft[] = [];
+  const hooks: { afterListConsentEntries?: () => Promise<void> } = {};
   const rolls = createMemoryRollStore();
   const clone = <T>(x: T): T => structuredClone(x);
   const buckets = () => [...extra.values()].filter((x): x is AssemblyCallRecipients => x.entityType === 'ASSEMBLY_CALL_RECIPIENTS');
@@ -152,12 +153,22 @@ export function setup(opts: { store?: boolean; units?: Unit[]; members?: UnitMem
       consents.set(`${req.apartmentId}|${req.consentId}`, clone(req));
       audits.push(clone(audit));
     },
-    listConsentEntries: async (apt, cid) => [...consentEntries.values()].filter((e) => e.apartmentId === apt && e.consentId === cid).map(clone),
+    listConsentEntries: async (apt, cid) => {
+      const out = [...consentEntries.values()].filter((e) => e.apartmentId === apt && e.consentId === cid).map(clone);
+      // Okumadan hemen sonra calisir (araya giren es zamanli kayit benzetimi).
+      const hook = hooks.afterListConsentEntries;
+      hooks.afterListConsentEntries = undefined;
+      if (hook) await hook();
+      return out;
+    },
     putConsentEntry: async (entry, audit) => {
-      if (consents.get(`${entry.apartmentId}|${entry.consentId}`)?.status !== 'open') throw new DataAccessError('conflict', 'kapali');
+      const req = consents.get(`${entry.apartmentId}|${entry.consentId}`);
+      if (req?.status !== 'open') throw new DataAccessError('conflict', 'kapali');
       const k = `${entry.PK}|${entry.SK}`;
       if (consentEntries.has(k)) throw new DataAccessError('conflict', 'var');
       consentEntries.set(k, clone(entry));
+      // Gercek depo gibi: talebin surumu ve sayaci ayni islemde artar.
+      consents.set(`${entry.apartmentId}|${entry.consentId}`, { ...req, version: req.version + 1, entryCount: (req.entryCount ?? 0) + 1, updatedAt: entry.recordedAt, updatedBy: entry.recordedBy });
       audits.push(clone(audit));
     },
   };
@@ -171,11 +182,13 @@ export function setup(opts: { store?: boolean; units?: Unit[]; members?: UnitMem
   const { store } = createMemoryDocumentStore();
   let n = 0;
   // Riza belgesi: gecici yukleme kimligi `up-*` ise kalici anahtara "tasinir"; imzali link anahtari doner.
+  const committed: string[] = [];
   const documents: AssemblyDocuments = {
-    promote: async (apt, upload, target) => {
+    prepare: async (apt, upload, target) => {
       if (!upload.uploadId.startsWith('up-')) throw new Error('yukleme yok');
-      return { key: `apartments/${apt}/assemblies/consents/${target.consentId}/${target.unitId}/${upload.uploadId}.pdf`, fileName: upload.fileName, contentType: 'application/pdf', size: 1234 };
+      return { key: `apartments/${apt}/assemblies/consents/${target.consentId}/${target.unitId}/${upload.uploadId}.pdf`, fileName: upload.fileName, contentType: 'application/pdf', size: 1234, uploadId: upload.uploadId };
     },
+    commit: async (_apt, doc) => void committed.push(doc.key),
     sign: async (_apt, doc) => ({ url: `https://signed.example/${doc.key}`, fileName: doc.fileName, contentType: doc.contentType, expiresAt: new Date(now.getTime() + 300_000).toISOString() }),
   };
   const service = createAssemblyService({
@@ -205,7 +218,7 @@ export function setup(opts: { store?: boolean; units?: Unit[]; members?: UnitMem
   const portal = (path: string, auth: string) => request('/api/portal/assemblies', 'GET', path, undefined, auth);
   const attend = (unitId: string, mode: string, extraBody: Record<string, unknown> = {}, id = 'asm1') => call('PUT', `/${id}/attendance/${unitId}`, { mode, ...extraBody });
   const version = (id = 'asm1') => docs.get(`${APT}|${id}`)!.version;
-  return { call, portal, token, attend, audits, store, docs, units, members, version, clock, rolls, outbox, extra, services, consents, consentEntries, repo, service };
+  return { call, portal, token, attend, audits, store, docs, units, members, version, clock, rolls, outbox, extra, services, consents, consentEntries, committed, hooks, repo, service };
 }
 
 export const meeting = {

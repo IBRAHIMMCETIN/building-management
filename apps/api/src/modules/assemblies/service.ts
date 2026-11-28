@@ -40,7 +40,7 @@ import {
 import { createConsentService } from './consents.js';
 import { ABSTAIN, type ElectionResult, ballotsIssue, decideElection, isElectionKind } from './elections.js';
 import { type ReportContent, decisionBookReport, itemKind, itemRule, minutesReport } from './minutes.js';
-import { meetingHash } from './notifications.js';
+import { meetingHash, partsFor } from './notifications.js';
 import { type ProxyRef, type Quorum, assemblyQuorum, proxyViolation } from './quorum.js';
 import { type AssemblyRepository, type AssemblyWriteExtras, assemblyKeys, assemblyRepository } from './repository.js';
 import { createServiceTracking } from './serviceTracking.js';
@@ -100,9 +100,14 @@ const NOTE_MAX = 4000;
 export type AssemblyContext = { apartmentId: string; userId: string };
 export type AssemblyPortalContext = AssemblyContext & { role: Role };
 
-/** Yazili riza belgesi: gider faturasi yukleme akisi (gecici `tmp/` -> kalici), 5 dk imzali link. */
+/**
+ * Yazili riza belgesi: gider faturasi yukleme akisi (gecici `tmp/` -> kalici), 5 dk imzali link.
+ * `prepare` yalnizca dogrular ve kalici anahtari dondurur; `commit` kopyayi kayit yazildiktan SONRA
+ * yapar (cakismada sahipsiz kalici dosya olusmaz); `sign` kopya eksikse gecici dosyadan tamamlar.
+ */
 export type AssemblyDocuments = {
-  promote(apartmentId: string, upload: { uploadId: string; fileName: string }, target: { consentId: string; unitId: string }): Promise<ConsentDocument>;
+  prepare(apartmentId: string, upload: { uploadId: string; fileName: string }, target: { consentId: string; unitId: string }): Promise<ConsentDocument>;
+  commit(apartmentId: string, doc: ConsentDocument): Promise<void>;
   sign(apartmentId: string, doc: ConsentDocument): Promise<{ url: string; fileName: string; contentType: string; expiresAt: string }>;
 };
 
@@ -249,6 +254,9 @@ function parseCandidates(raw: unknown, kind: AgendaItem['decisionKind'], i: numb
     return { candidateId: `c${j + 1}`, name, ...(userId ? { userId } : {}) };
   });
 }
+
+/** Bildirim parca kimligi: tek parcada eski bicim (`<tur>:<id>[:<sira>]`), cok parcada `:p<k>` eki. */
+const partEventId = (base: string, part: number, parts: number) => (parts > 1 ? `${base}:p${part}` : base);
 
 /** Diziyi en fazla `size` ogelik parcalara boler. */
 const chunked = <T>(items: readonly T[], size: number): T[][] => Array.from({ length: Math.ceil(items.length / size) }, (_, i) => items.slice(i * size, (i + 1) * size));
@@ -673,10 +681,39 @@ export function createAssemblyService(overrides: Partial<AssemblyServiceDeps> = 
       updatedBy: ctx.userId,
       version: current.version + 1,
     };
-    const event = notify
-      ? buildEvent({ eventId, type: 'ASSEMBLY_CANCELLED', apartmentId: ctx.apartmentId, actorId: ctx.userId, payload: { assemblyId: current.assemblyId, scheduledAt: current.scheduledAt, kind: current.kind } }, deps.now)
-      : undefined;
-    return save(next, current.version, audit(ctx, next, 'assembly.cancel', { ...meetingDetails(next), notified: notify, ...(notify ? { eventId } : {}) }, reason), event ? { outbox: [event] } : undefined);
+    // Buyuk sitede bildirim parcalara bolunur (worker mesaj basina en fazla ~1.000 alici).
+    const parts = notify ? partsFor(await noticeAudienceSize(ctx, current)) : 0;
+    const events = Array.from({ length: parts }, (_, part) =>
+      buildEvent(
+        {
+          eventId: partEventId(eventId, part, parts),
+          type: 'ASSEMBLY_CANCELLED',
+          apartmentId: ctx.apartmentId,
+          actorId: ctx.userId,
+          payload: { assemblyId: current.assemblyId, scheduledAt: current.scheduledAt, kind: current.kind, ...(parts > 1 ? { part, parts } : {}) },
+        },
+        deps.now,
+      ),
+    );
+    return save(next, current.version, audit(ctx, next, 'assembly.cancel', { ...meetingDetails(next), notified: notify, ...(notify ? { eventId, parts } : {}) }, reason), events.length ? { outbox: events } : undefined);
+  }
+
+  /** Iptal / erteleme bildiriminin alicilari: tum cagrilarin alici birlesimi (parca sayisi icin). */
+  async function noticeAudienceSize(ctx: AssemblyContext, a: Assembly): Promise<number> {
+    const calls = await repo.listCalls(ctx.apartmentId, a.assemblyId);
+    return new Set(calls.flatMap((c) => c.recipientUserIds)).size;
+  }
+
+  /**
+   * Maliklere en son bildirilen toplanti zamani: son cagri (cagridaki tarih) veya son erteleme
+   * bildirimi, hangisi daha yeniyse. Eski cagri kaydinda tarih yoksa toplantinin guncel zamani.
+   */
+  function lastCommunicated(a: Assembly): IsoDateTime {
+    const marks = [
+      ...(a.calls ?? []).flatMap((c) => (c.scheduledAt ? [{ at: c.calledAt, when: c.scheduledAt }] : [])),
+      ...(a.reschedules ?? []).map((r) => ({ at: r.at, when: r.scheduledAt })),
+    ].sort((x, y) => x.at.localeCompare(y.at));
+    return marks.at(-1)?.when ?? a.scheduledAt;
   }
 
   /**
@@ -691,7 +728,9 @@ export function createAssemblyService(overrides: Partial<AssemblyServiceDeps> = 
     const version = reqInt(o, 'version', 1, Number.MAX_SAFE_INTEGER);
     const reason = reqString(o, 'reason', 500, 3);
     for (const k of Object.keys(o)) {
-      if (!['version', 'reason', 'scheduledAt', 'location', 'onlineUrl'].includes(k)) throw new ValidationError('Ertelemede yalnızca tarih, yer ve çevrim içi bağlantı değiştirilebilir', k);
+      if (!['version', 'reason', 'scheduledAt', 'location', 'onlineUrl', 'secondMeetingPlan'].includes(k)) {
+        throw new ValidationError('Ertelemede yalnızca tarih, yer, çevrim içi bağlantı ve ikinci toplantı planı değiştirilebilir', k);
+      }
     }
     const current = await requireAssembly(ctx, id);
     assertVersion(current, version);
@@ -700,9 +739,29 @@ export function createAssemblyService(overrides: Partial<AssemblyServiceDeps> = 
     if (current.roll || stamp() >= current.scheduledAt) throw new AssemblyError('conflict', 'Başlamış toplantı ertelenemez');
     const prior = current.reschedules ?? [];
     if (prior.length >= MAX_RESCHEDULES) throw new AssemblyError('unprocessable', `Bir toplantı en fazla ${MAX_RESCHEDULES} kez ertelenebilir; yeni toplantı oluşturun`);
-    const fields = await meetingFields(ctx, { scheduledAt: o.scheduledAt, location: o.location, onlineUrl: o.onlineUrl }, current);
+    const newAt = o.scheduledAt === undefined ? current.scheduledAt : parseDateTime(o, 'scheduledAt');
+    // Ilk cagrida bildirilen ikinci toplanti (m.29/3) yeni tarihe gore yeniden bildirilmeli.
+    if (current.secondMeetingPlan && newAt !== current.scheduledAt && o.secondMeetingPlan === undefined) {
+      throw new ValidationError('İlk toplantının tarihi değişince ikinci toplantının yeri ve zamanı da yeniden bildirilmelidir (KMK m.29/3): secondMeetingPlan girin', 'secondMeetingPlan');
+    }
+    const fields = await meetingFields(
+      ctx,
+      { scheduledAt: o.scheduledAt, location: o.location, onlineUrl: o.onlineUrl, ...(o.secondMeetingPlan !== undefined ? { secondMeetingPlan: o.secondMeetingPlan } : {}) },
+      current,
+    );
     if (fields.scheduledAt <= stamp()) throw new ValidationError('Yeni toplantı zamanı gelecekte olmalıdır', 'scheduledAt');
-    if (!placeOrTimeChanged(current, fields)) throw new ValidationError('Tarih, yer veya çevrim içi bağlantıdan en az biri değişmeli', 'scheduledAt');
+    const planChanged = JSON.stringify(current.secondMeetingPlan ?? null) !== JSON.stringify(fields.secondMeetingPlan ?? null);
+    if (!placeOrTimeChanged(current, fields) && !planChanged) throw new ValidationError('Tarih, yer, çevrim içi bağlantı veya ikinci toplantı planından en az biri değişmeli', 'scheduledAt');
+    // Bu toplantiya bagli ikinci toplantilar yeni tarihle de 7-15 gun araliginda kalmali.
+    const linked = (await repo.list(ctx.apartmentId)).filter((x) => x.apartmentId === ctx.apartmentId && x.firstMeetingId === current.assemblyId && x.status !== 'cancelled');
+    for (const second of linked) {
+      try {
+        assertSecondMeetingGap(fields.scheduledAt, second.scheduledAt, 'scheduledAt');
+      } catch {
+        throw new AssemblyError('conflict', `Bu toplantıya bağlı ikinci toplantı (${formatDateTime(second.scheduledAt)}) yeni tarihle 7-15 gün aralığında kalmıyor; önce ikinci toplantıyı düzenleyin veya iptal edin`);
+      }
+    }
+    const previousAt = lastCommunicated(current);
     const now = stamp();
     const seq = prior.length + 1;
     const eventId = `ASSEMBLY_RESCHEDULED:${current.assemblyId}:${seq}`;
@@ -710,12 +769,14 @@ export function createAssemblyService(overrides: Partial<AssemblyServiceDeps> = 
     const base: Assembly = { ...rest, ...fields, updatedAt: now, updatedBy: ctx.userId, version: current.version + 1 };
     const record: AssemblyReschedule = {
       seq,
-      previousScheduledAt: current.scheduledAt,
+      previousScheduledAt: previousAt,
       ...(current.location ? { previousLocation: current.location } : {}),
       ...(current.onlineUrl ? { previousOnlineUrl: current.onlineUrl } : {}),
       scheduledAt: base.scheduledAt,
       ...(base.location ? { location: base.location } : {}),
       ...(base.onlineUrl ? { onlineUrl: base.onlineUrl } : {}),
+      ...(current.secondMeetingPlan ? { previousSecondMeetingPlan: current.secondMeetingPlan } : {}),
+      ...(base.secondMeetingPlan ? { secondMeetingPlan: base.secondMeetingPlan } : {}),
       reason,
       at: now,
       by: ctx.userId,
@@ -723,26 +784,40 @@ export function createAssemblyService(overrides: Partial<AssemblyServiceDeps> = 
       meetingHash: meetingHash(base),
     };
     const next: Assembly = { ...base, reschedules: [...prior, record] };
-    const event = buildEvent(
-      {
-        eventId,
-        type: 'ASSEMBLY_RESCHEDULED',
-        apartmentId: ctx.apartmentId,
-        actorId: ctx.userId,
-        payload: {
-          assemblyId: next.assemblyId,
-          seq,
-          kind: next.kind,
-          previousScheduledAt: current.scheduledAt,
-          scheduledAt: next.scheduledAt,
-          ...(next.location ? { location: next.location } : {}),
-          ...(next.onlineUrl ? { onlineUrl: next.onlineUrl } : {}),
+    const parts = partsFor(await noticeAudienceSize(ctx, current));
+    const events = Array.from({ length: parts }, (_, part) =>
+      buildEvent(
+        {
+          eventId: partEventId(eventId, part, parts),
+          type: 'ASSEMBLY_RESCHEDULED',
+          apartmentId: ctx.apartmentId,
+          actorId: ctx.userId,
+          payload: {
+            assemblyId: next.assemblyId,
+            seq,
+            kind: next.kind,
+            previousScheduledAt: previousAt,
+            scheduledAt: next.scheduledAt,
+            ...(next.location ? { location: next.location } : {}),
+            ...(next.onlineUrl ? { onlineUrl: next.onlineUrl } : {}),
+            ...(parts > 1 ? { part, parts } : {}),
+          },
         },
-      },
-      deps.now,
+        deps.now,
+      ),
     );
-    const details = { seq, previousScheduledAt: current.scheduledAt, scheduledAt: next.scheduledAt, timeChanged: current.scheduledAt !== next.scheduledAt, placeChanged: record.previousLocation !== record.location || record.previousOnlineUrl !== record.onlineUrl, eventId };
-    const saved = await save(next, current.version, audit(ctx, next, 'assembly.reschedule', details, reason), { outbox: [event] });
+    const details = {
+      seq,
+      previousScheduledAt: previousAt,
+      scheduledAt: next.scheduledAt,
+      timeChanged: previousAt !== next.scheduledAt,
+      movedEarlier: next.scheduledAt < previousAt,
+      placeChanged: record.previousLocation !== record.location || record.previousOnlineUrl !== record.onlineUrl,
+      secondMeetingPlanChanged: planChanged,
+      eventId,
+      parts,
+    };
+    const saved = await save(next, current.version, audit(ctx, next, 'assembly.reschedule', details, reason), { outbox: events });
     const t = callTiming(next, await meetingWarnings(ctx, next));
     return {
       assembly: saved,
@@ -784,11 +859,15 @@ export function createAssemblyService(overrides: Partial<AssemblyServiceDeps> = 
     const now = stamp();
     const seq = calls.length + 1;
     const eventId = `ASSEMBLY_CALLED:${a.assemblyId}:${seq}`;
+    // Buyuk sitede bildirim parcalara bolunur: worker mesaj basina en fazla ~1.000 alici isler.
+    const parts = partsFor(audience.recipients.length);
     const summary: AssemblyCallSummary = {
       seq,
       calledAt: now,
       calledBy: ctx.userId,
       eventId,
+      ...(parts > 1 ? { parts } : {}),
+      scheduledAt: a.scheduledAt,
       recipients: audience.recipients.length,
       ownersWithoutAccount: audience.ownersWithoutAccount,
       daysBefore: t.daysBefore,
@@ -819,33 +898,36 @@ export function createAssemblyService(overrides: Partial<AssemblyServiceDeps> = 
       bucket,
       userIds,
     }));
-    const event = buildEvent(
-      {
-        eventId,
-        type: 'ASSEMBLY_CALLED',
-        apartmentId: ctx.apartmentId,
-        actorId: ctx.userId,
-        payload: {
-          assemblyId: a.assemblyId,
-          callSeq: seq,
-          kind: a.kind,
-          secondMeeting: a.secondMeeting,
-          scheduledAt: a.scheduledAt,
-          ...(a.location ? { location: a.location } : {}),
-          ...(a.onlineUrl ? { onlineUrl: a.onlineUrl } : {}),
-          agenda: a.agenda.map((i) => i.title),
-          ...(a.secondMeetingPlan ? { secondMeetingPlan: a.secondMeetingPlan } : {}),
-          resend,
+    const events = Array.from({ length: parts }, (_, part) =>
+      buildEvent(
+        {
+          eventId: partEventId(eventId, part, parts),
+          type: 'ASSEMBLY_CALLED',
+          apartmentId: ctx.apartmentId,
+          actorId: ctx.userId,
+          payload: {
+            assemblyId: a.assemblyId,
+            callSeq: seq,
+            kind: a.kind,
+            secondMeeting: a.secondMeeting,
+            scheduledAt: a.scheduledAt,
+            ...(a.location ? { location: a.location } : {}),
+            ...(a.onlineUrl ? { onlineUrl: a.onlineUrl } : {}),
+            agenda: a.agenda.map((i) => i.title),
+            ...(a.secondMeetingPlan ? { secondMeetingPlan: a.secondMeetingPlan } : {}),
+            resend,
+            ...(parts > 1 ? { part, parts } : {}),
+          },
         },
-      },
-      deps.now,
+        deps.now,
+      ),
     );
     const next: Assembly = { ...a, calls: [...calls, summary], updatedAt: now, updatedBy: ctx.userId, version: a.version + 1 };
     const { meetingHash: _h, reason: _r, calledBy: _b, calledAt: _c, ...auditDetails } = summary;
     const saved = await save(next, a.version, audit(ctx, next, resend ? 'assembly.call_resend' : 'assembly.call', { ...auditDetails, scheduledAt: a.scheduledAt, buckets: groups.length }, reason), {
       call,
       callRecipients,
-      outbox: [event],
+      outbox: events,
     });
     const warnings = [...t.warnings, ...(audience.recipients.length === 0 ? ['Oy listesinde e-posta gidecek kat maliki kullanıcısı yok; yasal çağrıyı ayrıca yapın.'] : [])];
     return { assembly: saved, call: summary, warnings };
@@ -1332,13 +1414,16 @@ export function createAssemblyService(overrides: Partial<AssemblyServiceDeps> = 
     return { ...(await signed(store, key, fileName)), preview };
   }
 
-  /** Tutanak PDF'i (okuma; hicbir sey dondurmaz). Kesinlesmemis toplantida "taslak". */
-  async function minutesFile(ctx: AssemblyContext, a: Assembly) {
+  /**
+   * Tutanak PDF'i (okuma; hicbir sey dondurmaz). Kesinlesmemis toplantida "taslak". `anonymizeLosers`:
+   * sakin portali (KVKK) - secilmeyen adaylar "Aday N"; yonetimin tutanagi tam.
+   */
+  async function minutesFile(ctx: AssemblyContext, a: Assembly, opts: { anonymizeLosers?: boolean } = {}) {
     const store = requireStore();
     if (!a.roll) throw new AssemblyError('conflict', 'Tutanak, toplantı başlayıp oy listesi dondurulduktan sonra (ilk katılım veya yeter sayı kaydı) hazırlanır');
     const [s, decisions, site] = await Promise.all([frozenState(ctx, a as Assembly & { roll: RollMeta }), repo.listDecisions(ctx.apartmentId, a.assemblyId), deps.core.getSite(ctx.apartmentId)]);
     const preview = a.status !== 'held';
-    const content = minutesReport({ apartmentName: site?.name ?? 'Apartman', assembly: view(a), quorum: s.quorum, decisions: sortDecisions(decisions), preview });
+    const content = minutesReport({ apartmentName: site?.name ?? 'Apartman', assembly: view(a), quorum: s.quorum, decisions: sortDecisions(decisions), preview, ...(opts.anonymizeLosers ? { anonymizeLosers: true } : {}) });
     const key = await cachedPdf(store, (h) => assemblyMinutesKey(ctx.apartmentId, a.rollDate, a.assemblyId, h), content);
     return { ...(await signed(store, key, `toplanti-tutanagi-${a.rollDate}${preview ? '-taslak' : ''}.pdf`)), preview };
   }
@@ -1482,7 +1567,7 @@ export function createAssemblyService(overrides: Partial<AssemblyServiceDeps> = 
   async function portalMinutes(ctx: AssemblyPortalContext, id: string) {
     const a = await portalAssembly(ctx, id);
     if (a.status !== 'held') throw new AssemblyError('conflict', 'Toplantı tutanağı henüz kesinleşmedi');
-    const { preview: _p, ...file } = await minutesFile(ctx, a);
+    const { preview: _p, ...file } = await minutesFile(ctx, a, { anonymizeLosers: true });
     return file;
   }
 

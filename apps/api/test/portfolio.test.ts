@@ -3,6 +3,7 @@
  * denetci sinirlari, destek oturumu / platform yoneticisi), mevcut ozetlerle birebir toplamlar,
  * apartman bazinda hata yalitimi, sure butcesi, sayfalama / ust sinir ve HTTP onbellegi.
  */
+import { resolveFeatures } from '../src/modules/features/catalog.js';
 import { describe, expect, it, vi } from 'vitest';
 import { createApp } from '../src/app.js';
 import type { AuthClaims } from '../src/auth/claims.js';
@@ -252,6 +253,21 @@ describe('portfoy servisi', () => {
       tenders: { openCount: 1 },
     });
     expect(page.totals).toMatchObject({ apartmentCount: 3, incompleteCount: 0, unitCount: 60, charged: 6000, collected: 3000, collectionRatePct: 50, openTickets: 9, urgentTickets: 3 });
+  });
+
+  it('modul anahtari kapali apartmanda genel kurul / ihale bolumu okunmaz ve kartta yok', async () => {
+    const { repo } = fakeRepo({ gsi, names });
+    const reads: string[] = [];
+    const features = { resolve: async (apt: string) => ({ ...resolveFeatures(undefined), 'admin.assemblies': apt !== 'apt-2', 'admin.tenders': apt !== 'apt-1' }) };
+    const service = createPortfolioService({ repo, sources: fakeSources({ onRead: (c, s) => reads.push(`${c.apartmentId}:${s}`) }), now: () => NOW, log: silent, features });
+    const page = await service.list({ userId: USER });
+    const card = (id: string) => page.items.find((c) => c.apartmentId === id);
+    expect(card('apt-2')).not.toHaveProperty('assemblies');
+    expect(card('apt-2')).toMatchObject({ tenders: { openCount: 1 }, status: 'ok', failed: [] });
+    expect(card('apt-1')).not.toHaveProperty('tenders');
+    expect(card('apt-1')).toMatchObject({ assemblies: { upcomingCount: 1 } });
+    expect(reads).not.toContain('apt-2:assemblies');
+    expect(reads).not.toContain('apt-1:tenders');
   });
 
   it('GSI aktif gosterse de taban kayitta biten rol listelenmez; hicbir yetki yoksa bos sayfa', async () => {

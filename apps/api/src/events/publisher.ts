@@ -276,6 +276,12 @@ export type AssemblyCalledPayload = {
   agenda: string[];
   secondMeetingPlan?: { scheduledAt: IsoDateTime; location?: string; onlineUrl?: string };
   resend: boolean;
+  /**
+   * Buyuk sitede bildirim parcalari: worker yalnizca `bucketOf(userId, parts) === part` alicilara
+   * gonderir (mesaj basina ~1.000 alici). Yoksa tek parca.
+   */
+  part?: number;
+  parts?: number;
 };
 
 /**
@@ -285,7 +291,7 @@ export type AssemblyCalledPayload = {
  * ve erteleme gerekcesi serbest metindir: TASINMAZ, worker toplanti kaydindan okur; toplanti bu arada
  * yeniden degistiyse (eski erteleme) veya kayit olayla uyusmuyorsa bildirim gitmez.
  */
-export type AssemblyCancelledPayload = { assemblyId: string; scheduledAt: IsoDateTime; kind: 'ordinary' | 'extraordinary' };
+export type AssemblyCancelledPayload = { assemblyId: string; scheduledAt: IsoDateTime; kind: 'ordinary' | 'extraordinary'; part?: number; parts?: number };
 export type AssemblyRescheduledPayload = {
   assemblyId: string;
   seq: number;
@@ -294,6 +300,8 @@ export type AssemblyRescheduledPayload = {
   scheduledAt: IsoDateTime;
   location?: string;
   onlineUrl?: string;
+  part?: number;
+  parts?: number;
 };
 
 /**

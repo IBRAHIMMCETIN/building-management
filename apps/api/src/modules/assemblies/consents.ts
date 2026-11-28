@@ -24,7 +24,8 @@ import type { ReportRow } from '../documents/reportPdf.js';
 import { formatDate, formatDateTime } from '../notifications/templates.js';
 import { istanbulDate } from '../polls/results.js';
 import type { RollEntry } from '../polls/rollSnapshot.js';
-import { AssemblyError } from './errors.js';
+import { addDays } from '../ownership/register.js';
+import { AssemblyError, dayDiff } from './errors.js';
 import {
   DECISION_KINDS,
   DECISION_PRESETS,
@@ -48,15 +49,35 @@ import { CONSENT_CHOICES, CONSENT_METHODS, type ConsentEntry, type ConsentReques
 export const CONSENT_KINDS: Partial<Record<DecisionKind, { legal: string; note: string }>> = {
   common_area_change: { legal: 'KMK m.19/2', note: 'Kanun metni "bütün kat maliklerinin beşte dördünün yazılı rızası" der.' },
   management_plan_change: { legal: 'KMK m.28', note: 'Kanun "beşte dördünün oyu" der; imza toplanarak değişiklik yorumdur, teyit edilmeli.' },
-  use_change: { legal: 'KMK m.24/2', note: 'Kurulun oybirliğiyle kararı aranır; bütün maliklerin yazılı rızası yorumdur, teyit edilmeli.' },
-  central_heating_conversion: { legal: 'KMK m.42/4', note: 'Sayı ve arsa payı olarak oybirliği; bütün maliklerin yazılı rızası yorumdur, teyit edilmeli.' },
-  major_disposition: { legal: 'KMK m.45', note: 'Bütün kat maliklerinin oybirliği; yazılı rıza yorumdur, teyit edilmeli.' },
-  additional_floor: { legal: 'KMK m.44', note: 'Kurulun oybirliğiyle kararı ve arsa paylarının oybirliğiyle yeniden tespiti; tapu memuru huzurunda resmi senet ayrıca gerekir (m.44/c).' },
-  custom: { legal: 'yönetim planı / özel', note: 'Yönetim planındaki hükme dayanır; teyit edilmeli.' },
+  use_change: { legal: 'KMK m.24/2', note: 'Kurulun oybirliğiyle kararı aranır; bütün maliklerin yazılı rızası yorumdur, teyit edilmeli. Hisseli bölümde bütün paydaşların imzası gerekir (TMK m.692 yorumu).' },
+  central_heating_conversion: {
+    legal: 'KMK m.42/4 (ikinci cümle)',
+    note: 'Yalnızca 2.000 m² ve üzeri binada merkeziden bireysel ısıtmaya geçiş sayı ve arsa payı olarak oybirliği ister; bütün maliklerin yazılı rızası yorumdur, teyit edilmeli.',
+  },
+  major_disposition: { legal: 'KMK m.45', note: 'Bütün kat maliklerinin oybirliği; yazılı rıza yorumdur, teyit edilmeli. Hisseli bölümde bütün paydaşların imzası gerekir (TMK m.692 yorumu).' },
+  additional_floor: {
+    legal: 'KMK m.44',
+    note: 'Kurulun oybirliğiyle kararı ve arsa paylarının oybirliğiyle yeniden tespiti; tapu memuru huzurunda resmi senet ayrıca gerekir (m.44/c). Hisseli bölümde bütün paydaşların imzası gerekir (TMK m.692 yorumu).',
+  },
+  custom: { legal: 'yönetim planı / özel', note: 'Yönetim planındaki hükme dayanır (yalnızca beşte dört, üçte iki veya oybirliği); teyit edilmeli.' },
 };
 
-/** Ozel turde secilebilen cogunluklar (toplanti katilanlariyla sayilan `attendees` toplanti disinda anlamsiz). */
-const CONSENT_RULES: readonly MajorityRule[] = MAJORITY_RULES.filter((r) => r !== 'attendees');
+/**
+ * Ozel turde secilebilen cogunluklar: yalnizca nitelikli (besde dort, ucte iki, oybirligi). Basit
+ * cogunluk (`attendees`, `persons_and_land`) toplanti karari ister (m.30, m.42/1): yazili rizayla
+ * toplanti atlanamaz.
+ */
+export const CONSENT_RULES: readonly MajorityRule[] = ['four_fifths_persons', 'four_fifths_votes', 'four_fifths_persons_and_land', 'two_thirds_votes', 'unanimous'];
+
+/**
+ * Tasarruf niteligindeki oybirligi turleri: hisseli bolumde riza icin BUTUN paydaslarin imzasi
+ * (TMK m.692 paylı mülkiyette tasarruf; yorum). Itiraz icin tek paydas yeter (oybirligini bozar).
+ * Diger turlerde paydaslarin temsilcisi (m.31/3) yeterli.
+ */
+export const ALL_COOWNER_KINDS: readonly DecisionKind[] = ['major_disposition', 'additional_floor', 'use_change'];
+
+/** Talep en fazla bu kadar gun acik kalir (sonra kayit eklenmez, kapatilir veya iptal edilir). */
+export const CONSENT_MAX_DAYS = 90;
 
 export const CONSENT_METHOD_LABELS = { wet_signature: 'Islak imza', notarized: 'Noter onaylı', e_signature: 'Nitelikli e-imza', other: 'Diğer' } as const;
 
@@ -95,7 +116,7 @@ export function createConsentService(deps: AssemblyServiceDeps, h: AssemblyHelpe
     return c;
   }
 
-  const view = ({ PK: _pk, SK: _sk, ...rest }: ConsentRequest) => rest;
+  const view = ({ PK: _pk, SK: _sk, ...rest }: ConsentRequest) => ({ ...rest, expiresOn: rest.expiresOn ?? addDays(rest.rollDate, CONSENT_MAX_DAYS) });
   const entryView = ({ PK: _pk, SK: _sk, document, ...rest }: ConsentEntry) => ({ ...rest, ...(document ? { document: { fileName: document.fileName, contentType: document.contentType, size: document.size } } : {}) });
 
   const audit = (ctx: AssemblyContext, c: Pick<ConsentRequest, 'consentId'>, action: string, details: Record<string, unknown>, reason?: string) => ({
@@ -149,8 +170,10 @@ export function createConsentService(deps: AssemblyServiceDeps, h: AssemblyHelpe
       decisionKind,
       rule,
       rollDate,
+      expiresOn: addDays(rollDate, CONSENT_MAX_DAYS),
       roll: snapshot.meta,
       status: 'open',
+      entryCount: 0,
       createdAt: now,
       createdBy: ctx.userId,
       updatedAt: now,
@@ -167,10 +190,26 @@ export function createConsentService(deps: AssemblyServiceDeps, h: AssemblyHelpe
     return { items: items.map(view) };
   }
 
+  /** Talep acildiktan sonra malik(leri) degisen bolumler (bugunku canli oy listesine gore). */
+  async function ownerChanges(ctx: AssemblyContext, c: ConsentRequest, entries: readonly RollEntry[]): Promise<Set<string>> {
+    const day = today();
+    if (c.status !== 'open' || day <= c.rollDate) return new Set();
+    const live = (await h.snapshot(ctx, 'consent', c.consentId, day, h.stamp())).entries;
+    const ownersOf = (e: RollEntry | undefined) => (e ? e.owners.map((o) => o.userId).sort().join(',') : '');
+    const liveOf = new Map(live.map((e) => [e.unitId, e]));
+    return new Set(entries.filter((e) => ownersOf(e) !== ownersOf(liveOf.get(e.unitId))).map((e) => e.unitId));
+  }
+
   /** Ayrinti: bolum bazinda gecerli kayit (imzalayan adi), sonuc (kapaliysa kesinlesen) ve dayanak. */
   async function consentDetail(ctx: AssemblyContext, consentId: string) {
     const c = await requireConsent(ctx, consentId);
     const [s, names] = await Promise.all([state(ctx, c), h.names(ctx)]);
+    const changed = await ownerChanges(ctx, c, s.entries);
+    const expiresOn = c.expiresOn ?? addDays(c.rollDate, CONSENT_MAX_DAYS);
+    const warnings: string[] = [];
+    if (changed.size) warnings.push(`${changed.size} bölümde talep açıldıktan sonra malik değişti; sayım talebin açıldığı günün listesiyle yapılır. Yeni malikin rızası gerekiyorsa yeni talep açın (halefler kurul kararıyla bağlıdır, KMK m.32/2; yazılı rıza için teyit edilmeli).`);
+    if (c.status === 'open' && today() > expiresOn) warnings.push(`Talebin ${CONSENT_MAX_DAYS} günlük süresi ${expiresOn} tarihinde doldu; yeni kayıt eklenemez, talebi kapatın veya iptal edin.`);
+    else if (c.status === 'open' && dayDiff(today(), expiresOn) <= 7) warnings.push(`Talebin süresi ${expiresOn} tarihinde dolacak.`);
     const latestOf = new Map(s.latest.map((e) => [e.unitId, e]));
     const history = new Map<string, number>();
     for (const e of s.all) history.set(e.unitId, (history.get(e.unitId) ?? 0) + 1);
@@ -183,9 +222,10 @@ export function createConsentService(deps: AssemblyServiceDeps, h: AssemblyHelpe
         ...(r.landShare ? { landShare: r.landShare } : {}),
         owners: r.owners.map((o) => ({ userId: o.userId, ...(names.get(o.userId) ? { name: names.get(o.userId) } : {}) })),
         ...(e ? { entry: { ...entryView(e), ...(names.get(e.signerUserId) ? { signerName: names.get(e.signerUserId) } : {}) }, records: history.get(r.unitId) ?? 1 } : {}),
+        ...(changed.has(r.unitId) ? { ownerChanged: true } : {}),
       };
     });
-    return { consent: view(c), legal: CONSENT_KINDS[c.decisionKind], outcome: s.outcome, rows };
+    return { consent: view(c), legal: CONSENT_KINDS[c.decisionKind], outcome: s.outcome, rows, warnings, allCoOwners: ALL_COOWNER_KINDS.includes(c.decisionKind) };
   }
 
   /**
@@ -203,14 +243,38 @@ export function createConsentService(deps: AssemblyServiceDeps, h: AssemblyHelpe
     if (signedOn > today()) throw new ValidationError('İmza tarihi bugünden sonra olamaz', 'signedOn');
     const c = await requireConsent(ctx, consentId);
     if (c.status !== 'open') throw new AssemblyError('conflict', c.status === 'closed' ? 'Talep kapatıldı; sonuç kesinleşti' : 'Talep iptal edildi');
+    const expiresOn = c.expiresOn ?? addDays(c.rollDate, CONSENT_MAX_DAYS);
+    if (today() > expiresOn) throw new AssemblyError('conflict', `Talebin ${CONSENT_MAX_DAYS} günlük süresi doldu (${expiresOn}); talebi kapatın veya yeni talep açın`);
+    // Riza talebin acildigi gunden once verilmis sayilmaz (oy listesi o gun dondu).
+    if (signedOn < c.rollDate) throw new ValidationError(`İmza tarihi talebin açıldığı günden (${c.rollDate}) önce olamaz`, 'signedOn');
     const s = await state(ctx, c);
     const entry = s.entries.find((e) => e.unitId === unitId);
     if (!entry) throw new AssemblyError('not_found', 'Bölüm talebin oy listesinde yok');
+    const allCoOwners = ALL_COOWNER_KINDS.includes(c.decisionKind) && entry.owners.length > 1;
     const signerUserId = o.signerUserId === undefined || o.signerUserId === null || o.signerUserId === '' ? undefined : assertId(o.signerUserId, 'signerUserId');
-    if (entry.owners.length > 1 && !signerUserId) throw new ValidationError('Hisseli bölümde rızayı veren paydaşı (temsilci) seçin', 'signerUserId');
-    const signer = signerUserId ?? entry.owners[0]?.userId;
+    const listed = o.signerUserIds === undefined || o.signerUserIds === null ? undefined : parseSigners(o.signerUserIds);
+    let signers: string[];
+    if (allCoOwners && choice === 'consent') {
+      // Tasarruf niteliginde oybirligi: bolumun butun paydaslari imzalamali.
+      signers = listed ?? (signerUserId ? [signerUserId] : []);
+      const owners = entry.owners.map((x) => x.userId);
+      if (!owners.every((u) => signers.includes(u))) throw new ValidationError('Bu karar türünde hisseli bölümün bütün paydaşlarının imzası gerekir (signerUserIds)', 'signerUserIds');
+    } else {
+      if (listed && listed.length > 1) throw new ValidationError('Bu kayıtta tek imzalayan (temsilci) seçilir', 'signerUserIds');
+      const one = signerUserId ?? listed?.[0];
+      if (entry.owners.length > 1 && !one) throw new ValidationError('Hisseli bölümde rızayı veren paydaşı (temsilci) seçin', 'signerUserId');
+      signers = [one ?? (entry.owners[0]?.userId as string)].filter(Boolean);
+    }
+    const signer = [...signers].sort()[0];
     if (!signer) throw new AssemblyError('unprocessable', 'Bölümün oy listesinde maliki yok');
-    if (!entry.owners.some((x) => x.userId === signer)) throw new ValidationError('İmzalayan bu bölümün malikleri arasında değil', 'signerUserId');
+    for (const u of signers) if (!entry.owners.some((x) => x.userId === u)) throw new ValidationError('İmzalayan bu bölümün malikleri arasında değil', 'signerUserId');
+    // Imzalayan imza gunu de malik olmali (talep acildiktan sonra devir).
+    if (signedOn > c.rollDate) {
+      const onDay = (await h.snapshot(ctx, 'consent', c.consentId, signedOn, h.stamp())).entries.find((e) => e.unitId === unitId);
+      for (const u of signers) {
+        if (!onDay?.owners.some((x) => x.userId === u)) throw new AssemblyError('unprocessable', `İmzalayan ${signedOn} tarihinde bu bölümün maliki değil`);
+      }
+    }
     const existing = s.latest.find((e) => e.unitId === unitId);
     if (existing && (o.correctionReason === undefined || o.correctionReason === null)) {
       throw new AssemblyError('conflict', 'Bu bölümün rıza kaydı var ve değiştirilemez; düzeltme gerekçesiyle yeni kayıt olarak eklenir');
@@ -230,7 +294,8 @@ export function createConsentService(deps: AssemblyServiceDeps, h: AssemblyHelpe
     if (o.document !== undefined && o.document !== null) {
       if (!deps.documents) throw new DocumentError('unavailable', 'Belge deposu yapılandırılmamış (DOCUMENTS_BUCKET)');
       const d = asObject(o.document, 'document');
-      document = await deps.documents.promote(ctx.apartmentId, { uploadId: assertId(d.uploadId, 'document.uploadId'), fileName: reqString(d, 'fileName', 255) }, { consentId, unitId });
+      // Yalnizca dogrulama ve kalici anahtar: kopya kayit yazildiktan SONRA (cakismada sahipsiz dosya yok).
+      document = await deps.documents.prepare(ctx.apartmentId, { uploadId: assertId(d.uploadId, 'document.uploadId'), fileName: reqString(d, 'fileName', 255) }, { consentId, unitId });
     }
     const seq = (existing?.seq ?? 0) + 1;
     const now = h.stamp();
@@ -243,6 +308,7 @@ export function createConsentService(deps: AssemblyServiceDeps, h: AssemblyHelpe
       seq,
       choice,
       signerUserId: signer,
+      ...(signers.length > 1 ? { signerUserIds: [...signers].sort() } : {}),
       signedOn,
       method,
       ...(methodNote ? { methodNote } : {}),
@@ -260,8 +326,22 @@ export function createConsentService(deps: AssemblyServiceDeps, h: AssemblyHelpe
       if (err instanceof DataAccessError && err.code === 'conflict') throw new AssemblyError('conflict', 'Kayıt bu arada değişti veya talep kapatıldı; sayfayı yenileyin');
       throw err;
     }
+    // Belge kalici yere kayit basarili olduktan sonra; kopyalanamazsa imzali link aninda yeniden dener.
+    let documentPending = false;
+    if (document && deps.documents) {
+      try {
+        await deps.documents.commit(ctx.apartmentId, document);
+      } catch {
+        documentPending = true;
+      }
+    }
     const latest = [...s.latest.filter((e) => e.unitId !== unitId), rec];
-    return { entry: entryView(rec), outcome: consentOutcome(c.rule, s.entries, c.roll, latest) };
+    return { entry: entryView(rec), outcome: consentOutcome(c.rule, s.entries, c.roll, latest), ...(documentPending ? { documentPending: true } : {}) };
+  }
+
+  function parseSigners(raw: unknown): string[] {
+    if (!Array.isArray(raw) || raw.length < 1 || raw.length > 20) throw new ValidationError('signerUserIds 1-20 kişi olmalı', 'signerUserIds');
+    return [...new Set(raw.map((u) => assertId(u, 'signerUserIds')))];
   }
 
   /** Talebi kapatir: sonuc kesinlesir (talep kaydina yazilir), sonra riza kaydi eklenmez. */
@@ -272,6 +352,9 @@ export function createConsentService(deps: AssemblyServiceDeps, h: AssemblyHelpe
     if (c.version !== version) throw new AssemblyError('conflict', 'Kayıt başka bir işlemle değişti (sürüm uyuşmazlığı)');
     if (c.status !== 'open') throw new AssemblyError('conflict', 'Yalnızca açık talep kapatılabilir');
     const s = await state(ctx, c);
+    // Her riza kaydi talebin surumunu ve sayacini ayni islemde artirir: okumadan sonra eklenen kayit
+    // kapanisi surum kosuluyla 409'a dusurur (son kayit sonuctan disarida kalamaz).
+    if (c.entryCount !== undefined && s.all.length !== c.entryCount) throw new AssemblyError('conflict', 'Kayıtlar bu arada değişti; sayfayı yenileyip tekrar kapatın');
     const now = h.stamp();
     const next: ConsentRequest = { ...c, status: 'closed', result: s.outcome, closedAt: now, closedBy: ctx.userId, updatedAt: now, updatedBy: ctx.userId, version: c.version + 1 };
     const entriesHash = sha256(s.latest.map((e) => [e.unitId, e.seq, e.choice]));

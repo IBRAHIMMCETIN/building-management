@@ -17,6 +17,7 @@
  * ileti siniri), worker cagri ve toplanti kaydini okur.
  */
 import { createHash } from 'node:crypto';
+import { bucketOf } from '../polls/rollSnapshot.js';
 import type { DomainEvent } from '../../events/publisher.js';
 import type { IsoDate, IsoDateTime } from '../core/types.js';
 import type { NotificationData, NotificationTemplate } from '../notifications/notifier.js';
@@ -29,6 +30,12 @@ type AssemblyCalledEvent = Extract<DomainEvent, { type: 'ASSEMBLY_CALLED' }>;
 type AssemblyNoticeEvent = Extract<DomainEvent, { type: 'ASSEMBLY_CANCELLED' | 'ASSEMBLY_RESCHEDULED' }>;
 
 export const isAssemblyEvent = (e: DomainEvent): e is AssemblyCalledEvent => e.type === 'ASSEMBLY_CALLED';
+
+/** Bildirim parcasi basina alici (worker 60 sn icinde, kalan kisim tekrar denemede). */
+export const NOTICE_PART_SIZE = 1000;
+export const partsFor = (recipients: number) => Math.max(1, Math.ceil(recipients / NOTICE_PART_SIZE));
+/** Alici bu parcada mi? Kullanici kimliginin ozetiyle: alici kumesi sonradan degisse de kayma yok. */
+export const inPart = (userId: string, part: number | undefined, parts: number | undefined) => !parts || parts <= 1 || bucketOf(userId, parts) === (part ?? 0);
 export const isAssemblyNoticeEvent = (e: DomainEvent): e is AssemblyNoticeEvent => e.type === 'ASSEMBLY_CANCELLED' || e.type === 'ASSEMBLY_RESCHEDULED';
 
 /**
@@ -72,6 +79,7 @@ export type AssemblyNoticeSnapshot = {
   location?: string;
   onlineUrl?: string;
   cancelReason?: string;
+  secondMeetingPlan?: Assembly['secondMeetingPlan'];
   reschedules: readonly AssemblyReschedule[];
   currentMeetingHash: string;
   /** Tum cagrilarin alicilari (birlesim). */
@@ -104,14 +112,16 @@ export function assemblyCallRecipients(event: AssemblyCalledEvent, memberships: 
     secondMeetingUrl: plan?.onlineUrl,
     resend: String(p.resend),
   };
-  return [...new Set(call.recipientUserIds)].filter((u) => users.has(u)).map((userId) => ({ userId, template: 'assembly_called', data }));
+  return [...new Set(call.recipientUserIds)].filter((u) => users.has(u) && inPart(u, p.part, p.parts)).map((userId) => ({ userId, template: 'assembly_called', data }));
 }
 
 /** Iptal ve erteleme bildirimi alicilari (cagri almis, hala uye olan kullanicilar). */
 export function assemblyNoticeRecipients(event: AssemblyNoticeEvent, memberships: readonly UnitMembership[], day: IsoDate, now: Date, snap?: AssemblyNoticeSnapshot): AssemblyCallRecipient[] {
   if (!snap || snap.assemblyId !== event.payload.assemblyId) return [];
   const users = membersOf(event.apartmentId, memberships, day);
-  const to = (template: NotificationTemplate, data: NotificationData) => [...new Set(snap.recipientUserIds)].filter((u) => users.has(u)).map((userId) => ({ userId, template, data }));
+  const p = event.payload;
+  const to = (template: NotificationTemplate, data: NotificationData) =>
+    [...new Set(snap.recipientUserIds)].filter((u) => users.has(u) && inPart(u, p.part, p.parts)).map((userId) => ({ userId, template, data }));
   if (event.type === 'ASSEMBLY_CANCELLED') {
     if (snap.status !== 'cancelled') return [];
     return to('assembly_cancelled', { assemblyId: snap.assemblyId, kind: snap.kind, scheduledAt: snap.scheduledAt, reason: snap.cancelReason });
@@ -128,6 +138,10 @@ export function assemblyNoticeRecipients(event: AssemblyNoticeEvent, memberships
     onlineUrl: snap.onlineUrl,
     placeChanged: String((r.previousLocation ?? '') !== (r.location ?? '') || (r.previousOnlineUrl ?? '') !== (r.onlineUrl ?? '')),
     timeChanged: String(r.previousScheduledAt !== r.scheduledAt),
+    movedEarlier: String(r.scheduledAt < r.previousScheduledAt),
+    secondMeetingAt: snap.secondMeetingPlan?.scheduledAt,
+    secondMeetingLocation: snap.secondMeetingPlan?.location,
+    secondMeetingUrl: snap.secondMeetingPlan?.onlineUrl,
     reason: r.reason,
   });
 }

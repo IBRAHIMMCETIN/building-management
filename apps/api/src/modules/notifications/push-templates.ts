@@ -142,7 +142,7 @@ function spec(n: Notification, now: Date): Spec | undefined {
       return { title: 'Kat malikleri kurulu toplantısı iptal edildi', body: `${formatDateTime(d.scheduledAt)} tarihli toplantı yapılmayacak.`, path: withId('/genel-kurul', d.assemblyId) };
     case 'assembly_rescheduled':
       return {
-        title: d.timeChanged === 'true' ? 'Kat malikleri kurulu toplantısı ertelendi' : 'Toplantı yeri değişti',
+        title: d.timeChanged !== 'true' ? 'Toplantı yeri değişti' : d.movedEarlier === 'true' ? 'Kat malikleri kurulu toplantısının tarihi değişti' : 'Kat malikleri kurulu toplantısı ertelendi',
         body: `Yeni tarih: ${formatDateTime(d.scheduledAt)} (Türkiye saati). Ayrıntılar için dokunun.`,
         path: withId('/genel-kurul', d.assemblyId),
       };

@@ -8,10 +8,15 @@
  *    edilir (`voidedAt`), durum gecmisi kayitta kalir. Her yazim denetimli (`assembly.service*`), surumlu.
  *  - "Tebligat yapildi": imza karsiligi elden veya taahhutlu mektupla teslim. E-posta bilgilendirmesi
  *    (sistem e-postasi dahil) yasal cagri sayilmaz (README "Hukuki yorum").
- *  - Sure: olaganustu toplantida (m.29/2) cagri toplantidan en az 15 gun once; elden teslimde imza
- *    tarihi, taahhutlu mektupta postaya verilis tarihi esas alinir (teyit edilmeli). Son gun gecmis
- *    veya 3 gun icindeyse ve tebligat yapilmamis malik varsa uyari. Olagan toplantida yonetim plani
- *    notu (m.29/1).
+ *  - Sure: olaganustu toplantida (m.29/2) cagri toplantidan en az 15 gun once. Zamanlilik TESLIM
+ *    (tebellug) tarihiyle olculur: elden teslimde imza tarihi, taahhutlu mektupta teslim tarihi
+ *    (`statusOn`). Daha guvenli okuma: tebligat gunu sayilmaz, 15 tam gun -> toplantidan en az 16 gun
+ *    once teslim (`deadline`); tebligat gunu sayilirsa 15 gun once (`deadlineLenient`). Zamaninda
+ *    postalanip gec teslim edilen mektup ayri durumdur (`late_delivery`). Son gun gecmis veya 3 gun
+ *    icindeyse ve tebligat yapilmamis malik varsa uyari. Olagan toplantida yonetim plani notu (m.29/1).
+ *  - Erteleme: her deneme kaydedildigi andaki erteleme sirasini (`rescheduleSeq`) ve toplanti zamanini
+ *    tasir; son ertelemeden ONCEKI denemeler eskidir (yeni tarih icin cagri yeniden yapilmali), durum
+ *    hesabina girmez.
  */
 import type { IsoDate } from '../core/types.js';
 import { ValidationError, asObject, assertId, isIsoDate, optString, reqEnum, reqInt, reqString } from '../core/validation.js';
@@ -38,7 +43,14 @@ export const SERVICE_RISK_DAYS = 3;
 
 export const SERVICE_METHOD_LABELS = { hand_signed: 'İmza karşılığı elden', registered_mail: 'Taahhütlü mektup', email_info: 'E-posta bilgilendirme' } as const;
 
-export type ServiceState = 'served' | 'served_late' | 'pending' | 'returned' | 'none';
+/** Daha guvenli okuma (tebligat gunu sayilmaz): teslim toplantidan en az bu kadar gun once. */
+export const SERVICE_NOTICE_DAYS = CALL_NOTICE_DAYS + 1;
+
+/**
+ * `served`: guvenli son gune kadar teslim; `late_delivery`: zamaninda postalandi ama gec teslim;
+ * `served_late`: gec postalandi ve teslim edildi; `pending` / `returned` / `none`.
+ */
+export type ServiceState = 'served' | 'late_delivery' | 'served_late' | 'pending' | 'returned' | 'none';
 
 export type ServiceRow = {
   ownerId: string;
@@ -58,37 +70,58 @@ function reqDate(o: Record<string, unknown>, key: string): IsoDate {
   return v;
 }
 
-/** Malikin tebligat durumu: gecerli (iptal edilmemis) yasal yontemli teslimler esas. */
-export function serviceState(attempts: readonly ServiceAttempt[], deadline: IsoDate): { state: ServiceState; servedOn?: IsoDate } {
-  const legal = attempts.filter((x) => !x.voidedAt && LEGAL_SERVICE_METHODS.includes(x.method));
-  const delivered = legal.filter((x) => x.status === 'delivered').sort((x, y) => x.sentOn.localeCompare(y.sentOn));
+/** Deneme son ertelemeden once mi kaydedildi (eski tarih icin)? Eski kayitta sira yok: 0. */
+export const isStale = (x: Pick<ServiceAttempt, 'rescheduleSeq'>, reschedules: number) => (x.rescheduleSeq ?? 0) < reschedules;
+
+/**
+ * Malikin tebligat durumu: gecerli (iptal edilmemis, son ertelemeden sonra kaydedilmis) yasal yontemli
+ * teslimler esas; zamanlilik teslim tarihiyle (`statusOn`; yoksa gonderim tarihi).
+ */
+export function serviceState(attempts: readonly ServiceAttempt[], deadline: IsoDate, reschedules = 0): { state: ServiceState; servedOn?: IsoDate } {
+  const legal = attempts.filter((x) => !x.voidedAt && !isStale(x, reschedules) && LEGAL_SERVICE_METHODS.includes(x.method));
+  const deliveredOn = (x: ServiceAttempt) => x.statusOn ?? x.sentOn;
+  const delivered = legal.filter((x) => x.status === 'delivered').sort((x, y) => deliveredOn(x).localeCompare(deliveredOn(y)));
   const first = delivered[0];
-  if (first) return { state: first.sentOn <= deadline ? 'served' : 'served_late', servedOn: first.sentOn };
+  if (first) {
+    const on = deliveredOn(first);
+    if (on <= deadline) return { state: 'served', servedOn: on };
+    return { state: delivered.some((x) => x.sentOn <= deadline) ? 'late_delivery' : 'served_late', servedOn: on };
+  }
   if (legal.some((x) => x.status === 'pending')) return { state: 'pending' };
   if (legal.some((x) => x.status === 'returned')) return { state: 'returned' };
   return { state: 'none' };
 }
 
 /** m.29 uyarilari (engel degil). `today`: Istanbul gunu. */
-export function serviceWarnings(a: Pick<Assembly, 'kind' | 'secondMeeting' | 'rollDate'>, counts: { owners: number; served: number; servedLate: number }, today: IsoDate): string[] {
-  const deadline = addDays(a.rollDate, -CALL_NOTICE_DAYS);
+export function serviceWarnings(
+  a: Pick<Assembly, 'kind' | 'secondMeeting' | 'rollDate'>,
+  counts: { owners: number; served: number; servedLate: number; lateDelivery?: number; staleAttempts?: number },
+  today: IsoDate,
+): string[] {
+  const deadline = addDays(a.rollDate, -SERVICE_NOTICE_DAYS);
+  const lenient = addDays(a.rollDate, -CALL_NOTICE_DAYS);
   const left = dayDiff(today, deadline);
-  const unserved = counts.owners - counts.served - counts.servedLate;
+  const late = counts.servedLate + (counts.lateDelivery ?? 0);
+  const unserved = counts.owners - counts.served - late;
   const out: string[] = [];
   if (a.secondMeeting) {
     out.push('İkinci toplantının yeri ve zamanı ilk toplantının çağrısında bildirilir (KMK m.29/3); bu liste ilk çağrının tebliğini izlemek için kullanılabilir.');
     return out;
   }
+  if (counts.staleAttempts) {
+    out.push(`Toplantı ertelendi: önceki tarih için kaydedilen ${counts.staleAttempts} teslim denemesi yeni tarih için geçerli sayılmaz; yeni tarih için çağrıyı yeniden tebliğ edin.`);
+  }
   if (a.kind === 'extraordinary') {
     if (unserved > 0 && left < 0) {
-      out.push(`KMK m.29/2 süresi geçti: ${unserved} kat malikine toplantıdan en az ${CALL_NOTICE_DAYS} gün önce (en geç ${deadline}) imza karşılığı veya taahhütlü mektupla çağrı yapıldığı kayıtlı değil. Toplantıyı erteleyip çağrıyı yenilemeyi değerlendirin; aksi halde kararlar iptal davası riski taşır.`);
+      out.push(`KMK m.29/2 süresi geçti: ${unserved} kat malikine toplantıdan en az ${CALL_NOTICE_DAYS} gün önce (tebligat günü sayılmadan en geç ${deadline}) imza karşılığı veya taahhütlü mektupla çağrı tebliğ edildiği kayıtlı değil. Toplantıyı erteleyip çağrıyı yenilemeyi değerlendirin; aksi halde kararlar iptal davası riski taşır.`);
     } else if (unserved > 0 && left <= SERVICE_RISK_DAYS) {
-      out.push(`KMK m.29/2 süresi riskte: ${unserved} kat malikine en geç ${deadline} tarihine kadar (${left} gün) imza karşılığı veya taahhütlü mektupla çağrı yapılmalı.`);
+      out.push(`KMK m.29/2 süresi riskte: ${unserved} kat malikine en geç ${deadline} tarihine kadar (${left} gün) imza karşılığı veya taahhütlü mektupla çağrı tebliğ edilmeli (tebligat günü sayılırsa son gün ${lenient}).`);
     }
-    if (counts.servedLate > 0) out.push(`${counts.servedLate} kat malikine çağrı ${CALL_NOTICE_DAYS} günlük süre geçtikten sonra yapıldı (KMK m.29/2).`);
+    if (counts.lateDelivery) out.push(`${counts.lateDelivery} kat malikine çağrı zamanında postalandı ancak ${deadline} tarihinden sonra teslim edildi; teslim tarihi esas alınırsa süre karşılanmamış olabilir (KMK m.29/2).`);
+    if (counts.servedLate > 0) out.push(`${counts.servedLate} kat malikine çağrı ${CALL_NOTICE_DAYS} günlük süre geçtikten sonra tebliğ edildi (KMK m.29/2).`);
   } else {
     out.push('Olağan toplantı yönetim planında gösterilen zamanda yapılır (KMK m.29/1); yönetim planınız çağrı usulü ve süresi öngörüyorsa bu listeyle izleyin.');
-    if (unserved > 0 && left <= SERVICE_RISK_DAYS) out.push(`${unserved} kat malikine yasal yöntemle çağrı yapıldığı kayıtlı değil (15 günlük başvuru tarihi ${deadline}).`);
+    if (unserved > 0 && left <= SERVICE_RISK_DAYS) out.push(`${unserved} kat malikine yasal yöntemle çağrı tebliğ edildiği kayıtlı değil (15 günlük süre için son teslim günü ${deadline}).`);
   }
   return out;
 }
@@ -111,38 +144,52 @@ export function createServiceTracking(deps: AssemblyServiceDeps, h: AssemblyHelp
     return out;
   }
 
-  const attemptView = ({ history: _h, ...rest }: ServiceAttempt) => rest;
+  const attemptView = ({ history: _h, ...rest }: ServiceAttempt, reschedules = 0) => ({ ...rest, ...(isStale(rest, reschedules) ? { stale: true } : {}) });
 
   /** Tebligat raporu: malik basina durum, ozet ve m.29 uyarilari. `filter=unserved`: tebligat yapilmamislar. */
   async function serviceReport(ctx: AssemblyContext, id: string, q: { filter?: string } = {}) {
     if (q.filter !== undefined && q.filter !== 'unserved') throw new ValidationError('filter yalnızca "unserved" olabilir', 'filter');
     const a = await h.requireAssembly(ctx, id);
     const [entries, records, names] = await Promise.all([rollEntries(ctx, a), repo.listServiceRecords(ctx.apartmentId, a.assemblyId), h.names(ctx)]);
-    const deadline = addDays(a.rollDate, -CALL_NOTICE_DAYS);
+    const deadline = addDays(a.rollDate, -SERVICE_NOTICE_DAYS);
+    const reschedules = a.reschedules?.length ?? 0;
     const recOf = new Map(records.filter((r) => r.apartmentId === ctx.apartmentId).map((r) => [r.ownerId, r]));
+    let staleAttempts = 0;
     const rows: ServiceRow[] = [...ownersOf(entries)].map(([ownerId, units]) => {
       const rec = recOf.get(ownerId);
-      const s = serviceState(rec?.attempts ?? [], deadline);
+      const s = serviceState(rec?.attempts ?? [], deadline, reschedules);
+      staleAttempts += (rec?.attempts ?? []).filter((x) => !x.voidedAt && isStale(x, reschedules)).length;
       return {
         ownerId,
         ...(names.get(ownerId) ? { name: names.get(ownerId) } : {}),
         units,
         state: s.state,
         ...(s.servedOn ? { servedOn: s.servedOn } : {}),
-        attempts: (rec?.attempts ?? []).map(attemptView),
+        attempts: (rec?.attempts ?? []).map((x) => attemptView(x, reschedules)),
         version: rec?.version ?? 0,
       };
     });
     rows.sort((x, y) => (x.name ?? '~').localeCompare(y.name ?? '~', 'tr') || x.ownerId.localeCompare(y.ownerId));
     const count = (s: ServiceState) => rows.filter((r) => r.state === s).length;
-    const summary = { owners: rows.length, served: count('served'), servedLate: count('served_late'), pending: count('pending'), returned: count('returned'), none: count('none') };
-    const unserved = rows.filter((r) => r.state !== 'served' && r.state !== 'served_late');
+    const summary = {
+      owners: rows.length,
+      served: count('served'),
+      lateDelivery: count('late_delivery'),
+      servedLate: count('served_late'),
+      pending: count('pending'),
+      returned: count('returned'),
+      none: count('none'),
+      staleAttempts,
+    };
+    const unserved = rows.filter((r) => r.state !== 'served' && r.state !== 'served_late' && r.state !== 'late_delivery');
     return {
       assemblyId: a.assemblyId,
       kind: a.kind,
       secondMeeting: a.secondMeeting,
       rollFrozen: Boolean(a.roll),
+      scheduledAt: a.scheduledAt,
       deadline,
+      deadlineLenient: addDays(a.rollDate, -CALL_NOTICE_DAYS),
       daysToDeadline: dayDiff(today(), deadline),
       summary: { ...summary, unserved: unserved.length },
       warnings: a.status === 'cancelled' ? [] : serviceWarnings(a, summary, today()),
@@ -150,7 +197,7 @@ export function createServiceTracking(deps: AssemblyServiceDeps, h: AssemblyHelp
     };
   }
 
-  async function write(ctx: AssemblyContext, next: AssemblyServiceRecord, expected: number, action: string, details: Record<string, unknown>, reason?: string) {
+  async function write(ctx: AssemblyContext, next: AssemblyServiceRecord, expected: number, action: string, details: Record<string, unknown>, reason: string | undefined, reschedules: number) {
     try {
       await repo.putServiceRecord(next, expected, {
         apartmentId: ctx.apartmentId,
@@ -166,7 +213,7 @@ export function createServiceTracking(deps: AssemblyServiceDeps, h: AssemblyHelp
       throw err;
     }
     const { PK: _pk, SK: _sk, ...rest } = next;
-    return { record: { ...rest, attempts: rest.attempts.map(attemptView) } };
+    return { record: { ...rest, attempts: rest.attempts.map((x) => attemptView(x, reschedules)) } };
   }
 
   async function loadFor(ctx: AssemblyContext, id: string, ownerId: string, version: number) {
@@ -207,6 +254,9 @@ export function createServiceTracking(deps: AssemblyServiceDeps, h: AssemblyHelp
       ...(statusOn ? { statusOn } : {}),
       ...(note ? { note } : {}),
       history: [{ status, ...(statusOn ? { statusOn } : {}), at: now, by: ctx.userId }],
+      // Hangi toplanti tarihi icin: sonraki ertelemede bu deneme eskir.
+      meetingAt: a.scheduledAt,
+      rescheduleSeq: a.reschedules?.length ?? 0,
       recordedAt: now,
       recordedBy: ctx.userId,
     };
@@ -221,8 +271,8 @@ export function createServiceTracking(deps: AssemblyServiceDeps, h: AssemblyHelp
       updatedBy: ctx.userId,
       version: version + 1,
     };
-    const deadline = addDays(a.rollDate, -CALL_NOTICE_DAYS);
-    return write(ctx, next, version, 'assembly.service', { seq: attempt.seq, method, sentOn, status, legal: LEGAL_SERVICE_METHODS.includes(method), timely: sentOn <= deadline });
+    const deadline = addDays(a.rollDate, -SERVICE_NOTICE_DAYS);
+    return write(ctx, next, version, 'assembly.service', { seq: attempt.seq, method, sentOn, status, legal: LEGAL_SERVICE_METHODS.includes(method), postedTimely: sentOn <= deadline, rescheduleSeq: attempt.rescheduleSeq }, undefined, a.reschedules?.length ?? 0);
   }
 
   /**
@@ -234,7 +284,7 @@ export function createServiceTracking(deps: AssemblyServiceDeps, h: AssemblyHelp
     const version = reqInt(o, 'version', 1, Number.MAX_SAFE_INTEGER);
     if (!/^\d{1,2}$/.test(seqParam)) throw new ValidationError('Geçersiz deneme numarası', 'seq');
     const seq = Number(seqParam);
-    const { rec } = await loadFor(ctx, id, ownerId, version);
+    const { a, rec } = await loadFor(ctx, id, ownerId, version);
     const cur = rec?.attempts.find((x) => x.seq === seq);
     if (!rec || !cur) throw new AssemblyError('not_found', 'Teslim denemesi bulunamadı');
     if (cur.voidedAt) throw new AssemblyError('conflict', 'İptal edilen deneme değiştirilemez');
@@ -260,7 +310,7 @@ export function createServiceTracking(deps: AssemblyServiceDeps, h: AssemblyHelp
       details = { seq, status, statusOn };
     }
     const next: AssemblyServiceRecord = { ...rec, attempts: rec.attempts.map((x) => (x.seq === seq ? updated : x)), updatedAt: now, updatedBy: ctx.userId, version: rec.version + 1 };
-    return write(ctx, next, version, action, details, reason);
+    return write(ctx, next, version, action, details, reason, a.reschedules?.length ?? 0);
   }
 
   return { serviceReport, addServiceAttempt, updateServiceAttempt };

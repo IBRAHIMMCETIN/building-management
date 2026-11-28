@@ -10,6 +10,7 @@ import type { ReportService } from '../finance/reportService.js';
 import type { Account } from '../finance/types.js';
 import type { MaintenanceService } from '../maintenance/service.js';
 import type { PollService } from '../polls/service.js';
+import type { SiteFeatureReader } from '../features/guard.js';
 import type { AssemblyService } from '../assemblies/service.js';
 import type { TenderService } from '../tenders/service.js';
 import type { TicketService } from '../tickets/service.js';
@@ -241,6 +242,11 @@ export type PortfolioServiceDeps = {
   fallbackBudgetMs: number;
   /** Bolum hatasi yalnizca sunucu gunlugune (apartman + bolum + hata adi); istemciye kod doner. */
   log: (entry: Record<string, unknown>) => void;
+  /**
+   * Site ozellik anahtarlari: genel kurul (`admin.assemblies`) / ihale (`admin.tenders`) modulu kapali
+   * apartmanda o bolum okunmaz ve kartta yer almaz. Verilmezse kontrol yok.
+   */
+  features?: Pick<SiteFeatureReader, 'resolve'>;
 };
 
 type PageApartment = EligibleApartment & { apartmentName: string };
@@ -280,6 +286,9 @@ export function createPortfolioService(overrides: Partial<PortfolioServiceDeps> 
       .map(({ named: _named, ...rest }) => rest);
   }
 
+  /** Modul anahtari acik mi (okuyucu yoksa acik). */
+  const moduleOn = async (apartmentId: string, key: 'admin.assemblies' | 'admin.tenders') => !deps.features || (await deps.features.resolve(apartmentId))[key];
+
   function baseCard(apt: PageApartment): PortfolioCard {
     return { apartmentId: apt.apartmentId, apartmentName: apt.apartmentName, role: apt.role, readOnly: apt.role === 'observer', status: 'ok', failed: [] };
   }
@@ -307,8 +316,8 @@ export function createPortfolioService(overrides: Partial<PortfolioServiceDeps> 
       maintenance: () => deps.sources.maintenance(ctx),
       equipment: async () => equipmentFigures((await deps.sources.equipment(ctx)).items),
       polls: async () => pollFigures(await deps.sources.polls(ctx)),
-      assemblies: async () => assemblyFigures(await deps.sources.assemblies(ctx), nowIso),
-      tenders: async () => tenderFigures((await deps.sources.tenders(ctx)).items),
+      assemblies: async () => ((await moduleOn(apt.apartmentId, 'admin.assemblies')) ? assemblyFigures(await deps.sources.assemblies(ctx), nowIso) : undefined),
+      tenders: async () => ((await moduleOn(apt.apartmentId, 'admin.tenders')) ? tenderFigures((await deps.sources.tenders(ctx)).items) : undefined),
     };
     type ErrorLike = { name?: string; code?: string } | undefined;
     const values = new Map<PortfolioSection, unknown>();
@@ -319,7 +328,8 @@ export function createPortfolioService(overrides: Partial<PortfolioServiceDeps> 
       const out = baseCard(apt);
       for (const section of sections) {
         if (values.has(section)) {
-          (out as Record<string, unknown>)[section] = values.get(section);
+          // Modulu kapali bolum (undefined) kartta yer almaz.
+          if (values.get(section) !== undefined) (out as Record<string, unknown>)[section] = values.get(section);
           continue;
         }
         out.failed.push(section);

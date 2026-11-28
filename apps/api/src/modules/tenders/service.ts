@@ -746,19 +746,22 @@ export function createTenderService(overrides: Partial<TenderServiceDeps> = {}) 
   // Genel kurul karari bagi
   // -------------------------------------------------------------------------
 
-  /** Ayni apartmanin guncel (madde basina en son sirali) genel kurul kararlari: ihale karar seciciye. */
+  /**
+   * Ayni apartmanin guncel (madde basina en son sirali) genel kurul kararlari: ihale karar seciciye.
+   * Yalnizca tutanagi kesinlesmis (`held`) toplantilar: karar ancak kesinlesince baglanabilir.
+   */
   async function assemblyDecisionOptions(ctx: TenderContext) {
     staffOf(ctx);
     const [assemblies, decisions] = await Promise.all([deps.assemblies.list(ctx.apartmentId), deps.assemblies.listDecisions(ctx.apartmentId)]);
     const statusOf = new Map(assemblies.filter((a) => a.apartmentId === ctx.apartmentId).map((a) => [a.assemblyId, a.status]));
     const order = (itemId: string) => Number(itemId.replace(/\D/g, '')) || 0;
-    const items = latestDecisions(decisions.filter((d) => d.apartmentId === ctx.apartmentId && statusOf.has(d.assemblyId)))
+    const items = latestDecisions(decisions.filter((d) => d.apartmentId === ctx.apartmentId && statusOf.get(d.assemblyId) === 'held'))
       .sort((x, y) => y.meetingAt.localeCompare(x.meetingAt) || x.assemblyId.localeCompare(y.assemblyId) || order(x.itemId) - order(y.itemId))
       .map((d) => ({ assemblyId: d.assemblyId, itemId: d.itemId, seq: d.seq, itemTitle: d.itemTitle, meetingAt: d.meetingAt, decisionKind: d.decisionKind, decision: d.outcome.decision, assemblyStatus: statusOf.get(d.assemblyId) }));
     return { items };
   }
 
-  /** Bag hedefi: ayni apartmanin iptal edilmemis toplantisinin, madde icin en son (gecerli) ve KABUL edilmis karari. */
+  /** Bag hedefi: ayni apartmanin tutanagi KESINLESMIS toplantisinin, madde icin en son (gecerli) ve KABUL edilmis karari. */
   async function resolveAssemblyDecision(ctx: TenderContext, raw: unknown): Promise<TenderAssemblyDecisionLink> {
     const o = asObject(raw, 'assemblyDecision');
     const assemblyId = assertId(o.assemblyId, 'assemblyDecision.assemblyId');
@@ -766,6 +769,7 @@ export function createTenderService(overrides: Partial<TenderServiceDeps> = {}) 
     const [a, decisions] = await Promise.all([deps.assemblies.get(ctx.apartmentId, assemblyId), deps.assemblies.listDecisions(ctx.apartmentId, assemblyId)]);
     if (!a || a.apartmentId !== ctx.apartmentId) throw new TenderError('not_found', 'Genel kurul kaydı bulunamadı');
     if (a.status === 'cancelled') throw new TenderError('unprocessable', 'İptal edilen toplantının kararına bağlanamaz');
+    if (a.status !== 'held') throw new TenderError('unprocessable', 'Tutanağı kesinleşmemiş toplantının kararına bağlanamaz; önce tutanağı kesinleştirin');
     const latest = latestDecisions(decisions.filter((d) => d.apartmentId === ctx.apartmentId && d.itemId === itemId))[0];
     if (!latest) throw new TenderError('not_found', 'Genel kurul kararı bulunamadı');
     if (latest.outcome.decision !== 'accepted') throw new TenderError('unprocessable', 'Kabul edilmemiş genel kurul kararına ihale bağlanamaz');

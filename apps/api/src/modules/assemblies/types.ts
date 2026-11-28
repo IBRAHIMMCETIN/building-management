@@ -48,8 +48,11 @@ export const MAX_AGENDA_ITEMS = 30;
 
 /** Cagri alicilari kova basina (kullanici kimligi ~40 bayt: kova ~45 KB, 400 KB sinirinin cok altinda). */
 export const CALL_RECIPIENTS_PER_BUCKET = 1000;
-/** Tek cagrinin en fazla alicisi: kovalar ayni atomik yazimda (100 oge, 4 MB) kalir. */
-export const MAX_CALL_RECIPIENTS = 50_000;
+/**
+ * Tek cagrinin en fazla alicisi: kovalar ve bildirim parcalari (kova basina bir olay) ayni atomik
+ * yazimda (100 oge, 4 MB) kalir: 45 kova + 45 olay + toplanti + cagri + denetim.
+ */
+export const MAX_CALL_RECIPIENTS = 45_000;
 /** Toplanti basina en fazla erteleme / yer degisikligi bildirimi. */
 export const MAX_RESCHEDULES = 5;
 
@@ -104,6 +107,9 @@ export type AssemblyReschedule = {
   scheduledAt: IsoDateTime;
   location?: string;
   onlineUrl?: string;
+  /** Yeniden bildirilen ikinci toplanti plani (ilk toplanti ertelendiyse, m.29/3). */
+  previousSecondMeetingPlan?: SecondMeetingPlan;
+  secondMeetingPlan?: SecondMeetingPlan;
   reason: string;
   at: IsoDateTime;
   by: string;
@@ -145,6 +151,10 @@ export type AssemblyCallSummary = {
   reason?: string;
   /** Cagridaki toplanti bilgisi (tarih, yer, baglanti, gundem, ikinci toplanti) ozeti: degisirse cagri eskidir. */
   meetingHash: string;
+  /** Cagrida bildirilen toplanti zamani (erteleme bildiriminde "onceki tarih"); eski kayitta yok. */
+  scheduledAt?: IsoDateTime;
+  /** Bildirim parca sayisi (buyuk sitede; olaylar `<eventId>:p<k>`). */
+  parts?: number;
 };
 
 export type Assembly = TableKeys &
@@ -273,6 +283,9 @@ export type ServiceAttempt = {
   note?: string;
   /** Durum gecmisi (degismez; en eski once). */
   history: { status: ServiceStatus; statusOn?: IsoDate; at: IsoDateTime; by: string; note?: string }[];
+  /** Kaydedildigi andaki toplanti zamani ve erteleme sirasi: sonraki ertelemede deneme eskir. Eski kayitta yok (0). */
+  meetingAt?: IsoDateTime;
+  rescheduleSeq?: number;
   /** Hatali giris: silinmez, gerekceyle iptal edilir. */
   voidedAt?: IsoDateTime;
   voidedBy?: string;
@@ -305,7 +318,8 @@ export type ConsentChoice = (typeof CONSENT_CHOICES)[number];
 export const CONSENT_METHODS = ['wet_signature', 'notarized', 'e_signature', 'other'] as const;
 export type ConsentMethod = (typeof CONSENT_METHODS)[number];
 
-export type ConsentDocument = { key: string; fileName: string; contentType: string; size: number };
+/** `uploadId`: gecici yukleme (kalici kopya kayittan sonra; imzali link eksik kopyayi tamamlar). */
+export type ConsentDocument = { key: string; fileName: string; contentType: string; size: number; uploadId?: string };
 
 export type ConsentRequest = TableKeys &
   AuditFields & {
@@ -318,8 +332,12 @@ export type ConsentRequest = TableKeys &
     rule: MajorityRule;
     /** Oy listesi tarihi (talep acilis gunu, Europe/Istanbul). */
     rollDate: IsoDate;
+    /** Son kayit gunu (acilis + CONSENT_MAX_DAYS); eski kayitta yok (hesaplanir). */
+    expiresOn?: IsoDate;
     roll: RollMeta;
     status: ConsentStatus;
+    /** Riza kaydi sayaci: her kayit ayni islemde artirir (ve surumu). Kapanis surum kosullu. */
+    entryCount?: number;
     /** Kapanista kesinlesen sonuc (sonra riza kaydi eklenemez). */
     result?: DecisionOutcome;
     closedAt?: IsoDateTime;
@@ -336,8 +354,10 @@ export type ConsentEntry = TableKeys & {
   unitId: string;
   seq: number;
   choice: ConsentChoice;
-  /** Rizayi veren malik (hisseli bolumde paydaslarin temsilcisi). */
+  /** Rizayi veren malik (hisseli bolumde paydaslarin temsilcisi; tum paydaslar imzaladiysa ilki). */
   signerUserId: string;
+  /** Tasarruf niteligindeki oybirligi turlerinde hisseli bolumun imzalayan butun paydaslari. */
+  signerUserIds?: string[];
   signedOn: IsoDate;
   method: ConsentMethod;
   methodNote?: string;

@@ -530,6 +530,10 @@ function assemblyNoticeSpec(n: Notification): Spec {
   const when = formatDateTime(d.scheduledAt);
   const prev = formatDateTime(d.previousScheduledAt);
   const timeChanged = d.timeChanged === 'true';
+  // Ileri tarihe alma "erteleme"; one alma "tarih degisikligi" (ertelendi denmez).
+  const earlier = d.movedEarlier === 'true';
+  const secondAt = str(d.secondMeetingAt);
+  const secondPlace = [str(d.secondMeetingLocation), str(d.secondMeetingUrl)].filter(Boolean).join(' · ');
   const rows: [string, string][] = [
     ...(timeChanged ? [['Önceki tarih', `${prev} (Türkiye saati)`] as [string, string]] : []),
     ['Yeni tarih ve saat', `${when} (Türkiye saati)`],
@@ -537,17 +541,22 @@ function assemblyNoticeSpec(n: Notification): Spec {
     ...(str(d.onlineUrl) ? [['Çevrim içi bağlantı', str(d.onlineUrl)] as [string, string]] : []),
   ];
   return {
-    subject: `${timeChanged ? 'Ertelendi' : 'Yer değişikliği'}: kat malikleri kurulu toplantısı - ${when}`,
-    heading: `${kind} kat malikleri kurulu toplantısı ${timeChanged ? 'ertelendi' : 'yeri değişti'}`,
+    subject: `${!timeChanged ? 'Yer değişikliği' : earlier ? 'Tarihi değişti' : 'Ertelendi'}: kat malikleri kurulu toplantısı - ${when}`,
+    heading: `${kind} kat malikleri kurulu toplantısı ${!timeChanged ? 'yeri değişti' : earlier ? 'tarihi değişti' : 'ertelendi'}`,
     preheader: timeChanged ? `${prev} yerine ${when}` : `Yeni yer: ${str(d.location) || str(d.onlineUrl)}`,
     blocks: [
       {
         kind: 'p',
-        text: timeChanged
-          ? `${prev} tarihli kat malikleri kurulu toplantısı yönetim tarafından ertelendi. Toplantı aşağıdaki tarihte yapılacaktır.`
-          : 'Kat malikleri kurulu toplantısının yeri değişti; toplantı aşağıdaki yerde yapılacaktır.',
+        text: !timeChanged
+          ? 'Kat malikleri kurulu toplantısının yeri değişti; toplantı aşağıdaki yerde yapılacaktır.'
+          : earlier
+            ? `${prev} tarihli kat malikleri kurulu toplantısının tarihi yönetim tarafından öne alındı. Toplantı aşağıdaki tarihte yapılacaktır.`
+            : `${prev} tarihli kat malikleri kurulu toplantısı yönetim tarafından ertelendi. Toplantı aşağıdaki tarihte yapılacaktır.`,
       },
       { kind: 'rows', rows },
+      ...(secondAt
+        ? [{ kind: 'p' as const, text: `İlk toplantıda yeter sayı sağlanamazsa ikinci toplantı ${formatDateTime(secondAt)} tarihinde${secondPlace ? ` (${secondPlace})` : ''} yapılacaktır (KMK m.29/3, m.30).` }]
+        : []),
       ...(reason ? [{ kind: 'p' as const, text: `Gerekçe: ${reason}` }] : []),
       { kind: 'note', text: ASSEMBLY_CALL_DISCLAIMER },
     ],
