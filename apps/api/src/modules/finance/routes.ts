@@ -7,6 +7,8 @@ import type { PeriodService } from './periods.js';
 import type { ReportService } from './reportService.js';
 import type { BudgetService } from './budgets.js';
 import type { PlanService } from './plans.js';
+import type { PlanRequestService } from './planRequests.js';
+import type { SupplierAdvanceService } from './supplierAdvances.js';
 import { type BulkJobService, jobView } from '../bulkjobs/service.js';
 import { BulkTooLargeError, type FinanceContext, type FinanceService } from './service.js';
 import { type SiteFeatureReader, requireFeature } from '../features/guard.js';
@@ -32,6 +34,10 @@ export type FinanceRoutesDeps = {
   jobs?: Pick<BulkJobService, 'startDues'>;
   /** Adim 1: site ozellik anahtarlari; `admin.debtRestructure` kapaliysa /plans* 403 (verilmezse kontrol yok). */
   features?: SiteFeatureReader;
+  /** Finans 2.2 sonrasi: sakin yapilandirma talepleri (onay planlari `plans` ile olusturur). */
+  planRequests?: PlanRequestService;
+  /** Finans 2.2 sonrasi: tedarikci avansi ve avans mahsubu. */
+  supplierAdvances?: SupplierAdvanceService;
 };
 
 /**
@@ -48,11 +54,19 @@ export type FinanceRoutesDeps = {
  * Finans 2.2 - borc yapilandirma:
  *        POST /plans/preview (yazmaz), POST /plans, GET /plans?accountId&status, GET /plans/open-items?accountId, GET /plans/:id,
  *        POST /plans/:id/accelerate, /plans/:id/pull-forward, /plans/:id/cancel
+ * Finans 2.2 sonrasi - sakin yapilandirma talepleri (yalnizca yonetici + firma; KVKK):
+ *        GET  /plan-requests?status, /plan-requests/settings, /plan-requests/:id
+ *        PUT  /plan-requests/settings, POST /plan-requests/:id/approve, /plan-requests/:id/reject
+ * Finans 2.2 sonrasi - tedarikci avansi:
+ *        GET  /supplier-advances?accountId&status, /supplier-advances/:id, /supplier-advances/:id/offset-preview,
+ *             /payables/:accountId/statement?from&to
+ *        POST /supplier-advances, /supplier-advances/:id/offsets, /supplier-advances/:id/reverse,
+ *             /supplier-advance-offsets/:offsetId/reverse
  *
  * Tenant izolasyonu: `apartmentId` YALNIZCA JWT claim'inden gelir; URL/govde ile
  * degistirilemez. Claim'de apartmentId yoksa (ornegin apartman secilmemis) 403 doner.
  */
-export function financeRoutes({ authenticate, service, closures, offsets, plans, periods, reports, budgets, jobs, features }: FinanceRoutesDeps) {
+export function financeRoutes({ authenticate, service, closures, offsets, plans, periods, reports, budgets, jobs, features, planRequests, supplierAdvances }: FinanceRoutesDeps) {
   const r = new Hono<Env>();
   r.use('*', authenticateWith(authenticate));
   r.use('*', async (c, next) => {
@@ -274,6 +288,52 @@ export function financeRoutes({ authenticate, service, closures, offsets, plans,
     );
     r.post('/plans/:planId/cancel', requireRole(WRITE_ROLES), async (c) =>
       c.json({ plan: await plans.cancel(ctx(c), c.req.param('planId'), await readJson(c)) }),
+    );
+  }
+
+  // ----- Finans 2.2 sonrasi: sakin yapilandirma talepleri -----
+  if (planRequests) {
+    // Onay plan olusturur: `admin.debtRestructure` kapaliysa talep kuyrugu da kapali (403 feature_disabled).
+    const gate = requireFeature(features, 'admin.debtRestructure');
+    r.use('/plan-requests', gate);
+    r.use('/plan-requests/*', gate);
+    // KVKK: talep ve sakin notu yalnizca yonetimde (denetci gormez).
+    r.get('/plan-requests', requireRole(WRITE_ROLES), async (c) => c.json(await planRequests.list(ctx(c), { status: c.req.query('status') })));
+    r.get('/plan-requests/settings', requireRole(WRITE_ROLES), async (c) => c.json(await planRequests.getSettings(ctx(c))));
+    r.put('/plan-requests/settings', requireRole(WRITE_ROLES), async (c) => c.json(await planRequests.updateSettings(ctx(c), await readJson(c))));
+    r.get('/plan-requests/:requestId', requireRole(WRITE_ROLES), async (c) => c.json(await planRequests.get(ctx(c), c.req.param('requestId'))));
+    r.post('/plan-requests/:requestId/approve', requireRole(WRITE_ROLES), async (c) => {
+      const result = await planRequests.approve(ctx(c), c.req.param('requestId'), await readJson(c));
+      return c.json(result, result.replayed ? 200 : 201);
+    });
+    r.post('/plan-requests/:requestId/reject', requireRole(WRITE_ROLES), async (c) => c.json(await planRequests.reject(ctx(c), c.req.param('requestId'), await readJson(c))));
+  }
+
+  // ----- Finans 2.2 sonrasi: tedarikci avansi ve avans mahsubu -----
+  if (supplierAdvances) {
+    r.get('/supplier-advances', requireRole(READ_ROLES), async (c) =>
+      c.json(await supplierAdvances.list(ctx(c), { payableAccountId: c.req.query('accountId'), status: c.req.query('status') })),
+    );
+    r.post('/supplier-advances', requireRole(WRITE_ROLES), async (c) => {
+      const result = await supplierAdvances.create(ctx(c), await readJson(c));
+      return c.json({ replayed: result.replayed, advance: await supplierAdvances.get(ctx(c), result.advance.advanceId) }, result.replayed ? 200 : 201);
+    });
+    r.get('/supplier-advances/:advanceId', requireRole(READ_ROLES), async (c) => c.json(await supplierAdvances.get(ctx(c), c.req.param('advanceId'))));
+    r.get('/supplier-advances/:advanceId/offset-preview', requireRole(WRITE_ROLES), async (c) => c.json(await supplierAdvances.offsetPreview(ctx(c), c.req.param('advanceId'))));
+    r.post('/supplier-advances/:advanceId/offsets', requireRole(WRITE_ROLES), async (c) => {
+      const result = await supplierAdvances.offset(ctx(c), c.req.param('advanceId'), await readJson(c));
+      return c.json({ replayed: result.replayed, offset: publicView(result.offset), advance: await supplierAdvances.get(ctx(c), result.advance.advanceId) }, result.replayed ? 200 : 201);
+    });
+    r.post('/supplier-advances/:advanceId/reverse', requireRole(WRITE_ROLES), async (c) => {
+      const advance = await supplierAdvances.reverseAdvance(ctx(c), c.req.param('advanceId'), await readJson(c));
+      return c.json({ advance: await supplierAdvances.get(ctx(c), advance.advanceId) });
+    });
+    r.post('/supplier-advance-offsets/:offsetId/reverse', requireRole(WRITE_ROLES), async (c) => {
+      const result = await supplierAdvances.reverseOffset(ctx(c), c.req.param('offsetId'), await readJson(c));
+      return c.json({ offset: publicView(result.offset), advance: await supplierAdvances.get(ctx(c), result.advance.advanceId) });
+    });
+    r.get('/payables/:accountId/statement', requireRole(READ_ROLES), async (c) =>
+      c.json(await supplierAdvances.statement(ctx(c), c.req.param('accountId'), { from: c.req.query('from'), to: c.req.query('to') })),
     );
   }
 

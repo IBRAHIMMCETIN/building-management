@@ -1982,6 +1982,25 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
     if (original.kind === 'transfer') return { code: 'transfer', message: 'Cari devri islemleri yalnizca kapamanin geri alinmasiyla cevrilebilir' };
     if (original.kind === 'offset') return { code: 'offset', message: 'Avans mahsubu yalnizca mahsup kaydindan geri alinabilir' };
     if (original.kind === 'restructure') return { code: 'restructure', message: 'Yapilandirma islemleri yalnizca planin iptaliyle cevrilebilir' };
+    if (original.kind === 'supplier_advance' || original.kind === 'supplier_advance_offset') {
+      return { code: 'supplier_advance', message: 'Tedarikci avansi ve avans mahsubu yalnizca avans kaydindan geri alinabilir' };
+    }
+    // Tedarikci avans mahsubunun hedefledigi fatura (vadeli gider) once mahsup geri alinmadan iptal edilemez.
+    if (original.kind === 'expense') {
+      for (const l of original.lines.filter((x) => x.side === 'credit')) {
+        const acc = await repo.getAccount(ctx.apartmentId, l.accountId);
+        if (acc?.type !== 'payable') continue;
+        const txs = await accountTransactions(repo, ctx.apartmentId, [acc.accountId]);
+        const cancelledIds = cancelledTransactions(txs);
+        const linked = txs.some(
+          (t) =>
+            t.kind === 'supplier_advance_offset' &&
+            !cancelledIds.has(t.transactionId) &&
+            t.supplierAdvance?.settles?.some((s) => s.transactionId === original.transactionId),
+        );
+        if (linked) return { code: 'settled', message: 'Bu fatura tedarikçi avansıyla mahsup edilmiş; önce avans mahsubu geri alınmalı' };
+      }
+    }
     // Finans 2.2: hedefli mahsupla (yapilandirma / mahsup) kapatilmis bir kalemin islemi ters
     // cevrilemez; once ilgili plan veya mahsup geri alinmali.
     if (original.lines.some((l) => l.side === 'debit' && l.unitId && l.liableParty)) {
@@ -2805,7 +2824,10 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
    */
   async function listPayables(ctx: FinanceContext, q: { includeItems?: boolean } = {}) {
     await ensureSystemAccounts(ctx);
-    const accounts = (await repo.listAccounts(ctx.apartmentId)).filter((a) => a.type === 'payable' && (a.status === 'active' || a.balance !== 0));
+    const all = await repo.listAccounts(ctx.apartmentId);
+    const accounts = all.filter((a) => a.type === 'payable' && (a.status === 'active' || a.balance !== 0));
+    // Tedarikci avans alt hesabi (borc-normal): acik avans = bakiye (supplierAdvances.ts).
+    const advanceOf = new Map(all.filter((a) => a.supplierAdvanceOf).map((a) => [a.supplierAdvanceOf as string, Math.max(0, a.balance)]));
     const items = await Promise.all(
       accounts.map(async (a) => {
         const sum = q.includeItems === false ? undefined : await summaryOf(a);
@@ -2814,11 +2836,13 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
           name: a.name,
           status: a.status,
           openBalance: openOf(a),
+          advanceOpen: advanceOf.get(a.accountId) ?? 0,
           version: a.version,
           ...(sum
             ? {
                 billed: sum.billed,
                 paid: sum.paid,
+                advanceApplied: sum.advanceApplied ?? 0,
                 openItems: sum.openItems.slice(0, 50),
                 openItemCount: sum.openItems.length,
                 ...(sum.lastPaymentDate ? { lastPaymentDate: sum.lastPaymentDate } : {}),
@@ -2828,7 +2852,7 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
       }),
     );
     items.sort((a, b) => b.openBalance - a.openBalance || a.name.localeCompare(b.name, 'tr'));
-    return { items, totalOpen: items.reduce((s, i) => s + i.openBalance, 0) };
+    return { items, totalOpen: items.reduce((s, i) => s + i.openBalance, 0), totalAdvanceOpen: items.reduce((s, i) => s + i.advanceOpen, 0) };
   }
 
   /**
@@ -2872,7 +2896,7 @@ export function createFinanceService(overrides: Partial<FinanceServiceDeps> = {}
       }
       const open = openOf(payable);
       if (p.amount > open) {
-        throw new FinanceError('unprocessable', `Odeme tutari tedarikcinin acik borcunu asiyor (acik borc: ${open} kurus); avans mahsubu henuz desteklenmiyor`);
+        throw new FinanceError('unprocessable', `Odeme tutari tedarikcinin acik borcunu asiyor (acik borc: ${open} kurus); fatura oncesi odeme icin tedarikci avansi kaydedin`);
       }
       if (p.checkFunds && funds.balance < p.amount) throw new FinanceError('insufficient_funds', 'Kasa/banka bakiyesi bu odeme icin yetersiz');
 

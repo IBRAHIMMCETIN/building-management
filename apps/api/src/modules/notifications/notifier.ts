@@ -35,6 +35,10 @@ export type NotificationTemplate =
   | 'tender_decided'
   | 'tender_cancelled'
   | 'tender_replied'
+  /** Yapilandirma (taksit) talebi: yeni talep (yonetim), onay / ret (talebi acan sakin). */
+  | 'restructure_requested'
+  | 'restructure_approved'
+  | 'restructure_rejected'
   | `dues_reminder_${'upcoming' | 'overdue_1' | 'overdue_7' | 'plan_default'}`;
 
 /** Ozet bildirimlerdeki kalem satiri (kisisel veri yok). */

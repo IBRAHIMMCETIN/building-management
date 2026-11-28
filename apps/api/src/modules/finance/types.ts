@@ -71,6 +71,12 @@ export type Account = TableKeys &
      * (`recv-<unit>-owner-h<etiket>`). Tahakkuk sicil paylariyla bolunur.
      */
     coOwner?: { userId: string };
+    /**
+     * Finans 2.2 sonrasi: tedarikciye verilen avans (on odeme) alt hesabi; deger tedarikcinin
+     * `payable` hesabidir. Alacak (borc-normal) hesaptir, daireye bagli degildir; sakin
+     * alacaklarina sayilmaz (`supplierAdvances.ts`).
+     */
+    supplierAdvanceOf?: string;
   };
 
 /** Daire + taraf ana alt carisi (tahakkuklarin hedefi). Ayrilan carileri `-c<kapamaId>` ekini tasir. */
@@ -115,7 +121,23 @@ export type TransactionKind =
    * Finans 2.2: borc yapilandirma. Ayni alt caride hedefli kapama (alacak, `settles`) + taksit /
    * birlestirilmis kalem acilisi (borc, `plan.items`); islem kendi icinde dengelidir.
    */
-  | 'restructure';
+  | 'restructure'
+  /** Tedarikciye avans (borc: tedarikci avans hesabi, alacak: kasa/banka). */
+  | 'supplier_advance'
+  /** Tedarikci avans mahsubu (borc: tedarikci `payable`, alacak: tedarikci avans hesabi). */
+  | 'supplier_advance_offset';
+
+/**
+ * Tedarikci avansi ayrintisi (`supplier_advance` / `supplier_advance_offset`). `settles`: mahsubun
+ * hedefledigi faturalar (gider islemi kimligi); tedarikci acik kalem dokumunde once bu faturalar
+ * kapanir, kalan tutar FIFO havuzuna girer.
+ */
+export type SupplierAdvanceInfo = {
+  advanceId: string;
+  payableAccountId: string;
+  offsetId?: string;
+  settles?: { transactionId: string; amount: Kurus }[];
+};
 
 /**
  * Cari devri kalemi (yalnizca `transfer` + `role: 'open'`): hedef caride orijinal vadesiyle
@@ -222,6 +244,8 @@ export type Transaction = TableKeys & {
   plan?: PlanInfo;
   /** Avans mahsubu kaydi (`kind: 'offset'`, Finans 2.2). */
   offsetId?: string;
+  /** Tedarikci avansi / avans mahsubu ayrintisi. */
+  supplierAdvance?: SupplierAdvanceInfo;
   /** Bos daire kurali: sakin gideri tahakkuk tarihinde dairede oturan olmadigi icin malike yazildi. */
   vacant?: true;
   /**

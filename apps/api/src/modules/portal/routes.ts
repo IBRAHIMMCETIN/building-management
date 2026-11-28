@@ -3,6 +3,7 @@ import type { Authenticator } from '../../auth/claims.js';
 import { type Env, authenticateWith, handleError, publicView, readJson, requireRole } from '../../http/helpers.js';
 import type { OffsetService } from '../finance/offsets.js';
 import type { PlanService } from '../finance/plans.js';
+import type { PlanRequestService } from '../finance/planRequests.js';
 import { PORTAL_ROLES, type PortalContext, type PortalService } from './service.js';
 import { type SiteFeatureReader, requireFeature } from '../features/guard.js';
 import type { ExpenseBreakdown } from './expenseBreakdown.js';
@@ -20,6 +21,8 @@ export type PortalRoutesDeps = {
   features?: SiteFeatureReader;
   /** Adim 3: aylik gider dagilimi (sitenin toplam giderleri; kisi / tedarikci adi yok). */
   expenseBreakdown?: (ctx: PortalContext, month?: string) => Promise<ExpenseBreakdown>;
+  /** Finans 2.2 sonrasi: sakin yapilandirma (taksit) talebi. */
+  planRequests?: Pick<PlanRequestService, 'portalOptions' | 'myRequests' | 'createRequest' | 'withdraw'>;
 };
 
 /**
@@ -28,6 +31,8 @@ export type PortalRoutesDeps = {
  *       /my-payment-reference (Faz B2: IBAN + odeme referans kodu)
  *       /my-plans (Finans 2.2: taksit planlari), /offset-options, /offset-requests
  *   POST /offset-requests (Finans 2.2: avans mahsubu talebi; yonetici onaylar/reddeder)
+ *   GET  /plan-requests/options, /plan-requests; POST /plan-requests, /plan-requests/:id/withdraw
+ *        (yapilandirma talebi; `resident.restructure` kapaliysa 403)
  *   (hepsi opsiyonel `?unitId=`; birden fazla dairesi olan sakin icin zorunlu)
  *
  *  - Rol: yalnizca `resident` (JWT `role` claim'i). Yonetici/denetci kendi modullerini kullanir.
@@ -36,7 +41,7 @@ export type PortalRoutesDeps = {
  *    eslestirilir; eslesmezse 403. Tek dairesi olan sakin parametre gondermez.
  *  - Kisisel finansal veri: yanitlar onbelleklenmez (`Cache-Control: no-store`).
  */
-export function portalRoutes({ authenticate, service, paymentReference, offsets, plans, features, expenseBreakdown }: PortalRoutesDeps) {
+export function portalRoutes({ authenticate, service, paymentReference, offsets, plans, features, expenseBreakdown, planRequests }: PortalRoutesDeps) {
   const r = new Hono<Env>();
   r.onError(handleError);
 
@@ -89,6 +94,19 @@ export function portalRoutes({ authenticate, service, paymentReference, offsets,
 
   if (plans) {
     r.get('/my-plans', requireFeature(features, 'resident.restructure'), async (c) => c.json(await plans.portalPlans(ctx(c), unitId(c))));
+  }
+
+  if (planRequests) {
+    const gate = requireFeature(features, 'resident.restructure');
+    r.use('/plan-requests', gate);
+    r.use('/plan-requests/*', gate);
+    r.get('/plan-requests/options', async (c) => c.json(await planRequests.portalOptions(ctx(c), unitId(c))));
+    r.get('/plan-requests', async (c) => c.json(await planRequests.myRequests(ctx(c))));
+    r.post('/plan-requests', async (c) => {
+      const result = await planRequests.createRequest(ctx(c), await readJson(c));
+      return c.json(result, result.replayed ? 200 : 201);
+    });
+    r.post('/plan-requests/:requestId/withdraw', async (c) => c.json({ request: await planRequests.withdraw(ctx(c), c.req.param('requestId'), await readJson(c).catch(() => ({}))) }));
   }
 
   if (offsets) {

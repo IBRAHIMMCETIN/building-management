@@ -20,6 +20,8 @@ import { type AssemblyCallSnapshot, assemblyCallRecipients, isAssemblyEvent, mee
 import { type AssemblyRepository, assemblyRepository } from '../modules/assemblies/repository.js';
 import { type TenderSnapshot, isTenderEvent, tenderRecipients } from '../modules/tenders/notifications.js';
 import { type TenderRepository, tenderRepository } from '../modules/tenders/repository.js';
+import { type PlanRequestSnapshot, isRestructureEvent, restructureRecipients } from '../modules/finance/planRequestNotifications.js';
+import { type PlanRequestRepository, planRequestRepository } from '../modules/finance/planRequests.js';
 
 export type { DeliveryResult, Notification, NotificationTemplate, Notifier } from '../modules/notifications/notifier.js';
 export { createLogNotifier } from '../modules/notifications/notifier.js';
@@ -51,6 +53,9 @@ export { createLogNotifier } from '../modules/notifications/notifier.js';
  *       TENDER_PUBLISHED / _DECIDED / _CANCELLED -> apartmanin guncel uyeleri; ihalenin guncel durumu
  *                                 olayla uyusmuyorsa kimse. TENDER_REPLIED -> yanitlanan acik sorularin
  *                                 yazarlari (hala uyeyse) (modules/tenders/notifications.ts)
+ *       RESTRUCTURE_REQUESTED  -> yonetim (yonetici + firma); RESTRUCTURE_APPROVED / _REJECTED -> talebi
+ *                                 acan sakin; talebin guncel durumu olayla uyusmuyorsa kimse
+ *                                 (modules/finance/planRequestNotifications.ts)
  *  4. Her aliciya `Notifier` ile bildirim gonderilir: NOTIFICATION_CHANNEL=log (yapilandirilmis
  *     log) veya ses (e-posta; tercih, adres ve alici bazli tekrar korumasi kanal icinde, bkz.
  *     modules/notifications/email.ts). SMS / WhatsApp ayni arayuzle eklenecek.
@@ -141,7 +146,14 @@ const receives = (m: UnitMembership, item: { unitId: string; userId?: string }, 
  * Worker'in olay icin ayrica okudugu kayitlar (payload kisisel veri / serbest metin tasimaz).
  * `now`: zamana bagli kurallar (kurye yanit suresi); verilmezse su an.
  */
-export type NotificationRecords = { now?: Date; courier?: CourierSnapshot; booking?: BookingSnapshot; assemblyCall?: AssemblyCallSnapshot; tender?: TenderSnapshot };
+export type NotificationRecords = {
+  now?: Date;
+  courier?: CourierSnapshot;
+  booking?: BookingSnapshot;
+  assemblyCall?: AssemblyCallSnapshot;
+  tender?: TenderSnapshot;
+  planRequest?: PlanRequestSnapshot;
+};
 
 /** Olaydan alici bazli bildirimleri uretir (ayni kullaniciya ayni olay icin tek bildirim). */
 export function buildNotifications(
@@ -192,6 +204,15 @@ export function buildNotifications(
   }
   if (isTenderEvent(event)) {
     return tenderRecipients(event, memberships, day, records.tender).map((r) => ({
+      eventId: event.eventId,
+      apartmentId: event.apartmentId,
+      userId: r.userId,
+      template: r.template,
+      data: r.data,
+    }));
+  }
+  if (isRestructureEvent(event)) {
+    return restructureRecipients(event, memberships, roles, day, records.planRequest).map((r) => ({
       eventId: event.eventId,
       apartmentId: event.apartmentId,
       userId: r.userId,
@@ -352,6 +373,8 @@ export type WorkerDeps = {
   assemblies: Pick<AssemblyRepository, 'get' | 'getCall'>;
   /** Ihale: guncel durum (bayat olay elenir) ve yanit olayinda yorumlar. */
   tenders: Pick<TenderRepository, 'get' | 'listComments'>;
+  /** Yapilandirma talebi: guncel durum (bayat olay elenir), alici ve tutarlar. */
+  planRequests: Pick<PlanRequestRepository, 'get'>;
   notifier: Notifier;
   /** Mobil bildirim kanali; null: kapali (PUSH_CHANNEL=off). */
   push: PushChannel | null;
@@ -377,6 +400,7 @@ export function createNotificationWorker(overrides: Partial<WorkerDeps> = {}) {
     reservations: reservationRepository,
     assemblies: assemblyRepository,
     tenders: tenderRepository,
+    planRequests: planRequestRepository,
     notifier: overrides.notifier ?? createNotifierFromEnv(),
     push: overrides.push !== undefined ? overrides.push : createPushChannelFromEnv(process.env, { now }),
     isProcessed: async (apt, id) => Boolean(await getTenantItem(processedKey(apt, id))),
@@ -460,6 +484,10 @@ export function createNotificationWorker(overrides: Partial<WorkerDeps> = {}) {
       ]);
       return { now: deps.now(), tender: t && t.apartmentId === event.apartmentId ? { tender: t, ...(comments ? { comments: comments.filter((c) => c.apartmentId === event.apartmentId) } : {}) } : null };
     }
+    if (isRestructureEvent(event)) {
+      const r = await deps.planRequests.get(event.apartmentId, event.payload.requestId);
+      return { now: deps.now(), planRequest: r && r.apartmentId === event.apartmentId ? r : null };
+    }
     return { now: deps.now() };
   }
 
@@ -473,7 +501,7 @@ export function createNotificationWorker(overrides: Partial<WorkerDeps> = {}) {
         ? new Map((await deps.core.listUnits(event.apartmentId)).map((u) => [u.unitId, u.blockId]))
         : new Map<string, string>();
 
-    const roles = isTicketEvent(event) || event.type === 'OPERATIONS_DIGEST' ? await deps.roles.list(event.apartmentId) : [];
+    const roles = isTicketEvent(event) || event.type === 'OPERATIONS_DIGEST' || event.type === 'RESTRUCTURE_REQUESTED' ? await deps.roles.list(event.apartmentId) : [];
     const records = await recordsFor(event);
     // Yonetim iptalinin hemen ardindaki ucret iadesi henuz yazilmadiysa sonucu beklenir (sinirli).
     if (refundSettling(event, records.booking, deps.now())) throw new DeferredEventError('Ucret iadesi sonucu bekleniyor');
