@@ -3,7 +3,7 @@ import { useMutation } from '@tanstack/react-query';
 import { CheckCircle2 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useForm } from 'react-hook-form';
-import { Alert, Button, Dialog, FormField, Input, Select } from '@/components/ui';
+import { Alert, Button, Dialog, FormField, Input, Select, Textarea } from '@/components/ui';
 import { useFinanceAccounts, useFinanceSummary, useRecordExpense } from '@/hooks/useFinance';
 import { useIdempotencyKey } from '@/hooks/useIdempotencyKey';
 import { INVOICE_ACCEPT, documentsApi, invoiceFileError } from '@/lib/api/documents';
@@ -13,8 +13,14 @@ import type { RecordExpenseInput } from '@/lib/api/finance';
 import { formatTRY, kurusToInput } from '@/lib/money';
 import { type ExpenseForm, type ExpenseValues, expenseSchema, todayIstanbul } from './schemas';
 
-/** On dolum (ornek: karara baglanmis ihale). Tutar kurus. */
-export type ExpensePreset = { expenseAccountId?: string; amount?: number; date?: string; description?: string; supplier?: string };
+/**
+ * On dolum (ornek: karara baglanmis ihale). Tutar kurus. `creditAccountId` / `creditAccountName`:
+ * eslestirilmis tedarikci (vadeli borc) hesabi; secenek listesine eklenir ve varsayilan olur.
+ */
+export type ExpensePreset = { expenseAccountId?: string; amount?: number; date?: string; description?: string; supplier?: string; creditAccountId?: string; creditAccountName?: string };
+
+/** Baglantili kayitta ek alan: karar tutari asiminda gerekce (ihale hakedisi). */
+export type LinkedExpenseInput = RecordExpenseInput & { overrunReason?: string };
 
 type Props = {
   open: boolean;
@@ -25,7 +31,7 @@ type Props = {
    * Gider baska bir modulun ucundan kaydedilir (ornek: `POST /api/tenders/:id/expense`; ayni Finans
    * gider servisi). Verilmezse `POST /api/finance/expenses`. Bu modda "Yeni gider" sunulmaz.
    */
-  onRecord?: (input: RecordExpenseInput) => Promise<{ amount: number }>;
+  onRecord?: (input: LinkedExpenseInput) => Promise<{ amount: number }>;
   title?: string;
 };
 
@@ -41,8 +47,11 @@ export function ExpenseDialog({ open, onClose, preset, onRecord, title = 'Gider 
   const summary = useFinanceSummary();
   const financeRecord = useRecordExpense();
   const linkedRecord = useMutation({
-    mutationFn: async (input: RecordExpenseInput) => ({ expense: await (onRecord as NonNullable<Props['onRecord']>)(input) }),
+    mutationFn: async (input: LinkedExpenseInput) => ({ expense: await (onRecord as NonNullable<Props['onRecord']>)(input) }),
   });
+  // Ihale hakedisi: gecerli giderler karar tutarini asarsa API 422 `overBudget` doner; gerekce istenir.
+  const [overrun, setOverrun] = useState(false);
+  const [overrunReason, setOverrunReason] = useState('');
   const record = onRecord ? linkedRecord : financeRecord;
   const [idempotencyKey, renewKey] = useIdempotencyKey();
   // Fatura dosyasi: secilen dosya, ayni modal icinde yeniden denemede tekrar yuklenmesin diye
@@ -55,7 +64,7 @@ export function ExpenseDialog({ open, onClose, preset, onRecord, title = 'Gider 
 
   const initial = (): ExpenseForm => ({
     expenseAccountId: preset?.expenseAccountId ?? '',
-    creditAccountId: 'cash',
+    creditAccountId: preset?.creditAccountId ?? 'cash',
     amount: preset?.amount ? kurusToInput(preset.amount) : '',
     date: preset?.date ?? todayIstanbul(),
     description: preset?.description ?? '',
@@ -76,6 +85,8 @@ export function ExpenseDialog({ open, onClose, preset, onRecord, title = 'Gider 
     renewKey();
     form.reset(initial());
     clearFile();
+    setOverrun(false);
+    setOverrunReason('');
     // eslint-disable-next-line react-hooks/exhaustive-deps -- yalnizca acilista
   }, [open]);
 
@@ -131,9 +142,15 @@ export function ExpenseDialog({ open, onClose, preset, onRecord, title = 'Gider 
         }
       }
     }
+    if (overrun && overrunReason.trim().length < 10) return;
+    const input: LinkedExpenseInput = { idempotencyKey, ...v, invoiceUpload, ...(overrun ? { overrunReason: overrunReason.trim() } : {}) };
     try {
-      await record.mutateAsync({ idempotencyKey, ...v, invoiceUpload });
+      await record.mutateAsync(input);
     } catch (err) {
+      if (onRecord && err instanceof ApiError && err.body?.overBudget === true && !overrun) {
+        setOverrun(true);
+        return;
+      }
       if (applyApiFieldError(err, form.setError, FIELDS)) return;
       if (err instanceof ApiError && err.code === 'insufficient_funds') {
         form.setError(
@@ -177,7 +194,12 @@ export function ExpenseDialog({ open, onClose, preset, onRecord, title = 'Gider 
       ) : (
         <form className="flex flex-col gap-4" noValidate onSubmit={submit}>
           {record.isError && !Object.values(errors).some((e) => e?.type === 'server') && (
-            <Alert tone="danger">{errorMessage(record.error)}</Alert>
+            <Alert tone={overrun ? 'info' : 'danger'}>{errorMessage(record.error)}</Alert>
+          )}
+          {overrun && (
+            <FormField label="Aşım gerekçesi" hint="Geçerli giderler karar tutarını aşıyor; gerekçe denetim günlüğüne ve hakediş kaydına yazılır (en az 10 karakter).">
+              <Textarea rows={2} maxLength={500} value={overrunReason} onChange={(e) => setOverrunReason(e.target.value)} />
+            </FormField>
           )}
 
           <FormField label="Gider kalemi" error={errors.expenseAccountId?.message}>
@@ -213,7 +235,7 @@ export function ExpenseDialog({ open, onClose, preset, onRecord, title = 'Gider 
             label="Ödeme kaynağı"
             error={errors.creditAccountId?.message}
             hint={
-              source === PAYABLE
+              source === PAYABLE || (preset?.creditAccountId && source === preset.creditAccountId)
                 ? 'Fatura tedarikçiye borç olarak yazılır; kasa/banka değişmez.'
                 : sourceAccount
                   ? `Mevcut bakiye: ${formatTRY(sourceAccount.balance)}`
@@ -227,6 +249,9 @@ export function ExpenseDialog({ open, onClose, preset, onRecord, title = 'Gider 
                 </option>
               ))}
               <option value={PAYABLE}>Vadeli (tedarikçiye borç)</option>
+              {preset?.creditAccountId && preset.creditAccountId !== PAYABLE && !funds.some((a) => a.accountId === preset.creditAccountId) && (
+                <option value={preset.creditAccountId}>Vadeli: {preset.creditAccountName ?? 'eşleştirilmiş tedarikçi'}</option>
+              )}
             </Select>
           </FormField>
 
@@ -258,8 +283,8 @@ export function ExpenseDialog({ open, onClose, preset, onRecord, title = 'Gider 
             <Button variant="ghost" onClick={onClose} disabled={record.isPending || uploading}>
               Vazgeç
             </Button>
-            <Button type="submit" loading={record.isPending || uploading} disabled={Boolean(file && invoiceFileError(file))}>
-              Gideri kaydet
+            <Button type="submit" loading={record.isPending || uploading} disabled={Boolean(file && invoiceFileError(file)) || (overrun && overrunReason.trim().length < 10)}>
+              {overrun ? 'Gerekçeyle kaydet' : 'Gideri kaydet'}
             </Button>
           </div>
         </form>

@@ -1,8 +1,10 @@
 import {
   type QuoteInput,
   type TenderInput,
+  assemblyDecisionOptionsSchema,
   tenderWriteSchema as created,
   tenderResponseSchema as one,
+  supplierAccountOptionsSchema,
   tenderSummarySchema,
 } from '@bm/shared/api/tenders';
 import { z } from 'zod';
@@ -24,6 +26,11 @@ import type { RecordExpenseInput } from './finance';
 export {
   TENDER_CATEGORIES,
   TENDER_STATUSES,
+  type AssemblyDecisionLink,
+  type AssemblyDecisionOption,
+  type ExpenseProgress,
+  type SupplierAccountOption,
+  type TenderExpense,
   commentSchema,
   comparisonSchema,
   decisionSchema,
@@ -43,6 +50,9 @@ export {
 } from '@bm/shared/api/tenders';
 
 const enc = encodeURIComponent;
+
+export type AssemblyDecisionRef = { assemblyId: string; itemId: string };
+export type TenderExpenseInput = RecordExpenseInput & { overrunReason?: string };
 const A = '/api/tenders';
 const P = '/api/portal/tenders';
 
@@ -53,7 +63,18 @@ export const tendersApi = {
   update: (id: string, input: Partial<TenderInput> & { version: number }) => apiClient.patch(`${A}/${enc(id)}`, input, { schema: one }),
   collect: (id: string, input: { version: number }) => apiClient.post(`${A}/${enc(id)}/collect`, input, { schema: one }),
   publish: (id: string, input: { version: number; shortfallReason?: string }) => apiClient.post(`${A}/${enc(id)}/publish`, input, { schema: one }),
-  decide: (id: string, input: { version: number; quoteId: string; reason: string; reference?: string }) => apiClient.post(`${A}/${enc(id)}/decide`, input, { schema: one }),
+  decide: (id: string, input: { version: number; quoteId: string; reason: string; reference?: string; assemblyDecision?: AssemblyDecisionRef }) =>
+    apiClient.post(`${A}/${enc(id)}/decide`, input, { schema: one }),
+  /** Ayni apartmanin guncel genel kurul kararlari (karar baglantisi secicisi). */
+  assemblyDecisions: (signal?: AbortSignal) => apiClient.get(`${A}/assembly-decisions`, { signal, schema: assemblyDecisionOptionsSchema }),
+  /** Genel kurul karar bagi; `null` bagi kaldirir. */
+  linkAssemblyDecision: (id: string, input: { version: number; assemblyDecision: AssemblyDecisionRef | null }) => apiClient.post(`${A}/${enc(id)}/assembly-decision`, input, { schema: one }),
+  /** Eslestirme icin Finans tedarikci hesaplari (firma adina benzeyenler once). */
+  supplierAccounts: (id: string, signal?: AbortSignal) => apiClient.get(`${A}/${enc(id)}/supplier-accounts`, { signal, schema: supplierAccountOptionsSchema }),
+  /** Kazanan firma -> Finans tedarikci hesabi; `null` bagi kaldirir. */
+  linkSupplier: (id: string, input: { version: number; accountId: string | null }) => apiClient.post(`${A}/${enc(id)}/supplier`, input, { schema: one }),
+  /** Sakin sorusunu gerekceyle gizler (moderasyon). */
+  hideComment: (id: string, commentId: string, input: { reason: string }) => apiClient.post(`${A}/${enc(id)}/comments/${enc(commentId)}/hide`, input, { schema: one }),
   cancel: (id: string, input: { version: number; reason: string }) => apiClient.post(`${A}/${enc(id)}/cancel`, input, { schema: one }),
   addQuote: (id: string, input: QuoteInput & { idempotencyKey: string }) => apiClient.post(`${A}/${enc(id)}/quotes`, input, { schema: created.extend({ quoteId: z.string() }) }),
   updateQuote: (id: string, quoteId: string, input: Partial<QuoteInput> & { version: number }) => apiClient.patch(`${A}/${enc(id)}/quotes/${enc(quoteId)}`, input, { schema: one }),
@@ -61,9 +82,10 @@ export const tendersApi = {
   /** `history`: degistirilmis onceki belgenin sirasi (yalnizca yonetim). */
   document: (id: string, quoteId: string, history?: number) =>
     apiClient.get(`${A}/${enc(id)}/quotes/${enc(quoteId)}/document`, { query: history === undefined ? undefined : { history: String(history) }, schema: signedDownloadSchema }),
-  comment: (id: string, input: { idempotencyKey: string; body: string }) => apiClient.post(`${A}/${enc(id)}/comments`, input, { schema: created }),
-  /** Karardan Finans gideri (Finans gider servisiyle; ihale basina bir gider). */
-  createExpense: (id: string, input: RecordExpenseInput) =>
+  /** Yonetim yaniti; `replyTo`: belirli soruya yanit (bildirim yalnizca o sorunun yazarina). */
+  comment: (id: string, input: { idempotencyKey: string; body: string; replyTo?: string }) => apiClient.post(`${A}/${enc(id)}/comments`, input, { schema: created }),
+  /** Karardan Finans gideri / hakedis (birden fazla; gecerli toplam karar tutarini asarsa `overrunReason`). */
+  createExpense: (id: string, input: TenderExpenseInput) =>
     apiClient.post(`${A}/${enc(id)}/expense`, input, { schema: created.extend({ expenseId: z.string(), transactionId: z.string() }) }),
 };
 
