@@ -440,6 +440,16 @@ resource "aws_apigatewayv2_stage" "default" {
     }
   }
 
+  # Tanitim sayfasi demo formu (public_site.tf): kimliksiz, en siki sinir.
+  dynamic "route_settings" {
+    for_each = local.public_form_routes
+    content {
+      route_key              = route_settings.value
+      throttling_rate_limit  = var.public_form_route_rate_limit
+      throttling_burst_limit = var.public_form_route_burst_limit
+    }
+  }
+
   access_log_settings {
     destination_arn = aws_cloudwatch_log_group.api_access.arn
     format = jsonencode({
@@ -458,7 +468,7 @@ resource "aws_apigatewayv2_stage" "default" {
   }
 
   # route_settings yalnizca var olan rotalar icin tanimlanabilir.
-  depends_on = [aws_apigatewayv2_route.payments_public, aws_apigatewayv2_route.sensitive]
+  depends_on = [aws_apigatewayv2_route.payments_public, aws_apigatewayv2_route.sensitive, aws_apigatewayv2_route.public_form]
 }
 
 resource "aws_lambda_permission" "apigw" {

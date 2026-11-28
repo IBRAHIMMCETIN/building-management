@@ -271,6 +271,21 @@ run "prod_plan" {
     condition     = aws_apigatewayv2_route.cors_preflight.route_key == "OPTIONS /api/{proxy+}" && aws_apigatewayv2_route.cors_preflight.authorization_type == "NONE"
     error_message = "CORS preflight (OPTIONS) kimliksiz olmali; aksi halde tarayici istekleri 401 ile engellenir"
   }
+  # Tanitim sayfasi demo formu: tek kimliksiz yazma rotasi, yalnizca POST, en siki rota siniri.
+  assert {
+    condition = (
+      toset([for r in aws_apigatewayv2_route.public_form : r.route_key]) == toset(["POST /api/public/demo-requests"]) &&
+      alltrue([for r in aws_apigatewayv2_route.public_form : r.authorization_type == "NONE"])
+    )
+    error_message = "Kimliksiz demo talep rotasi yalnizca POST /api/public/demo-requests olmali (GET / ANY acilmamali)"
+  }
+  assert {
+    condition = anytrue([
+      for rs in aws_apigatewayv2_stage.default.route_settings :
+      rs.route_key == "POST /api/public/demo-requests" && rs.throttling_rate_limit == 1 && rs.throttling_burst_limit == 5
+    ])
+    error_message = "Demo talep rotasi 1/sn, burst 5 ile sinirlanmali"
+  }
   assert {
     condition     = aws_apigatewayv2_integration.api.payload_format_version == "2.0"
     error_message = "Hono aws-lambda adaptoru payload v2 bekler"

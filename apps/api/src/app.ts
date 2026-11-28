@@ -56,6 +56,8 @@ import { type BudgetService, createBudgetService } from './modules/finance/budge
 import { type PlanService, createPlanService } from './modules/finance/plans.js';
 import { type FinanceService, createFinanceService } from './modules/finance/service.js';
 import { healthRoutes } from './modules/health/routes.js';
+import { platformDemoRequestRoutes, publicDemoRequestRoutes } from './modules/demo-requests/routes.js';
+import { type DemoRequestService, createDemoRequestService } from './modules/demo-requests/service.js';
 import { meRoutes } from './modules/me/routes.js';
 import { type MeService, createMeService } from './modules/me/service.js';
 import { type PreferencesService, createPreferencesService } from './modules/notifications/preferences.js';
@@ -208,6 +210,8 @@ export type AppConfig = {
   expenseBreakdown?: (ctx: { apartmentId: string }, month?: string) => Promise<ExpenseBreakdown>;
   /** Adim 1: platform / yonetici ozellik uclari (testlerde sahte depoyla). */
   featureService?: FeatureService;
+  /** Tanitim sayfasi demo talepleri (herkese acik POST + platform listesi; testlerde sahte depoyla). */
+  demoRequestService?: DemoRequestService;
 };
 
 /** Testlerin sahte servislerle kurdugu uygulama mi? (production `createApp`'e servis vermez.) */
@@ -243,6 +247,11 @@ export function createApp(config: AppConfig) {
   app.options('/api/*', (c) => c.body(null, 204));
 
   app.route('/api/health', healthRoutes(config));
+
+  // Tanitim sayfasi: kimliksiz demo talebi (API Gateway'de JWT'siz ayri rota) + platform listesi.
+  const demoRequestService = config.demoRequestService ?? createDemoRequestService({ metrics });
+  app.route('/api/public/demo-requests', publicDemoRequestRoutes({ service: demoRequestService }));
+  app.route('/api/platform/demo-requests', platformDemoRequestRoutes({ authenticate, service: demoRequestService }));
 
   // Adim 1: site bazli ozellik anahtarlari (tum korumali modul rotalarindan once kurulur).
   const siteFeatures =
