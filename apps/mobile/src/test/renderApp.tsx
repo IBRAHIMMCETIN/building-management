@@ -6,6 +6,7 @@ import type { AppEnv } from '@/config/env';
 import { AuthProvider } from '@/context/AuthProvider';
 import { PortalUnitProvider } from '@/context/PortalUnitProvider';
 import { createMockAuthAdapter } from '@/lib/auth/mockAdapter';
+import type { NotificationsAdapter } from '@/lib/push/types';
 import type { KeyValueStorage } from '@/lib/storage/types';
 import { createServices } from '@/services';
 import { ServicesProvider } from '@/services';
@@ -49,7 +50,8 @@ export function mockApi(routes: Routes) {
     const [base = '', qs = ''] = input.replace('https://api.test', '').split('?');
     const query = Object.fromEntries(qs.split('&').filter(Boolean).map((p) => p.split('=').map(decodeURIComponent) as [string, string]));
     const method = (init?.method ?? 'GET').toUpperCase();
-    const body = init?.body ? JSON.parse(String(init.body)) : undefined;
+    // JSON govde ayristirilir; dosya (imzali linke PUT) oldugu gibi kaydedilir.
+    const body = typeof init?.body === 'string' ? JSON.parse(init.body) : init?.body;
     calls.push({ method, path: base, query, body });
     const handler = routes[`${method} ${base}`];
     let status = 200;
@@ -72,11 +74,14 @@ export function mockApi(routes: Routes) {
   return { fetchImpl, calls };
 }
 
-type Options = { email?: string | null; routes?: Routes; env?: Partial<AppEnv>; withUnit?: boolean };
+type Options = { email?: string | null; routes?: Routes; env?: Partial<AppEnv>; withUnit?: boolean; notifications?: NotificationsAdapter };
 
-export async function renderApp(ui: ReactElement, { email = 'resident@dev.local', routes = {}, env = {}, withUnit = true }: Options = {}) {
+export async function renderApp(ui: ReactElement, { email = 'resident@dev.local', routes = {}, env = {}, withUnit = true, notifications }: Options = {}) {
   const api = mockApi(routes);
-  const services = createServices({ ...TEST_ENV, ...env }, { adapter: createMockAuthAdapter({ storage: memoryStorage(), delayMs: 0 }), fetchImpl: api.fetchImpl });
+  const services = createServices(
+    { ...TEST_ENV, ...env },
+    { adapter: createMockAuthAdapter({ storage: memoryStorage(), delayMs: 0 }), fetchImpl: api.fetchImpl, pushStorage: memoryStorage(), ...(notifications ? { notifications } : {}) },
+  );
   await services.session.ready;
   if (email) await services.session.signIn({ email, password: 'Mock123456' });
   // Ekran sorgulari kendi tekrar kuralini verir (5xx 2 kez); testte beklemesiz tekrarlanir.

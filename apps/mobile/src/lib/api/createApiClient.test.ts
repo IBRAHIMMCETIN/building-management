@@ -31,6 +31,16 @@ describe('createApiClient (web istemcisiyle ayni hata modeli)', () => {
     expect(header(calls[0], 'authorization')).toBe('Bearer tok');
   });
 
+  it('429: Retry-After basligi govdede yoksa bekleme suresine tasinir', async () => {
+    const impl = (async () =>
+      ({ ok: false, status: 429, headers: { get: (k: string) => (k === 'retry-after' ? '90' : null) }, text: async () => JSON.stringify({ error: 'rate_limited', message: 'Çok fazla istek' }) }) as unknown as Response) as unknown as typeof fetch;
+    const api = createApiClient({ baseUrl: '', getToken: async () => 'tok', fetchImpl: impl });
+    const err = await api.post('/api/gate/passes/verify', { code: 'X' }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    expect((err as ApiError).body).toMatchObject({ error: 'rate_limited', retryAfterSeconds: 90 });
+    expect(errorMessage(err)).toBe('Çok fazla istek');
+  });
+
   it('API hata govdesindeki Turkce mesaj ve kod korunur', async () => {
     const { impl } = fakeFetch([{ status: 400, body: { error: 'unit_selection_required', message: 'Daire seçin', units: [{ unitId: 'u1', label: 'Daire 1' }] } }]);
     const api = createApiClient({ baseUrl: '', getToken: async () => 'tok', fetchImpl: impl });
