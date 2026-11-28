@@ -1,6 +1,6 @@
 import { ApiError, errorMessage } from '@bm/shared/api/errors';
-import { type TicketEvent, reopenNoteSchema, ticketCommentSchema } from '@bm/shared/api/portalTickets';
-import type { Ticket } from '@bm/shared/api/tickets';
+import { reopenNoteSchema, ticketCommentSchema } from '@bm/shared/api/portalTickets';
+import type { Ticket, TicketEvent } from '@bm/shared/api/tickets';
 import { formatDateTime } from '@bm/shared/dates';
 import { CATEGORY_LABELS, RATING_LABELS } from '@bm/shared/tickets/model';
 import { useState } from 'react';

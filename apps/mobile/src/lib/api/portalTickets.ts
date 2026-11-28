@@ -1,14 +1,6 @@
 import { signedDownloadSchema } from '@bm/shared/api/documents';
-import {
-  type PortalCreateTicketInput,
-  createdTicketSchema,
-  photoUploadSchema,
-  similarTicketsSchema,
-  ticketCommentResultSchema,
-  ticketDetailSchema,
-  ticketOneSchema,
-} from '@bm/shared/api/portalTickets';
-import { ticketListSchema } from '@bm/shared/api/tickets';
+import { type PortalCreateTicketInput, createdTicketSchema, ticketCommentResultSchema, ticketOneSchema } from '@bm/shared/api/portalTickets';
+import { photoUploadSchema, similarSchema, ticketDetailSchema, ticketListSchema } from '@bm/shared/api/tickets';
 import type { ApiClient } from './createApiClient';
 
 /*
@@ -22,7 +14,7 @@ const P = '/api/portal/tickets';
 
 export const portalTicketsApi = {
   list: (api: ApiClient, status: string, signal?: AbortSignal) => api.get(P, { signal, query: { status, limit: 100 }, schema: ticketListSchema }),
-  similar: (api: ApiClient, category: string, signal?: AbortSignal) => api.get(`${P}/similar`, { signal, query: { category }, schema: similarTicketsSchema }),
+  similar: (api: ApiClient, category: string, signal?: AbortSignal) => api.get(`${P}/similar`, { signal, query: { category }, schema: similarSchema }),
   create: (api: ApiClient, input: PortalCreateTicketInput) => api.post(P, input, { schema: createdTicketSchema }),
   uploadUrl: (api: ApiClient, file: { contentType: string; size: number }) => api.post(`${P}/photos/upload-url`, file, { schema: photoUploadSchema }),
   get: (api: ApiClient, id: string, signal?: AbortSignal) => api.get(`${P}/${enc(id)}`, { signal, schema: ticketDetailSchema }),

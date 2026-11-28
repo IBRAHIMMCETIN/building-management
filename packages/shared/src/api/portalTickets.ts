@@ -1,50 +1,17 @@
 import { z } from 'zod';
 import { ROLE_LABELS, isRole } from '../roles';
-import { EVENT_LABELS, STATUS_LABELS, TICKET_CATEGORIES, TICKET_STATUSES, type TicketCategory } from '../tickets/model';
-import { ticketSchema } from './tickets';
+import { EVENT_LABELS, STATUS_LABELS, type TicketCategory } from '../tickets/model';
+import { type TicketEvent, type photoUploadSchema, ticketEventSchema, ticketSchema } from './tickets';
 
 /*
  * Sakin portali ariza / talep - /api/portal/tickets (yalnizca `resident`; apps/api/src/modules/tickets/portalRoutes.ts):
  * actigim + dairemin talepleri, yalnizca herkese acik olaylar; onay (1-5 puan), yeniden acma, geri cekme,
- * yorum ve fotograf. Web karsiligi: apps/web/src/lib/api/tickets.ts (olay / ayrinti / benzer / yukleme
- * semalari) ve portalTickets.ts; sozlesme aynidir. Fotograf kurallari API ile ayni
- * (apps/api/src/modules/meters/common.ts, tickets/photos.ts).
+ * yorum ve fotograf. Olay / ayrinti / benzer talep / yukleme semalari ./tickets.ts'te (web ayni
+ * dosyayi kullanir); burada sakin istek / yanit tipleri, fotograf ve form kurallari, gosterim
+ * yardimcilari. Fotograf kurallari API ile ayni (apps/api/src/modules/meters/common.ts, tickets/photos.ts).
  */
 
-export const ticketEventSchema = z.object({
-  eventId: z.string(),
-  kind: z.string(),
-  visibility: z.enum(['public', 'internal']),
-  at: z.string(),
-  by: z.string().optional(),
-  byRole: z.string().optional(),
-  mine: z.boolean().optional(),
-  from: z.enum(TICKET_STATUSES).optional(),
-  to: z.enum(TICKET_STATUSES).optional(),
-  assigneeId: z.string().optional(),
-  body: z.string().optional(),
-  changes: z.record(z.string(), z.tuple([z.unknown(), z.unknown()])).optional(),
-  photoKeys: z.array(z.string()).optional(),
-  rating: z.number().optional(),
-  amount: z.number().optional(),
-  expenseId: z.string().optional(),
-  transactionId: z.string().optional(),
-});
-export type TicketEvent = z.infer<typeof ticketEventSchema>;
-
-export const ticketDetailSchema = z.object({ ticket: ticketSchema, events: z.array(ticketEventSchema) });
-export type TicketDetail = z.infer<typeof ticketDetailSchema>;
-
-/** Ortak alanda ayni kategoride acik talepler (yeni talep uyarisi). */
-export const similarTicketsSchema = z.object({
-  items: z.array(
-    z.object({ number: z.string(), category: z.enum(TICKET_CATEGORIES), area: z.string(), blockId: z.string().optional(), status: z.enum(TICKET_STATUSES), createdAt: z.string(), mine: z.boolean() }),
-  ),
-});
-export type SimilarTicket = z.infer<typeof similarTicketsSchema>['items'][number];
-
 /** Imzali S3 yukleme linki: dosya API'den gecmez, `uploadUrl`'e PUT edilir; olaya `uploadId` verilir. */
-export const photoUploadSchema = z.object({ uploadId: z.string(), uploadUrl: z.string(), headers: z.record(z.string(), z.string()).default({}) });
 export type PhotoUpload = z.infer<typeof photoUploadSchema>;
 
 export const createdTicketSchema = z.object({ ticket: ticketSchema, replayed: z.boolean() });

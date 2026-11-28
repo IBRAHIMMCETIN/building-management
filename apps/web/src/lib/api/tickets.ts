@@ -1,6 +1,6 @@
-import { type EstimateInput, ticketListSchema, ticketSchema } from '@bm/shared/api/tickets';
+import { type EstimateInput, photoUploadSchema, similarSchema, ticketDetailSchema, ticketEventSchema, ticketListSchema, ticketSchema } from '@bm/shared/api/tickets';
 import { z } from 'zod';
-import { TICKET_CATEGORIES, TICKET_STATUSES, type TicketCategory, type TicketPriority, type TransitionAction } from '@/lib/tickets/model';
+import { TICKET_STATUSES, type TicketCategory, type TicketPriority, type TransitionAction } from '@/lib/tickets/model';
 import { apiClient } from './client';
 import { signedDownloadSchema } from './documentModel';
 import { ApiError } from './errors';
@@ -11,40 +11,24 @@ import { ApiError } from './errors';
  *   /api/tickets/:id/costs, /charges   O1-4 masraf ve daireye yansitma (yonetim; denetci okur)
  *   /api/portal/tickets   sakin (bkz. portalTickets.ts)
  * Tutarlar kurus.
- * Talep ve liste semalari web + mobil ortak: packages/shared/src/api/tickets.ts.
+ * Talep, liste, olay / ayrinti, foto yukleme ve benzer talep semalari web + mobil ortak:
+ * packages/shared/src/api/tickets.ts (bu dosya eski import yollari icin yeniden disa aktarir).
  */
 export {
   type EstimateInput,
+  type SimilarTicket,
   type StaffEstimate,
   type Ticket,
+  type TicketDetail,
+  type TicketEvent,
+  photoUploadSchema,
+  similarSchema,
   staffEstimateSchema,
+  ticketDetailSchema,
+  ticketEventSchema,
   ticketListSchema,
   ticketSchema,
 } from '@bm/shared/api/tickets';
-
-export const ticketEventSchema = z.object({
-  eventId: z.string(),
-  kind: z.string(),
-  visibility: z.enum(['public', 'internal']),
-  at: z.string(),
-  by: z.string().optional(),
-  byRole: z.string().optional(),
-  mine: z.boolean().optional(),
-  from: z.enum(TICKET_STATUSES).optional(),
-  to: z.enum(TICKET_STATUSES).optional(),
-  assigneeId: z.string().optional(),
-  body: z.string().optional(),
-  changes: z.record(z.string(), z.tuple([z.unknown(), z.unknown()])).optional(),
-  photoKeys: z.array(z.string()).optional(),
-  rating: z.number().optional(),
-  amount: z.number().optional(),
-  expenseId: z.string().optional(),
-  transactionId: z.string().optional(),
-});
-export type TicketEvent = z.infer<typeof ticketEventSchema>;
-
-export const ticketDetailSchema = z.object({ ticket: ticketSchema, events: z.array(ticketEventSchema) });
-export type TicketDetail = z.infer<typeof ticketDetailSchema>;
 
 export const boardSchema = z.object({
   columns: z.array(z.object({ status: z.enum(TICKET_STATUSES), count: z.number().int(), items: z.array(ticketSchema) })),
@@ -56,13 +40,6 @@ export const boardSchema = z.object({
 export type TicketBoard = z.infer<typeof boardSchema>;
 
 export const assigneesSchema = z.object({ items: z.array(z.object({ userId: z.string(), name: z.string() })) });
-
-export const photoUploadSchema = z.object({ uploadId: z.string(), uploadUrl: z.string(), headers: z.record(z.string(), z.string()).default({}) });
-
-export const similarSchema = z.object({
-  items: z.array(z.object({ number: z.string(), category: z.enum(TICKET_CATEGORIES), area: z.string(), blockId: z.string().optional(), status: z.enum(TICKET_STATUSES), createdAt: z.string(), mine: z.boolean() })),
-});
-export type SimilarTicket = z.infer<typeof similarSchema>['items'][number];
 
 // --- O1-4 masraflar -------------------------------------------------------
 

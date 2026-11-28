@@ -1,6 +1,7 @@
 import { errorMessage } from '@bm/shared/api/errors';
 import type { SignedDownload } from '@bm/shared/api/documents';
-import { type TicketEvent, ticketEventAuthor, ticketEventTitle } from '@bm/shared/api/portalTickets';
+import { ticketEventAuthor, ticketEventTitle } from '@bm/shared/api/portalTickets';
+import type { TicketEvent } from '@bm/shared/api/tickets';
 import { formatDateTime } from '@bm/shared/dates';
 import { photoIdOf } from '@bm/shared/tickets/model';
 import { useState } from 'react';
