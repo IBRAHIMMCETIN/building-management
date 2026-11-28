@@ -10,6 +10,20 @@ import { type CariClosure, type ClosureRepository, createClosureService } from '
 import { toLedgerEntries } from '../../src/modules/finance/repository.js';
 import { type AccountOffset, type OffsetRepository, type OffsetRequest, createOffsetService } from '../../src/modules/finance/offsets.js';
 import { type InstallmentPlan, type PlanRepository, createPlanService } from '../../src/modules/finance/plans.js';
+import {
+  type PlanRequest,
+  type PlanRequestHead,
+  type PlanRequestKey,
+  type PlanRequestRepository,
+  type PlanRequestSettingsDoc,
+  createPlanRequestService,
+} from '../../src/modules/finance/planRequests.js';
+import {
+  type SupplierAdvance,
+  type SupplierAdvanceOffset,
+  type SupplierAdvanceRepository,
+  createSupplierAdvanceService,
+} from '../../src/modules/finance/supplierAdvances.js';
 import { createFinanceService } from '../../src/modules/finance/service.js';
 import type { Transaction } from '../../src/modules/finance/types.js';
 import { type MembershipRepository, membershipKeys } from '../../src/modules/memberships/repository.js';
@@ -18,6 +32,7 @@ import type { PortalRepository } from '../../src/modules/portal/repository.js';
 import { type PortalServiceDeps, createPortalService } from '../../src/modules/portal/service.js';
 import type { UnitMembership } from '../../src/modules/portal/types.js';
 import { createFakeFinanceRepo } from './financeRepo.js';
+import type { SiteFeatureReader } from '../../src/modules/features/guard.js';
 
 export const APT = 'apt-1';
 export const TL = (n: number) => toKurus(Math.round(n * 100));
@@ -51,7 +66,7 @@ export function unit(id: string): Unit {
 }
 
 /** vacancyRule: finans servisine uyelikler verilir (bos daire kurali acik). */
-export function cariWorld(start = '2026-09-01', opts: { vacancyRule?: boolean } = {}) {
+export function cariWorld(start = '2026-09-01', opts: { vacancyRule?: boolean; features?: SiteFeatureReader } = {}) {
   const fake = createFakeFinanceRepo();
   let n = 0;
   let now = new Date(`${start}T09:00:00.000Z`);
@@ -70,6 +85,12 @@ export function cariWorld(start = '2026-09-01', opts: { vacancyRule?: boolean } 
   const finance = createFinanceService({
     repository: fake.repo,
     core,
+    // Tedarikci ozeti (GET /payables) icin hesap satirlari sahte defterden.
+    ledger: {
+      listLedgerEntries: async (apt, accountId) =>
+        [...fake.transactions.values()].filter((t) => t.siteId === apt).flatMap((t) => toLedgerEntries(t)).filter((e) => e.accountId === accountId),
+      getTransactions: async (apt, ids) => ids.map((id) => fake.transactions.get(`${apt}|${id}`)).filter((t): t is Transaction => !!t),
+    },
     now: () => now,
     newId,
     ...(opts.vacancyRule ? { memberships } : {}),
@@ -121,6 +142,31 @@ export function cariWorld(start = '2026-09-01', opts: { vacancyRule?: boolean } 
     now: () => now,
     newId,
   });
+  // Finans 2.2 sonrasi: yapilandirma talepleri ve tedarikci avanslari da ayni belge deposunda.
+  const planRequestsRepo: PlanRequestRepository = {
+    get: async (apt, id) => docsOf<PlanRequest>('PLAN_REQUEST').find((r) => r.apartmentId === apt && r.requestId === id),
+    list: async (apt) => docsOf<PlanRequest>('PLAN_REQUEST').filter((r) => r.apartmentId === apt),
+    getHead: async (apt, accountId) => docsOf<PlanRequestHead>('PLAN_REQUEST_HEAD').find((h) => h.apartmentId === apt && h.accountId === accountId),
+    listHeads: async (apt) => docsOf<PlanRequestHead>('PLAN_REQUEST_HEAD').filter((h) => h.apartmentId === apt),
+    getKey: async (apt, tag) => fake.docs.get(`APT#${apt}|PLANREQKEY#${tag}`) as unknown as PlanRequestKey | undefined,
+    getSettings: async (apt) => docsOf<PlanRequestSettingsDoc>('PLAN_REQUEST_SETTINGS').find((s) => s.apartmentId === apt),
+  };
+  const planRequests = createPlanRequestService({
+    plans,
+    financeRepo: fake.repo,
+    requests: planRequestsRepo,
+    portal,
+    core: core as unknown as Pick<CoreRepository, 'getSite'>,
+    now: () => now,
+    newId,
+  });
+  const advancesRepo: SupplierAdvanceRepository = {
+    get: async (apt, id) => docsOf<SupplierAdvance>('SUPPLIER_ADVANCE').find((a) => a.apartmentId === apt && a.advanceId === id),
+    list: async (apt) => docsOf<SupplierAdvance>('SUPPLIER_ADVANCE').filter((a) => a.apartmentId === apt),
+    getOffset: async (apt, id) => docsOf<SupplierAdvanceOffset>('SUPPLIER_ADVANCE_OFFSET').find((o) => o.apartmentId === apt && o.offsetId === id),
+    listOffsets: async (apt) => docsOf<SupplierAdvanceOffset>('SUPPLIER_ADVANCE_OFFSET').filter((o) => o.apartmentId === apt),
+  };
+  const supplierAdvances = createSupplierAdvanceService({ finance, financeRepo: fake.repo, advances: advancesRepo, now: () => now, newId });
   // Daireler ekraninin kaynagi (GET /api/memberships?current=true) ayni belge deposundan okur.
   const membershipRepo: MembershipRepository = {
     get: async (apt, userId, unitId) => fake.docs.get(`APT#${apt}|MEMBER#${userId}#${unitId}`) as unknown as UnitMembership | undefined,
@@ -138,6 +184,9 @@ export function cariWorld(start = '2026-09-01', opts: { vacancyRule?: boolean } 
     closureService: closures,
     offsetService: offsets,
     planService: plans,
+    planRequestService: planRequests,
+    supplierAdvanceService: supplierAdvances,
+    ...(opts.features ? { siteFeatures: opts.features } : {}),
     portalService: portal,
     membershipService: createMembershipService({ repository: membershipRepo, core: core as Pick<CoreRepository, 'getUnit'>, now: () => now }),
     authenticate: (c) => {
@@ -187,6 +236,6 @@ export function cariWorld(start = '2026-09-01', opts: { vacancyRule?: boolean } 
     now = new Date(`${d}T09:00:00.000Z`);
   };
   const addUnit = (id: string, number: string) => units.push({ ...unit(id), number });
-  return { fake, finance, closures, offsets, plans, portal, call, member, memberOf, charge, pay, txs, acc, setNow, ctx, addUnit };
+  return { fake, finance, closures, offsets, plans, planRequests, supplierAdvances, portal, call, member, memberOf, charge, pay, txs, acc, setNow, ctx, addUnit };
 }
 

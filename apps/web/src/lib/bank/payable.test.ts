@@ -16,7 +16,7 @@ describe('tedarikci odemesi yardimcilari', () => {
     expect(settleState(2500, undefined)).toMatchObject({ valid: false, error: 'Tedarikçi seçin' });
     expect(settleState(2500, { openBalance: 0 })).toMatchObject({ valid: false });
     expect(settleState(2501, { openBalance: 2500 })).toMatchObject({ valid: false });
-    expect(settleState(2501, { openBalance: 2500 }).error).toContain('Avans mahsubu');
+    expect(settleState(2501, { openBalance: 2500 }).error).toContain('avans olarak kaydedin');
     expect(settleState(1000, { openBalance: 2500 })).toEqual({ valid: true, remaining: 1500 });
     expect(settleState(2500, { openBalance: 2500 })).toEqual({ valid: true, remaining: 0 });
   });

@@ -49,6 +49,9 @@ export const EVENT_TYPES = [
   'TENDER_REPLIED',
   'MEMBERSHIP_ENDED',
   'BULK_JOB_FINISHED',
+  'RESTRUCTURE_REQUESTED',
+  'RESTRUCTURE_APPROVED',
+  'RESTRUCTURE_REJECTED',
 ] as const;
 export type EventType = (typeof EVENT_TYPES)[number];
 
@@ -323,6 +326,12 @@ export type BulkJobFinishedPayload = {
   label?: string;
   errorMessage?: string;
 };
+ * Finans 2.2 sonrasi: sakin yapilandirma talebi (`planRequests.ts`). REQUESTED -> yonetim;
+ * APPROVED / REJECTED -> talebi acan sakin (hala dairenin uyesiyse). Payload yalnizca kimlik
+ * tasir; tutar, taksit ve ret gerekcesi worker'in okudugu guncel talep kaydindan gelir.
+ * `eventId` = `<TUR>:<requestId>`.
+ */
+export type RestructureEventPayload = { requestId: string };
 
 type PayloadByType = {
   DUE_GENERATED: DueGeneratedPayload;
@@ -350,6 +359,9 @@ type PayloadByType = {
   TENDER_REPLIED: TenderRepliedPayload;
   MEMBERSHIP_ENDED: MembershipEndedPayload;
   BULK_JOB_FINISHED: BulkJobFinishedPayload;
+  RESTRUCTURE_REQUESTED: RestructureEventPayload;
+  RESTRUCTURE_APPROVED: RestructureEventPayload;
+  RESTRUCTURE_REJECTED: RestructureEventPayload;
 };
 
 export type DomainEvent<T extends EventType = EventType> = {

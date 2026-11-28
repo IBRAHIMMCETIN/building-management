@@ -37,6 +37,10 @@ export type NotificationTemplate =
   | 'tender_replied'
   /** Bildirim devami: arka plan toplu isinin bitis ozeti (isi baslatan yonetici). */
   | 'bulk_job_summary'
+  /** Yapilandirma (taksit) talebi: yeni talep (yonetim), onay / ret (talebi acan sakin). */
+  | 'restructure_requested'
+  | 'restructure_approved'
+  | 'restructure_rejected'
   | `dues_reminder_${'upcoming' | 'overdue_1' | 'overdue_7' | 'plan_default'}`;
 
 /** Ozet bildirimlerdeki kalem satiri (kisisel veri yok). */

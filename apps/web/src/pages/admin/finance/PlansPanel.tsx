@@ -9,6 +9,7 @@ import type { InstallmentPlan, OffsetRequest, PlanAction, PlanDisplayStatus } fr
 import { formatDate, formatDateTime } from '@/lib/dates';
 import { formatTRY, kurusToInput, parseTRYToKurus } from '@/lib/money';
 import { ACCELERATION_MODE_LABELS, PLAN_STATUS_LABELS, PLAN_STATUS_TONES, installmentSummary, reasonError, ruleText } from '@/lib/restructure/model';
+import { PlanRequestsSection } from './PlanRequestsSection';
 
 type NameOf = (accountId: string) => string;
 
@@ -284,7 +285,7 @@ const FILTERS: { id: PlanDisplayStatus | 'all'; label: string }[] = [
   { id: 'cancelled', label: PLAN_STATUS_LABELS.cancelled },
 ];
 
-/** Finans 2.2 - "Taksit planlari" sekmesi: bekleyen sakin mahsup talepleri + planlar. */
+/** Finans 2.2 - "Taksit planlari" sekmesi: sakin taksit talepleri, bekleyen sakin mahsup talepleri + planlar. */
 export function PlansPanel({ canWrite }: { canWrite: boolean }) {
   const [filter, setFilter] = useState<PlanDisplayStatus | 'all'>('all');
   const plans = usePlans(filter === 'all' ? {} : { status: filter });
@@ -300,6 +301,7 @@ export function PlansPanel({ canWrite }: { canWrite: boolean }) {
 
   return (
     <div className="flex flex-col gap-4">
+      <PlanRequestsSection canWrite={canWrite} nameOf={nameOf} />
       {pending.length > 0 && (
         <Card className="p-0">
           <p className="border-b border-border px-3 py-2 text-small font-semibold">Bekleyen sakin mahsup talepleri ({pending.length})</p>

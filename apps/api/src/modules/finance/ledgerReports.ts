@@ -204,7 +204,10 @@ export function buildAnnualStatement(activity: ReportActivity, budget?: { lines:
   const ie = buildIncomeExpense(activity);
   const sumType = (types: AccountType[], pick: (r: TrialBalanceRow) => number) => tb.rows.filter((r) => types.includes(r.type)).reduce((s, r) => s + pick(r), 0);
   const fundsRows = tb.rows.filter((r) => r.type === 'cash' || r.type === 'bank').map(({ accountId, name, code, type, opening, closing }) => ({ accountId, name, ...(code ? { code } : {}), type, opening, closing }));
-  const receivableRows = tb.rows.filter((r) => r.type === 'receivable');
+  // Tedarikci avans alt hesaplari (`supplierAdvanceOf`) alacak turundedir ama sakin carisi degildir: ayri satir.
+  const supplierAdvanceIds = new Set(activity.accounts.filter((a) => a.type === 'receivable' && a.supplierAdvanceOf).map((a) => a.accountId));
+  const receivableRows = tb.rows.filter((r) => r.type === 'receivable' && !supplierAdvanceIds.has(r.accountId));
+  const supplierAdvanceRows = tb.rows.filter((r) => supplierAdvanceIds.has(r.accountId));
   const budgetTotals = budget
     ? {
         income: budget.lines.filter((l) => l.kind === 'income').reduce((s, l) => s + l.months.reduce((a, b) => a + b, 0), 0),
@@ -226,6 +229,11 @@ export function buildAnnualStatement(activity: ReportActivity, budget?: { lines:
       opening: receivableRows.reduce((s, r) => s + Math.max(r.opening, 0), 0),
       closing: receivableRows.reduce((s, r) => s + Math.max(r.closing, 0), 0),
       advancesClosing: receivableRows.reduce((s, r) => s + Math.max(-r.closing, 0), 0),
+    },
+    /** Tedarikcilere verilen, faturayla mahsup edilmemis avanslar (yil basi / yil sonu). */
+    supplierAdvances: {
+      opening: supplierAdvanceRows.reduce((s, r) => s + r.opening, 0),
+      closing: supplierAdvanceRows.reduce((s, r) => s + r.closing, 0),
     },
     payables: { opening: -sumType(['payable'], (r) => r.opening), closing: -sumType(['payable'], (r) => r.closing) },
     ...(budgetTotals ? { budget: { ...budgetTotals, result: budgetTotals.income - budgetTotals.expense } } : {}),

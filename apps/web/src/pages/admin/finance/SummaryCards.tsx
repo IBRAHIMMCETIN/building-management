@@ -60,7 +60,11 @@ export function SummaryCards() {
         label="Toplam mevcut varlık"
         value={formatTRY(data.totalFunds)}
         icon={Wallet}
-        detail={data.payables > 0 ? `Tedarikçi borcu: ${formatTRY(data.payables)}` : undefined}
+        detail={
+          [data.payables > 0 ? `Tedarikçi borcu: ${formatTRY(data.payables)}` : '', data.supplierAdvances > 0 ? `verilen avans: ${formatTRY(data.supplierAdvances)}` : '']
+            .filter(Boolean)
+            .join(' · ') || undefined
+        }
       />
       <StatCard
         label="Bekleyen tahsilat"

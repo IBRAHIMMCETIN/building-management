@@ -123,6 +123,8 @@ export const annualStatementSchema = z.object({
   expense: z.object({ rows: z.array(nameTotal), total: kurus }),
   result: kurus,
   receivables: z.object({ opening: kurus, closing: kurus, advancesClosing: kurus }),
+  /** Tedarikcilere verilen avanslar (sakin alacaklarina dahil degil; eski API'de yok). */
+  supplierAdvances: z.object({ opening: kurus, closing: kurus }).default({ opening: 0, closing: 0 }),
   payables: z.object({ opening: kurus, closing: kurus }),
   budget: z.object({ income: kurus, expense: kurus, result: kurus }).optional(),
   balanced: z.boolean(),

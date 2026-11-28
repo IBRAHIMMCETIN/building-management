@@ -42,6 +42,15 @@ const EXACT: Record<string, string> = {
   'finance.plan_cancel': 'Taksit planı iptal edildi',
   'finance.plan_default': 'Taksit planında temerrüt tespit edildi',
   'finance.plan_default_cleared': 'Taksit planı temerrüdü giderildi',
+  'finance.plan_request': 'Sakin taksit (yapılandırma) talebi',
+  'finance.plan_request_approve': 'Taksit talebi onaylandı (plan oluşturuldu)',
+  'finance.plan_request_reject': 'Taksit talebi reddedildi',
+  'finance.plan_request_withdraw': 'Taksit talebi sakin tarafından geri çekildi',
+  'finance.plan_request_settings': 'Taksit talebi sınırları değişti',
+  'finance.supplier_advance': 'Tedarikçiye avans verildi',
+  'finance.supplier_advance_reverse': 'Tedarikçi avansı iptal edildi',
+  'finance.supplier_advance_offset': 'Tedarikçi avansı faturaya mahsup edildi',
+  'finance.supplier_advance_offset_reverse': 'Tedarikçi avans mahsubu geri alındı',
   'ownership.backfill': 'Mülkiyet sicili oluşturuldu (ilk geçiş)',
   'ownership.register': 'Mülkiyet sicili / hisseler düzeltildi',
   'ownership.billing': 'Malik faturalama modu değişti',
@@ -266,6 +275,8 @@ const LEDGER_KINDS: Record<string, string> = {
   payable_payment: 'tedarikçi ödemesi',
   offset: 'avans mahsubu',
   restructure: 'borç yapılandırma',
+  supplier_advance: 'tedarikçi avansı',
+  supplier_advance_offset: 'tedarikçi avans mahsubu',
 };
 
 /** Gece defter denetimi bulgu kodlari (apps/api/src/modules/finance/audit.ts `AUDIT_CODES`). */
@@ -290,6 +301,7 @@ export const LEDGER_FINDING_LABELS: Record<string, string> = {
   fiscal_lock_mismatch: 'Dönem kilidi tutarsız',
   ticket_cost_mismatch: 'Talep / bakım gideri özeti defterle uyuşmuyor',
   explink_orphan: 'Sahipsiz gider bağlantısı',
+  supplier_advance_mismatch: 'Tedarikçi avansı kaydı defterle uyuşmuyor',
 };
 
 export function findingLabel(code: string): string {

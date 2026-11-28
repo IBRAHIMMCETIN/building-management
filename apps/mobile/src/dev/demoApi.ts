@@ -11,6 +11,7 @@ import { createAssembliesDemo } from './demoAssemblies';
 import { createConsumptionDemo } from './demoConsumption';
 import { createPollsDemo } from './demoPolls';
 import { createTendersDemo } from './demoTenders';
+import { createPlanRequestsDemo } from './demoPlanRequests';
 
 /*
  * DEMO veri (EXPO_PUBLIC_API_MODE=demo, yalnizca mock kimlikle): API calismadan web onizlemesinde
@@ -149,6 +150,7 @@ export function createDemoFetch({ now = () => new Date() }: DemoFetchOptions = {
     createAssembliesDemo(),
     createConsumptionDemo(),
     createTendersDemo(),
+    createPlanRequestsDemo(),
     // Saha rolleri (M3): guvenlik kapisi ve bina gorevlisi.
     createGateDeskDemo(),
     createWorkDemo(),
