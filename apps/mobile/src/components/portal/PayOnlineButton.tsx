@@ -4,6 +4,7 @@ import { CreditCard } from '@/components/icons';
 import { AppText } from '@/components/ui';
 import { WebLinkButton } from '@/components/WebLinkButton';
 import { useAuth } from '@/context/AuthProvider';
+import { useFeature } from '@/context/SiteFeaturesProvider';
 import { portalKeys, usePaymentQuote } from '@/hooks/usePortal';
 import { PAYMENT_WEB_PATH } from '@/lib/nav';
 
@@ -15,11 +16,13 @@ import { PAYMENT_WEB_PATH } from '@/lib/nav';
  * `hint`: online odeme kapaliysa elden / havale notu.
  */
 export function PayOnlineButton({ hint = false }: { hint?: boolean }) {
-  const quote = usePaymentQuote();
+  // Adim 1: online odeme site ozelligi kapaliysa dugme yok (yalnizca elden / havale notu).
+  const featureOn = useFeature('payments.online');
+  const quote = usePaymentQuote(featureOn);
   const queryClient = useQueryClient();
   const { user } = useAuth();
 
-  if (canPayOnline(quote.data)) {
+  if (featureOn && canPayOnline(quote.data)) {
     return (
       <WebLinkButton
         // Web odeme sayfasi kendi daire secimini degil, mobilde gosterilen daireyi kullanir
@@ -31,7 +34,7 @@ export function PayOnlineButton({ hint = false }: { hint?: boolean }) {
       />
     );
   }
-  if (!hint || quote.isPending) return null;
+  if (!hint || (featureOn && quote.isPending)) return null;
   return (
     <AppText variant="small" tone="muted">
       Ödemelerinizi apartman yöneticinize elden veya banka havalesiyle yapabilirsiniz.

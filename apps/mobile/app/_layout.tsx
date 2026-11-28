@@ -11,6 +11,7 @@ import { PushPermissionPrompt } from '@/components/PushPermissionPrompt';
 import { AppText, Card, Screen } from '@/components/ui';
 import { env, envResult } from '@/config/env';
 import { AuthProvider, useAuth } from '@/context/AuthProvider';
+import { SiteFeaturesProvider } from '@/context/SiteFeaturesProvider';
 import { useReactQueryAppState } from '@/hooks/useAppForeground';
 import { useAppLock } from '@/hooks/useAppLock';
 import { useReactQueryNetwork } from '@/hooks/useNetwork';
@@ -67,7 +68,8 @@ function RootStack() {
   const area = user?.role ? areaForRole(user.role) : null;
 
   return (
-    <>
+    // Adim 1: aktif apartmanin site ozellikleri (kapali ozelligin Diğer ogesi, ekrani ve kartlari gizlenir).
+    <SiteFeaturesProvider>
       {/* Bildirime dokunma / on planda gelen bildirim; giristen sonra izin aciklamasi; genel bilgi notu. */}
       <NotificationObserver />
       <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.bg }, ...headerOptions(colors) }}>
@@ -95,7 +97,7 @@ function RootStack() {
       <NoticeBanner />
       {/* Face ID / parmak izi kilidi (Hesabım): yiginin ustunde; acikken izin penceresi gosterilmez. */}
       <AppLockGate />
-    </>
+    </SiteFeaturesProvider>
   );
 }
 

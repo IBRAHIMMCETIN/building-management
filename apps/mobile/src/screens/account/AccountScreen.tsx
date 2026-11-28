@@ -1,10 +1,11 @@
 import { ROLE_LABELS } from '@bm/shared/roles';
 import { useRouter } from 'expo-router';
-import { ArrowLeftRight, LogOut, UserRound } from '@/components/icons';
+import { ArrowLeftRight, BellRing, LogOut, UserRound } from '@/components/icons';
 import { useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 import { AppText, Button, Card, CardTitle, Screen } from '@/components/ui';
 import { useAuth } from '@/context/AuthProvider';
+import { useFeature } from '@/context/SiteFeaturesProvider';
 import { useActiveApartmentName, useContexts } from '@/hooks/useContexts';
 import { space } from '@/theme/tokens';
 import { useTheme } from '@/theme/useTheme';
@@ -26,7 +27,8 @@ function Field({ label, value }: { label: string; value: string }) {
 /**
  * Hesabım (web: pages/account/AccountPage.tsx): profil ve aktif baglam, baglam degistirme, e-posta
  * ve mobil bildirim tercihleri (bu telefonun izni / kaydi ile), cikis. Sakin, bina gorevlisi ve guvenlik ayni ekrani kullanir. Iki adimli
- * dogrulama kurulumu bu rollerde zorunlu olmadigindan mobilde yoktur (web Hesabım'da).
+ * dogrulama kurulumu bu rollerde zorunlu olmadigindan mobilde yoktur (web Hesabım'da). Sakinde tercih kartlari
+ * `resident.notificationPrefs` site ozelligine baglidir (sade modda yalnizca telefonun bildirim izni).
  */
 export function AccountScreen({ showTitle = true }: { showTitle?: boolean }) {
   const { user, signOut } = useAuth();
@@ -36,6 +38,9 @@ export function AccountScreen({ showTitle = true }: { showTitle?: boolean }) {
   const { colors } = useTheme();
   const [signingOut, setSigningOut] = useState(false);
   const canSwitch = (contexts.data?.contexts.length ?? 0) > 1;
+  // Adim 1: sakinde bildirim tercihleri site ozelligine bagli (kapaliyken API de 403 doner); diger roller etkilenmez.
+  const residentPrefsOn = useFeature('resident.notificationPrefs');
+  const showPrefs = user?.role !== 'resident' || residentPrefsOn;
 
   if (!user) return null;
 
@@ -54,10 +59,20 @@ export function AccountScreen({ showTitle = true }: { showTitle?: boolean }) {
 
       <AppLockCard />
 
-      <NotificationPreferencesCard />
-      <NotificationPreferencesCard channel="push">
-        <PushDeviceStatus />
-      </NotificationPreferencesCard>
+      {showPrefs ? (
+        <>
+          <NotificationPreferencesCard />
+          <NotificationPreferencesCard channel="push">
+            <PushDeviceStatus />
+          </NotificationPreferencesCard>
+        </>
+      ) : (
+        // Sade mod: tercih anahtarlari yok; yalnizca bu telefonun bildirim izni (izin ver / Ayarlar).
+        <Card>
+          <CardTitle icon={<BellRing size={20} color={colors.muted} aria-hidden />}>Bildirimler</CardTitle>
+          <PushDeviceStatus />
+        </Card>
+      )}
 
       <Button
         variant="secondary"
