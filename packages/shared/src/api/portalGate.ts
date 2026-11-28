@@ -154,6 +154,12 @@ export function isTurkishPlate(plate: string): boolean {
   return digits >= min && digits <= max;
 }
 
+/** `34ABC123` -> `34 ABC 123`; Turk plakasi degilse oldugu gibi. */
+export function formatPlate(plate: string): string {
+  const m = PLATE_RE.exec(plate);
+  return m ? `${m[1]} ${m[2]} ${m[3]}` : plate;
+}
+
 /** Form dogrulamasi: hata metni veya `undefined`. */
 export function plateError(input: string): string | undefined {
   const plate = normalizePlate(input);

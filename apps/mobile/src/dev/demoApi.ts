@@ -1,10 +1,14 @@
 import type { NotificationPreferences } from '@bm/shared/api/notificationPreferences';
 import { mockContextsFor } from '@bm/shared/auth/mockScenarios';
 import { decodeClaims } from '@bm/shared/auth/session';
+import { createGateDemo } from './demo/gate';
+import { createReservationsDemo } from './demo/reservations';
+import { createTicketsDemo } from './demo/tickets';
 
 /*
  * DEMO veri (EXPO_PUBLIC_API_MODE=demo, yalnizca mock kimlikle): API calismadan web onizlemesinde
- * ekranlar gorulebilsin diye M1 uclarinin ornek yanitlari. Gercek veri DEGILDIR; uygulama ust
+ * ekranlar gorulebilsin diye ornek yanitlar (M1 uclari burada; talepler, kapi, rezervasyon ve
+ * sonraki ozellikler src/dev/demo/ altinda ozellik basina ayri dosyada). Gercek veri DEGILDIR; uygulama ust
  * cubugunda "Demo verisi" etiketi gorunur. Yanitlar API sozlesmesiyle ayni bicimdedir (zod
  * semalari @bm/shared'den dogrular).
  */
@@ -106,25 +110,6 @@ function announcements(now: Date) {
   };
 }
 
-function ticket(id: string, number: string, title: string, status: string, createdDaysAgo: number, now: Date, actions: string[] = []) {
-  return {
-    ticketId: id,
-    number,
-    title,
-    description: title,
-    category: 'plumbing',
-    priority: 'normal',
-    location: { kind: 'unit', unitId: 'u-demo-7' },
-    status,
-    source: 'portal',
-    createdAt: new Date(now.getTime() - createdDaysAgo * day).toISOString(),
-    dueAt: new Date(now.getTime() + 2 * day).toISOString(),
-    assigned: status !== 'open',
-    actions,
-    version: 1,
-  };
-}
-
 function quote(now: Date) {
   return {
     unitId: 'u-demo-7',
@@ -140,9 +125,16 @@ function quote(now: Date) {
 
 export type DemoFetchOptions = { now?: () => Date };
 
-/** `fetch` yerine gecer: yalnizca M1 uclarini yanitlar, digerleri 404. */
+/** Ozellik demo dosyasinin gordugu istek (kimlik dogrulanmis, sakin rolu). */
+export type DemoRequest = { method: string; path: string; query: Record<string, string>; body: unknown; now: Date };
+/** Yanit veya `undefined` (bu dosyanin ucu degil). */
+export type DemoHandler = (req: DemoRequest) => { status: number; body?: unknown } | undefined;
+
+/** `fetch` yerine gecer: M1 uclari burada, diger ozellikler src/dev/demo/* dosyalarinda; digerleri 404. */
 export function createDemoFetch({ now = () => new Date() }: DemoFetchOptions = {}): typeof fetch {
   let prefs: NotificationPreferences = { email: { enabled: true }, push: { enabled: true } };
+  const start = now();
+  const domains: DemoHandler[] = [createTicketsDemo(start), createGateDemo(start), createReservationsDemo(start)];
 
   return (async (input: string | URL | Request, init?: RequestInit) => {
     const raw = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
@@ -187,13 +179,12 @@ export function createDemoFetch({ now = () => new Date() }: DemoFetchOptions = {
         return respond(200, announcements(t));
       case '/api/portal/payments/quote':
         return respond(200, quote(t));
-      case '/api/portal/tickets': {
-        const open = new URLSearchParamsLite(qs).get('status')?.includes('open') ?? true;
-        const items = open
-          ? [ticket('tk-2', 'T-0042', 'Banyo lavabosu su kaçırıyor', 'resolved', 3, t, ['confirm', 'reopen']), ticket('tk-3', 'T-0045', 'Kombi basıncı düşüyor', 'assigned', 1, t)]
-          : [];
-        return respond(200, { items, total: items.length });
-      }
+    }
+    // Ozellik basina ayri demo dosyalari (src/dev/demo/*): ilk yanit veren kazanir.
+    const request: DemoRequest = { method, path, query: new URLSearchParamsLite(qs).entries(), body: init?.body ? JSON.parse(String(init.body)) : undefined, now: t };
+    for (const handle of domains) {
+      const reply = handle(request);
+      if (reply) return respond(reply.status, reply.body);
     }
     if (path.startsWith('/api/documents/my-receipts/')) {
       return respond(404, { error: 'not_found', message: 'Demo modunda makbuz PDF’i yok; gerçek API’de makbuz burada açılır.' });
@@ -214,5 +205,8 @@ class URLSearchParamsLite {
   }
   get(key: string) {
     return this.map.get(key);
+  }
+  entries(): Record<string, string> {
+    return Object.fromEntries(this.map);
   }
 }
