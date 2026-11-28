@@ -16,26 +16,30 @@ import {
 } from '@bm/shared/api/portalGate';
 import { formatDateTime } from '@bm/shared/dates';
 import { useQueryClient } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Platform, StyleSheet, View } from 'react-native';
 import { Car, DoorOpen, LogIn, LogOut, Package, Plus, QrCode as QrIcon } from '@/components/icons';
 import { FilterChips } from '@/components/portal/FilterChips';
 import { PortalQueryState } from '@/components/portal/PortalQueryState';
+import { Sheet } from '@/components/portal/Sheet';
 import { Alert, AppText, Badge, Button, Card, CardTitle, EmptyState, LoadingBlock, Screen, TextField } from '@/components/ui';
 import { useAuth } from '@/context/AuthProvider';
-import { gateKeys, useGateLog, useMyCouriers, useMyGate, useMyGateActions, useMyPasses, useMyVehicles } from '@/hooks/useGate';
+import { gateKeys, useGateLog, useMyCouriers, useMyGate, useMyGateActions, useMyPasses, useMyVehicles, usePassIssuing } from '@/hooks/useGate';
 import { radii, space, withAlpha } from '@/theme/tokens';
 import { useTheme } from '@/theme/useTheme';
-import { NewPassSheet } from './NewPassSheet';
-import { PassShareSheet } from './PassShareSheet';
+import { NewPassForm } from './NewPassForm';
+import { PassShare } from './PassShare';
 
 type Tab = 'guests' | 'vehicles' | 'history';
+/** Tek pencere: form -> (basarida) ayni pencerede QR / paylasim. Iki Modal art arda acilmaz. */
+type PassSheetState = { kind: 'new' } | { kind: 'share'; pass: MyPass };
 
 /**
  * Sakin "Ziyaretçi" (web: pages/resident/gate/MyGatePage.tsx): kapidaki kuryeye onay (en ustte,
- * yanit icin son saatle; ekran acikken 15 sn'de bir ve uygulama one gelince yenilenir), misafir
- * gecisi (QR + kisa kod paylasimi, yeni QR, iptal), araclarim ve dairemin kapi kayitlari. Yalnizca
- * dairede oturan sakinler (kiraci veya oturan malik) kullanir.
+ * yanit icin son saatle; ekran acikken sunucunun `pollSeconds` araligiyla ve uygulama one gelince
+ * yenilenir), misafir gecisi (QR + kisa kod paylasimi, yeni QR, iptal), araclarim ve dairemin kapi
+ * kayitlari. Yalnizca dairede oturan sakinler (kiraci veya oturan malik) kullanir. Gecis penceresi ve
+ * jeton veren islemler ekran duzeyindedir: istek surerken bolum degisse de yeni QR kaybolmaz.
  */
 export function GateScreen() {
   const overview = useMyGate();
@@ -43,6 +47,8 @@ export function GateScreen() {
   const { user } = useAuth();
   const [tab, setTab] = useState<Tab>('guests');
   const [refreshing, setRefreshing] = useState(false);
+  const [sheet, setSheet] = useState<PassSheetState>();
+  const issuing = usePassIssuing((pass) => setSheet({ kind: 'share', pass }));
 
   const refresh = async () => {
     setRefreshing(true);
@@ -86,13 +92,32 @@ export function GateScreen() {
               { value: 'history', label: 'Kapı kayıtları' },
             ]}
           />
-          {tab === 'guests' && <Guests units={units} limits={limits} />}
+          {tab === 'guests' && <Guests units={units} rotate={issuing.rotate} onNew={() => setSheet({ kind: 'new' })} />}
           {tab === 'vehicles' && <MyVehicles units={units} max={limits.maxVehiclesPerUnit} />}
           {tab === 'history' && <History units={units} />}
+          <Sheet open={!!sheet} title={sheet?.kind === 'share' ? 'Misafir geçişi' : 'Misafir geçişi oluştur'} onClose={() => setSheet(undefined)}>
+            {sheet?.kind === 'new' ? (
+              <NewPassForm units={units} limits={limits} create={issuing.create} onCancel={() => setSheet(undefined)} />
+            ) : sheet?.kind === 'share' ? (
+              <PassShare pass={sheet.pass} />
+            ) : null}
+          </Sheet>
         </>
       )}
     </Screen>
   );
+}
+
+/** Verilen ana kadar `false`, sonra `true` (yanit suresi dolunca kart kendini kapatir). */
+function usePassed(iso: string): boolean {
+  const at = Date.parse(iso);
+  const [passed, setPassed] = useState(() => Date.now() >= at);
+  useEffect(() => {
+    if (passed) return;
+    const t = setTimeout(() => setPassed(true), Math.max(0, at - Date.now()) + 50);
+    return () => clearTimeout(t);
+  }, [at, passed]);
+  return passed;
 }
 
 function WaitingCouriers() {
@@ -108,10 +133,14 @@ function WaitingCouriers() {
   );
 }
 
-/** Belirgin kurye karti: firma, daire, gelis saati, gorevlinin notu, yanit icin son saat. */
+/**
+ * Belirgin kurye karti: firma, daire, gelis saati, gorevlinin notu, yanit icin son saat. Son saat
+ * gecince dugmeler istemcide de kapanir (sunucu bir sonraki yenilemede `canRespond: false` doner).
+ */
 function CourierPrompt({ c }: { c: Courier }) {
   const a = useMyGateActions();
   const { colors } = useTheme();
+  const late = usePassed(c.respondBy);
   const respond = (decision: 'approve' | 'decline') => a.respondCourier.mutate({ id: c.courierId, version: c.version, decision });
   const pending = a.respondCourier.isPending ? a.respondCourier.variables?.decision : undefined;
 
@@ -129,20 +158,20 @@ function CourierPrompt({ c }: { c: Courier }) {
       ) : null}
       <View style={[styles.respondBy, { backgroundColor: withAlpha(colors.warning, 0.1) }]}>
         <AppText variant="small" tone="warning">
-          {'Yanıt için son saat: '}
+          {late ? 'Yanıt süresi doldu (' : 'Yanıt için son saat: '}
           <AppText variant="small" tone="warning" weight="semibold" tabular>
             {timeOf(c.respondBy)}
           </AppText>
-          . Yanıt verilmezse kurye içeri alınmaz.
+          {late ? '). Kurye içeri alınmaz.' : '. Yanıt verilmezse kurye içeri alınmaz.'}
         </AppText>
       </View>
       {a.respondCourier.error && <Alert tone="danger">{errorMessage(a.respondCourier.error)}</Alert>}
       <View style={styles.pair}>
         <View style={styles.flex}>
-          <Button label="İçeri alınsın" block loading={pending === 'approve'} disabled={!!pending} onPress={() => respond('approve')} />
+          <Button label="İçeri alınsın" block loading={pending === 'approve'} disabled={!!pending || late} onPress={() => respond('approve')} />
         </View>
         <View style={styles.flex}>
-          <Button variant="secondary" label="Reddet" block loading={pending === 'decline'} disabled={!!pending} onPress={() => respond('decline')} />
+          <Button variant="secondary" label="Reddet" block loading={pending === 'decline'} disabled={!!pending || late} onPress={() => respond('decline')} />
         </View>
       </View>
     </Card>
@@ -154,22 +183,21 @@ function VerdictBadge({ verdict }: { verdict: MyPass['verdict'] }) {
   return <Badge tone={v.tone} label={v.label} />;
 }
 
-function Guests({ units, limits }: { units: GateUnit[]; limits: { maxPassDays: number; maxPassLeadDays: number } }) {
+type RotateMutation = { mutate: (v: { id: string; version: number }, opts?: { onSettled?: () => void }) => void; isPending: boolean; error: unknown };
+
+function Guests({ units, rotate, onNew }: { units: GateUnit[]; rotate: RotateMutation; onNew: () => void }) {
   const passes = useMyPasses();
   const a = useMyGateActions();
   const { colors } = useTheme();
-  const [creating, setCreating] = useState(false);
-  const [shown, setShown] = useState<MyPass>();
   /** `revoke:<id>` veya `rotate:<id>`: ikinci dokunusla onaylanan islem. */
   const [confirm, setConfirm] = useState<string>();
   const items = passes.data ?? [];
-  const rotate = (p: MyPass) => a.rotatePass.mutate({ id: p.passId, version: p.version }, { onSuccess: (r) => setShown(r.pass), onSettled: () => setConfirm(undefined) });
 
   return (
     <View style={styles.gap3}>
-      <Button icon={Plus} label="Misafir geçişi oluştur" block onPress={() => setCreating(true)} />
+      <Button icon={Plus} label="Misafir geçişi oluştur" block onPress={onNew} />
       {a.revokePass.error && <Alert tone="danger">{errorMessage(a.revokePass.error)}</Alert>}
-      {a.rotatePass.error && <Alert tone="danger">{errorMessage(a.rotatePass.error)}</Alert>}
+      {rotate.error ? <Alert tone="danger">{errorMessage(rotate.error)}</Alert> : null}
       {passes.isPending ? (
         <LoadingBlock label="Misafir geçişleri yükleniyor" />
       ) : passes.isError ? (
@@ -213,7 +241,11 @@ function Guests({ units, limits }: { units: GateUnit[]; limits: { maxPassDays: n
                       {asking === 'revoke' ? (
                         <Button variant="danger" label="Evet, iptal et" loading={a.revokePass.isPending} onPress={() => a.revokePass.mutate({ id: p.passId, version: p.version }, { onSettled: () => setConfirm(undefined) })} />
                       ) : (
-                        <Button label="Evet, yeni QR oluştur" loading={a.rotatePass.isPending} onPress={() => rotate(p)} />
+                        <Button
+                          label="Evet, yeni QR oluştur"
+                          loading={rotate.isPending}
+                          onPress={() => rotate.mutate({ id: p.passId, version: p.version }, { onSettled: () => setConfirm(undefined) })}
+                        />
                       )}
                     </>
                   ) : (
@@ -230,8 +262,6 @@ function Guests({ units, limits }: { units: GateUnit[]; limits: { maxPassDays: n
           );
         })
       )}
-      <NewPassSheet open={creating} onClose={() => setCreating(false)} units={units} limits={limits} onCreated={setShown} />
-      <PassShareSheet pass={shown} onClose={() => setShown(undefined)} />
     </View>
   );
 }

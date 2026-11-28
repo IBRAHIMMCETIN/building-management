@@ -1,5 +1,6 @@
-import type { CreatePassInput, CreateVehicleInput, UpdateVehicleInput } from '@bm/shared/api/portalGate';
+import type { CreatePassInput, CreateVehicleInput, MyPass, UpdateVehicleInput } from '@bm/shared/api/portalGate';
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useRef } from 'react';
 import { useAuth } from '@/context/AuthProvider';
 import { portalGateApi } from '@/lib/api/portalGate';
 import { useServices } from '@/services';
@@ -44,15 +45,38 @@ export function useMyPasses() {
   return useQuery({ queryKey: gateKeys.passes(apt, userId), queryFn: ({ signal }) => portalGateApi.passes(api, signal).then((r) => r.items), enabled });
 }
 
+/** Yenileme araligi sunucunun `pollSeconds` degeriyle (yoksa 15 sn). */
 export function useMyCouriers() {
   const { api, apt, userId, enabled } = useScope();
   return useQuery({
     queryKey: gateKeys.couriers(apt, userId),
-    queryFn: ({ signal }) => portalGateApi.couriers(api, signal).then((r) => r.items),
+    queryFn: ({ signal }) => portalGateApi.couriers(api, signal),
+    select: (r) => r.items,
     enabled,
-    refetchInterval: COURIER_POLL_MS,
+    refetchInterval: (query) => (query.state.data?.pollSeconds ? query.state.data.pollSeconds * 1000 : COURIER_POLL_MS),
     refetchOnWindowFocus: true,
   });
+}
+
+/**
+ * Misafir gecisi olusturma ve "Yeni QR oluştur": jeton YALNIZCA bu yanitlarda gelir. Yanit kanca
+ * duzeyindeki `onSuccess` ile `onIssued`'a verilir (dugmeye ozel `mutate` geri cagrisi degil): istek
+ * surerken bolum degisip liste ekrandan kalksa da jeton kaybolmaz. Kanca, bolumler arasinda kalici
+ * olan ekran duzeyinde kullanilir.
+ */
+export function usePassIssuing(onIssued: (pass: MyPass) => void) {
+  const { api, apt, userId } = useScope();
+  const qc = useQueryClient();
+  const callback = useRef(onIssued);
+  callback.current = onIssued;
+  const opts = {
+    onSuccess: (r: { pass: MyPass }) => callback.current(r.pass),
+    onSettled: () => qc.invalidateQueries({ queryKey: gateKeys.all(apt, userId) }),
+  };
+  return {
+    create: useMutation({ mutationFn: (v: CreatePassInput) => portalGateApi.createPass(api, v), ...opts }),
+    rotate: useMutation({ mutationFn: (v: { id: string; version: number }) => portalGateApi.rotatePass(api, v.id, v.version), ...opts }),
+  };
 }
 
 /** Dairenin son 7 gunluk kapi kayitlari: "Daha fazla yükle" ile sayfali. */
@@ -72,9 +96,7 @@ export function useMyGateActions() {
   const qc = useQueryClient();
   const opts = { onSettled: () => qc.invalidateQueries({ queryKey: gateKeys.all(apt, userId) }) };
   return {
-    createPass: useMutation({ mutationFn: (v: CreatePassInput) => portalGateApi.createPass(api, v), ...opts }),
     revokePass: useMutation({ mutationFn: (v: { id: string; version: number }) => portalGateApi.revokePass(api, v.id, v.version), ...opts }),
-    rotatePass: useMutation({ mutationFn: (v: { id: string; version: number }) => portalGateApi.rotatePass(api, v.id, v.version), ...opts }),
     respondCourier: useMutation({
       mutationFn: (v: { id: string; version: number; decision: 'approve' | 'decline' }) => portalGateApi.respondCourier(api, v.id, { version: v.version, decision: v.decision }),
       ...opts,

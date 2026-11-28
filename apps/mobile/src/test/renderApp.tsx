@@ -58,7 +58,8 @@ export function mockApi(routes: Routes) {
       status = 404;
       payload = { error: 'not_found', message: 'Kayıt bulunamadı.' };
     } else {
-      const out = typeof handler === 'function' ? handler({ url: input, query, body }) : handler;
+      // Fonksiyon Promise dondurebilir: geciken yanit (bekleyen istek) veya reddedilen = ag hatasi.
+      const out = await (typeof handler === 'function' ? handler({ url: input, query, body }) : handler);
       if (isResponse(out)) {
         status = out.status;
         payload = out.body;

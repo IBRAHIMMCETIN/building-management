@@ -1,32 +1,41 @@
 import { errorMessage } from '@bm/shared/api/errors';
-import { type GateUnit, type MyPass, type PassFormIssue, normalizePlate, passFormIssue } from '@bm/shared/api/portalGate';
+import { type CreatePassInput, type GateUnit, type PassFormIssue, normalizePlate, passFormIssue } from '@bm/shared/api/portalGate';
 import { addDays, istanbulToday } from '@bm/shared/reservations/model';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 import { Check, Circle } from '@/components/icons';
 import { DateField } from '@/components/portal/DateField';
 import { FilterChips } from '@/components/portal/FilterChips';
-import { Sheet } from '@/components/portal/Sheet';
 import { Alert, AppText, Button, ListRow, TextField } from '@/components/ui';
-import { useMyGateActions } from '@/hooks/useGate';
 import { useIdempotencyKey } from '@/lib/idempotency';
 import { space } from '@/theme/tokens';
 import { useTheme } from '@/theme/useTheme';
 
 type Limits = { maxPassDays: number; maxPassLeadDays: number };
-type Props = { open: boolean; onClose: () => void; units: GateUnit[]; limits: Limits; onCreated: (p: MyPass) => void };
+/** Ekran duzeyindeki olusturma islemi (usePassIssuing().create): basarida pencere paylasim adimina gecer. */
+type CreateMutation = {
+  mutate: (input: CreatePassInput) => void;
+  reset: () => void;
+  isPending: boolean;
+  error: unknown;
+};
+type Props = { units: GateUnit[]; limits: Limits; create: CreateMutation; onCancel: () => void };
 
 const ENTRY_MODES = [
   { value: 'single', title: 'Tek giriş', detail: 'Bir kez girişte kullanılır, sonra geçersiz olur.' },
   { value: 'multi', title: 'Çoklu giriş', detail: 'Seçilen günler boyunca girip çıkabilir.' },
 ] as const;
 
-/** Sakin: misafir gecisi (web: pages/resident/gate/NewPassDialog.tsx): ad, tarih / aralik, tek veya coklu giris, istege bagli plaka ve not. */
-export function NewPassSheet({ open, onClose, units, limits, onCreated }: Props) {
+/**
+ * Misafir gecisi formu (web: pages/resident/gate/NewPassDialog.tsx): ad, tarih / aralik, tek veya
+ * coklu giris, istege bagli plaka ve not. Pencere her acilista formu yeniden kurar: islem anahtari
+ * (idempotencyKey) acilis basina yenidir, ayni acilistaki tekrar gonderim ayni anahtari kullanir.
+ * Basarida ayni pencere QR / paylasim adimina gecer (ikinci bir pencere acilmaz).
+ */
+export function NewPassForm({ units, limits, create, onCancel }: Props) {
   const today = istanbulToday();
-  const actions = useMyGateActions();
   const { colors } = useTheme();
-  const [key, renew] = useIdempotencyKey();
+  const [key] = useIdempotencyKey();
   const [unitId, setUnitId] = useState(units[0]?.unitId ?? '');
   const [guestName, setGuestName] = useState('');
   const [validFrom, setValidFrom] = useState(today);
@@ -35,55 +44,32 @@ export function NewPassSheet({ open, onClose, units, limits, onCreated }: Props)
   const [plate, setPlate] = useState('');
   const [note, setNote] = useState('');
   const [formError, setFormError] = useState<PassFormIssue>();
-  const [error, setError] = useState<string | null>(null);
+  const { reset } = create;
 
-  const reset = () => {
-    setGuestName('');
-    setValidFrom(today);
-    setValidUntil('');
-    setEntryMode('single');
-    setPlate('');
-    setNote('');
-    setFormError(undefined);
-    setError(null);
-  };
-  const close = () => {
-    reset();
-    onClose();
-  };
+  // Onceki acilistan kalan hata yeni formda gosterilmez.
+  useEffect(() => reset(), [reset]);
+
   const submit = () => {
-    setError(null);
     const problem = passFormIssue({ guestName, validFrom, validUntil, today, ...limits });
     setFormError(problem);
     if (problem) return;
     const p = normalizePlate(plate);
-    actions.createPass.mutate(
-      {
-        idempotencyKey: key,
-        unitId: unitId || units[0]?.unitId || '',
-        guestName: guestName.trim(),
-        validFrom,
-        ...(validUntil ? { validUntil } : {}),
-        entryMode,
-        ...(p ? { plate: p } : {}),
-        ...(note.trim() ? { note: note.trim() } : {}),
-      },
-      {
-        onSuccess: (r) => {
-          renew();
-          reset();
-          onClose();
-          onCreated(r.pass);
-        },
-        onError: (err) => setError(errorMessage(err)),
-      },
-    );
+    create.mutate({
+      idempotencyKey: key,
+      unitId: unitId || units[0]?.unitId || '',
+      guestName: guestName.trim(),
+      validFrom,
+      ...(validUntil ? { validUntil } : {}),
+      entryMode,
+      ...(p ? { plate: p } : {}),
+      ...(note.trim() ? { note: note.trim() } : {}),
+    });
   };
   const errorOf = (field: PassFormIssue['field']) => (formError?.field === field ? formError.message : undefined);
   const nameError = errorOf('guestName');
 
   return (
-    <Sheet open={open} title="Misafir geçişi oluştur" onClose={close}>
+    <>
       {units.length > 1 && (
         <View style={styles.group}>
           <AppText variant="small" weight="medium">
@@ -143,12 +129,12 @@ export function NewPassSheet({ open, onClose, units, limits, onCreated }: Props)
           Görevli görür; telefon numarası yazmayın
         </AppText>
       </View>
-      {error && <Alert tone="danger">{error}</Alert>}
+      {create.error ? <Alert tone="danger">{errorMessage(create.error)}</Alert> : null}
       <View style={styles.actions}>
-        <Button variant="ghost" label="Vazgeç" onPress={close} />
-        <Button label="Geçiş oluştur" loading={actions.createPass.isPending} onPress={submit} />
+        <Button variant="ghost" label="Vazgeç" onPress={onCancel} />
+        <Button label="Geçiş oluştur" loading={create.isPending} onPress={submit} />
       </View>
-    </Sheet>
+    </>
   );
 }
 

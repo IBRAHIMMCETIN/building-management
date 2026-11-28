@@ -147,6 +147,69 @@ describe('Ziyaretçi', () => {
     await waitFor(() => expect(calls.find((c) => c.path.endsWith('/revoke'))?.body).toEqual({ version: 5 }));
   });
 
+  it('yeni QR istegi surerken bolum degisse de yeni jeton kaybolmaz (pencere acilir)', async () => {
+    let release: (v: unknown) => void = () => undefined;
+    const { calls } = await renderApp(<GateScreen />, {
+      routes: base({
+        'POST /api/portal/gate/passes/p1/rotate': () =>
+          new Promise((resolve) => {
+            release = resolve;
+          }),
+      }),
+    });
+    await fireEvent.press(await screen.findByRole('button', { name: 'Misafir p1 için yeni QR oluştur' }));
+    await fireEvent.press(screen.getByRole('button', { name: 'Evet, yeni QR oluştur' }));
+    await waitFor(() => expect(calls.some((c) => c.path.endsWith('/rotate'))).toBe(true));
+    // Istek surerken Araçlarım'a gecilir: misafir listesi ekrandan kalkar.
+    await fireEvent.press(screen.getByRole('button', { name: 'Araçlarım' }));
+    expect(screen.queryByText('Misafir p1')).toBeNull();
+    await act(async () => release({ pass: pass('p1', { version: 6, token: 'tok_yyyyyyyyyyyyyyyyyyyyyy', shortCode: 'BBBB3333' }) }));
+    expect(await screen.findByText('BBBB-3333')).toBeTruthy();
+    expect(screen.getByRole('header', { name: 'Misafir geçişi' })).toBeTruthy();
+  });
+
+  it('gecis formu: ayni acilista tekrar ayni anahtar; pencere kapanip acilinca yeni anahtar', async () => {
+    let fail = true;
+    const { calls } = await renderApp(<GateScreen />, {
+      routes: base({
+        'POST /api/portal/gate/passes': () =>
+          fail ? { status: 503, body: { error: 'unavailable' } } : { status: 201, body: { pass: pass('p9', { token: 'tok_abcdefghijklmnopqrstu', shortCode: 'K7M2PQ4X' }), replayed: false } },
+      }),
+    });
+    const fillAndSubmit = async () => {
+      await fireEvent.changeText(screen.getByLabelText('Misafirin adı'), 'Ayşe');
+      await fireEvent.press(screen.getByRole('button', { name: 'Geçiş oluştur' }));
+    };
+    await fireEvent.press(await screen.findByRole('button', { name: 'Misafir geçişi oluştur' }));
+    await fillAndSubmit();
+    expect(await screen.findByText('Sunucuda beklenmeyen bir hata oluştu.')).toBeTruthy();
+    await fireEvent.press(screen.getByRole('button', { name: 'Geçiş oluştur' }));
+    await waitFor(() => expect(calls.filter((c) => c.method === 'POST' && c.path === '/api/portal/gate/passes')).toHaveLength(2));
+    await fireEvent.press(screen.getByRole('button', { name: 'Vazgeç' }));
+    // Yeniden acilan formda onceki hata yok, yeni anahtar.
+    await fireEvent.press(screen.getByRole('button', { name: 'Misafir geçişi oluştur' }));
+    expect(screen.queryByText('Sunucuda beklenmeyen bir hata oluştu.')).toBeNull();
+    fail = false;
+    await fillAndSubmit();
+    expect(await screen.findByText('K7M2-PQ4X')).toBeTruthy();
+    const keys = calls.filter((c) => c.method === 'POST' && c.path === '/api/portal/gate/passes').map((c) => (c.body as { idempotencyKey: string }).idempotencyKey);
+    expect(keys).toHaveLength(3);
+    expect(keys[1]).toBe(keys[0]);
+    expect(keys[2]).not.toBe(keys[0]);
+  });
+
+  it('yanit suresi gecen kuryede dugmeler kapanir; yenileme sunucunun pollSeconds degeriyle', async () => {
+    const { queryClient } = await renderApp(<GateScreen />, {
+      routes: base({ 'GET /api/portal/gate/couriers': { items: [courier({ respondBy: '2020-01-01T10:00:00.000Z' })], pollSeconds: 30 } }),
+    });
+    expect(await screen.findByText(/^Yanıt süresi doldu/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'İçeri alınsın' }).props.accessibilityState).toMatchObject({ disabled: true });
+    expect(screen.getByRole('button', { name: 'Reddet' }).props.accessibilityState).toMatchObject({ disabled: true });
+    const query = queryClient.getQueryCache().findAll({ predicate: (q) => q.queryKey.includes('couriers') })[0];
+    const interval = query?.observers[0]?.options.refetchInterval as (q: unknown) => number;
+    expect(interval(query)).toBe(30_000);
+  });
+
   it('araclarim: plaka bicimi denetlenir, kaydedilir, pasife alinir', async () => {
     const { calls } = await renderApp(<GateScreen />, {
       routes: base({
