@@ -6,6 +6,7 @@ import {
   categoryEnabled,
   channelEnabled,
 } from '@bm/shared/api/notificationPreferences';
+import type { ReactNode } from 'react';
 import { BellRing } from '@/components/icons';
 import { StyleSheet, View } from 'react-native';
 import { Alert, AppText, Card, CardTitle, Skeleton, SwitchRow } from '@/components/ui';
@@ -34,9 +35,9 @@ const COPY: Record<NotificationChannel, { title: string; master: string; masterD
  * Hesabım - bildirim tercihleri (web: pages/account/NotificationPreferencesCard.tsx). Kanal basina ana
  * anahtar ve web ile ayni kategoriler; her degisiklik YALNIZCA degisen alani gonderir (`{ email: {...} }`
  * veya `{ push: {...} }`; sunucu digerlerine dokunmaz). Tercih kullanici geneldir (tum apartmanlar).
- * M1 Hesabım yalnizca e-postayi gosterir; `channel="push"` push fazinda ayni bilesenle eklenir.
+ * Hesabım ikisini de gosterir; `children` kanalin cihaz durumu (push: bu telefonun izni / kaydi) icindir.
  */
-export function NotificationPreferencesCard({ channel = 'email' }: { channel?: NotificationChannel }) {
+export function NotificationPreferencesCard({ channel = 'email', children }: { channel?: NotificationChannel; children?: ReactNode }) {
   const prefs = useNotificationPreferences();
   const save = useSaveNotificationPreferences();
   const { colors } = useTheme();
@@ -46,6 +47,7 @@ export function NotificationPreferencesCard({ channel = 'email' }: { channel?: N
   return (
     <Card>
       <CardTitle icon={<BellRing size={20} color={colors.muted} aria-hidden />}>{copy.title}</CardTitle>
+      {children}
       {prefs.isPending && <Skeleton height={32} />}
       {prefs.isError && <Alert tone="danger">{errorMessage(prefs.error)}</Alert>}
       {prefs.data && (
@@ -64,6 +66,7 @@ export function NotificationPreferencesCard({ channel = 'email' }: { channel?: N
                 <SwitchRow
                   key={category}
                   label={meta.label}
+                  accessibilityLabel={channel === 'push' ? `${meta.label}, mobil bildirim` : undefined}
                   description={meta.description}
                   value={enabled && categoryEnabled(prefs.data, category, channel)}
                   disabled={save.isPending || !enabled}

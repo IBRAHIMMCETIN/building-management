@@ -1,16 +1,20 @@
 import { QueryClientProvider } from '@tanstack/react-query';
 import { DarkTheme, DefaultTheme, Stack, ThemeProvider } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, StyleSheet, View } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { BrandMark } from '@/components/Brand';
+import { NoticeBanner } from '@/components/NoticeBanner';
+import { PushPermissionPrompt } from '@/components/PushPermissionPrompt';
 import { AppText, Card, Screen } from '@/components/ui';
 import { env, envResult } from '@/config/env';
 import { AuthProvider, useAuth } from '@/context/AuthProvider';
 import { useReactQueryAppState } from '@/hooks/useAppForeground';
 import { createQueryClient } from '@/lib/api/queryClient';
 import { areaForRole } from '@/lib/auth/flow';
+import { applyOrientationPolicy } from '@/lib/orientation';
+import { NotificationObserver } from '@/navigation/NotificationObserver';
 import { headerOptions } from '@/navigation/options';
 import { ServicesProvider, createServices } from '@/services';
 import { space } from '@/theme/tokens';
@@ -59,27 +63,33 @@ function RootStack() {
   const area = user?.role ? areaForRole(user.role) : null;
 
   return (
-    <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.bg }, ...headerOptions(colors) }}>
-      <Stack.Screen name="index" />
-      <Stack.Protected guard={!isAuthenticated}>
-        <Stack.Screen name="(auth)" />
-      </Stack.Protected>
-      <Stack.Protected guard={area === 'resident'}>
-        <Stack.Screen name="resident" />
-      </Stack.Protected>
-      <Stack.Protected guard={area === 'guard'}>
-        <Stack.Screen name="guard" />
-      </Stack.Protected>
-      <Stack.Protected guard={area === 'staff'}>
-        <Stack.Screen name="staff" />
-      </Stack.Protected>
-      <Stack.Protected guard={area === 'panel'}>
-        <Stack.Screen name="panel" />
-      </Stack.Protected>
-      <Stack.Protected guard={isAuthenticated}>
-        <Stack.Screen name="select-context" options={{ headerShown: !needsContext, title: 'Apartman / rol seçin' }} />
-      </Stack.Protected>
-    </Stack>
+    <>
+      {/* Bildirime dokunma / on planda gelen bildirim; giristen sonra izin aciklamasi; genel bilgi notu. */}
+      <NotificationObserver />
+      <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.bg }, ...headerOptions(colors) }}>
+        <Stack.Screen name="index" />
+        <Stack.Protected guard={!isAuthenticated}>
+          <Stack.Screen name="(auth)" />
+        </Stack.Protected>
+        <Stack.Protected guard={area === 'resident'}>
+          <Stack.Screen name="resident" />
+        </Stack.Protected>
+        <Stack.Protected guard={area === 'guard'}>
+          <Stack.Screen name="guard" />
+        </Stack.Protected>
+        <Stack.Protected guard={area === 'staff'}>
+          <Stack.Screen name="staff" />
+        </Stack.Protected>
+        <Stack.Protected guard={area === 'panel'}>
+          <Stack.Screen name="panel" />
+        </Stack.Protected>
+        <Stack.Protected guard={isAuthenticated}>
+          <Stack.Screen name="select-context" options={{ headerShown: !needsContext, title: 'Apartman / rol seçin' }} />
+        </Stack.Protected>
+      </Stack>
+      <PushPermissionPrompt />
+      <NoticeBanner />
+    </>
   );
 }
 
@@ -87,6 +97,11 @@ function App() {
   const [services] = useState(() => createServices(env));
   const [queryClient] = useState(createQueryClient);
   useReactQueryAppState();
+  // Acilista: Android bildirim kanallari + on plan gosterim kurali (izin istemez) ve ekran yonu.
+  useEffect(() => {
+    void services.notifications.configure();
+    void applyOrientationPolicy();
+  }, [services]);
   const { scheme, colors } = useTheme();
   const navTheme = useMemo(() => {
     const base = scheme === 'dark' ? DarkTheme : DefaultTheme;
