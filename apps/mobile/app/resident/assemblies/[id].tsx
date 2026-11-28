@@ -5,7 +5,7 @@ export default function AssemblyDetailRoute() {
   const { id } = useLocalSearchParams<{ id: string }>();
   return (
     <>
-      <Stack.Screen options={{ title: 'Genel Kurul' }} />
+      <Stack.Screen options={{ title: 'Toplantı' }} />
       <AssemblyDetailScreen id={id ?? ''} />
     </>
   );

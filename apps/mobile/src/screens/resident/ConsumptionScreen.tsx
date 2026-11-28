@@ -6,6 +6,7 @@ import { Pressable, StyleSheet, View } from 'react-native';
 import { FileDown, Gauge } from '@/components/icons';
 import { BarTrack } from '@/components/portal/BarTrack';
 import { PortalQueryState } from '@/components/portal/PortalQueryState';
+import { StatTile } from '@/components/portal/StatTile';
 import { Alert, AppText, Badge, Button, Card, CardTitle, EmptyState, LoadingBlock, Screen, type AppTextProps } from '@/components/ui';
 import { usePortalUnit } from '@/context/PortalUnitProvider';
 import { useMyConsumption } from '@/hooks/useConsumption';
@@ -92,7 +93,7 @@ export function ConsumptionScreen() {
   );
 }
 
-/** Gider turu secimi (web: FilterChips "Gider türü"); tek secim, gorunen 36 pt, dokunma alani 44 pt. */
+/** Gider turu secimi (web: FilterChips "Gider türü"); tek secim. Gorunen en az 36 pt, dokunma alani 44 pt (UnitPicker gibi). */
 function CategoryChips({ value, options, onChange }: { value: TemplateCategory; options: TemplateCategory[]; onChange: (c: TemplateCategory) => void }) {
   const { colors } = useTheme();
   return (
@@ -105,7 +106,7 @@ function CategoryChips({ value, options, onChange }: { value: TemplateCategory; 
             accessibilityRole="radio"
             accessibilityLabel={CATEGORY_LABELS[c]}
             accessibilityState={{ checked: on }}
-            hitSlop={{ top: (MIN_TOUCH - CHIP_HEIGHT) / 2, bottom: (MIN_TOUCH - CHIP_HEIGHT) / 2 }}
+            hitSlop={{ top: 4, bottom: 4 }}
             onPress={() => onChange(c)}
             style={({ pressed }) => [
               styles.chip,
@@ -129,7 +130,7 @@ function Comparison({ period: p }: { period: PortalPeriod }) {
   const previous = p.previous ? `Önceki döneme göre ${p.previous.percent !== undefined ? formatPercentChange(p.previous.percent) : formatConsumption(p.previous.diff)}` : null;
 
   return (
-    <View style={styles.grid} accessibilityLabel={`${p.name} karşılaştırma`}>
+    <View style={styles.grid}>
       <Card style={styles.wide}>
         <View accessible accessibilityLabel={`Sizin tüketiminiz, ${p.name}: ${mine}${previous ? `. ${previous}` : ''}`} style={styles.gap1}>
           <AppText variant="small" tone="muted">{`Sizin tüketiminiz · ${p.name}`}</AppText>
@@ -184,7 +185,7 @@ function Trend({ periods }: { periods: PortalPeriod[] }) {
   return (
     <Card>
       <CardTitle>Dönem dönem tüketim</CardTitle>
-      <View style={styles.trend} accessibilityLabel="Tüketim geçmişi">
+      <View style={styles.trend}>
         {periods.map((p) => {
           const value = p.hasMeter ? formatConsumption(p.consumption) : '—';
           return (
@@ -237,8 +238,8 @@ function PeriodCard({ period: p, loading, onPdf }: { period: PortalPeriod; loadi
         ]}
       />
       <View style={styles.stats}>
-        <Stat label="Ortak pay" value={formatTRY(p.commonAmount)} />
-        <Stat label="Tüketim payı" value={formatTRY(p.consumptionAmount)} />
+        <StatTile label="Ortak pay" value={formatTRY(p.commonAmount)} />
+        <StatTile label="Tüketim payı" value={formatTRY(p.consumptionAmount)} />
       </View>
 
       {p.hasMeter ? (
@@ -292,27 +293,12 @@ function PeriodCard({ period: p, loading, onPdf }: { period: PortalPeriod; loadi
   );
 }
 
-function Stat({ label, value }: { label: string; value: string }) {
-  const { colors } = useTheme();
-  return (
-    <View style={[styles.stat, { backgroundColor: colors.surfaceMuted }]} accessible accessibilityLabel={`${label}: ${value}`}>
-      <AppText variant="small" tone="muted">
-        {label}
-      </AppText>
-      <AppText weight="semibold" tabular>
-        {value}
-      </AppText>
-    </View>
-  );
-}
-
-const CHIP_HEIGHT = 36;
 
 const styles = StyleSheet.create({
   flex: { flex: 1 },
   gap1: { gap: space(1) },
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: space(2) },
-  chip: { height: CHIP_HEIGHT, justifyContent: 'center', borderRadius: radii.full, borderWidth: StyleSheet.hairlineWidth * 2, paddingHorizontal: space(4) },
+  chip: { minHeight: MIN_TOUCH - 8, justifyContent: 'center', borderRadius: radii.full, borderWidth: StyleSheet.hairlineWidth * 2, paddingHorizontal: space(4), paddingVertical: space(1.5) },
   grid: { flexDirection: 'row', flexWrap: 'wrap', gap: space(3) },
   wide: { flexBasis: '100%' },
   half: { flexGrow: 1, flexBasis: '45%' },
@@ -323,7 +309,6 @@ const styles = StyleSheet.create({
   between: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: space(3) },
   inline: { flexDirection: 'row', alignItems: 'center', gap: space(1.5) },
   stats: { flexDirection: 'row', flexWrap: 'wrap', gap: space(3) },
-  stat: { flexGrow: 1, flexBasis: '45%', borderRadius: radii.md, padding: space(3), gap: 2 },
   meters: { gap: space(1) },
   total: { borderTopWidth: StyleSheet.hairlineWidth * 2, paddingTop: space(1) },
 });

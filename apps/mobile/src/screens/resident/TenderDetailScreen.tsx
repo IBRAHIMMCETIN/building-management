@@ -80,11 +80,11 @@ function Detail({ tender: t }: { tender: Tender }) {
   return (
     <>
       <Card>
-        <AppText variant="caption" tone="muted">
-          {`${TENDER_CATEGORY_LABELS[t.category]}${t.publishedAt ? ` · Paylaşıldı: ${formatDateTime(t.publishedAt)}` : ''}`}
-        </AppText>
         <AppText variant="heading" weight="semibold" accessibilityRole="header">
           {t.title}
+        </AppText>
+        <AppText variant="caption" tone="muted">
+          {`${TENDER_CATEGORY_LABELS[t.category]}${t.publishedAt ? ` · Paylaşıldı: ${formatDateTime(t.publishedAt)}` : ''}`}
         </AppText>
         <View style={styles.meta}>
           <Badge tone={TENDER_STATUS_TONES[t.status]} label={TENDER_STATUS_LABELS[t.status]} />
@@ -104,9 +104,7 @@ function Detail({ tender: t }: { tender: Tender }) {
           <View style={styles.decision}>
             <CircleCheck size={20} color={colors.success} aria-hidden style={styles.iconTop} />
             <View style={styles.flexGap}>
-              <AppText variant="heading" weight="semibold" accessibilityRole="header">
-                {`Yönetimin kararı: ${d.supplierName} · ${formatTRY(d.totalKurus)}`}
-              </AppText>
+              <CardTitle>{`Yönetimin kararı: ${d.supplierName} · ${formatTRY(d.totalKurus)}`}</CardTitle>
               <AppText variant="caption" tone="muted">
                 {`${formatDateTime(d.decidedAt)}${t.comparison.lowestQuoteIds.includes(d.quoteId) ? ' · En düşük teklif' : ' · En düşük teklif seçilmedi'}`}
               </AppText>
@@ -152,11 +150,11 @@ function Quotes({ tender: t }: { tender: Tender }) {
           Henüz teklif eklenmedi.
         </AppText>
       ) : (
-        <View style={styles.quotes} accessibilityLabel="Teklif karşılaştırması (KDV dahil toplama göre sıralı)">
+        <View style={styles.quotes}>
           {columns.map(({ quote: q, row: r }) => (
             <View
               key={q.quoteId}
-              style={[styles.quote, r.isLowest ? { borderColor: withAlpha(colors.success, 0.3), backgroundColor: withAlpha(colors.success, 0.1) } : { borderColor: colors.border }]}
+              style={[styles.quote, r.isLowest ? { borderColor: withAlpha(colors.success, 0.5), backgroundColor: withAlpha(colors.success, 0.05) } : { borderColor: colors.border }]}
             >
               <View style={styles.quoteHead}>
                 <AppText weight="semibold" accessibilityRole="header">
@@ -339,18 +337,18 @@ const styles = StyleSheet.create({
   meta: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: space(2) },
   description: { borderRadius: radii.lg, padding: space(3) },
   decision: { flexDirection: 'row', alignItems: 'flex-start', gap: space(3) },
-  iconTop: { marginTop: 3 },
+  iconTop: { marginTop: 2 },
   flexGap: { flex: 1, gap: space(1) },
   quotes: { gap: space(3) },
-  quote: { gap: space(2), borderRadius: radii.lg, borderWidth: StyleSheet.hairlineWidth * 2, padding: space(3) },
+  quote: { gap: space(2), borderRadius: radii.lg, borderWidth: StyleSheet.hairlineWidth * 2, paddingHorizontal: space(3), paddingVertical: space(2.5) },
   quoteHead: { gap: space(1) },
   pair: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: space(3) },
   pairLabel: { flexShrink: 0, paddingTop: 2 },
   pairValue: { flex: 1, textAlign: 'right' },
   withdrawn: { gap: space(2) },
-  withdrawnRow: { gap: space(1), borderRadius: radii.lg, borderWidth: StyleSheet.hairlineWidth * 2, paddingHorizontal: space(3), paddingVertical: space(2) },
+  withdrawnRow: { gap: space(1), borderRadius: radii.lg, borderWidth: StyleSheet.hairlineWidth * 2, paddingHorizontal: space(3), paddingVertical: space(2.5) },
   comments: { gap: space(2) },
-  comment: { gap: space(1), borderRadius: radii.lg, borderWidth: StyleSheet.hairlineWidth * 2, paddingHorizontal: space(3), paddingVertical: space(2) },
+  comment: { gap: space(1), borderRadius: radii.lg, borderWidth: StyleSheet.hairlineWidth * 2, paddingHorizontal: space(3), paddingVertical: space(2.5) },
   commentHead: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: space(2) },
   form: { gap: space(2) },
   formFoot: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: space(2) },

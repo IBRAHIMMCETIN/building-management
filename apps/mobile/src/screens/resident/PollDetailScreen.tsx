@@ -2,8 +2,8 @@ import { ApiError, errorMessage } from '@bm/shared/api/errors';
 import { AUDIENCE_LABELS, PHASE_LABELS, PHASE_TONES, type PortalPoll, WEIGHTING_LABELS, myVoteText } from '@bm/shared/api/polls';
 import { formatDate, formatDateTime } from '@bm/shared/dates';
 import { useState } from 'react';
-import { Pressable, StyleSheet, View } from 'react-native';
-import { CircleCheck, Lock, Users, Vote } from '@/components/icons';
+import { AccessibilityInfo, Pressable, StyleSheet, View } from 'react-native';
+import { CircleCheck, Lock, Users } from '@/components/icons';
 import { PollResultsView } from '@/components/portal/PollResultsView';
 import { PortalQueryState } from '@/components/portal/PortalQueryState';
 import { Alert, AppText, Badge, Button, Card, CardTitle, LoadingBlock, Screen } from '@/components/ui';
@@ -89,9 +89,7 @@ function Detail({ poll: p }: { poll: PortalPoll }) {
       </Card>
 
       <Card>
-        <CardTitle icon={<Vote size={20} color={colors.muted} aria-hidden />}>
-          {p.phase === 'open' && p.canVote ? (changing ? 'Oyunuzu değiştirin' : 'Oyunuzu kullanın') : 'Oyunuz'}
-        </CardTitle>
+        <CardTitle>{p.phase === 'open' && p.canVote ? (changing ? 'Oyunuzu değiştirin' : 'Oyunuzu kullanın') : 'Oyunuz'}</CardTitle>
 
         {mine && (
           <View style={styles.inline} accessible accessibilityLabel={mine}>
@@ -158,6 +156,8 @@ function Detail({ poll: p }: { poll: PortalPoll }) {
                 onPress={() => {
                   vote.reset();
                   setConfirming(true);
+                  // iOS canli bolgeyi okumaz: onay adimi ekran okuyucuya ayrica duyurulur.
+                  if (chosen) AccessibilityInfo.announceForAccessibility(`${chosen.label} seçildi. Onaylamak için Oyu onayla düğmesine dokunun.`);
                 }}
               />
             )}
@@ -208,7 +208,7 @@ const styles = StyleSheet.create({
   meta: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: space(2) },
   inline: { flexDirection: 'row', alignItems: 'center', gap: space(1.5) },
   inlineTop: { flexDirection: 'row', alignItems: 'flex-start', gap: space(1.5) },
-  iconTop: { marginTop: 3 },
+  iconTop: { marginTop: 2 },
   form: { gap: space(3) },
   options: { gap: space(2) },
   option: {
@@ -216,7 +216,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: space(3),
-    borderRadius: radii.md,
+    borderRadius: radii.lg,
     borderWidth: StyleSheet.hairlineWidth * 2,
     paddingHorizontal: space(4),
     paddingVertical: space(3),

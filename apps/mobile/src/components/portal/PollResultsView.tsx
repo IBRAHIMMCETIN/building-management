@@ -3,9 +3,10 @@ import { formatDate } from '@bm/shared/dates';
 import { StyleSheet, View } from 'react-native';
 import { Trophy } from '@/components/icons';
 import { Alert, AppText, Badge } from '@/components/ui';
-import { radii, space } from '@/theme/tokens';
+import { space } from '@/theme/tokens';
 import { useTheme } from '@/theme/useTheme';
 import { BarTrack } from './BarTrack';
+import { StatTile } from './StatTile';
 
 type Props = {
   results: PollResults;
@@ -27,8 +28,8 @@ export function PollResultsView({ results: r, highlightOptionId }: Props) {
   return (
     <View style={styles.root}>
       <View style={styles.stats}>
-        <Stat label="Katılım (bölüm)" value={units} />
-        {land && <Stat label="Katılım (arsa payı)" value={land} />}
+        <StatTile label="Katılım (bölüm)" value={units} />
+        {land && <StatTile label="Katılım (arsa payı)" value={land} />}
       </View>
 
       <AppText variant="caption" tone="muted">
@@ -38,7 +39,7 @@ export function PollResultsView({ results: r, highlightOptionId }: Props) {
       {r.tallyHidden ? (
         <Alert>Gizli oylama sürüyor: seçeneklerin dağılımı oylama bitince açıklanır. Şimdilik yalnızca katılım görünür.</Alert>
       ) : (
-        <View style={styles.options} accessibilityLabel="Seçeneklere göre sonuç">
+        <View style={styles.options}>
           {(r.options ?? []).map((o) => {
             const bps = optionBasisBps(o, r.weighting);
             const winner = r.winnerOptionId === o.optionId;
@@ -83,24 +84,10 @@ export function PollResultsView({ results: r, highlightOptionId }: Props) {
   );
 }
 
-function Stat({ label, value }: { label: string; value: string }) {
-  const { colors } = useTheme();
-  return (
-    <View style={[styles.stat, { backgroundColor: colors.surfaceMuted }]} accessible accessibilityLabel={`${label}: ${value}`}>
-      <AppText variant="caption" tone="muted">
-        {label}
-      </AppText>
-      <AppText weight="semibold" tabular>
-        {value}
-      </AppText>
-    </View>
-  );
-}
 
 const styles = StyleSheet.create({
   root: { gap: space(4) },
   stats: { flexDirection: 'row', flexWrap: 'wrap', gap: space(3) },
-  stat: { flexGrow: 1, flexBasis: '45%', borderRadius: radii.md, padding: space(3), gap: 2 },
   options: { gap: space(3) },
   option: { gap: space(1.5) },
   optionHead: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: space(2) },

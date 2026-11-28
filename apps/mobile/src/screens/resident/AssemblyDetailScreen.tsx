@@ -142,7 +142,7 @@ function Detail({ assembly: a }: { assembly: PortalAssembly }) {
                 : `Toplantı yeter sayısı sağlanamadı${q.noAttendance ? ' (katılım olmadı)' : ` (${q.presentOwners}/${q.totalOwners} kat maliki)`}; karar alınmadı.`}
           </Alert>
         )}
-        <View style={styles.agenda} accessibilityLabel="Gündem maddeleri">
+        <View style={styles.agenda}>
           {a.agenda.map((item, i) => (
             <View key={item.itemId} style={[styles.item, { borderColor: colors.border }]}>
               <View style={styles.itemHead}>
