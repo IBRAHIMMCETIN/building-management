@@ -1,0 +1,75 @@
+<!doctype html>
+<!--
+  Paylasim gorseli kaynagi (public/brand/og-image.png, 1200x630). Adres icermez: alan adi degisince
+  yeniden uretmek gerekmez. Yeniden uretmek icin bu dosyayi tarayicida 1200x630 gorunum alaninda acip
+  ekran goruntusu alin (ornegin Chrome: --headless=new --window-size=1200,630 --screenshot) ve PNG'yi
+  public/brand/og-image.png olarak kaydedin. Renkler theme.css marka degerleri; yazi tipi sistem yazi tipi.
+-->
+<html lang="tr">
+  <head>
+    <meta charset="UTF-8" />
+    <title>YÖNESİST paylaşım görseli</title>
+    <style>
+      * { box-sizing: border-box; margin: 0; }
+      html, body { width: 1200px; height: 630px; overflow: hidden; }
+      body {
+        background: #122a4e;
+        color: #ffffff;
+        font-family: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+        display: grid;
+        grid-template-columns: 600px 1fr;
+        gap: 48px;
+        padding: 72px 72px 64px;
+      }
+      .brand { display: flex; align-items: center; gap: 16px; }
+      .brand img { width: 64px; height: 64px; }
+      .word { font-size: 40px; font-weight: 800; letter-spacing: 0.04em; }
+      .word span { color: #fc7200; }
+      h1 { margin-top: 56px; font-size: 56px; line-height: 1.12; font-weight: 800; letter-spacing: -0.02em; }
+      .offer {
+        margin-top: 40px; display: inline-flex; align-items: center; gap: 12px;
+        border: 2px solid rgb(255 255 255 / 0.35); border-radius: 999px; padding: 10px 22px;
+        font-size: 24px; font-weight: 600;
+      }
+      .offer i { width: 12px; height: 12px; border-radius: 50%; background: #2ec4cb; }
+      .site { align-self: end; display: flex; flex-direction: column; gap: 10px; }
+      .blocks { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; align-items: end; border-bottom: 4px solid rgb(255 255 255 / 0.35); }
+      .block { display: grid; grid-template-columns: repeat(6, 1fr); gap: 3px; padding: 5px; border: 2px solid rgb(255 255 255 / 0.25); border-bottom: 0; border-radius: 8px 8px 0 0; background: rgb(255 255 255 / 0.06); }
+      .block b { aspect-ratio: 1; background: #2ec4cb; }
+      .block b.p { background: #fc7200; }
+      .block b.e { background: transparent; outline: 1px solid rgb(255 255 255 / 0.35); outline-offset: -1px; }
+      .labels { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; text-align: center; font-size: 18px; color: rgb(255 255 255 / 0.75); }
+      .tag { font-size: 22px; color: rgb(255 255 255 / 0.8); margin-top: 20px; }
+    </style>
+  </head>
+  <body>
+    <div>
+      <div class="brand">
+        <img src="../public/brand/mark-dark.png" alt="" />
+        <div class="word">YÖNE<span>SİST</span></div>
+      </div>
+      <h1>Çok bloklu siteler için aidat, tahsilat ve arıza takibi</h1>
+      <div class="offer"><i></i>Pilot dönemde ücretsiz deneme</div>
+    </div>
+    <div class="site">
+      <div class="blocks" id="blocks"></div>
+      <div class="labels"><span>A Blok</span><span>B Blok</span><span>C Blok</span><span>D Blok</span></div>
+      <p class="tag">Bina ve toplu konut yönetim sistemi</p>
+    </div>
+    <script>
+      // Tanitim sayfasindaki ornek blok gorseliyle ayni durum kurali (HeroVisual.tsx unitState); kat sayilari siluet icin farkli.
+      var seeds = [1, 4, 7, 2];
+      var floors = [9, 12, 8, 10];
+      var html = '';
+      for (var b = 0; b < 4; b++) {
+        html += '<div class="block">';
+        for (var i = 0; i < floors[b] * 6; i++) {
+          var v = (i * 7 + seeds[b] * 5) % 13;
+          html += '<b class="' + (v === 12 ? 'e' : v >= 10 ? 'p' : '') + '"></b>';
+        }
+        html += '</div>';
+      }
+      document.getElementById('blocks').innerHTML = html;
+    </script>
+  </body>
+</html>

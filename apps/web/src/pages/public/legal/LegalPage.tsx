@@ -65,7 +65,7 @@ export function LegalPage({ docKey }: { docKey: LegalDocumentKey }) {
           ))}
         </article>
       </main>
-      <PublicFooter />
+      <PublicFooter demoHref="/#iletisim" />
     </div>
   );
 }

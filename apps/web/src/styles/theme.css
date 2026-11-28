@@ -34,6 +34,10 @@
   --color-brand-orange: #d95f00;
   --color-on-primary: #ffffff;
   --color-on-accent: #ffffff;
+  /* Vurgu bandi (tanitim sayfasi pilot bolumu): iki temada da marka laciverti + beyaz metin, 14.3:1.
+     Koyu tema blogunda bilerek karsiligi yok (koyu temada da lacivert kalir). */
+  --color-band: #122a4e;
+  --color-on-band: #ffffff;
   --color-success: #047857;
   --color-warning: #b45309;
   --color-danger: #dc2626;

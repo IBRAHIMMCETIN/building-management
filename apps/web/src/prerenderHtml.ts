@@ -36,7 +36,7 @@ export const PRERENDER_PAGES: readonly PrerenderPage[] = [
     file: 'index.html',
     title: LANDING_TITLE,
     description:
-      'Aidat ve tahsilat, banka ekstresi eşleştirme, arıza ve bakım, güvenlik kapısı, anket ve genel kurul: apartman, site ve toplu konut yönetimi tek yerde.',
+      'Çok bloklu siteler için aidat ve tahsilat, banka ekstresi eşleştirme, arıza ve bakım, kapı ve genel kurul. Pilot dönemde ücretsiz deneme.',
   },
   ...LEGAL_DOCUMENT_ORDER.map((key): PrerenderPage => {
     const doc = LEGAL_DOCUMENTS[key];

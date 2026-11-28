@@ -5,7 +5,7 @@ import { act } from 'react';
 import { createRoot, hydrateRoot } from 'react-dom/client';
 import { renderToString } from 'react-dom/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { NAV_LINKS, SECTION_IDS } from './content';
+import { AUDIENCES, FAQS, HERO, MOBILE, NAV_LINKS, PILOT, SECTION_IDS, STEPS, TRUST } from './content';
 import { DemoRequestForm, SEND_FAILED_MESSAGE, TOO_MANY_REQUESTS_MESSAGE } from './DemoRequestForm';
 import { LandingPage } from './LandingPage';
 
@@ -74,7 +74,7 @@ describe('tanitim sayfasi', () => {
     expect(container.querySelectorAll('footer')).toHaveLength(1);
     const h1 = container.querySelectorAll('h1');
     expect(h1).toHaveLength(1);
-    expect(h1[0]!.textContent).toContain('sitenizin bütün işleri tek yerde');
+    expect(h1[0]!.textContent).toBe(HERO.title);
     // Her bolum basligina bagli ve bir h2 tasir; h2'den once h3 yok.
     for (const id of Object.values(SECTION_IDS)) {
       const section = container.querySelector(`section#${id}`)!;
@@ -95,14 +95,122 @@ describe('tanitim sayfasi', () => {
     const nav = container.querySelector('nav[aria-label="Sayfa bölümleri"]')!;
     const hrefs = [...nav.querySelectorAll('a')].map((a) => a.getAttribute('href'));
     expect(hrefs).toEqual(NAV_LINKS.map((l) => l.href));
-    expect([...nav.querySelectorAll('a')].map((a) => a.textContent)).toEqual(['Özellikler', 'Kimler için', 'Mobil', 'SSS', 'İletişim']);
+    expect([...nav.querySelectorAll('a')].map((a) => a.textContent)).toEqual(NAV_LINKS.map((l) => l.label));
     for (const href of hrefs) expect(container.querySelector(href!), href!).toBeTruthy();
     const links = [...container.querySelectorAll('a')];
     expect(links.filter((a) => a.textContent?.includes('Giriş yap')).every((a) => a.getAttribute('href') === '/login')).toBe(true);
-    expect(links.filter((a) => a.textContent?.trim() === 'Demo talep et').map((a) => a.getAttribute('href'))).toContain('#iletisim');
-    // Hukuki sayfalar alt bilgide.
+    // Butun "Demo talep et" eylemleri (ust cubuk, kahraman, pilot bandi, alt bilgi) forma gider.
+    const demo = links.filter((a) => a.textContent?.trim() === 'Demo talep et');
+    expect(demo.length).toBeGreaterThanOrEqual(4);
+    expect(demo.every((a) => a.getAttribute('href') === '#iletisim')).toBe(true);
+    // Butun sayfa ici baglantilarin hedefi var.
+    for (const a of links.filter((x) => x.getAttribute('href')?.startsWith('#'))) {
+      expect(container.querySelector(a.getAttribute('href')!), a.getAttribute('href')!).toBeTruthy();
+    }
+    // Alt bilgi: sayfa bolumleri, giris ve hukuki sayfalar.
     const footerHrefs = [...container.querySelectorAll('footer a')].map((a) => a.getAttribute('href'));
-    expect(footerHrefs).toEqual(expect.arrayContaining(['/kvkk', '/gizlilik', '/kullanim-kosullari']));
+    expect(footerHrefs).toEqual(expect.arrayContaining(['/kvkk', '/gizlilik', '/kullanim-kosullari', '/login', ...NAV_LINKS.map((l) => l.href)]));
+  });
+
+  it('kahraman: birincil eylem Demo talep et, ikincil Nasil calisir; pilot teklifi bagli', async () => {
+    await render(<LandingPage />);
+    const hero = container.querySelector('section[aria-labelledby="hero-baslik"]')!;
+    const ctas = [...hero.querySelectorAll('a')].map((a) => [a.textContent?.trim(), a.getAttribute('href')]);
+    expect(ctas).toEqual([
+      [HERO.offer, `#${SECTION_IDS.pilot}`],
+      ['Demo talep et', '#iletisim'],
+      ['Nasıl çalışır?', `#${SECTION_IDS.how}`],
+    ]);
+    // Urun gorseli: ekran okuyucudan gizli, anlami figcaption tasir; ornek veri etiketli; ayni referans
+    // kodu hem sakin telefonunda hem yonetim panelindeki ekstre satirinda.
+    const figure = hero.querySelector('figure')!;
+    expect(figure.querySelector('[aria-hidden="true"]')).toBeTruthy();
+    expect(figure.querySelector('figcaption')!.textContent).toContain('Örnek veri');
+    expect(figure.textContent).toContain('Örnek veri');
+    expect(figure.querySelectorAll('mark')).toHaveLength(2);
+    expect(new Set([...figure.querySelectorAll('mark')].map((m) => m.textContent))).toEqual(new Set(['R4T7KD']));
+    expect(figure.textContent).toContain('216 bağımsız bölüm');
+    // Ekstre: referans kodu yalnizca oneri uretir; odeme yonetici onaylayinca islenir (urundeki gibi).
+    const suggested = [...figure.querySelectorAll('li')].find((li) => li.querySelector('mark'))!;
+    expect(suggested.textContent).toMatch(/Öneri: A Blok 12/);
+    expect(suggested.textContent).toContain('Onayla');
+  });
+
+  it('gorseller: aria-hidden alt agaclarda odaklanabilir oge yok; her gorselin gorunur aciklamasi var', async () => {
+    await render(<LandingPage />);
+    const hidden = container.querySelectorAll('main [aria-hidden="true"]');
+    expect(hidden.length).toBeGreaterThan(0);
+    for (const h of hidden) {
+      // Klavyeyle ulasilabilen her sey (formdaki bal kupu bilerek tabindex=-1).
+      const focusable = ['a[href]', 'button', 'input', 'select', 'textarea', 'summary', '[tabindex]', '[contenteditable]'].map((x) => `${x}:not([tabindex="-1"])`).join(', ');
+      expect(h.querySelectorAll(focusable)).toHaveLength(0);
+    }
+    for (const figure of container.querySelectorAll('main figure')) {
+      expect(figure.querySelector('figcaption')!.textContent!.trim().length).toBeGreaterThan(0);
+    }
+  });
+
+  it('Nasil calisir: dort numarali adim; Kimler icin hedef kitleye konusur', async () => {
+    await render(<LandingPage />);
+    const steps = container.querySelectorAll(`#${SECTION_IDS.how} ol > li`);
+    expect(STEPS).toHaveLength(4);
+    expect(steps).toHaveLength(STEPS.length);
+    // Her adim: gorunur sira numarasi, baslik (h3) ve aciklama.
+    [...steps].forEach((li, i) => {
+      expect(li.querySelector('span')!.textContent).toBe(String(i + 1));
+      expect(li.querySelector('h3')!.textContent).toBe(STEPS[i]!.title);
+      expect(li.querySelector('p')!.textContent).toBe(STEPS[i]!.text);
+    });
+    const audiences = container.querySelector(`#${SECTION_IDS.audiences}`)!;
+    expect(audiences.querySelectorAll('h3')).toHaveLength(AUDIENCES.length);
+    AUDIENCES.forEach((a, i) => {
+      const column = audiences.querySelectorAll('h3')[i]!.parentElement!;
+      expect(column.querySelector('h3')!.textContent).toBe(a.title);
+      expect(column.querySelectorAll('li')).toHaveLength(a.points.length);
+    });
+  });
+
+  it('mobil: yakinda magazalarda; sakin, guvenlik ve gorevli ekranlari ornek veri etiketli', async () => {
+    await render(<LandingPage />);
+    const mobile = container.querySelector(`#${SECTION_IDS.mobile}`)!;
+    expect(mobile.textContent).toContain(MOBILE.status);
+    expect(MOBILE.status).toMatch(/^Yakında/);
+    // Magaza adlari baglanti degil (uygulama henuz yayinda degil).
+    expect(mobile.querySelectorAll('a')).toHaveLength(0);
+    const figures = mobile.querySelectorAll('figure');
+    expect([...figures].map((f) => f.querySelector('figcaption h3')!.textContent)).toEqual(MOBILE.roles.map((r) => r.title));
+    for (const f of figures) {
+      expect(f.querySelector('[aria-hidden="true"]')!.textContent).toContain('Örnek veri');
+    }
+  });
+
+  it('guven ve pilot: borclu isimleri sozu, Avrupa bolgesi; pilot ucretsiz ve fiyat yazmaz', async () => {
+    await render(<LandingPage />);
+    const trust = container.querySelector(`#${SECTION_IDS.trust}`)!;
+    expect(trust.textContent).toContain(TRUST.promise);
+    expect(trust.textContent).toContain('eu-north-1');
+    expect(trust.querySelectorAll('li')).toHaveLength(TRUST.items.length);
+    const pilot = container.querySelector(`#${SECTION_IDS.pilot}`)!;
+    expect(pilot.querySelector('h2')!.textContent).toBe(PILOT.title);
+    expect(pilot.querySelector('a')!.getAttribute('href')).toBe('#iletisim');
+    // Fiyat yok: TL tutari yalnizca "Örnek veri" etiketli, ekran okuyucudan gizli gorsellerde gecer.
+    expect(pilot.textContent).not.toMatch(/₺|TL\b/);
+    for (const el of container.querySelectorAll('main *')) {
+      const own = [...el.childNodes].filter((n) => n.nodeType === 3).map((n) => n.textContent).join('');
+      if (own.includes('₺')) expect(el.closest('[aria-hidden="true"]'), own).toBeTruthy();
+    }
+  });
+
+  it('dogruluk: canli olmayan kanal ve odeme yontemi vaat edilmez', async () => {
+    await render(<LandingPage />);
+    const text = container.textContent ?? '';
+    // WhatsApp bildirimi henuz canli degil; sayfada hic gecmez.
+    expect(text).not.toMatch(/whatsapp/i);
+    expect(text).toContain('henüz kullanıma açılmadı');
+    expect(text).not.toMatch(/müşterimiz|referanslarımız|memnun/i);
+    // Ekstre eslestirmesi oneridir, onayla islenir: "otomatik eslesir" gibi abartma yok.
+    expect(text).not.toMatch(/otomatik eşleş|ile eşleşti|kendiliğinden eşleş/i);
+    expect(text).toContain('toplu onayla işlenir');
   });
 
   it('mobil menu: dugme aria-expanded ile acilir, baglantiya tiklayinca ve Escape ile kapanir', async () => {
@@ -132,15 +240,19 @@ describe('tanitim sayfasi', () => {
     expect(document.activeElement).toBe(name);
   });
 
-  it('SSS: yerel details/summary; fiyat sorusu teklif istemeye yonlendirir, canli olmayan ozellikler "henuz" der', async () => {
+  it('SSS: yerel details/summary, 5-8 soru; her soru ve cevap dolu', async () => {
     await render(<LandingPage />);
-    const details = container.querySelectorAll(`#${SECTION_IDS.faq} details`);
+    const details = container.querySelectorAll<HTMLDetailsElement>(`#${SECTION_IDS.faq} details`);
     expect(details.length).toBeGreaterThanOrEqual(5);
-    expect(details.length).toBeLessThanOrEqual(7);
-    const text = container.textContent ?? '';
-    expect(text).toContain('henüz kullanıma açılmadı');
-    expect(text).toContain('Yakında App Store ve Google Play’de');
-    expect(container.querySelector(`#${SECTION_IDS.pricing} a`)!.getAttribute('href')).toBe('#iletisim');
+    expect(details.length).toBeLessThanOrEqual(8);
+    expect(details).toHaveLength(FAQS.length);
+    [...details].forEach((d, i) => {
+      expect(d.querySelector('summary')!.textContent).toBe(FAQS[i]!.question);
+      expect(d.querySelector('p')!.textContent).toBe(FAQS[i]!.answer);
+    });
+    // Kapali baslar; ok isareti hareketi azaltilmis harekette kapali (motion-safe).
+    expect([...details].every((d) => !d.open)).toBe(true);
+    expect(details[0]!.querySelector('summary svg')!.getAttribute('class')).toContain('motion-safe:transition-transform');
   });
 
   it('sunucuda on-render edilen HTML tarayicida hatasiz hidrate edilir (uyusmazlik yok)', async () => {

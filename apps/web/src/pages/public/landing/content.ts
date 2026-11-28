@@ -2,8 +2,8 @@ import {
   Briefcase,
   Building2,
   DoorOpen,
+  Earth,
   HandCoins,
-  Landmark,
   Lock,
   type LucideIcon,
   Receipt,
@@ -11,7 +11,6 @@ import {
   ShieldCheck,
   Split,
   UserRound,
-  Users,
   Vote,
   Wrench,
 } from 'lucide-react';
@@ -19,38 +18,98 @@ import {
 /*
  * Tanitim sayfasinin metinleri. Yalnizca bugun calisan ozellikler yazilir (README "API Modulleri",
  * "Guvenlik ve izleme", "Finansal Kurallar"); canli olmayanlar acikca "henuz" / "yakinda" diye
- * belirtilir: kartla online odeme, mobil uygulamanin magazalarda yayini. Musteri logosu, yorum veya
- * istatistik yoktur.
+ * belirtilir: kartla online odeme, mobil uygulamanin magazalarda yayini. WhatsApp bildirimi henuz
+ * canli olmadigi icin hic anilmaz. Musteri logosu, yorum veya istatistik yoktur; gorsellerdeki
+ * rakamlar "Örnek veri" etiketlidir. Hedef: 200+ daireli, cok bloklu siteler (sahibin 28.11.2026
+ * karari, README "Geliştirme sırası").
  */
 
 export const SECTION_IDS = {
-  features: 'ozellikler',
+  how: 'nasil-calisir',
   audiences: 'kimler-icin',
+  features: 'ozellikler',
   mobile: 'mobil',
   trust: 'guven',
+  pilot: 'pilot',
   faq: 'sss',
-  pricing: 'fiyatlandirma',
   contact: 'iletisim',
 } as const;
 
-/** Ust menu baglantilari (sayfa ici). */
+/** Ust menu ve alt bilgi baglantilari (sayfa ici). */
 export const NAV_LINKS: readonly { href: string; label: string }[] = [
-  { href: `#${SECTION_IDS.features}`, label: 'Özellikler' },
+  { href: `#${SECTION_IDS.how}`, label: 'Nasıl çalışır' },
   { href: `#${SECTION_IDS.audiences}`, label: 'Kimler için' },
+  { href: `#${SECTION_IDS.features}`, label: 'Özellikler' },
   { href: `#${SECTION_IDS.mobile}`, label: 'Mobil' },
+  { href: `#${SECTION_IDS.trust}`, label: 'Güven ve uyum' },
   { href: `#${SECTION_IDS.faq}`, label: 'SSS' },
-  { href: `#${SECTION_IDS.contact}`, label: 'İletişim' },
 ];
 
 export const HERO = {
-  title: 'Aidattan genel kurula, sitenizin bütün işleri tek yerde',
-  lead: 'YÖNESİST; apartman, site ve toplu konut yönetimleri için aidat ve tahsilat, arıza ve bakım, kapı ve ziyaretçi, anket ve genel kurul işlerini bir araya getirir. Yönetici panelde, sakin portalda, görevli ve güvenlik sahada aynı kayıtlarla çalışır.',
+  offer: 'Pilot dönemde ücretsiz deneme',
+  title: 'Çok bloklu siteler için aidat, tahsilat ve arıza takibi',
+  lead: 'Sakin, borcunu ve kendi ödeme referans kodunu telefonda büyük yazıyla görür; havale veya EFT ile öder. Siz banka ekstresini yüklersiniz; referans kodlu ödemeler ilgili daireye önerilir, tek tıkla veya toplu onayla işlenir.',
   points: [
-    'Kat Mülkiyeti Kanunu’na uygun malik ve kiracı carisi',
-    'Silinemeyen, değiştirilemeyen finansal defter',
-    'Çok bloklu, yüzlerce bağımsız bölümlü siteler için',
+    '200’den fazla bağımsız bölümlü, çok bloklu siteler için',
+    'Kat Mülkiyeti Kanunu’na uygun malik ve kiracı ayrımı',
+    'Borçlu isimleri hiçbir yerde herkese açık gösterilmez',
   ],
 } as const;
+
+export type Step = { title: string; text: string };
+
+/** "Nasıl çalışır": gercek bir sira oldugu icin numaralidir. */
+export const STEPS: readonly Step[] = [
+  {
+    title: 'Site kurulumu ve veri aktarımı',
+    text: 'Bloklar, daireler, malik ve kiracılar ile açılış bakiyeleri Excel veya CSV dosyasından önizlenerek aktarılır; hatalı satırlar tek tek gösterilir.',
+  },
+  {
+    title: 'Aidat ve tahsilat',
+    text: 'Aylık aidat tek seferde tahakkuk eder. Sakin, sitenin IBAN’ına kendi referans koduyla havale yapar; ekstreyi yüklediğinizde referans kodlu ödemeler ilgili daireye önerilir, tek tıkla veya toplu onayla işlenir; kodsuz ödemeleri elle eşlersiniz.',
+  },
+  {
+    title: 'Sakin ekranı ve mobil',
+    text: 'Sakin borcunu, son ödeme gününü ve makbuzlarını görür, arıza bildirir. Telefonun tarayıcısında çalışır; mobil uygulama yakında mağazalarda.',
+  },
+  {
+    title: 'Raporlar',
+    text: 'Gelir-gider özeti, aidat durumu, aylık mizan ve banka mutabakatı PDF olarak alınır; genel kurul hazırlığı da aynı kayıtlarla yapılır.',
+  },
+];
+
+export type Audience = { title: string; icon: LucideIcon; points: readonly string[] };
+
+/** "Kimler için": hedef kitle (rol listesi degil). */
+export const AUDIENCES: readonly Audience[] = [
+  {
+    title: '200+ daireli, çok bloklu siteler',
+    icon: Building2,
+    points: [
+      'Bloklar ve bağımsız bölümler ayrı tanımlanır; duyurular blok bazında gönderilir.',
+      '5.000 bölüme kadar toplu tahakkuk ve sayaç dağıtımı arka planda işlenir, ilerlemesi ekrandan izlenir.',
+      'Her dairede malik ve kiracının carisi ayrıdır; boş dairede gider malike yazılır.',
+    ],
+  },
+  {
+    title: 'Yarı profesyonel yöneticiler',
+    icon: Briefcase,
+    points: [
+      'Aidat, gider ve tahsilat sade ekranlarda; muhasebe defteri arka planda tutulur.',
+      'Kullanmadığınız modüller talebiniz üzerine sitenizde gizlenir; ekranda yalnızca işinize yarayanlar kalır.',
+      'Genel kurul çağrısı, hazirun cetveli ve KMK yeter sayı hesapları sistemde hazır.',
+    ],
+  },
+  {
+    title: 'Teknolojiyle arası iyi olmayan sakinler',
+    icon: UserRound,
+    points: [
+      'Büyük yazı, sade ekran: borç ve son ödeme günü ilk bakışta görünür.',
+      'IBAN ve referans kodu tek dokunuşla kopyalanır; muhasebe terimleri kullanılmaz.',
+      'Uygulama kurmak gerekmez: telefonun tarayıcısında açılır, ana ekrana eklenebilir.',
+    ],
+  },
+];
 
 export type ModuleItem = { title: string; text: string };
 export type ModuleGroup = { id: string; title: string; icon: LucideIcon; items: readonly ModuleItem[] };
@@ -63,15 +122,15 @@ export const MODULE_GROUPS: readonly ModuleGroup[] = [
     items: [
       {
         title: 'Aidat, tahakkuk ve tahsilat',
-        text: 'Eşit, m² veya arsa payına göre toplu tahakkuk; gecikme tazminatı ve makbuz. Sakin, IBAN’ı ve kişisel referans kodunu portaldan kopyalayıp havale veya EFT ile öder. Kartla online ödeme altyapısı hazır, henüz kullanıma açılmadı.',
+        text: 'Eşit, m² veya arsa payına göre toplu tahakkuk, gecikme tazminatı ve makbuz. Ödeme havale veya EFT ile; kartla online ödeme altyapısı hazır, henüz kullanıma açılmadı.',
       },
       {
         title: 'Banka ekstresi ve muhasebe defteri',
-        text: 'CSV veya Excel ekstreyi yükleyin; ödemeler referans koduyla eşleştirilsin, kalanları tek tek eşleyin. Gider, tedarikçi borcu, bütçe ve aylık dönem kapanışı aynı defterde.',
+        text: 'CSV veya Excel ekstre yüklenir; referans kodlu ödemeler daireye önerilir, onayınızla işlenir. Gider, tedarikçi borcu, bütçe ve aylık dönem kapanışı aynı defterde.',
       },
       {
         title: 'Raporlar',
-        text: 'Gelir-gider özeti, aidat durumu ve gecikmeler, aylık mizan; banka mutabakatı ve sayaç dağıtım dökümü PDF olarak alınır.',
+        text: 'Gelir-gider özeti, aidat durumu ve gecikmeler, aylık mizan, banka mutabakatı ve sayaç dağıtım dökümü PDF olarak.',
       },
     ],
   },
@@ -86,11 +145,11 @@ export const MODULE_GROUPS: readonly ModuleGroup[] = [
       },
       {
         title: 'Periyodik bakım ve ekipman sicili',
-        text: 'Asansör, jeneratör, hidrofor gibi ekipmanların garanti, servis sözleşmesi ve periyodik kontrol tarihleri; bakım görevleri takvimden otomatik oluşur.',
+        text: 'Asansör, jeneratör, hidrofor gibi ekipmanların garanti ve kontrol tarihleri; bakım görevleri takvimden otomatik oluşur.',
       },
       {
         title: 'Ortak alan rezervasyonu',
-        text: 'Toplantı salonu, spor alanı, misafirhane: saat dilimleri, kişi sınırı, onay, ücret ve iptal kuralı.',
+        text: 'Toplantı salonu, spor alanı, misafirhane: saat dilimleri, kişi sınırı, onay ve iptal kuralı.',
       },
     ],
   },
@@ -101,7 +160,7 @@ export const MODULE_GROUPS: readonly ModuleGroup[] = [
     items: [
       {
         title: 'Güvenlik kapısı',
-        text: 'Sakin misafirine QR’lı geçiş gönderir; güvenlik okutup giriş kaydeder. Kurye geldiğinde sakin “İçeri alınsın” der. Plaka sorgusu ve günlük giriş-çıkış kayıtları.',
+        text: 'Sakin misafirine QR’lı geçiş gönderir, güvenlik okutup giriş kaydeder. Kurye gelince sakin “İçeri alınsın” der. Plaka sorgusu ve günlük kapı kayıtları.',
       },
     ],
   },
@@ -112,172 +171,153 @@ export const MODULE_GROUPS: readonly ModuleGroup[] = [
     items: [
       {
         title: 'Anket, oylama ve genel kurul',
-        text: 'Bağımsız bölüm veya arsa payı ağırlıklı oylama. Kat malikleri kurulu için çağrı, hazirun cetveli, KMK m.30 yeter sayı ve m.31 çoğunluk hesapları, tutanak ve karar defteri.',
+        text: 'Bağımsız bölüm veya arsa payı ağırlıklı oylama. Çağrı, hazirun cetveli, KMK m.30 yeter sayı ve m.31 çoğunluk hesapları, tutanak ve karar defteri.',
       },
       {
         title: 'İhale ve teklif şeffaflığı',
-        text: 'Mantolama, asansör, çatı gibi işler için teklifler toplanır, KDV dahil karşılaştırılır; karar ve gerekçesi sakinlerle paylaşılır.',
+        text: 'Mantolama, asansör, çatı gibi işler için teklifler KDV dahil karşılaştırılır; karar ve gerekçesi sakinlerle paylaşılır.',
       },
       {
-        title: 'Duyurular ve bildirimler',
-        text: 'Blok bazında duyuru, yayın onayı ve arşiv. Duyurular sakin portalında görünür.',
+        title: 'Duyurular',
+        text: 'Blok bazında duyuru, yayın onayı ve arşiv; duyurular sakin ekranında görünür.',
       },
     ],
   },
   {
-    id: 'firma',
-    title: 'Birden çok site',
+    id: 'ekip',
+    title: 'Kurulum ve ekip',
     icon: Briefcase,
     items: [
       {
-        title: 'Yönetim firması portföyü',
-        text: 'Yönettiğiniz bütün siteler tek ekranda: tahsilat oranı, vadesi geçmiş alacak, açık talepler, geciken bakımlar ve yaklaşan genel kurullar.',
-      },
-      {
-        title: 'Kişiler ve toplu aktarım',
+        title: 'Toplu aktarım',
         text: 'Daireler, kişiler ve açılış bakiyeleri Excel veya CSV ile önizlenerek aktarılır; hatalı satırlar raporlanır.',
       },
+      {
+        title: 'Ekip ve roller',
+        text: 'Yönetici, denetçi, bina görevlisi ve güvenlik rolleri site bazında verilir; herkes yalnızca kendi işini görür.',
+      },
+      {
+        title: 'Birden çok site',
+        text: 'Yönetim firmaları için portföy ekranı: sitelerin tahsilat oranı, açık talepleri ve yaklaşan genel kurulları tek yerde.',
+      },
     ],
   },
 ];
 
-export type Audience = { title: string; where: string; icon: LucideIcon; points: readonly string[] };
-
-export const AUDIENCES: readonly Audience[] = [
-  {
-    title: 'Site ve apartman yöneticisi',
-    where: 'Yönetim paneli, web',
-    icon: Building2,
-    points: [
-      'Aylık aidatı tek seferde tahakkuk edin, ekstreyle tahsilatı eşleyin.',
-      'Arızaları, bakımları ve ekipman tarihlerini kaçırmayın.',
-      'Genel kurulu çağrıdan tutanağa kadar sistemde hazırlayın.',
-    ],
-  },
-  {
-    title: 'Profesyonel yönetim firması',
-    where: 'Portföy ve ekip, web',
-    icon: Briefcase,
-    points: [
-      'Bütün sitelerinizin özetini tek ekranda görün.',
-      'Yönetici, denetçi, görevli ve güvenlik rollerini site bazında verin.',
-      'Her sitenin verisi ayrı tutulur; kullanmadığınız modüller sitede gizlenir.',
-    ],
-  },
-  {
-    title: 'Kat maliki ve kiracı',
-    where: 'Sakin portalı, web (mobil uygulama yakında)',
-    icon: UserRound,
-    points: [
-      'Borcunuzu, son ödeme gününü ve makbuzlarınızı görün.',
-      'Arıza bildirin, misafirinize QR gönderin, ortak alan ayırtın, oylamaya katılın.',
-      'Genel kurul bilgileri kat maliklerine, kişisel bilgiler yalnızca size açıktır.',
-    ],
-  },
-  {
-    title: 'Bina görevlisi ve güvenlik',
-    where: 'Saha ekranları, web (mobil uygulama yakında)',
-    icon: Users,
-    points: [
-      'Görevli: size atanan talepler ve bakım görevleri, fotoğraflı tamamlama, sayaç okuma.',
-      'Güvenlik: QR veya kısa kodla misafir doğrulama, kurye onayı, plaka sorgusu.',
-    ],
-  },
-];
+export type MobileRoleId = 'resident' | 'guard' | 'staff';
+export type MobileRole = { id: MobileRoleId; title: string; text: string };
 
 export const MOBILE = {
+  status: 'Yakında App Store ve Google Play’de',
   title: 'Sakin, görevli ve güvenlik için mobil uygulama',
-  lead: 'iOS ve Android için yerel uygulama mağaza yayınına hazırlanıyor: yakında App Store ve Google Play’de. Yönetim paneli web’de kalır.',
+  lead: 'iOS ve Android uygulaması mağaza yayınına hazırlanıyor. O zamana kadar sakin ekranı telefonun tarayıcısında çalışır ve ana ekrana eklenebilir; yönetim paneli web’de kalır.',
+  stores: ['App Store', 'Google Play'],
   roles: [
-    { title: 'Sakin', text: 'Ana sayfa, borçlar ve makbuzlar, talepler, ziyaretçi ve kurye, rezervasyon, oylamalar, genel kurul.' },
-    { title: 'Güvenlik', text: 'Kamera ile QR okutma, kısa kod, kurye masası, plaka sorgusu ve kapı kayıtları.' },
-    { title: 'Bina görevlisi', text: 'İşlerim listesi, önce-sonra fotoğraflı talep ve bakım tamamlama, sayaç okuma.' },
-  ],
-  note: 'O zamana kadar sakin portalı telefonun tarayıcısında çalışır ve ana ekrana eklenebilir.',
+    { id: 'resident', title: 'Sakin', text: 'Borç ve makbuzlar, arıza bildirimi, ziyaretçi ve kurye onayı, rezervasyon, oylamalar.' },
+    { id: 'guard', title: 'Güvenlik', text: 'Kamera ile QR okutma, kısa kod, kurye masası, plaka sorgusu ve kapı kayıtları.' },
+    { id: 'staff', title: 'Bina görevlisi', text: 'Günün işleri, önce-sonra fotoğraflı talep ve bakım tamamlama, sayaç okuma.' },
+  ] satisfies readonly MobileRole[],
 } as const;
 
 export type TrustItem = { title: string; text: string; icon: LucideIcon };
 
-export const TRUST_ITEMS: readonly TrustItem[] = [
-  {
-    title: 'KMK’ya uygun malik ve kiracı ayrımı',
-    text: 'Her bağımsız bölümde malik ve kiracının ayrı carisi vardır. Rutin giderler oturana, demirbaş ve yatırım giderleri malike yazılır; boş dairede gider malike düşer.',
-    icon: Split,
-  },
-  {
-    title: 'Değiştirilemez finansal defter',
-    text: 'Kayıtlar silinmez ve üzerine yazılmaz; düzeltme ters kayıtla yapılır. Bakiyeler her gece defterle karşılaştırılır.',
-    icon: Receipt,
-  },
-  {
-    title: 'Denetim kaydı',
-    text: 'Hassas işlemler, her kaydı bir öncekine SHA-256 ile bağlayan ve 10 yıl saklanan bir günlüğe yazılır; zincir her gece doğrulanır.',
-    icon: ScrollText,
-  },
-  {
-    title: 'İki adımlı doğrulama',
-    text: 'Yönetici, yönetim firması ve denetçi hesaplarında doğrulayıcı uygulama kodu zorunludur.',
-    icon: ShieldCheck,
-  },
-  {
-    title: 'KVKK',
-    text: 'Borçlu isimleri herkese açık listelenmez. IP adresleri kısaltılarak, karşı taraf IBAN’ları özet olarak tutulur. Veriler Avrupa’da (AWS, Stockholm) saklanır.',
-    icon: Lock,
-  },
-  {
-    title: 'Site bazında ayrım',
-    text: 'Her site yalnızca kendi verisini görür. Platform ekibi bir siteye yalnızca gerekçeli, en fazla 60 dakikalık, salt okunur ve kayıt altındaki destek oturumuyla bakabilir.',
-    icon: Landmark,
-  },
-];
+export const TRUST = {
+  title: 'Güven ve uyum',
+  promise: 'Borçlu isimleri hiçbir yerde herkese açık gösterilmez.',
+  promiseText: 'Bir dairenin borcunu yalnızca o dairenin sakinleri ve sitenin yetkili yönetimi görür.',
+  items: [
+    {
+      title: 'Kat Mülkiyeti Kanunu’na uygun',
+      text: 'Malik ve kiracının ayrı carisi: rutin gider oturana, demirbaş ve yatırım gideri malike yazılır. Genel kurulda KMK yeter sayı ve çoğunluk hesapları.',
+      icon: Split,
+    },
+    {
+      title: 'KVKK',
+      text: 'Kişisel veride en az bilgi: IP adresleri kısaltılarak, karşı taraf IBAN’ları özet olarak tutulur. Aydınlatma metni yayında (taslak, hukuki incelemede).',
+      icon: Lock,
+    },
+    {
+      title: 'Değiştirilemez finansal defter',
+      text: 'Kayıtlar silinmez ve üzerine yazılmaz; düzeltme ters kayıtla yapılır. Bakiyeler her gece defterle karşılaştırılır.',
+      icon: Receipt,
+    },
+    {
+      title: 'Denetim kaydı',
+      text: 'Hassas işlemler, her kaydı bir öncekine bağlayan ve 10 yıl saklanan bir günlüğe yazılır; zincir her gece doğrulanır.',
+      icon: ScrollText,
+    },
+    {
+      title: 'İki adımlı doğrulama',
+      text: 'Yönetici, yönetim firması ve denetçi hesaplarında doğrulayıcı uygulamasıyla iki adımlı giriş; bu hesaplar için zorunlu tutulabilir.',
+      icon: ShieldCheck,
+    },
+    {
+      title: 'Veriler Avrupa’da',
+      text: 'Amazon Web Services’in Stockholm (eu-north-1) bölgesinde şifreli olarak saklanır; bağlantılar da şifrelidir. Her site yalnızca kendi verisini görür.',
+      icon: Earth,
+    },
+  ] satisfies readonly TrustItem[],
+} as const;
+
+export const PILOT = {
+  title: 'Pilot dönemde ücretsiz deneme',
+  lead: 'YÖNESİST pilot aşamasında. Pilot dönemde kurulum, veri aktarımı ve kullanım ücretsizdir; ücretli kullanıma geçmeden önce fiyatı sitenizin büyüklüğüne göre sizinle konuşuruz.',
+  points: [
+    'Kurulumu ve veri aktarımını sizinle birlikte yaparız.',
+    'İsterseniz önce bir iki blokla başlarsınız.',
+    'Yöneticinin ve sakinlerin geri bildirimiyle ekranları birlikte düzeltiriz.',
+  ],
+  note: 'Liste fiyatı yok: ücret, bağımsız bölüm sayısına ve kullanacağınız modüllere göre belirlenir.',
+} as const;
 
 export type Faq = { question: string; answer: string };
 
 export const FAQS: readonly Faq[] = [
   {
-    question: 'Verilerimiz nerede saklanıyor?',
+    question: 'Pilot dönemde ücret ödeyecek miyiz?',
     answer:
-      'Amazon Web Services’in Avrupa’daki Stockholm (eu-north-1) bölgesinde. Bağlantılar şifrelidir, veritabanında zamana göre geri dönüş (yedek) açıktır ve her site yalnızca kendi verisine erişir.',
+      'Hayır. Pilot dönem ücretsiz deneme olarak yürür. Ücretli kullanıma geçmeden önce fiyatı, bağımsız bölüm sayısına ve kullanacağınız modüllere göre sizinle konuşuruz; liste fiyatı yoktur.',
   },
   {
     question: 'Sakinler aidatı nasıl öder? Online ödeme var mı?',
     answer:
-      'Bugün havale veya EFT ile: sakin, sitenin IBAN’ını ve kendi referans kodunu portaldan kopyalar. Banka ekstresini yüklediğinizde ödemeler referans koduyla eşleştirilir. Kartla online ödeme altyapısı hazırdır ancak henüz kullanıma açılmadı.',
+      'Bugün havale veya EFT ile: sakin, sitenin IBAN’ını ve kendi referans kodunu ekrandan kopyalar. Banka ekstresini yüklediğinizde referans kodlu ödemeler ilgili daireye önerilir; tek tıkla veya toplu onayla işlenir. Kartla online ödeme altyapısı hazırdır ancak henüz kullanıma açılmadı.',
   },
   {
-    question: 'Mobil uygulama var mı?',
+    question: 'Yaşlı ya da teknolojiyle arası iyi olmayan sakinler kullanabilir mi?',
     answer:
-      'Sakinler, bina görevlileri ve güvenlik için iOS ve Android uygulaması mağaza yayınına hazırlanıyor; yakında App Store ve Google Play’de. O zamana kadar sakin portalı telefonun tarayıcısında çalışır ve ana ekrana eklenebilir.',
+      'Sakin ekranı bunun için sade tutuldu: borç ve son ödeme günü büyük yazıyla en üstte, IBAN ve referans kodu tek dokunuşla kopyalanır, “Arıza bildir” düğmesi ana sayfadadır. Uygulama kurmak gerekmez; ekran telefonun tarayıcısında açılır.',
   },
   {
     question: 'Mevcut verilerimizi aktarabilir miyiz?',
     answer:
-      'Evet. Daireleri, kişileri ve açılış bakiyelerini Excel veya CSV dosyasıyla toplu aktarabilirsiniz; aktarım önce önizlenir, hatalı satırlar raporlanır. Banka ekstreleri de CSV veya Excel olarak yüklenir.',
+      'Evet. Daireleri, kişileri ve açılış bakiyelerini Excel veya CSV dosyasıyla toplu aktarabilirsiniz; aktarım önce önizlenir, hatalı satırlar raporlanır. Pilot dönemde aktarımı sizinle birlikte yaparız.',
   },
   {
     question: 'Büyük ve çok bloklu sitelerde çalışır mı?',
     answer:
-      'Evet. Bloklar ve bağımsız bölümler ayrı tanımlanır; 5.000 bölüme kadar toplu tahakkuk ve sayaç dağıtımı arka planda işlenir, ekrandan ilerlemesi izlenir.',
+      'Evet, hedefimiz tam olarak bu siteler. Bloklar ve bağımsız bölümler ayrı tanımlanır; 5.000 bölüme kadar toplu tahakkuk ve sayaç dağıtımı arka planda işlenir, ilerlemesi ekrandan izlenir.',
+  },
+  {
+    question: 'Verilerimiz nerede saklanıyor, kimler görebilir?',
+    answer:
+      'Amazon Web Services’in Avrupa’daki Stockholm (eu-north-1) bölgesinde. Veriler şifreli olarak saklanır, bağlantılar şifrelidir, her site yalnızca kendi verisine erişir ve borç bilgisini yalnızca dairenin kendi sakinleri ile yetkili yönetim görür. Platform ekibi bir siteye yalnızca gerekçeli, en fazla 60 dakikalık, salt okunur ve kayıt altındaki destek oturumuyla bakabilir.',
+  },
+  {
+    question: 'Mobil uygulama var mı?',
+    answer:
+      'Sakinler, bina görevlileri ve güvenlik için iOS ve Android uygulaması mağaza yayınına hazırlanıyor; yakında App Store ve Google Play’de. O zamana kadar sakin ekranı telefonun tarayıcısında çalışır ve ana ekrana eklenebilir.',
   },
   {
     question: 'Kullanmadığımız özellikleri kapatabilir miyiz?',
     answer:
-      'Evet. Özellikler site bazında açılıp kapatılır; sade kurulumda yalnızca ihtiyacınız olan ekranlar görünür. Kapatılan bir özellik silinmez, istendiğinde yeniden açılır.',
-  },
-  {
-    question: 'Fiyatlandırma nasıl?',
-    answer: 'Fiyat, bağımsız bölüm sayısına ve kullanacağınız modüllere göre belirlenir. Demo formunu doldurun, sitenize özel teklif hazırlayalım.',
+      'Evet. Özellikler talebiniz üzerine site bazında açılıp kapatılır; sade kurulumda yalnızca ihtiyacınız olan ekranlar görünür. Kapatılan bir özellik silinmez, istendiğinde yeniden açılır.',
   },
 ];
 
-export const PRICING = {
-  title: 'Fiyatlandırma: sitenizin büyüklüğüne göre teklif',
-  text: 'Liste fiyatı yok: ücret, bağımsız bölüm sayısına ve kullanacağınız modüllere göre belirlenir. Pilot dönemde kurulum ve deneme ücretsizdir.',
-} as const;
-
 export const CONTACT = {
   title: 'Demo talep edin',
-  lead: 'Formu doldurun; sitenize uygun kurulumu ve fiyatı birlikte konuşalım.',
+  lead: 'Formu doldurun; sitenizi, pilot sürecini ve kurulumu birlikte konuşalım.',
   steps: [
     'Talebiniz bize ulaşır.',
     'Sizinle e-posta veya telefonla iletişime geçip sitenizin ihtiyaçlarını konuşuruz.',

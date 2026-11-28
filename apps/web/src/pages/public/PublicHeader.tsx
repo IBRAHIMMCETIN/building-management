@@ -51,7 +51,7 @@ export function PublicHeader({ links = [], demoHref = '#iletisim', homeHref = '/
           aria-label={`${BRAND_NAME} ana sayfa`}
           className="flex items-center gap-2 rounded-md focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
         >
-          <BrandMark className="size-8" />
+          <BrandMark small className="size-8" />
           <BrandWordmark className="text-heading" />
         </a>
 
