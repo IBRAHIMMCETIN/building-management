@@ -3,6 +3,7 @@ import { useMemo } from 'react';
 import { BankTransferCard } from '@/components/portal/BankTransferCard';
 import { InstallmentPlanCard } from '@/components/portal/InstallmentPlanCard';
 import { OffsetRequestCard } from '@/components/portal/OffsetRequestCard';
+import { RestructureRequestCard } from '@/components/portal/RestructureRequestCard';
 import { useFeature } from '@/context/SiteFeaturesContext';
 import { ChangeUnitLink, PortalQueryState } from '@/components/portal/PortalQueryState';
 import { PayOnlineButton } from '@/components/portal/PayOnlineButton';
@@ -243,6 +244,7 @@ export function DuesPage() {
       <h1 className="text-title font-bold">Borçlarım</h1>
       <SummaryCard />
       {restructureOn && <InstallmentPlanCard />}
+      {restructureOn && <RestructureRequestCard />}
       <BankTransferCard />
       {offsetOn && <OffsetRequestCard />}
       <Movements />

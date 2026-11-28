@@ -1,3 +1,12 @@
+import {
+  type CreatePlanRequestInput,
+  type PlanRequestStatus,
+  myPlanRequestSchema,
+  myPlanRequestsSchema,
+  planRequestOptionsSchema,
+  planRequestWithdrawSchema,
+  planRequestWriteSchema,
+} from '@bm/shared/api/planRequests';
 import { z } from 'zod';
 import { apiClient } from './client';
 
@@ -236,6 +245,40 @@ export type CreateOffsetRequestInput = {
   note?: string;
 };
 
+// ---------------------------------------------------------------------------
+// Sakin yapilandirma talebi (Finans 2.2 sonrasi): yonetim kuyrugu ve ayarlar
+// ---------------------------------------------------------------------------
+
+export const planRequestSettingsSchema = z.object({
+  enabled: z.boolean(),
+  maxInstallments: z.number().int(),
+  minInstallmentAmount: kurus,
+  includeLateFees: z.boolean(),
+});
+export type PlanRequestSettings = z.infer<typeof planRequestSettingsSchema>;
+export const planRequestSettingsResponseSchema = z.object({ settings: planRequestSettingsSchema, version: z.number().int() });
+
+/** Yonetim gorunumu (sakin gorunumune ek olarak talebi acan kullanici ve karari veren). */
+export const planRequestSchema = myPlanRequestSchema.extend({
+  userId: z.string(),
+  decision: myPlanRequestSchema.shape.decision.unwrap().extend({ by: z.string() }).optional(),
+});
+export type PlanRequest = z.infer<typeof planRequestSchema>;
+
+export const planRequestDetailSchema = z.object({
+  request: planRequestSchema,
+  settings: planRequestSettingsSchema,
+  current: z
+    .object({ overdue: kurus, accruedLateFee: kurus, total: kurus, activePlanId: z.string().optional(), items: planOpenItemsSchema.shape.items })
+    .optional(),
+  asIs: z
+    .object({ accountId: z.string(), chargeIds: z.array(z.string()), installments: z.number().int(), firstDueDate: z.string(), includeLateFees: z.boolean() })
+    .optional(),
+});
+export type PlanRequestDetail = z.infer<typeof planRequestDetailSchema>;
+
+export type ApprovePlanRequestInput = { installments?: number; firstDueDate?: string; includeLateFees?: boolean; chargeIds?: string[]; reason?: string };
+
 const unitQuery = (unitId?: string) => (unitId ? { unitId } : undefined);
 const enc = encodeURIComponent;
 
@@ -282,4 +325,29 @@ export const restructureApi = {
     apiClient.get('/api/portal/offset-requests', { signal, schema: z.object({ items: z.array(offsetRequestSchema) }) }),
   createOffsetRequest: (input: CreateOffsetRequestInput) =>
     apiClient.post('/api/portal/offset-requests', input, { schema: z.object({ replayed: z.boolean(), request: offsetRequestSchema }) }),
+
+  // ----- Sakin: yapilandirma talebi -----
+  planRequestOptions: (unitId: string | undefined, signal?: AbortSignal) =>
+    apiClient.get('/api/portal/plan-requests/options', { signal, query: unitQuery(unitId), schema: planRequestOptionsSchema }),
+  myPlanRequests: (signal?: AbortSignal) => apiClient.get('/api/portal/plan-requests', { signal, schema: myPlanRequestsSchema }),
+  createPlanRequest: (input: CreatePlanRequestInput) => apiClient.post('/api/portal/plan-requests', input, { schema: planRequestWriteSchema }),
+  withdrawPlanRequest: (requestId: string) => apiClient.post(`/api/portal/plan-requests/${enc(requestId)}/withdraw`, {}, { schema: planRequestWithdrawSchema }),
+
+  // ----- Yonetici: yapilandirma talepleri -----
+  listPlanRequests: (status: PlanRequestStatus | undefined, signal?: AbortSignal) =>
+    apiClient.get('/api/finance/plan-requests', {
+      signal,
+      query: status ? { status } : undefined,
+      schema: z.object({ items: z.array(planRequestSchema), pendingCount: z.number().int() }),
+    }),
+  planRequest: (requestId: string, signal?: AbortSignal) => apiClient.get(`/api/finance/plan-requests/${enc(requestId)}`, { signal, schema: planRequestDetailSchema }),
+  approvePlanRequest: (requestId: string, input: ApprovePlanRequestInput) =>
+    apiClient.post(`/api/finance/plan-requests/${enc(requestId)}/approve`, input, {
+      schema: z.object({ request: planRequestSchema, plan: planSchema, replayed: z.boolean() }),
+    }),
+  rejectPlanRequest: (requestId: string, reason: string) =>
+    apiClient.post(`/api/finance/plan-requests/${enc(requestId)}/reject`, { reason }, { schema: z.object({ request: planRequestSchema }) }),
+  planRequestSettings: (signal?: AbortSignal) => apiClient.get('/api/finance/plan-requests/settings', { signal, schema: planRequestSettingsResponseSchema }),
+  savePlanRequestSettings: (input: Partial<PlanRequestSettings> & { version: number }) =>
+    apiClient.put('/api/finance/plan-requests/settings', input, { schema: planRequestSettingsResponseSchema }),
 };

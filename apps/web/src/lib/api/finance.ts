@@ -23,6 +23,8 @@ export const summarySchema = z.object({
   receivables: kurus,
   advances: kurus,
   payables: kurus,
+  /** Tedarikcilere verilen, faturayla mahsup edilmemis avanslar (eski API'de yok). */
+  supplierAdvances: kurus.default(0),
   overdue: kurus,
   /** Islemis, henuz deftere yazilmamis kistelyevm gecikme tazminati (eski API'de yok). */
   accruedLateFees: kurus.default(0),
@@ -43,7 +45,22 @@ export const transactionSchema = z.object({
   dueDate: isoDate.optional(),
   description: z.string(),
   /** transfer: tasinmada cari devri (kapama), refund: avans iadesi; offset: avans mahsubu, restructure: borc yapilandirma (Finans 2.2). */
-  kind: z.enum(['dues_charge', 'payment', 'expense', 'reversal', 'late_fee', 'opening_balance', 'transfer', 'refund', 'payable_payment', 'offset', 'restructure']),
+  kind: z.enum([
+    'dues_charge',
+    'payment',
+    'expense',
+    'reversal',
+    'late_fee',
+    'opening_balance',
+    'transfer',
+    'refund',
+    'payable_payment',
+    'offset',
+    'restructure',
+    // Finans 2.2 sonrasi: tedarikci avansi ve avans mahsubu.
+    'supplier_advance',
+    'supplier_advance_offset',
+  ]),
   category: z.enum(TRANSACTION_CATEGORIES),
   amount: kurus,
   funds: z.array(
@@ -246,13 +263,27 @@ export const payableAccountSchema = z.object({
   status: z.enum(['active', 'inactive']),
   /** Acik borc (kurus, >= 0). */
   openBalance: kurus,
+  /** Finans 2.2 sonrasi: tedarikciye verilen, henuz mahsup edilmemis avans. */
+  advanceOpen: kurus.default(0),
   version: z.number().int(),
   billed: kurus.optional(),
   paid: kurus.optional(),
+  /** Faturalara mahsup edilmis avans toplami. */
+  advanceApplied: kurus.optional(),
   openItemCount: z.number().int().optional(),
   lastPaymentDate: z.string().optional(),
   openItems: z
-    .array(z.object({ transactionId: z.string(), date: z.string(), description: z.string(), reference: z.string().optional(), amount: kurus, open: kurus }))
+    .array(
+      z.object({
+        transactionId: z.string(),
+        date: z.string(),
+        description: z.string(),
+        reference: z.string().optional(),
+        amount: kurus,
+        open: kurus,
+        advanceApplied: kurus.optional(),
+      }),
+    )
     .default([]),
 });
 export type PayableAccount = z.infer<typeof payableAccountSchema>;
@@ -291,7 +322,10 @@ export const financeApi = {
   previewDues: (input: DuesBulkInput, signal?: AbortSignal) =>
     apiClient.post('/api/finance/dues/preview', input, { signal, schema: duesPreviewSchema }),
   payables: (signal?: AbortSignal) =>
-    apiClient.get('/api/finance/payables', { signal, schema: z.object({ items: z.array(payableAccountSchema), totalOpen: kurus }) }),
+    apiClient.get('/api/finance/payables', {
+      signal,
+      schema: z.object({ items: z.array(payableAccountSchema), totalOpen: kurus, totalAdvanceOpen: kurus.default(0) }),
+    }),
   recordPayablePayment: (accountId: string, input: RecordPayablePaymentInput) =>
     apiClient.post(`/api/finance/payables/${encodeURIComponent(accountId)}/payments`, input, {
       schema: z.object({ replayed: z.boolean(), transaction: z.object({ transactionId: z.string() }), openBalance: kurus }),

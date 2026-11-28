@@ -2,7 +2,10 @@ import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tansta
 import { useFeature } from '@/context/SiteFeaturesContext';
 import { usePortalUnit } from '@/context/PortalUnitContext';
 import { ApiError } from '@/lib/api/errors';
+import type { CreatePlanRequestInput, PlanRequestStatus } from '@bm/shared/api/planRequests';
 import {
+  type ApprovePlanRequestInput,
+  type PlanRequestSettings,
   type ApproveOffsetRequestInput,
   type CreateOffsetInput,
   type CreateOffsetRequestInput,
@@ -193,6 +196,105 @@ export function useMyOffsetRequests() {
     enabled: enabled && on,
     retry,
   });
+}
+
+// ----- Sakin: yapilandirma talebi (Finans 2.2 sonrasi) -----
+
+const portalPlanRequestKeys = {
+  all: (apt: string, user: string) => [...portalKeys.all(apt, user), 'plan-requests'] as const,
+  options: (apt: string, user: string, unitId?: string) => [...portalPlanRequestKeys.all(apt, user), 'options', unitId ?? 'auto'] as const,
+  mine: (apt: string, user: string) => [...portalPlanRequestKeys.all(apt, user), 'mine'] as const,
+};
+
+export function usePlanRequestOptions() {
+  const { apt, userId, unitId, enabled } = usePortalScope();
+  const on = useFeature('resident.restructure');
+  return useQuery({
+    queryKey: portalPlanRequestKeys.options(apt, userId, unitId),
+    queryFn: ({ signal }) => restructureApi.planRequestOptions(unitId, signal),
+    enabled: enabled && on,
+    retry,
+  });
+}
+
+export function useMyPlanRequests() {
+  const { apt, userId, enabled } = usePortalScope();
+  const on = useFeature('resident.restructure');
+  return useQuery({
+    queryKey: portalPlanRequestKeys.mine(apt, userId),
+    queryFn: ({ signal }) => restructureApi.myPlanRequests(signal).then((r) => r.items),
+    enabled: enabled && on,
+    retry,
+  });
+}
+
+/** Talep / geri cekme sonrasi secenekler, talepler ve plan karti yeniden cekilir. */
+export function useCreatePlanRequest() {
+  const { apt, userId, unitId } = usePortalScope();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: Omit<CreatePlanRequestInput, 'unitId'>) => restructureApi.createPlanRequest({ ...input, ...(unitId ? { unitId } : {}) }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: portalKeys.all(apt, userId) }),
+  });
+}
+
+export function useWithdrawPlanRequest() {
+  const { apt, userId } = usePortalScope();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (requestId: string) => restructureApi.withdrawPlanRequest(requestId),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: portalKeys.all(apt, userId) }),
+  });
+}
+
+// ----- Yonetici: yapilandirma talepleri -----
+
+/** KVKK: talepler yalnizca yonetici + firma (denetci istemez; API 403). */
+export function usePlanRequests(status?: PlanRequestStatus) {
+  const { apt, canWrite } = useApt();
+  const on = useFeature('admin.debtRestructure');
+  return useQuery({
+    queryKey: [...restructureKeys.all(apt), 'plan-requests', status ?? 'all'] as const,
+    queryFn: ({ signal }) => restructureApi.listPlanRequests(status, signal),
+    enabled: canWrite && on,
+  });
+}
+
+export function usePlanRequestDetail(requestId: string | null) {
+  const { apt, canWrite } = useApt();
+  return useQuery({
+    queryKey: [...restructureKeys.all(apt), 'plan-request', requestId ?? ''] as const,
+    queryFn: ({ signal }) => restructureApi.planRequest(requestId as string, signal),
+    enabled: canWrite && !!requestId,
+  });
+}
+
+export function useApprovePlanRequest() {
+  const invalidate = useInvalidate();
+  return useMutation({
+    mutationFn: (v: { requestId: string; input: ApprovePlanRequestInput }) => restructureApi.approvePlanRequest(v.requestId, v.input),
+    onSuccess: invalidate,
+  });
+}
+
+export function useRejectPlanRequest() {
+  const invalidate = useInvalidate();
+  return useMutation({ mutationFn: (v: { requestId: string; reason: string }) => restructureApi.rejectPlanRequest(v.requestId, v.reason), onSuccess: invalidate });
+}
+
+export function usePlanRequestSettings() {
+  const { apt, canWrite } = useApt();
+  const on = useFeature('admin.debtRestructure');
+  return useQuery({
+    queryKey: [...restructureKeys.all(apt), 'plan-request-settings'] as const,
+    queryFn: ({ signal }) => restructureApi.planRequestSettings(signal),
+    enabled: canWrite && on,
+  });
+}
+
+export function useSavePlanRequestSettings() {
+  const invalidate = useInvalidate();
+  return useMutation({ mutationFn: (input: Partial<PlanRequestSettings> & { version: number }) => restructureApi.savePlanRequestSettings(input), onSuccess: invalidate });
 }
 
 export function useCreateOffsetRequest() {
