@@ -91,10 +91,76 @@ export const commentSchema = z.object({
   authorKind: z.enum(['resident', 'management']),
   mine: z.boolean(),
   createdAt: z.string(),
+  /** Yonetim yaniti: yanitlanan sakin sorusu (gizlenen soruya yanitta sakin gorunumunde yok). */
+  replyTo: z.string().optional(),
+  /** Moderasyon: yalnizca yonetim / denetci gorunumunde (sakinlere gizlenen soru hic donmez). */
+  hidden: z.object({ at: z.string(), reason: z.string(), by: z.string().optional() }).optional(),
   authorId: z.string().optional(),
   authorRole: z.string().optional(),
 });
 export type TenderComment = z.infer<typeof commentSchema>;
+
+/** Karara bagli gider (hakedis). `reversed`: Finans'ta ters kaydedildi (ilerlemeye sayilmaz). */
+export const tenderExpenseSchema = z.object({
+  expenseId: z.string(),
+  transactionId: z.string(),
+  amountKurus: z.number(),
+  date: z.string(),
+  linkedAt: z.string(),
+  linkedBy: z.string().optional(),
+  reversed: z.boolean().optional(),
+  installment: z.number().optional(),
+  overrunReason: z.string().optional(),
+});
+export type TenderExpense = z.infer<typeof tenderExpenseSchema>;
+
+export const expenseProgressSchema = z.object({
+  decidedTotalKurus: z.number(),
+  activeTotalKurus: z.number(),
+  remainingKurus: z.number(),
+  overrunKurus: z.number(),
+  percentBps: z.number(),
+  activeCount: z.number(),
+  reversedCount: z.number(),
+});
+export type ExpenseProgress = z.infer<typeof expenseProgressSchema>;
+
+/** Genel kurul karar bagi. Sakin: `portalLink` (malik + kesinlesmis toplanti); yonetim: `seq`, toplanti durumu. */
+export const assemblyDecisionLinkSchema = z.object({
+  assemblyId: z.string(),
+  itemId: z.string(),
+  itemTitle: z.string(),
+  meetingAt: z.string(),
+  decision: z.literal('accepted'),
+  corrected: z.boolean().optional(),
+  currentDecision: z.enum(['accepted', 'rejected']).optional(),
+  portalLink: z.boolean().optional(),
+  seq: z.number().optional(),
+  assemblyStatus: z.string().optional(),
+  linkedAt: z.string().optional(),
+  linkedBy: z.string().optional(),
+});
+export type AssemblyDecisionLink = z.infer<typeof assemblyDecisionLinkSchema>;
+
+/** Karar baglantisi secicisi: ayni apartmanin madde basina guncel genel kurul kararlari. */
+export const assemblyDecisionOptionSchema = z.object({
+  assemblyId: z.string(),
+  itemId: z.string(),
+  seq: z.number(),
+  itemTitle: z.string(),
+  meetingAt: z.string(),
+  decisionKind: z.string(),
+  decision: z.enum(['accepted', 'rejected']),
+  assemblyStatus: z.string().optional(),
+});
+export type AssemblyDecisionOption = z.infer<typeof assemblyDecisionOptionSchema>;
+export const assemblyDecisionOptionsSchema = z.object({ items: z.array(assemblyDecisionOptionSchema) });
+
+export const supplierAccountSchema = z.object({ accountId: z.string(), name: z.string(), linkedAt: z.string(), linkedBy: z.string() });
+export const supplierAccountOptionsSchema = z.object({
+  items: z.array(z.object({ accountId: z.string(), name: z.string(), code: z.string().optional(), suggested: z.boolean(), linked: z.boolean() })),
+});
+export type SupplierAccountOption = z.infer<typeof supplierAccountOptionsSchema>['items'][number];
 
 export const tenderSchema = tenderSummarySchema.extend({
   description: z.string(),
@@ -106,12 +172,19 @@ export const tenderSchema = tenderSummarySchema.extend({
   comments: z.array(commentSchema),
   canComment: z.boolean(),
   readiness: z.object({ activeQuotes: z.number(), minQuotes: z.number(), missingDocuments: z.array(z.string()), shortfall: z.boolean() }).optional(),
-  /** Karardan kaydedilen Finans gideri (yonetim + denetci). */
-  expense: z
-    .object({ expenseId: z.string(), transactionId: z.string(), amountKurus: z.number(), date: z.string(), linkedAt: z.string(), linkedBy: z.string().optional(), reversed: z.boolean().optional() })
+  /** En son gecerli (yoksa en son) bagli gider (yonetim + denetci; eski istemciler). */
+  expense: tenderExpenseSchema.optional(),
+  /** Hakedisler: karara bagli tum giderler, eskiden yeniye (yonetim + denetci). */
+  expenses: z.array(tenderExpenseSchema).optional(),
+  /** Karara bagli ihalede gecerli giderlerin karar tutarina gore ilerlemesi. */
+  expenseProgress: expenseProgressSchema.optional(),
+  /** Yalnizca yonetim, karara baglanmis ihale: yeni gider / hakedis penceresinin on dolumu (kalan tutar). */
+  expenseDraft: z
+    .object({ amountKurus: z.number(), supplier: z.string(), description: z.string(), expenseAccountId: z.string(), creditAccountId: z.string().optional(), date: z.string(), installment: z.number().optional() })
     .optional(),
-  /** Yalnizca yonetim, karara baglanmis ve gideri olmayan ihale: gider penceresinin on dolumu. */
-  expenseDraft: z.object({ amountKurus: z.number(), supplier: z.string(), description: z.string(), expenseAccountId: z.string(), date: z.string() }).optional(),
+  /** Kazanan firmanin Finans tedarikci hesabi (yonetim + denetci). */
+  supplierAccount: supplierAccountSchema.optional(),
+  assemblyDecision: assemblyDecisionLinkSchema.optional(),
 });
 export type Tender = z.infer<typeof tenderSchema>;
 
