@@ -41,6 +41,7 @@ export type NotificationTemplate =
   | 'billing_past_due'
   | 'billing_suspended'
   | 'billing_reactivated'
+  | 'billing_cancelled'
   /** Bildirim devami: arka plan toplu isinin bitis ozeti (isi baslatan yonetici). */
   | 'bulk_job_summary'
   | `dues_reminder_${'upcoming' | 'overdue_1' | 'overdue_7' | 'plan_default'}`;
@@ -63,6 +64,11 @@ export type Notification = {
    * bu kategoriyi kapattiysa e-posta gitmez.
    */
   category?: NotificationCategory;
+  /**
+   * Zorunlu e-posta (abonelik gecikmesi / askiya alma / sona erme): kullanici tercihi kapatsa da
+   * gider (guvenlik ve davet e-postalari gibi). Push tercihi yine gecerlidir.
+   */
+  essential?: boolean;
   /** Sablon degiskenleri; kisisel veri icermez (ad/e-posta kanal adaptorunde cozulur). */
   data: NotificationData;
 };

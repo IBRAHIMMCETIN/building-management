@@ -30,7 +30,15 @@ import { featureAllowed, staticSiteFeatureReader } from '../src/modules/features
 import type { FeatureRepository } from '../src/modules/features/repository.js';
 import { createFeatureService } from '../src/modules/features/service.js';
 import { invoicePdfContent, invoicePdfHash, invoicePdfKey } from '../src/modules/subscriptions/invoicePdf.js';
-import { type AdvanceInput, TransitionError, advance, applyAction } from '../src/modules/subscriptions/machine.js';
+import { type AdvanceInput, TransitionError, advance, applyAction, settleAfterPayment } from '../src/modules/subscriptions/machine.js';
+import type { AnnouncementService } from '../src/modules/announcements/service.js';
+import type { TenderService } from '../src/modules/tenders/service.js';
+import { createApartmentRoleService } from '../src/modules/apartment-roles/service.js';
+import type { ApartmentRoleRepository } from '../src/modules/apartment-roles/repository.js';
+import { createPushGate } from '../src/workers/notification-worker.js';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { LICENSABLE_KEYS } from '../src/modules/features/catalog.js';
 import { billingRecipients } from '../src/modules/subscriptions/notifications.js';
 import { PLACEHOLDER_PLANS, parsePlanContent } from '../src/modules/subscriptions/plans.js';
 import { addMonths, invoiceAmounts, periodBounds, priceLines, vatOf } from '../src/modules/subscriptions/pricing.js';
@@ -254,7 +262,9 @@ describe('abonelik durum makinesi (tarih bazli)', () => {
     const re = run(susp.sub, '2027-01-05', paid);
     expect(re.sub.status).toBe('active');
     expect(re.events.map((e) => e.type)).toEqual(['SUBSCRIPTION_REACTIVATED']);
-    expect(re.invoices.map((i) => i.invoiceId)).toEqual(['2027-01-01']);
+    // Askida biten donem faturalanmaz: yeni donem odeme gunu baslar, fatura o gun kesilir.
+    expect(re.invoices.map((i) => [i.invoiceId, i.issueDate, i.dueDate])).toEqual([['2027-01-05', '2027-01-05', '2027-01-15']]);
+    expect(re.sub).toMatchObject({ billingAnchor: '2027-01-05', periodIndex: 0, currentPeriodEnd: '2027-02-04' });
     expect(re.sub.pastDueSince).toBeUndefined();
   });
 
@@ -270,7 +280,12 @@ describe('abonelik durum makinesi (tarih bazli)', () => {
     const active = run(sub(), '2026-12-01').sub;
     const r = run(active, '2027-02-15', [{ invoiceId: '2026-12-01', dueDate: '2026-12-11', status: 'paid', totalKurus: 1 }]);
     expect(r.invoices.map((i) => i.invoiceId)).toEqual(['2027-01-01', '2027-02-01']);
-    expect(r.sub).toMatchObject({ periodIndex: 2, currentPeriodEnd: '2027-02-28', status: 'past_due' });
+    // Gecmis tarihli fatura yok: kacirilan donemler islendigi gun kesilir, vade bugun + odeme suresi.
+    expect(r.invoices.map((i) => [i.issueDate, i.dueDate])).toEqual([
+      ['2027-02-15', '2027-02-25'],
+      ['2027-02-15', '2027-02-25'],
+    ]);
+    expect(r.sub).toMatchObject({ periodIndex: 2, currentPeriodEnd: '2027-02-28', status: 'active' });
   });
 
   it('bedelsiz plan fatura kesmez ve vadesi gecmez', () => {
@@ -773,7 +788,10 @@ describe('abonelik bildirimleri', () => {
           calls.push([apt, day ?? '']);
           return apt === APT ? ({ status: 'updated', subscriptionStatus: 'active', transitions: [], invoices: [], events: 0 } as never) : ({ status: 'skipped', reason: 'legacy' } as never);
         },
+        getSettings: async () => ({ enabled: true, automation: true, version: 1 }),
+        isReadOnly: async () => false,
       },
+      fanout: null,
       log: { info: () => {}, error: () => {} },
     });
     const outcomes = await worker.runJob({ job: 'subscriptions', scheduledTime: '2026-12-01T03:15:00.000Z' });
@@ -823,6 +841,282 @@ describe('abonelik platform ayari (varsayilan kapali)', () => {
     const off = await f.service.updateSettings(platform, { version: 1, enabled: false, automation: true, reason: 'Geçici kapatma' });
     expect(off).toMatchObject({ enabled: false, automation: false });
     expect((await reader.resolve(APT)).legacy).toBe(true);
-    expect(await f.service.managerView(APT)).toMatchObject({ status: 'legacy', legacy: true });
+    expect(await f.service.managerView(APT)).toMatchObject({ status: 'legacy', legacy: true, enabled: false });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Inceleme duzeltmeleri
+// ---------------------------------------------------------------------------
+
+describe('kapaliyken sifir etki (yetki okuyucusu)', () => {
+  const boom = async (): Promise<never> => {
+    throw new Error('ThrottlingException');
+  };
+  const silent = { error: () => {} };
+
+  it('ayar okunamazsa son bilinen deger, hic yoksa KAPALI; ayar hatasi istegi dusurmez ve kisa sure onbelleklenir', async () => {
+    const getSubscription = vi.fn(async () => sub({ status: 'suspended' }));
+    let fail = true;
+    const getSettings = vi.fn(async () => {
+      if (fail) throw new Error('timeout');
+      return { enabled: true };
+    });
+    let t = 0;
+    const reader = createEntitlementReader({ getSubscription, getSettings, ttlMs: 1000, errorTtlMs: 100, now: () => t, log: silent });
+    expect(await reader.resolve(APT)).toMatchObject({ legacy: true });
+    expect(getSubscription).not.toHaveBeenCalled();
+    await reader.resolve(APT);
+    expect(getSettings).toHaveBeenCalledTimes(1); // hata onbellekte
+    fail = false;
+    t = 200;
+    expect((await reader.resolve(APT)).readOnly).toBe(true);
+    // Son bilinen: acik. Sonraki okuma hatasi acik kabul eder (abonelik onbellekten).
+    fail = true;
+    t = 1500;
+    expect((await reader.resolve(APT)).readOnly).toBe(true);
+  });
+
+  it('sistem acik bilinirken abonelik okuma hatasi fail closed ve kisa sure onbellekte; failOpen ile legacy', async () => {
+    const getSubscription = vi.fn(boom);
+    const reader = createEntitlementReader({ getSubscription, getSettings: async () => ({ enabled: true }), errorTtlMs: 5_000, log: silent });
+    await expect(reader.resolve(APT)).rejects.toThrow('ThrottlingException');
+    await expect(reader.resolve(APT)).rejects.toThrow('ThrottlingException');
+    expect(getSubscription).toHaveBeenCalledTimes(1);
+    expect(await createEntitlementReader({ getSubscription: boom, getSettings: async () => ({ enabled: true }), failOpen: true, log: silent }).resolve(APT)).toMatchObject({ legacy: true });
+  });
+
+  it('createApp gercek okuyucuyla: kapali + ayar okunamiyor -> okuma ve yazma istekleri basarili; GET abonelik okumaz', async () => {
+    const getSettings = vi.fn(boom);
+    const getSubscription = vi.fn(async () => undefined);
+    const announcementService = { list: async () => [], create: async () => ({ PK: 'p', SK: 's', announcementId: 'a1' }) } as unknown as AnnouncementService;
+    const tenderService = { list: async () => ({ items: [] }) } as unknown as TenderService;
+    const app = createApp({ version: 't', authenticate: createMockAuthenticator(), announcementService, tenderService, entitlementSource: { getSettings, getSubscription } });
+    const headers = { authorization: `Bearer ${encodeMockToken({ sub: 'm1', role: 'apartment_manager', apartmentId: APT })}`, 'content-type': 'application/json' };
+    const errLog = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      expect((await app.request('/api/announcements', { headers })).status).toBe(200);
+      expect(getSettings).not.toHaveBeenCalled();
+      expect((await app.request('/api/announcements', { method: 'POST', headers, body: '{}' })).status).toBe(201);
+      expect((await app.request('/api/tenders', { headers })).status).toBe(200);
+      expect(getSubscription).not.toHaveBeenCalled();
+    } finally {
+      errLog.mockRestore();
+    }
+  });
+
+  it('GET istekleri yetki okumaz; plan modulu yolu ve yazma okur', async () => {
+    const reader = { resolve: vi.fn(async () => entitlementOf(undefined)), invalidate: () => {} };
+    const features = createLicensedFeatureReader(staticSiteFeatureReader(), reader);
+    const auth = withEntitlements(() => ({ userId: 'm', role: 'apartment_manager', apartmentId: APT }), { entitlements: reader, features });
+    const c = (method: string, path: string) => ({ req: { method, path }, header: () => {} }) as never;
+    await auth(c('GET', '/api/announcements'));
+    await auth(c('GET', '/api/finance/reports/x'));
+    expect(reader.resolve).not.toHaveBeenCalled();
+    await auth(c('GET', '/api/tenders'));
+    expect(reader.resolve).toHaveBeenCalledTimes(1);
+    await auth(c('POST', '/api/announcements'));
+    expect(reader.resolve).toHaveBeenCalledTimes(2);
+    // Muaf yazim (elle tahsilat) da okumaz.
+    await auth(c('POST', '/api/finance/payments'));
+    expect(reader.resolve).toHaveBeenCalledTimes(2);
+  });
+
+  it('bildirim worker: push kapisi onbellekli; ayar okunamazsa plan okunmaz, site okunamazsa push acik', async () => {
+    const getSubscription = vi.fn(async () => sub({ status: 'active', plan: plan({ features: { ...allFeatures(), 'channels.push': false } }) }));
+    const getSiteFeatures = vi.fn(async () => undefined);
+    const gate = createPushGate({ getSettings: async () => ({ enabled: true }), getSubscription, getSiteFeatures });
+    expect(await gate(APT)).toBe(false);
+    expect(await gate(APT)).toBe(false);
+    expect(getSubscription).toHaveBeenCalledTimes(1);
+    expect(getSiteFeatures).toHaveBeenCalledTimes(1);
+    const off = createPushGate({ getSettings: boom, getSubscription, getSiteFeatures: boom });
+    const errLog = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      expect(await off(APT2)).toBe(true);
+    } finally {
+      errLog.mockRestore();
+    }
+    expect(getSubscription).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('inceleme: durum makinesi duzeltmeleri', () => {
+  it('denemede askiya alinip yeniden acilan: deneme suruyorsa denemeye, bittiyse bugun ilk donem (ucretsiz kalici aktiflik yok)', () => {
+    const susp = applyAction({ sub: sub(), day: '2026-11-10', invoices: [], unitCount: 5, action: 'suspend' }).sub;
+    const back = applyAction({ sub: susp, day: '2026-11-20', invoices: [], unitCount: 5, action: 'reactivate' });
+    expect(back.sub).toMatchObject({ status: 'trial', trialEndsAt: '2026-11-30' });
+    expect(back.invoices).toEqual([]);
+    const late = applyAction({ sub: susp, day: '2026-12-10', invoices: [], unitCount: 5, action: 'reactivate' });
+    expect(late.sub).toMatchObject({ status: 'active', billingAnchor: '2026-12-10', currentPeriodEnd: '2027-01-09' });
+    expect(late.invoices.map((i) => [i.invoiceId, i.issueDate, i.dueDate])).toEqual([['2026-12-10', '2026-12-10', '2026-12-20']]);
+  });
+
+  it('elle askidan uzun sure sonra donus: askidaki donemler faturalanmaz, otomasyon kapaliyken yenileme bir sonraki "donemi isle"de', () => {
+    const active = run(sub(), '2026-12-01').sub;
+    const susp = applyAction({ sub: active, day: '2026-12-05', invoices: [{ invoiceId: '2026-12-01', dueDate: '2026-12-11', status: 'paid', totalKurus: 1 }], unitCount: 10, action: 'suspend' }).sub;
+    const paid = [{ invoiceId: '2026-12-01', dueDate: '2026-12-11', status: 'paid' as const, totalKurus: 1 }];
+    const manual = applyAction({ sub: susp, day: '2027-03-10', invoices: paid, unitCount: 10, action: 'reactivate', automation: false });
+    expect(manual.sub).toMatchObject({ status: 'active', resumeFrom: '2027-03-10' });
+    expect(manual.invoices).toEqual([]);
+    const later = run(manual.sub, '2027-03-12', paid);
+    expect(later.invoices.map((i) => [i.invoiceId, i.issueDate])).toEqual([['2027-03-10', '2027-03-12']]);
+    expect(later.sub.resumeFrom).toBeUndefined();
+    const auto = applyAction({ sub: susp, day: '2027-03-10', invoices: paid, unitCount: 10, action: 'reactivate' });
+    expect(auto.invoices.map((i) => i.invoiceId)).toEqual(['2027-03-10']);
+  });
+
+  it('otomasyon kapaliyken odeme: yalnizca odemenin cozdugu durum; yenileme, fatura, gecikme ve olay yok', () => {
+    const active = run(sub(), '2026-12-01').sub;
+    const open = [{ invoiceId: '2026-12-01', dueDate: '2026-12-11', status: 'issued' as const, totalKurus: 1 }];
+    const susp = run(run(active, '2026-12-12', open).sub, '2026-12-26', open).sub;
+    const r = settleAfterPayment({ sub: susp, day: '2027-02-10', invoices: [{ ...open[0]!, status: 'paid' }], unitCount: 10 });
+    expect(r.sub).toMatchObject({ status: 'active', resumeFrom: '2027-02-10' });
+    expect(r.invoices).toEqual([]);
+    expect(r.events).toEqual([]);
+    // Odenmemis fatura duruyorsa hicbir sey degismez (gecikme / askiya alma adimi yok).
+    expect(settleAfterPayment({ sub: active, day: '2027-02-10', invoices: open, unitCount: 10 }).changed).toBe(false);
+  });
+
+  it('servis: otomasyon kapaliyken odendi isaretleme yeni fatura / e-posta uretmez', async () => {
+    const f = fixture({ value: at('2026-11-01') }, { enabled: true, automation: false });
+    await f.service.seedPlaceholderPlans({ userId: 'p1' });
+    await f.service.startSubscription({ userId: 'p1' }, APT2, { idempotencyKey: 'start-apt-2-0001', planCode: 'temel', trialDays: 0 });
+    const before = f.mem.events.length;
+    const inv = (await f.mem.repo.listInvoices(APT2))[0]!;
+    // Donem bitmis olsa da odeme isaretlemesi yenilemez.
+    f.mem.subs.get(APT2)!.currentPeriodEnd = '2026-10-31';
+    const r = await f.service.markPaid({ userId: 'p1' }, APT2, inv.invoiceId, { version: inv.version, method: 'cash', reference: 'MKB-1', paidOn: '2026-11-01' });
+    expect(r.invoice.status).toBe('paid');
+    expect(await f.mem.repo.listInvoices(APT2)).toHaveLength(1);
+    expect(f.mem.events.length).toBe(before);
+  });
+
+  it('plan anlik goruntusunde olmayan anahtar katalog varsayilani (acik)', () => {
+    const old = sub({ status: 'active', plan: plan({ features: { 'modules.gate': false } }) });
+    const e = entitlementOf(old);
+    expect(e.features['modules.gate']).toBe(false);
+    expect(e.features['modules.tenders']).toBe(true);
+    expect(e.features['channels.push']).toBe(true);
+  });
+});
+
+describe('inceleme: salt okunur muafiyetleri, zamanlayici ve limitler', () => {
+  const suspended = entitlementOf(sub({ status: 'suspended' }));
+
+  it('elle tahsilat, banka ekstresi, guvenlik masasi ve onizlemeler salt okunurda acik; yonetim islemleri kapali', () => {
+    for (const path of [
+      '/api/finance/payments',
+      '/api/bank/statements',
+      '/api/bank/lines/l1/match',
+      '/api/gate/passes/verify',
+      '/api/gate/passes/p1/entry',
+      '/api/gate/passes/p1/exit',
+      '/api/gate/couriers',
+      '/api/gate/couriers/c1/exit',
+      '/api/gate/log',
+      '/api/finance/dues/preview',
+      '/api/imports/preview',
+      '/api/finance/offsets/preview',
+      '/api/ownership/units/u1/transfers/preview',
+      '/api/metering/swaps/preview',
+    ]) {
+      expect(readOnlyCheck(suspended, { method: 'POST', path }), path).toBeUndefined();
+    }
+    for (const path of ['/api/finance/dues', '/api/gate/vehicles', '/api/gate/passes/p1/revoke', '/api/imports/commit', '/api/finance/payments/x/reverse']) {
+      expect(readOnlyCheck(suspended, { method: 'POST', path })?.code, path).toBe('subscription_read_only');
+    }
+    // Onizleme kaliplari yalnizca POST icin.
+    expect(readOnlyCheck(suspended, { method: 'PUT', path: '/api/finance/payments' })?.code).toBe('subscription_read_only');
+  });
+
+  it('zamanlayici: salt okunur sitede gecikme tazminati ve hatirlatma atlanir; aylik aidat surer; abonelik isi kapaliyken siteye bakmaz', async () => {
+    const listSiteIds = vi.fn(async () => [APT, APT2]);
+    const finance = {
+      postLateFees: vi.fn(async () => ({ count: 0, totalAmount: 0 })),
+      dueReminders: vi.fn(async () => []),
+      autoChargeDues: vi.fn(async () => ({ status: 'skipped', reason: 'plan_disabled' })),
+    };
+    const worker = (settings: { enabled: boolean; automation: boolean }) =>
+      createSchedulerWorker({
+        core: { listSiteIds, getSite: async (id) => site(id, id) },
+        finance: finance as never,
+        bulkJobs: null,
+        subscriptions: { runDaily: vi.fn(async () => ({ status: 'unchanged' }) as never), getSettings: async () => ({ ...settings, version: 1 }), isReadOnly: async (apt) => apt === APT },
+        events: { publish: async () => {} },
+        fanout: null,
+        log: { info: () => {}, error: () => {} },
+      });
+    const on = worker({ enabled: true, automation: true });
+    const lf = await on.runJob({ job: 'late_fees', scheduledTime: '2026-12-01T00:00:00.000Z' });
+    expect(lf.map((o) => [o.apartmentId, o.status, o.status === 'skipped' ? o.reason : ''])).toEqual([
+      [APT, 'skipped', 'read_only'],
+      [APT2, 'done', ''],
+    ]);
+    const dr = await on.runJob({ job: 'dues_reminders', scheduledTime: '2026-12-01T07:00:00.000Z' });
+    expect(dr[0]).toMatchObject({ apartmentId: APT, status: 'skipped', reason: 'read_only' });
+    await on.runJob({ job: 'monthly_dues', scheduledTime: '2026-12-01T00:00:00.000Z' });
+    expect(finance.autoChargeDues).toHaveBeenCalledTimes(2);
+    listSiteIds.mockClear();
+    expect(await worker({ enabled: false, automation: false }).runJob({ job: 'subscriptions', scheduledTime: '2026-12-01T03:15:00.000Z' })).toEqual([
+      { apartmentId: '_subscriptions', status: 'skipped', reason: 'billing_disabled' },
+    ]);
+    expect(await worker({ enabled: true, automation: false }).runJob({ job: 'subscriptions', scheduledTime: '2026-12-01T03:15:00.000Z' })).toEqual([
+      { apartmentId: '_subscriptions', status: 'skipped', reason: 'automation_off' },
+    ]);
+    expect(listSiteIds).not.toHaveBeenCalled();
+    // Kapaliyken sakine donuk isler abonelige bakmaz.
+    const off = worker({ enabled: false, automation: false });
+    expect((await off.runJob({ job: 'late_fees', scheduledTime: '2026-12-01T00:00:00.000Z' })).every((o) => o.status === 'done')).toBe(true);
+  });
+
+  it('ekip limiti: ileri tarihli roller de sayilir; bitmis rolu tarih uzatarak geri almak da sinira takilir', async () => {
+    const roles: ApartmentRole[] = [
+      role(APT, 'm1', 'apartment_manager'),
+      role(APT, 'f1', 'building_staff', { startDate: '2099-01-01' }),
+      role(APT, 'old', 'security_guard', { startDate: '2025-01-01', endDate: '2025-06-30', version: 1 } as Partial<ApartmentRole>),
+    ];
+    const repo = { list: async () => roles, get: async (_a: string, u: string, r: string) => roles.find((x) => x.userId === u && x.role === r), create: async () => {}, update: async () => {} } as unknown as ApartmentRoleRepository;
+    const limited = staticEntitlementReader(entitlementOf(sub({ status: 'active', plan: plan({ limits: { maxUnits: null, maxStaffUsers: 2 } }) })));
+    const svc = createApartmentRoleService({
+      repository: repo,
+      core: { getSite: async () => site(APT, 'Gül') },
+      directory: { kind: 'mock', findOrCreate: async () => ({ userId: 'new', created: true }) } as never,
+      assertStaffCapacity: (apt, n) => assertStaffCapacity(limited, apt, n),
+    });
+    const ctx = { apartmentId: APT, userId: 'm1', role: 'apartment_manager' as const };
+    await expect(svc.invite(ctx, { email: 'yeni@example.com', fullName: 'Yeni Kişi', role: 'building_staff' })).rejects.toMatchObject({ code: 'plan_limit_exceeded' });
+    await expect(svc.update(ctx, 'old', 'security_guard', { version: 1, endDate: '2099-12-31' })).rejects.toMatchObject({ code: 'plan_limit_exceeded' });
+  });
+});
+
+describe('inceleme: bildirim ve belge', () => {
+  it('gecikme / askiya alma / sona erme e-postasi zorunlu; iptal olayi ve sablonu var', () => {
+    const roles = [role(APT, 'm1', 'apartment_manager')];
+    const ev = (type: DomainEvent['type'], payload: Record<string, unknown>) =>
+      ({ eventId: 'e', type, version: 1, occurredAt: '2026-12-01T00:00:00.000Z', apartmentId: APT, actorId: 'p1', groupKey: APT, payload }) as never;
+    expect(billingRecipients(ev('SUBSCRIPTION_SUSPENDED', { suspendedAt: '2026-12-26', reason: 'non_payment' }), roles, '2026-12-26')[0]).toMatchObject({ essential: true });
+    expect(billingRecipients(ev('SUBSCRIPTION_CANCELLED', { cancelledAt: '2026-12-26' }), roles, '2026-12-26')[0]).toMatchObject({ template: 'billing_cancelled', essential: true });
+    expect(billingRecipients(ev('SUBSCRIPTION_INVOICE_ISSUED', { invoiceNumber: 'x' }), roles, '2026-12-26')[0]?.essential).toBeUndefined();
+    const cancel = applyAction({ sub: sub({ status: 'active' }), day: '2026-12-26', invoices: [], unitCount: 1, action: 'cancel' });
+    expect(cancel.events.map((e) => e.type)).toEqual(['SUBSCRIPTION_CANCELLED']);
+    const mail = renderEmail({ eventId: 'e', apartmentId: APT, userId: 'm1', template: 'billing_cancelled', data: { cancelledAt: '2026-12-26' } }, { siteName: 'Gül', unitLabel: () => '' });
+    expect(mail?.subject).toMatch(/sona erdi/);
+  });
+
+  it('iptal edilmis faturanin PDF i yoneticiye verilmez; platform gorur', async () => {
+    const f = fixture({ value: at('2026-11-01') });
+    await f.service.seedPlaceholderPlans({ userId: 'p1' });
+    await f.service.startSubscription({ userId: 'p1' }, APT2, { idempotencyKey: 'start-apt-2-0001', planCode: 'temel', trialDays: 0 });
+    await f.service.voidInvoice({ userId: 'p1' }, APT2, '2026-11-01', { version: 1, reason: 'Yanlış dönem' });
+    await expect(f.service.invoicePdf(APT2, '2026-11-01', { includeVoid: false })).rejects.toMatchObject({ code: 'not_found' });
+    expect((await f.service.invoicePdf(APT2, '2026-11-01')).url).toMatch(/^memory:/);
+  });
+
+  it('web LICENSABLE_KEYS API katalogu ile ayni anahtarlari ayni sirada tasir', () => {
+    const web = readFileSync(join(__dirname, '..', '..', 'web', 'src', 'lib', 'features', 'catalog.ts'), 'utf8');
+    const start = web.indexOf('export const LICENSABLE_KEYS');
+    const block = web.slice(start, web.indexOf('];', start));
+    expect([...block.matchAll(/'([a-zA-Z]+\.[a-zA-Z]+)'/g)].map((m) => m[1])).toEqual([...LICENSABLE_KEYS]);
   });
 });

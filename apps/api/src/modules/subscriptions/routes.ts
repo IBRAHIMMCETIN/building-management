@@ -34,7 +34,8 @@ export function subscriptionRoutes({ authenticate, service }: SubscriptionRoutes
 
   r.get('/status', requireRole(STATUS_ROLES), async (c) => c.json(await service.statusView(apt(c))));
   r.get('/', requireRole(DETAIL_ROLES), async (c) => c.json(await service.managerView(apt(c))));
-  r.get('/invoices/:invoiceId/pdf', requireRole(DETAIL_ROLES), async (c) => c.json(await service.invoicePdf(apt(c), c.req.param('invoiceId'))));
+  // Iptal edilmis faturanin PDF'i yoneticiye verilmez (platform gorur).
+  r.get('/invoices/:invoiceId/pdf', requireRole(DETAIL_ROLES), async (c) => c.json(await service.invoicePdf(apt(c), c.req.param('invoiceId'), { includeVoid: false })));
   return r;
 }
 

@@ -21,8 +21,8 @@ import { type AssemblyRepository, assemblyRepository } from '../modules/assembli
 import { type TenderSnapshot, isTenderEvent, tenderRecipients } from '../modules/tenders/notifications.js';
 import { type TenderRepository, tenderRepository } from '../modules/tenders/repository.js';
 import { billingRecipients, isBillingEvent } from '../modules/subscriptions/notifications.js';
-import { entitlementOf, licensedFeatures } from '../modules/subscriptions/entitlements.js';
-import { resolveFeatures } from '../modules/features/catalog.js';
+import { createEntitlementReader, type entitlementOf, licensedFeatures } from '../modules/subscriptions/entitlements.js';
+import { type SiteFeatureSettings, resolveFeatures } from '../modules/features/catalog.js';
 import { subscriptionRepository } from '../modules/subscriptions/repository.js';
 import { bulkJobRecipients, isBulkJobEvent } from '../modules/bulkjobs/notifications.js';
 import {
@@ -220,7 +220,14 @@ export function buildNotifications(
     }));
   }
   if (isBillingEvent(event)) {
-    return billingRecipients(event, roles, day).map((r) => ({ eventId: event.eventId, apartmentId: event.apartmentId, userId: r.userId, template: r.template, data: r.data }));
+    return billingRecipients(event, roles, day).map((r) => ({
+      eventId: event.eventId,
+      apartmentId: event.apartmentId,
+      userId: r.userId,
+      template: r.template,
+      data: r.data,
+      ...(r.essential ? { essential: true } : {}),
+    }));
   }
   if (isTicketEvent(event)) {
     return ticketRecipients(event, memberships, roles, day).map((r) => ({
@@ -392,8 +399,41 @@ const processedKey = (apartmentId: string, eventId: string) => ({
   SK: skKey('NOTIF', eventId),
 });
 
+/**
+ * Etkin `channels.push` (site ayari VE abonelik plani), konteyner icinde onbellekli (60 sn). Abonelik
+ * sistemi kapaliyken / ayar okunamazken plan okunmaz (sifir etki); site anahtari okunamazsa push
+ * acik kalir (abonelik oncesi davranis). Sistem aciksa abonelik okuma hatasi olayi yeniden denetir.
+ */
+export function createPushGate(source: {
+  getSettings: () => Promise<{ enabled: boolean }>;
+  getSubscription: (apartmentId: string) => Promise<Parameters<typeof entitlementOf>[0]>;
+  getSiteFeatures: (apartmentId: string) => Promise<SiteFeatureSettings | undefined>;
+  ttlMs?: number;
+} = {
+  getSettings: () => subscriptionRepository.getSettings(),
+  getSubscription: (id) => subscriptionRepository.peekSubscription(id),
+  getSiteFeatures: (id) => subscriptionRepository.peekSiteFeatures(id),
+}) {
+  const ttlMs = source.ttlMs ?? 60_000;
+  const entitlements = createEntitlementReader({ getSubscription: source.getSubscription, getSettings: source.getSettings, ttlMs });
+  const sites = new Map<string, { at: number; value: SiteFeatureSettings | undefined }>();
+  return async (apartmentId: string): Promise<boolean> => {
+    let site = sites.get(apartmentId);
+    if (!site || Date.now() - site.at >= ttlMs) {
+      try {
+        site = { at: Date.now(), value: await source.getSiteFeatures(apartmentId) };
+        sites.set(apartmentId, site);
+      } catch {
+        site = { at: Date.now(), value: undefined };
+      }
+    }
+    return licensedFeatures(resolveFeatures(site.value), await entitlements.resolve(apartmentId))['channels.push'];
+  };
+}
+
 export function createNotificationWorker(overrides: Partial<WorkerDeps> = {}) {
   const now = overrides.now ?? (() => new Date());
+  let pushGate: ((apartmentId: string) => Promise<boolean>) | undefined;
   const deps: WorkerDeps = {
     memberships: membershipRepository,
     core: coreRepository,
@@ -408,12 +448,8 @@ export function createNotificationWorker(overrides: Partial<WorkerDeps> = {}) {
     // site ayari). Veri deposu yapilandirilmamissa (yalnizca test) acik; okuma hatasi olayi yeniden denetir.
     pushAllowed: async (apartmentId) => {
       if (!process.env.DYNAMODB_TABLE_NAME) return true;
-      const [features, settings, sub] = await Promise.all([
-        subscriptionRepository.peekSiteFeatures(apartmentId),
-        subscriptionRepository.getSettings(),
-        subscriptionRepository.peekSubscription(apartmentId),
-      ]);
-      return licensedFeatures(resolveFeatures(features), entitlementOf(settings.enabled ? sub : undefined))['channels.push'];
+      const gate = (pushGate ??= createPushGate());
+      return gate(apartmentId);
     },
     isProcessed: async (apt, id) => Boolean(await getTenantItem(processedKey(apt, id))),
     markProcessed: async (apt, id, info) => {

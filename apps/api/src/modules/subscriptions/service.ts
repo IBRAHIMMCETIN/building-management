@@ -13,7 +13,7 @@ import { renderReportPdf } from '../documents/reportPdf.js';
 import { type DocumentStore, URL_TTL_SECONDS, createDocumentStoreFromEnv } from '../documents/store.js';
 import { type Entitlement, entitlementOf } from './entitlements.js';
 import { invoicePdfContent, invoicePdfHash, invoicePdfKey } from './invoicePdf.js';
-import { type AdvanceResult, type InvoiceDraft, type MachineEvent, SUBSCRIPTION_ACTIONS, TransitionError, advance, applyAction } from './machine.js';
+import { type AdvanceResult, type InvoiceDraft, type MachineEvent, SUBSCRIPTION_ACTIONS, TransitionError, advance, applyAction, settleAfterPayment } from './machine.js';
 import { PLACEHOLDER_PLANS, parsePlanContent } from './plans.js';
 import { addDays, daysBetween, istanbulDay } from './pricing.js';
 import { type SubscriptionRepository, type UnnumberedInvoice, subscriptionRepository } from './repository.js';
@@ -21,6 +21,8 @@ import {
   BILLING_PERIODS,
   type BillingPeriod,
   type BillingSettings,
+  type BillingSettingsView,
+  DEFAULT_BILLING_SETTINGS,
   billingSettingsKeys,
   DEFAULT_GRACE_DAYS,
   DEFAULT_PAYMENT_TERM_DAYS,
@@ -290,6 +292,15 @@ export function createSubscriptionService(overrides: Partial<SubscriptionService
   }
 
   const getSettings = () => repo.getSettings();
+
+  /**
+   * Zamanlayici: site salt okunur mu (sakine donuk isler atlanir)? Ayar disaridan bir kez okunup
+   * verilir; sistem kapaliyken abonelik okunmaz.
+   */
+  async function isReadOnly(apartmentId: string, settings: Pick<BillingSettingsView, 'enabled'>): Promise<boolean> {
+    if (!settings.enabled) return false;
+    return entitlementOf(await repo.peekSubscription(apartmentId)).readOnly;
+  }
 
   /** Govde: { version, enabled, automation?, reason } - platform zincirine denetimli. */
   async function updateSettings(ctx: Ctx, input: unknown) {
@@ -567,10 +578,11 @@ export function createSubscriptionService(overrides: Partial<SubscriptionService
     const trialEndsAt = action === 'extend_trial' ? reqDate(o, 'trialEndsAt') : undefined;
     const sub = await requireSubscription(apartmentId);
     if (sub.version !== expected) throw new SubscriptionError('conflict', 'Abonelik başka biri tarafından güncellendi (sürüm uyuşmazlığı)');
-    const [invoices, use] = await Promise.all([repo.listInvoices(apartmentId), usage(apartmentId)]);
+    const [invoices, use, settings] = await Promise.all([repo.listInvoices(apartmentId), usage(apartmentId), repo.getSettings()]);
     let result: AdvanceResult;
     try {
-      result = applyAction({ sub, day: today(), invoices, unitCount: use.units, action, ...(trialEndsAt ? { trialEndsAt } : {}) });
+      // Otomasyon kapaliyken yalnizca islemin kendisi (yenileme / fatura / vade adimlari yok).
+      result = applyAction({ sub, day: today(), invoices, unitCount: use.units, action, automation: settings.automation, ...(trialEndsAt ? { trialEndsAt } : {}) });
     } catch (err) {
       if (err instanceof TransitionError) throw new SubscriptionError('invalid_transition', err.message);
       throw err;
@@ -591,8 +603,13 @@ export function createSubscriptionService(overrides: Partial<SubscriptionService
    * `manual: true`: platformun "Donemi isle" islemi (otomasyon kapaliyken de calisir; elle fatura).
    * Zamanlanmis is yalnizca platform ayarinda otomasyon aciksa ilerletir.
    */
-  async function runDaily(apartmentId: string, day: IsoDate = today(), actor = SUBSCRIPTION_SYSTEM_ACTOR, opts: { manual?: boolean } = {}) {
-    const settings = await repo.getSettings();
+  async function runDaily(
+    apartmentId: string,
+    day: IsoDate = today(),
+    actor = SUBSCRIPTION_SYSTEM_ACTOR,
+    opts: { manual?: boolean; settings?: Pick<BillingSettingsView, 'enabled' | 'automation'> } = {},
+  ) {
+    const settings = opts.settings ?? (await repo.getSettings());
     if (!settings.enabled) {
       if (opts.manual) throw disabledError();
       return { status: 'skipped' as const, reason: 'billing_disabled' };
@@ -663,9 +680,12 @@ export function createSubscriptionService(overrides: Partial<SubscriptionService
     if (inv.status !== 'issued') throw new SubscriptionError('invalid_transition', inv.status === 'paid' ? 'Fatura zaten ödendi olarak işaretli' : 'İptal edilmiş fatura değiştirilemez');
     const updated: SubscriptionInvoice = { ...mutate(inv), updatedAt: stamp(), updatedBy: ctx.userId, version: inv.version + 1 };
     const sub = await requireSubscription(apartmentId);
-    const [all, use] = await Promise.all([repo.listInvoices(apartmentId), usage(apartmentId)]);
+    const [all, use, settings] = await Promise.all([repo.listInvoices(apartmentId), usage(apartmentId), repo.getSettings()]);
     const invoices = all.map((i) => (i.invoiceId === invoiceId ? updated : i));
-    const result = sub.status === 'cancelled' ? { sub, invoices: [], events: [], transitions: [], changed: false } : advance({ sub, day: today(), invoices, unitCount: use.units });
+    const input = { sub, day: today(), invoices, unitCount: use.units };
+    // Otomasyon kapaliyken yalnizca odemeyle dogrudan cozulen durum (yenileme / fatura / e-posta yok).
+    const result =
+      sub.status === 'cancelled' ? { sub, invoices: [], events: [], transitions: [], changed: false } : settings.automation ? advance(input) : settleAfterPayment(input);
     const out = await persist(result, {
       expectedVersion: sub.version,
       actor: ctx.userId,
@@ -705,10 +725,12 @@ export function createSubscriptionService(overrides: Partial<SubscriptionService
     return settleInvoice(ctx, apartmentId, invoiceId, expected, (inv) => ({ ...inv, status: 'void', voidReason: why, voidedBy: ctx.userId }), 'subscription.invoice.void', why, {});
   }
 
-  async function invoicePdf(apartmentId: string, invoiceId: string) {
+  /** `includeVoid: false` (yonetici ucu): iptal edilmis faturanin PDF'i verilmez. */
+  async function invoicePdf(apartmentId: string, invoiceId: string, opts: { includeVoid?: boolean } = { includeVoid: true }) {
     if (!deps.store) throw new DocumentError('unavailable', 'Belge deposu yapılandırılmamış (DOCUMENTS_BUCKET)');
     const store = deps.store;
     const inv = await requireInvoice(apartmentId, invoiceId);
+    if (inv.status === 'void' && opts.includeVoid === false) throw new SubscriptionError('not_found', 'Fatura bulunamadı');
     const hash = invoicePdfHash(inv);
     const key = invoicePdfKey(inv, hash);
     if (!(await store.head(key))) await store.put(key, await renderReportPdf({ ...invoicePdfContent(inv), generatedAt: stamp(), dataHash: hash }), 'application/pdf');
@@ -721,18 +743,30 @@ export function createSubscriptionService(overrides: Partial<SubscriptionService
   // Yonetici gorunumu
   // -------------------------------------------------------------------------
 
-  /** Banner ve salt okunur bildirimi icin hafif durum (tum yonetim paneli rolleri). */
-  /** Platform ayari kapaliyken abonelik kaydi yok sayilir (legacy = bugunku davranis). */
-  async function effectiveSubscription(apartmentId: string) {
-    const [settings, sub] = await Promise.all([repo.getSettings(), repo.getSubscription(apartmentId)]);
-    return settings.enabled ? sub : undefined;
+  /** Ayar okunamazsa KAPALI kabul edilir (gorunumler ve yetki okuyucusuyla ayni: kisit yok). */
+  async function settingsOrOff() {
+    try {
+      return await repo.getSettings();
+    } catch {
+      return { ...DEFAULT_BILLING_SETTINGS };
+    }
   }
 
+  /** Platform ayari kapaliyken abonelik kaydi yok sayilir (legacy = bugunku davranis). */
+  async function effectiveSubscription(apartmentId: string) {
+    const settings = await settingsOrOff();
+    return { settings, sub: settings.enabled ? await repo.getSubscription(apartmentId) : undefined };
+  }
+
+  /** Banner ve salt okunur bildirimi icin hafif durum (tum yonetim paneli rolleri). */
   async function statusView(apartmentId: string) {
-    const sub = await effectiveSubscription(apartmentId);
+    const { settings, sub } = await effectiveSubscription(apartmentId);
     const e: Entitlement = entitlementOf(sub);
     const day = today();
     return {
+      /** Abonelik sistemi platformda acik mi (kapaliyken ekranlar abonelik ogelerini gostermez). */
+      enabled: settings.enabled,
+      automation: settings.automation,
       status: e.status,
       legacy: e.legacy,
       readOnly: e.readOnly,
@@ -743,10 +777,10 @@ export function createSubscriptionService(overrides: Partial<SubscriptionService
   }
 
   async function managerView(apartmentId: string) {
-    const [sub, invoices, use] = await Promise.all([effectiveSubscription(apartmentId), repo.listInvoices(apartmentId), usage(apartmentId)]);
+    const [{ sub }, view, invoices, use] = await Promise.all([effectiveSubscription(apartmentId), statusView(apartmentId), repo.listInvoices(apartmentId), usage(apartmentId)]);
     const e = entitlementOf(sub);
     return {
-      ...(await statusView(apartmentId)),
+      ...view,
       features: e.features,
       limits: e.limits,
       usage: use,
@@ -775,6 +809,7 @@ export function createSubscriptionService(overrides: Partial<SubscriptionService
   return {
     getSettings,
     updateSettings,
+    isReadOnly,
     listPlans,
     getPlan,
     createPlan,

@@ -49,7 +49,8 @@ export function entitlementOf(sub: Pick<Subscription, 'status' | 'plan'> | undef
     legacy: false,
     status: sub.status,
     readOnly: READ_ONLY_STATUSES.includes(sub.status),
-    features: Object.fromEntries(PLAN_FEATURES.map((f) => [f, sub.plan.features[f] === true])) as PlanFeatures,
+    // Plan anlik goruntusunde olmayan (sonradan eklenmis) anahtar katalog varsayilani gibi acik.
+    features: Object.fromEntries(PLAN_FEATURES.map((f) => [f, sub.plan.features[f] ?? true])) as PlanFeatures,
     limits: { maxUnits: sub.plan.limits.maxUnits ?? null, maxStaffUsers: sub.plan.limits.maxStaffUsers ?? null },
   };
 }
@@ -59,44 +60,70 @@ export type EntitlementReader = {
   invalidate(apartmentId?: string): void;
 };
 
-export type EntitlementReaderDeps = {
+/** Yetki okuyucusunun veri kaynaklari (production: abonelik deposu). */
+export type EntitlementSource = {
   getSubscription: (apartmentId: string) => Promise<Pick<Subscription, 'status' | 'plan'> | undefined>;
   /** Platform ayari; verilmezse sistem acik kabul edilir (testler). */
   getSettings?: () => Promise<Pick<BillingSettingsView, 'enabled'>>;
+};
+
+export type EntitlementReaderDeps = EntitlementSource & {
   ttlMs?: number;
+  /** Okuma hatasinin onbellekte tutulma suresi (art arda istekler depoyu dovmesin). */
+  errorTtlMs?: number;
   now?: () => number;
-  /** true: okuma hatasinda legacy (yalnizca acikca yapilandirilirsa). */
+  /** true: abonelik okuma hatasinda legacy (yalnizca acikca yapilandirilirsa). */
   failOpen?: boolean;
   log?: Pick<Console, 'error'>;
 };
 
-export function createEntitlementReader({ getSubscription, getSettings, ttlMs = 30_000, now = Date.now, failOpen = false, log = console }: EntitlementReaderDeps): EntitlementReader {
-  const cache = new Map<string, { at: number; value: Entitlement }>();
-  let settings: { at: number; enabled: boolean } | undefined;
-  const fresh = (at: number) => ttlMs > 0 && now() - at < ttlMs;
+/**
+ * Platform ayari KAPALIYKEN sifir etki: ayar okunamazsa son bilinen deger, hic yoksa KAPALI
+ * (kisit yok) kabul edilir; ayar okuma hatasi hicbir istegi dusurmez. Yalnizca sistem ACIK
+ * bilindiginde abonelik kaydinin okuma hatasi fail closed'dir (`failOpen` ile legacy). Hatalar
+ * kisa sure (varsayilan 5 sn) onbellekte tutulur.
+ */
+export function createEntitlementReader({ getSubscription, getSettings, ttlMs = 30_000, errorTtlMs = 5_000, now = Date.now, failOpen = false, log = console }: EntitlementReaderDeps): EntitlementReader {
+  const cache = new Map<string, { at: number; value?: Entitlement; error?: unknown }>();
+  let settings: { at: number; enabled: boolean; ttl: number } | undefined;
+  let lastKnown: boolean | undefined;
+  const live = (at: number, ttl: number) => ttl > 0 && now() - at < ttl;
 
   async function enabled(): Promise<boolean> {
     if (!getSettings) return true;
-    if (settings && fresh(settings.at)) return settings.enabled;
-    const value = (await getSettings()).enabled === true;
-    if (ttlMs > 0) settings = { at: now(), enabled: value };
-    return value;
+    if (settings && live(settings.at, settings.ttl)) return settings.enabled;
+    try {
+      const value = (await getSettings()).enabled === true;
+      lastKnown = value;
+      settings = { at: now(), enabled: value, ttl: ttlMs };
+      return value;
+    } catch (err) {
+      const fallback = lastKnown ?? false;
+      log.error(JSON.stringify({ level: 'error', msg: 'billing_settings_read_failed', fallback, error: err instanceof Error ? err.name : 'unknown' }));
+      settings = { at: now(), enabled: fallback, ttl: errorTtlMs };
+      return fallback;
+    }
   }
 
   return {
     async resolve(apartmentId) {
+      if (!(await enabled())) return entitlementOf(undefined);
       const hit = cache.get(apartmentId);
-      if (hit && fresh(hit.at)) return hit.value;
-      let value: Entitlement;
+      if (hit?.value && live(hit.at, ttlMs)) return hit.value;
+      if (hit?.error && live(hit.at, errorTtlMs)) {
+        if (failOpen) return entitlementOf(undefined);
+        throw hit.error;
+      }
       try {
-        value = (await enabled()) ? entitlementOf(await getSubscription(apartmentId)) : entitlementOf(undefined);
+        const value = entitlementOf(await getSubscription(apartmentId));
+        if (ttlMs > 0) cache.set(apartmentId, { at: now(), value });
+        return value;
       } catch (err) {
+        cache.set(apartmentId, { at: now(), error: err });
         if (!failOpen) throw err;
         log.error(JSON.stringify({ level: 'error', msg: 'entitlement_read_failed_open', apartmentId, error: err instanceof Error ? err.name : 'unknown' }));
         return entitlementOf(undefined);
       }
-      if (ttlMs > 0) cache.set(apartmentId, { at: now(), value });
-      return value;
     },
     invalidate(apartmentId) {
       settings = undefined;
@@ -202,13 +229,40 @@ export const FEATURE_ROUTES: readonly { prefix: string; feature: FeatureKey; met
   { prefix: '/api/finance/dues/jobs', feature: 'modules.bulkJobs', methods: ['POST'] },
 ];
 
-/** Salt okunur durumda da yazilabilen yollar (temel islemler). */
-export const READ_ONLY_EXEMPT_PREFIXES: readonly string[] = ['/api/portal', '/api/subscription', '/api/audit/verify', '/api/support'];
+/**
+ * Salt okunur durumda da yazilabilen yollar (temel islemler; sakinlere ve guvenlige zarar vermemek icin):
+ * sakin portali, abonelik ekrani, zincir dogrulamasi, destek; banka ekstresi aktarimi / eslestirme ve
+ * elle tahsilat kaydi (sakinin odemesi deftere girsin); guvenlik masasi (QR / kod dogrulama, giris /
+ * cikis, kurye, elle gunluk).
+ */
+export const READ_ONLY_EXEMPT_PREFIXES: readonly string[] = ['/api/portal', '/api/subscription', '/api/audit/verify', '/api/support', '/api/bank'];
+
+/** Tam yol kaliplari: salt okunur durumda acik yazimlar (yalnizca POST) ve yan etkisiz onizlemeler. */
+export const READ_ONLY_EXEMPT_PATHS: readonly RegExp[] = [
+  /^\/api\/finance\/payments$/,
+  /^\/api\/gate\/passes\/verify$/,
+  /^\/api\/gate\/passes\/[^/]+\/(entry|exit)$/,
+  /^\/api\/gate\/couriers$/,
+  /^\/api\/gate\/couriers\/[^/]+\/(entry|exit|cancel)$/,
+  /^\/api\/gate\/log$/,
+  // Onizlemeler (yazim yok):
+  /^\/api\/finance\/dues\/preview$/,
+  /^\/api\/finance\/offsets\/preview$/,
+  /^\/api\/finance\/plans\/preview$/,
+  /^\/api\/imports\/preview$/,
+  /^\/api\/ownership\/units\/[^/]+\/transfers\/preview$/,
+  /^\/api\/metering\/swaps\/preview$/,
+];
 
 const READ_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 export const isWriteMethod = (method: string) => !READ_METHODS.has(method.toUpperCase());
 
 const under = (path: string, prefix: string) => path === prefix || path.startsWith(`${prefix}/`);
+
+export function readOnlyExempt(method: string, path: string): boolean {
+  const p = path.length > 1 ? path.replace(/\/+$/, '') : path;
+  return READ_ONLY_EXEMPT_PREFIXES.some((x) => under(p, x)) || (method.toUpperCase() === 'POST' && READ_ONLY_EXEMPT_PATHS.some((r) => r.test(p)));
+}
 
 export function featureForRequest(method: string, path: string): FeatureKey | undefined {
   const m = method.toUpperCase();
@@ -221,13 +275,14 @@ export const bypassesEntitlements = (claims: AuthClaims) => claims.role === 'pla
 /** Salt okunur karari (SAF): engel varsa hata, yoksa undefined. */
 export function readOnlyCheck(e: Entitlement, req: { method: string; path: string }): EntitlementError | undefined {
   if (e.legacy || !e.readOnly || !isWriteMethod(req.method)) return undefined;
-  return READ_ONLY_EXEMPT_PREFIXES.some((p) => under(req.path, p)) ? undefined : readOnlyError(e.status);
+  return readOnlyExempt(req.method, req.path) ? undefined : readOnlyError(e.status);
 }
 
 /**
  * Kimlik dogrulayici sarmalayicisi: istek moduldeki isleyiciye ulasmadan karar verilir. Aktif
  * apartmani olmayan istek (platform uclari, baglam secimi) kontrol edilmez. `features` etkin
- * (site VE plan) okuyucudur.
+ * (site VE plan) okuyucudur. Okuma istekleri (GET/HEAD) yalnizca plan modulu yolundaysa
+ * abonelik okur; diger okumalar hic ek okuma yapmaz. Salt okunurdan muaf yazimlar da okumaz.
  */
 export function withEntitlements(authenticate: Authenticator, deps: { entitlements: EntitlementReader; features: SiteFeatureReader }): Authenticator {
   return async (c: Context) => {
@@ -239,6 +294,7 @@ export function withEntitlements(authenticate: Authenticator, deps: { entitlemen
       c.header('Cache-Control', 'no-store');
       throw new FeatureDisabledError(key);
     }
+    if (!isWriteMethod(req.method) || readOnlyExempt(req.method, req.path)) return claims;
     const err = readOnlyCheck(await deps.entitlements.resolve(claims.apartmentId), req);
     if (err) {
       c.header('Cache-Control', 'no-store');

@@ -35,7 +35,8 @@ export type MachineEvent =
   | { type: 'SUBSCRIPTION_TRIAL_ENDING'; eventId: string; payload: { trialEndsAt: IsoDate; daysLeft: number; planName: string } }
   | { type: 'SUBSCRIPTION_PAST_DUE'; eventId: string; payload: { pastDueSince: IsoDate; suspendOn: IsoDate; overdueTotalKurus: number; invoiceCount: number } }
   | { type: 'SUBSCRIPTION_SUSPENDED'; eventId: string; payload: { suspendedAt: IsoDate; reason: 'non_payment' | 'manual' } }
-  | { type: 'SUBSCRIPTION_REACTIVATED'; eventId: string; payload: { reactivatedOn: IsoDate; from: SubscriptionStatus } };
+  | { type: 'SUBSCRIPTION_REACTIVATED'; eventId: string; payload: { reactivatedOn: IsoDate; from: SubscriptionStatus } }
+  | { type: 'SUBSCRIPTION_CANCELLED'; eventId: string; payload: { cancelledAt: IsoDate } };
 
 export type Transition = { from: SubscriptionStatus; to: SubscriptionStatus; reason: string };
 
@@ -91,12 +92,15 @@ function builder(input: AdvanceInput) {
     // Bedelsiz plan (pilot / ucretsiz): fatura kesilmez, vade de olusmaz.
     if (amounts.totalKurus <= 0 || known.has(bounds.start)) return;
     known.add(bounds.start);
+    // Fatura islendigi GUN kesilir (gecmis tarihli fatura yok; numaralar yil serisinde tarih sirasinda);
+    // son odeme en erken bugun + odeme suresi.
+    const issueDate = bounds.start > input.day ? bounds.start : input.day;
     const draft: InvoiceDraft = {
       invoiceId: bounds.start,
       periodStart: bounds.start,
       periodEnd: bounds.end,
-      issueDate: bounds.start,
-      dueDate: addDays(bounds.start, sub.paymentTermDays),
+      issueDate,
+      dueDate: addDays(issueDate, sub.paymentTermDays),
       unitCount: input.unitCount,
       lines,
       ...amounts,
@@ -105,8 +109,46 @@ function builder(input: AdvanceInput) {
     open.push({ invoiceId: draft.invoiceId, dueDate: draft.dueDate, status: 'issued', totalKurus: draft.totalKurus });
   };
 
+  /**
+   * Askidan / iptalden donuste (`resumeFrom`) suresi dolmus donem YENIDEN TABANLANIR: askida gecen
+   * donemler faturalanmaz, yeni donem donus gununden baslar. Hic faturalanmamis abonelik de oradan baslar.
+   */
   const renew = (day: IsoDate) => {
+    if (sub.resumeFrom) {
+      const from = sub.resumeFrom;
+      delete sub.resumeFrom;
+      if (!sub.currentPeriodEnd || sub.currentPeriodEnd < from) {
+        delete sub.billingAnchor;
+        delete sub.periodIndex;
+        startPeriod(from);
+      }
+    }
     for (let guard = 0; guard < 36 && sub.currentPeriodEnd && day > sub.currentPeriodEnd; guard++) startPeriod(addDays(sub.currentPeriodEnd, 1));
+  };
+
+  /** Donus gunu: donem bitmisse veya hic donem yoksa yeniden tabanlama isareti. */
+  const markResume = (day: IsoDate) => {
+    if (!sub.currentPeriodEnd || sub.currentPeriodEnd < day) sub.resumeFrom = day;
+  };
+
+  /**
+   * Otomasyon KAPALIYKEN odeme / iptal sonrasi: yalnizca odemeyle dogrudan cozulen durum (gecikme
+   * -> aktif, odeme nedeniyle askida -> aktif); donem yenileme, fatura, gecikme / askiya alma ve
+   * bildirim YOK.
+   */
+  const settlePayments = (day: IsoDate) => {
+    if (open.some((i) => i.dueDate < day)) return;
+    if (sub.status === 'past_due') {
+      move('active', 'paid');
+      delete sub.pastDueSince;
+    }
+    if (sub.status === 'suspended' && sub.suspendedReason === 'non_payment') {
+      move('active', 'paid');
+      delete sub.pastDueSince;
+      delete sub.suspendedAt;
+      delete sub.suspendedReason;
+      markResume(day);
+    }
   };
 
   /** Gunluk adimlar (deneme -> donem -> vade). */
@@ -163,7 +205,8 @@ function builder(input: AdvanceInput) {
       delete sub.pastDueSince;
       delete sub.suspendedAt;
       delete sub.suspendedReason;
-      // Askida gecen surede biten donemler yenilenir.
+      // Askida gecen donemler faturalanmaz: donem bittiyse yeni donem bugunden.
+      markResume(day);
       renew(day);
     }
   };
@@ -174,13 +217,23 @@ function builder(input: AdvanceInput) {
     return { sub, invoices, events, transitions, changed };
   };
 
-  return { sub, events, transitions, move, startPeriod, settle, result };
+  return { sub, events, transitions, move, startPeriod, settle, settlePayments, markResume, result };
 }
 
 /** Bir gunluk ilerleme (yakalama dahil: kacirilmis gunler tek calismada islenir). */
 export function advance(input: AdvanceInput): AdvanceResult {
   const b = builder(input);
   b.settle(input.day);
+  return b.result();
+}
+
+/**
+ * Otomasyon kapaliyken odeme / iptal sonrasi durum: yalnizca odemeyle dogrudan cozulen gecis
+ * (yenileme, fatura, gecikme ve bildirim yok).
+ */
+export function settleAfterPayment(input: AdvanceInput): AdvanceResult {
+  const b = builder(input);
+  b.settlePayments(input.day);
   return b.result();
 }
 
@@ -218,7 +271,7 @@ const STATUS_TEXT: Record<SubscriptionStatus, string> = {
  * Platformun elle gecisi; ardindan ayni gun icin gunluk adimlar calisir (donem / vade durumu hemen
  * oturur). `trialEndsAt` yalnizca `extend_trial` icin.
  */
-export function applyAction(input: AdvanceInput & { action: SubscriptionAction; trialEndsAt?: IsoDate }): AdvanceResult {
+export function applyAction(input: AdvanceInput & { action: SubscriptionAction; trialEndsAt?: IsoDate; automation?: boolean }): AdvanceResult {
   const { action, day } = input;
   if (!ACTION_ALLOWED_FROM[action].includes(input.sub.status)) {
     throw new TransitionError(`Bu işlem ${STATUS_TEXT[input.sub.status]} abonelikte yapılamaz`);
@@ -246,6 +299,7 @@ export function applyAction(input: AdvanceInput & { action: SubscriptionAction; 
     case 'cancel':
       b.move('cancelled', 'manual_cancel');
       sub.cancelledAt = day;
+      b.events.push({ type: 'SUBSCRIPTION_CANCELLED', eventId: `SUBSCRIPTION_CANCELLED:${sub.apartmentId}:${day}`, payload: { cancelledAt: day } });
       break;
     case 'reactivate': {
       const from = sub.status;
@@ -254,7 +308,6 @@ export function applyAction(input: AdvanceInput & { action: SubscriptionAction; 
         eventId: `SUBSCRIPTION_REACTIVATED:${sub.apartmentId}:${sub.suspendedAt ?? sub.cancelledAt ?? day}`,
         payload: { reactivatedOn: day, from },
       });
-      b.move('active', 'manual_reactivate');
       delete sub.suspendedAt;
       delete sub.suspendedReason;
       // Odenmemis vadesi gecmis fatura kaldiysa ayni gun yeniden `past_due` olur; ek sure bugunden baslar.
@@ -264,11 +317,25 @@ export function applyAction(input: AdvanceInput & { action: SubscriptionAction; 
         // Iptalden donuste yeni donem tabani bugun.
         delete sub.billingAnchor;
         delete sub.periodIndex;
+        b.move('active', 'manual_reactivate');
         b.startPeriod(day);
+      } else if (!sub.billingAnchor) {
+        // Hic faturalanmamis (denemedeyken askiya alinmis): deneme suruyorsa denemeye doner, bittiyse
+        // ilk donem bugun baslar (ucretsiz kalici aktiflik yok).
+        if (sub.trialEndsAt && sub.trialEndsAt >= day) b.move('trial', 'manual_reactivate');
+        else {
+          b.move('active', 'manual_reactivate');
+          b.startPeriod(day);
+        }
+      } else {
+        b.move('active', 'manual_reactivate');
+        // Askida biten donemler faturalanmaz: bir sonraki yenilemede taban donus gunu olur.
+        b.markResume(day);
       }
       break;
     }
   }
-  if (action !== 'cancel' && action !== 'suspend') b.settle(day);
+  // Otomasyon kapaliyken yalnizca islemin kendisi (yenileme / vade / bildirim adimlari yok).
+  if (input.automation !== false && action !== 'cancel' && action !== 'suspend') b.settle(day);
   return b.result(true);
 }

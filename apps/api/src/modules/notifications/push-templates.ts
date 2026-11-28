@@ -158,6 +158,8 @@ function spec(n: Notification, now: Date): Spec | undefined {
       return { title: 'Aboneliğiniz askıya alındı', body: 'Hesabınız salt okunur modda.', path: '/abonelik' };
     case 'billing_reactivated':
       return { title: 'Aboneliğiniz yeniden açıldı', body: 'Salt okunur mod kaldırıldı.', path: '/abonelik' };
+    case 'billing_cancelled':
+      return { title: 'Aboneliğiniz sona erdi', body: 'Hesabınız salt okunur modda.', path: '/abonelik' };
     case 'bulk_job_summary': {
       const kind = BULK_JOB_KIND_TEXT[str(d.kind)] ?? 'Toplu işlem';
       const fmt = (v: unknown) => num(v).toLocaleString('tr-TR');

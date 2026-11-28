@@ -78,6 +78,13 @@ export type SubscriptionRepository = {
 
 const MAX_NUMBERING_ATTEMPTS = 4;
 
+/**
+ * Her istekte / her bildirimde yapilan yetki okumalari (ayar, abonelik, site anahtarlari) icin
+ * SDK istek zaman asimi: yavas tablo API'yi bekletmesin (hata okuyucunun yedek davranisina duser).
+ */
+export const HOT_READ_TIMEOUT_MS = 1_500;
+const readOptions = () => ({ abortSignal: AbortSignal.timeout(HOT_READ_TIMEOUT_MS) });
+
 function conditionFailed(err: unknown): boolean {
   return err instanceof TransactionCanceledException && (err.CancellationReasons ?? []).some((r) => r.Code === 'ConditionalCheckFailed');
 }
@@ -153,7 +160,7 @@ export function createSubscriptionRepository(): SubscriptionRepository {
     async getSettings() {
       const { client, tableName } = getDynamo();
       try {
-        const out = await client.send(new GetCommand({ TableName: tableName, Key: billingSettingsKeys }));
+        const out = await client.send(new GetCommand({ TableName: tableName, Key: billingSettingsKeys }), readOptions());
         return settingsView(out?.Item as BillingSettings | undefined);
       } catch (err) {
         throw toDataAccessError(err);
@@ -244,7 +251,7 @@ export function createSubscriptionRepository(): SubscriptionRepository {
     async peekSubscription(apartmentId) {
       const { client, tableName } = getDynamo();
       try {
-        const out = await client.send(new GetCommand({ TableName: tableName, Key: subscriptionKeys(apartmentId) }));
+        const out = await client.send(new GetCommand({ TableName: tableName, Key: subscriptionKeys(apartmentId) }), readOptions());
         const item = out?.Item as Subscription | undefined;
         return item?.entityType === 'SUBSCRIPTION' ? item : undefined;
       } catch (err) {
@@ -254,7 +261,7 @@ export function createSubscriptionRepository(): SubscriptionRepository {
     async peekSiteFeatures(apartmentId) {
       const { client, tableName } = getDynamo();
       try {
-        const out = await client.send(new GetCommand({ TableName: tableName, Key: { PK: tenantPk(apartmentId), SK: 'SITE' }, ProjectionExpression: 'settings.features' }));
+        const out = await client.send(new GetCommand({ TableName: tableName, Key: { PK: tenantPk(apartmentId), SK: 'SITE' }, ProjectionExpression: 'settings.features' }), readOptions());
         return (out?.Item as { settings?: { features?: SiteFeatureSettings } } | undefined)?.settings?.features;
       } catch (err) {
         throw toDataAccessError(err);

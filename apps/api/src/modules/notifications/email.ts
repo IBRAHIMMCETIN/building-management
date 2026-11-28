@@ -228,10 +228,13 @@ export function createEmailNotifier(deps: EmailNotifierDeps): Notifier {
   async function send(n: Notification): Promise<DeliveryResult> {
     if (await deps.sentLog.has(n.apartmentId, n.eventId, n.userId)) return { status: 'skipped', reason: 'already_sent' };
 
-    const prefs = await deps.preferences.get(n.userId);
-    if (!prefs.email.enabled) return { status: 'skipped', reason: 'opted_out' };
-    const category = n.category ?? categoryOfTemplate(n.template);
-    if (category && prefs.email[category] === false) return { status: 'skipped', reason: 'opted_out' };
+    // Zorunlu bildirim (abonelik gecikmesi / askiya alma / sona erme) tercihten bagimsiz gider.
+    if (!n.essential) {
+      const prefs = await deps.preferences.get(n.userId);
+      if (!prefs.email.enabled) return { status: 'skipped', reason: 'opted_out' };
+      const category = n.category ?? categoryOfTemplate(n.template);
+      if (category && prefs.email[category] === false) return { status: 'skipped', reason: 'opted_out' };
+    }
 
     const person = await deps.people.get(n.apartmentId, n.userId);
     const personEmail = person?.email?.trim();

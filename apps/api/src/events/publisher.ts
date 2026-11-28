@@ -52,6 +52,7 @@ export const EVENT_TYPES = [
   'SUBSCRIPTION_PAST_DUE',
   'SUBSCRIPTION_SUSPENDED',
   'SUBSCRIPTION_REACTIVATED',
+  'SUBSCRIPTION_CANCELLED',
   'MEMBERSHIP_ENDED',
   'BULK_JOB_FINISHED',
 ] as const;
@@ -311,6 +312,7 @@ export type SubscriptionInvoiceIssuedPayload = {
 export type SubscriptionPastDuePayload = { pastDueSince: IsoDate; suspendOn: IsoDate; overdueTotalKurus: number; invoiceCount: number };
 export type SubscriptionSuspendedPayload = { suspendedAt: IsoDate; reason: 'non_payment' | 'manual' };
 export type SubscriptionReactivatedPayload = { reactivatedOn: IsoDate; from: string };
+export type SubscriptionCancelledPayload = { cancelledAt: IsoDate };
 
 /**
  * Kapi devami: uyelik yazimi (PATCH / iptal) kullaniciyi bugun itibariyla bolumde oturmayan yapti
@@ -376,6 +378,7 @@ type PayloadByType = {
   SUBSCRIPTION_PAST_DUE: SubscriptionPastDuePayload;
   SUBSCRIPTION_SUSPENDED: SubscriptionSuspendedPayload;
   SUBSCRIPTION_REACTIVATED: SubscriptionReactivatedPayload;
+  SUBSCRIPTION_CANCELLED: SubscriptionCancelledPayload;
   MEMBERSHIP_ENDED: MembershipEndedPayload;
   BULK_JOB_FINISHED: BulkJobFinishedPayload;
 };

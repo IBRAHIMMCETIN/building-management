@@ -195,6 +195,8 @@ export type Subscription = TableKeys & {
   /** `non_payment`: odeme gelince kendiliginden acilir; `manual`: yalnizca platform acar. */
   suspendedReason?: 'non_payment' | 'manual';
   cancelledAt?: IsoDate;
+  /** Askidan donus gunu: suresi dolmus donem bir sonraki yenilemede bu gunden yeniden tabanlanir. */
+  resumeFrom?: IsoDate;
   /** Deneme bitis bildirimleri (olay bir kez; deneme uzatilinca sifirlanir). */
   notices?: { trial7?: IsoDate; trial1?: IsoDate };
   lastRunOn?: IsoDate;

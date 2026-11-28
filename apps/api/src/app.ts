@@ -95,6 +95,7 @@ import { type MeterService, createMeterService } from './modules/meters/service.
 import { createOwnershipReader } from './modules/ownership/reader.js';
 import {
   type EntitlementReader,
+  type EntitlementSource,
   assertStaffCapacity,
   assertUnitCapacity,
   createEntitlementReader,
@@ -234,6 +235,11 @@ export type AppConfig = {
    * `ENTITLEMENTS_FAIL_OPEN=true` ile acik).
    */
   entitlements?: EntitlementReader;
+  /**
+   * Production okuyucusunun kaynaklari (testler: gercek okuyucu, sahte depo). Verilmezse
+   * production'da abonelik deposu; `entitlements` verilmisse kullanilmaz.
+   */
+  entitlementSource?: EntitlementSource;
   /** Abonelik / lisans: platform plan / abonelik / fatura uclari ve yonetici gorunumu. */
   subscriptionService?: SubscriptionService;
 };
@@ -256,15 +262,13 @@ export function createApp(config: AppConfig) {
   const metrics = config.metrics ?? noopMetrics;
   const mfaService = config.mfaService ?? createMfaService({ policy: mfaPolicy, metrics });
   // Abonelik yetkileri (platform ayari kapaliyken / abonelik yoksa legacy = bugunku davranis).
-  const entitlements: EntitlementReader =
-    config.entitlements ??
+  const entitlementSource: EntitlementSource | undefined =
+    config.entitlementSource ??
     (hasInjectedServices(config) || !process.env.DYNAMODB_TABLE_NAME
-      ? legacyEntitlementReader
-      : createEntitlementReader({
-          getSubscription: (id) => subscriptionRepository.peekSubscription(id),
-          getSettings: () => subscriptionRepository.getSettings(),
-          failOpen: failOpenFromEnv(),
-        }));
+      ? undefined
+      : { getSubscription: (id) => subscriptionRepository.peekSubscription(id), getSettings: () => subscriptionRepository.getSettings() });
+  const entitlements: EntitlementReader =
+    config.entitlements ?? (entitlementSource ? createEntitlementReader({ ...entitlementSource, failOpen: failOpenFromEnv() }) : legacyEntitlementReader);
   // Adim 1: site bazli ozellik anahtarlari; etkin deger = site ayari VE abonelik plani izni
   // (plan modulleri ayni katalogun `licensable` anahtarlari; ayni guard ve hata kodu).
   const baseSiteFeatures =

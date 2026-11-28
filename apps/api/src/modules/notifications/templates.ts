@@ -323,6 +323,7 @@ function spec(n: Notification, ctx: EmailContext): Spec | undefined {
     case 'billing_past_due':
     case 'billing_suspended':
     case 'billing_reactivated':
+    case 'billing_cancelled':
       return billingSpec(n);
     default:
       return undefined;
@@ -393,6 +394,17 @@ function billingSpec(n: Notification): Spec {
                 : `Geciken abonelik ödemesi nedeniyle aboneliğiniz ${formatDate(d.suspendedAt)} tarihinde askıya alındı. Hesabınız salt okunur modda; ödeme alınınca kendiliğinden açılır.`,
           },
           { kind: 'note', text: 'Kayıtları görüntüleyebilir ve dışa aktarabilirsiniz; sakinlerin aidat ödemeleri alınmaya devam eder.' },
+        ],
+        cta,
+      };
+    case 'billing_cancelled':
+      return {
+        subject: 'Aboneliğiniz sona erdi',
+        heading: 'Aboneliğiniz sona erdi',
+        preheader: 'Hesabınız salt okunur modda.',
+        blocks: [
+          { kind: 'p', text: `Aboneliğiniz ${formatDate(d.cancelledAt)} tarihinde sona erdi. Hesabınız salt okunur modda.` },
+          { kind: 'note', text: 'Kayıtları görüntüleyebilir ve dışa aktarabilirsiniz; sakinlerin aidat ödemeleri alınmaya devam eder. Yeniden açmak için platform ekibiyle iletişime geçin.' },
         ],
         cta,
       };
