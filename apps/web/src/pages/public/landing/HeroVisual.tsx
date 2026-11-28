@@ -1,28 +1,42 @@
-import { DoorOpen, Wrench } from 'lucide-react';
-import { Badge, Card } from '@/components/ui';
+import { CircleCheck } from 'lucide-react';
+import { Card } from '@/components/ui';
 import { cn } from '@/lib/cn';
+import { PhoneFrame, RESIDENT_TABS, ReferenceMark, ResidentPortalScreen, SAMPLE_REFERENCE, SampleBadge } from './PhoneVisual';
 
 /*
- * Kahraman alanindaki urun gorseli: uygulamanin kendi kart, rozet ve renk token'lariyla cizilmis
- * temsili bir Genel Bakis. Bloklarin pencereleri bagimsiz bolumlerdir; renk bu ayin aidat durumunu
- * gosterir (isim yok: borclu isimleri hicbir yerde listelenmez). Veriler ornektir ve sabittir
- * (sunucuda on-render edilen HTML ile tarayicidaki ilk render ayni olmali).
+ * Kahraman alanindaki urun gorseli: bir havalenin yolu. Sakin telefonda IBAN'i ve kendi referans
+ * kodunu (R4T7KD) kopyalar; yonetim panelinde banka ekstresindeki ayni kodlu satir "A Blok 12"
+ * dairesine eslesmis gorunur. Altta 4 blok, 216 bagimsiz bolum: pencereler dairelerdir, renk bu ayin
+ * aidat durumudur (isim yok: borclu isimleri hicbir yerde gosterilmez). Uygulamanin kendi kart, rozet
+ * ve renk token'lariyla cizilir; veriler ornektir ve sabittir (on-render HTML'i ile ilk render ayni).
  */
 
 type UnitState = 'paid' | 'pending' | 'empty';
 
+const FLOORS = 9;
+const UNITS_PER_FLOOR = 6;
 const BLOCKS = [
-  { name: 'A Blok', floors: 6, seed: 1 },
-  { name: 'B Blok', floors: 8, seed: 4 },
-  { name: 'C Blok', floors: 5, seed: 7 },
+  { name: 'A', seed: 1 },
+  { name: 'B', seed: 4 },
+  { name: 'C', seed: 7 },
+  { name: 'D', seed: 2 },
 ] as const;
-const UNITS_PER_FLOOR = 4;
+/** Ekstrede eslesen ornek odemenin dairesi: A Blok 12. */
+const MATCHED = { block: 'A', index: 11 } as const;
 
 function unitState(seed: number, index: number): UnitState {
-  const v = (index * 7 + seed * 3) % 11;
-  if (v === 10) return 'empty';
-  return v >= 8 ? 'pending' : 'paid';
+  const v = (index * 7 + seed * 5) % 13;
+  if (v === 12) return 'empty';
+  return v >= 10 ? 'pending' : 'paid';
 }
+
+const blocks = BLOCKS.map((b) => ({
+  ...b,
+  units: Array.from({ length: FLOORS * UNITS_PER_FLOOR }, (_, i) => (b.name === MATCHED.block && i === MATCHED.index ? 'paid' : unitState(b.seed, i))),
+}));
+const allUnits = blocks.flatMap((b) => b.units);
+const charged = allUnits.filter((u) => u !== 'empty').length;
+const paidPercent = Math.round((allUnits.filter((u) => u === 'paid').length / charged) * 100);
 
 const UNIT_CLASS: Record<UnitState, string> = {
   paid: 'bg-accent',
@@ -32,91 +46,124 @@ const UNIT_CLASS: Record<UnitState, string> = {
 
 const LEGEND: readonly { state: UnitState; label: string }[] = [
   { state: 'paid', label: 'Ödendi' },
-  { state: 'pending', label: 'Ödeme bekleniyor' },
-  { state: 'empty', label: 'Boş daire' },
+  { state: 'pending', label: 'Bekliyor' },
+  { state: 'empty', label: 'Boş' },
 ];
 
-const blocks = BLOCKS.map((b) => ({ ...b, units: Array.from({ length: b.floors * UNITS_PER_FLOOR }, (_, i) => unitState(b.seed, i)) }));
-const allUnits = blocks.flatMap((b) => b.units);
-const charged = allUnits.filter((u) => u !== 'empty').length;
-const paid = allUnits.filter((u) => u === 'paid').length;
-const paidPercent = Math.round((paid / charged) * 100);
+type StatementLine = { date: string; text: string; amount: string; match?: string };
 
-export function HeroVisual({ className }: { className?: string }) {
+const STATEMENT: readonly StatementLine[] = [
+  { date: '12.11', text: 'KASIM AİDAT', amount: '₺1.500,50', match: 'A Blok 12' },
+  { date: '12.11', text: 'EFT M2Q9XC AİDAT', amount: '₺1.500,50', match: 'C Blok 4' },
+  { date: '13.11', text: 'HAVALE KASIM AYI', amount: '₺1.350,00' },
+];
+
+function ManagerPanel() {
   return (
-    <figure className={cn('relative', className)}>
-      <div aria-hidden="true" className="flex flex-col gap-3">
-        <Card className="flex flex-col gap-5 lg:pb-16">
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <p className="font-semibold text-text">Örnek Sitesi</p>
-              <p className="text-small text-muted">
-                {blocks.length} blok, {allUnits.length} bağımsız bölüm
-              </p>
-            </div>
-            <Badge tone="accent">Örnek veri</Badge>
-          </div>
+    <Card className="flex flex-col gap-5 p-4 sm:pr-14 md:p-5 md:pr-16">
+      <div className="flex items-start justify-between gap-3 border-b border-border pb-4">
+        <div>
+          <p className="font-semibold text-text">Örnek Sitesi</p>
+          <p className="text-small text-muted">Yönetim paneli</p>
+        </div>
+        <SampleBadge />
+      </div>
 
-          <div>
-            <div className="grid grid-cols-3 items-end justify-items-center border-b-2 border-border-strong">
-              {blocks.map((b) => (
-                <div key={b.name} className="grid grid-cols-4 gap-1 rounded-t-md border border-b-0 border-border-strong bg-surface-muted p-1.5 sm:gap-1.5 sm:p-2">
-                  {b.units.map((u, i) => (
-                    <span key={i} className={cn('h-3 w-3.5 rounded-sm sm:h-3.5 sm:w-5', UNIT_CLASS[u])} />
-                  ))}
-                </div>
-              ))}
-            </div>
-            <div className="mt-1.5 grid grid-cols-3 justify-items-center">
-              {blocks.map((b) => (
-                <p key={b.name} className="text-xs font-medium text-muted">
-                  {b.name}
+      <div className="flex flex-col gap-3">
+        <div className="flex items-baseline justify-between gap-3">
+          <p className="text-small font-semibold text-text">Banka ekstresi</p>
+          <p className="text-xs text-muted">2 ödeme eşleşti, 1 ödeme sizi bekliyor</p>
+        </div>
+        <ul className="flex flex-col divide-y divide-border rounded-lg border border-border bg-surface">
+          {STATEMENT.map((line, i) => (
+            <li key={line.text} className="flex items-start justify-between gap-3 px-3 py-2.5">
+              <div className="flex min-w-0 flex-col gap-1">
+                <p className="truncate font-mono text-xs text-text-secondary">
+                  {line.date} {i === 0 ? <>EFT <ReferenceMark /> </> : null}
+                  {line.text}
                 </p>
+                {line.match ? (
+                  <p className="flex items-center gap-1 text-xs font-medium text-success">
+                    <CircleCheck className="size-3.5 shrink-0" />
+                    {line.match} ile eşleşti
+                  </p>
+                ) : (
+                  <p className="flex items-center gap-1.5 text-xs font-medium text-text-secondary">
+                    <span className="size-2 shrink-0 rounded-full bg-brand-orange" />
+                    Kod yok, elle eşleyin
+                  </p>
+                )}
+              </div>
+              <p className="shrink-0 text-small font-semibold text-text tabular-nums">{line.amount}</p>
+            </li>
+          ))}
+        </ul>
+      </div>
+
+      <div className="flex flex-col gap-3">
+        <div className="flex items-baseline justify-between gap-3">
+          <p className="text-small font-semibold text-text">Kasım aidatı</p>
+          <p className="text-xs text-muted">
+            {blocks.length} blok, {allUnits.length} bağımsız bölüm
+          </p>
+        </div>
+        <div className="grid grid-cols-4 items-end gap-2 border-b-2 border-border-strong sm:gap-3">
+          {blocks.map((b) => (
+            <div key={b.name} className="grid grid-cols-6 gap-0.5 rounded-t-md border border-b-0 border-border-strong bg-surface-muted p-1">
+              {b.units.map((u, i) => (
+                <span
+                  key={i}
+                  className={cn('aspect-square', UNIT_CLASS[u], b.name === MATCHED.block && i === MATCHED.index && 'relative z-10 outline-2 outline-offset-1 outline-text')}
+                />
               ))}
             </div>
-          </div>
-
-          <div className="flex items-end justify-between gap-4 border-t border-border pt-4">
-            <div>
-              <p className="text-small whitespace-nowrap text-muted">Bu ay tahsilat</p>
-              <p className="text-2xl font-semibold tabular-nums">%{paidPercent}</p>
-            </div>
-            <ul className="flex flex-col gap-1 text-xs text-text-secondary">
-              {LEGEND.map((l) => (
-                <li key={l.state} className="flex items-center gap-1.5">
-                  <span className={cn('size-3 rounded-sm', UNIT_CLASS[l.state])} />
-                  {l.label}
-                </li>
-              ))}
-            </ul>
-          </div>
-        </Card>
-
-        <div className="grid gap-3 sm:grid-cols-2 lg:-mt-14 lg:gap-4 lg:px-5">
-          <Card className="flex items-start gap-3 p-4 md:p-4">
-            <Wrench className="mt-0.5 size-5 shrink-0 text-accent" />
-            <div className="flex min-w-0 flex-col gap-1">
-              <p className="text-small font-medium text-text">Asansör arızası, B Blok</p>
-              <p className="text-xs text-muted">Görevliye atandı, bugün 14:00</p>
-              <Badge tone="warning" className="self-start">
-                İşlemde
-              </Badge>
-            </div>
-          </Card>
-          <Card className="flex items-start gap-3 p-4 md:p-4">
-            <DoorOpen className="mt-0.5 size-5 shrink-0 text-accent" />
-            <div className="flex min-w-0 flex-col gap-1">
-              <p className="text-small font-medium text-text">Kurye kapıda, C Blok 12</p>
-              <p className="text-xs text-muted">Sakin onayladı: içeri alınsın</p>
-              <Badge tone="success" className="self-start">
-                Onaylandı
-              </Badge>
-            </div>
-          </Card>
+          ))}
+        </div>
+        <div className="grid grid-cols-4 gap-2 sm:gap-3">
+          {blocks.map((b) => (
+            <p key={b.name} className="text-center text-xs font-medium text-muted">
+              {b.name} Blok
+            </p>
+          ))}
+        </div>
+        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+          <p className="text-small text-text-secondary">
+            Tahsilat <strong className="text-heading font-semibold text-text tabular-nums">%{paidPercent}</strong>
+          </p>
+          <ul className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-text-secondary">
+            {LEGEND.map((l) => (
+              <li key={l.state} className="flex items-center gap-1.5">
+                <span className={cn('size-2.5', UNIT_CLASS[l.state])} />
+                {l.label}
+              </li>
+            ))}
+          </ul>
         </div>
       </div>
-      <figcaption className="mt-4 text-xs text-muted">
-        Temsilî ekran, örnek verilerle: blok blok aidat durumu, açık arıza talebi ve kapıdaki kurye.
+    </Card>
+  );
+}
+
+/**
+ * Yonetim paneli + sakin telefonu. Dar ekranda (sm alti) yalnizca panel: telefon ekranlari Mobil
+ * bolumunde. Telefon panelin sag ic boslugunun ustune biner; panelin icerigini ortmez.
+ */
+export function HeroVisual({ className }: { className?: string }) {
+  return (
+    <figure className={cn('flex flex-col gap-4', className)}>
+      <div aria-hidden="true" className="flex items-start">
+        <div className="min-w-0 flex-1">
+          <ManagerPanel />
+        </div>
+        <div className="relative z-10 -ml-10 hidden pt-16 sm:block md:-ml-12">
+          <PhoneFrame tabs={RESIDENT_TABS} className="[zoom:0.7] xl:[zoom:0.66]">
+            <ResidentPortalScreen />
+          </PhoneFrame>
+        </div>
+      </div>
+      <figcaption className="text-xs text-muted">
+        Örnek veri: sakin {SAMPLE_REFERENCE} referans koduyla havale yapar; banka ekstresi yüklenince ödeme A Blok 12’ye eşleşir ve dairesi
+        “Ödendi” olur.
       </figcaption>
     </figure>
   );
