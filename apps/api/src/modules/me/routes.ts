@@ -4,7 +4,7 @@ import { handleError } from '../../http/helpers.js';
 import { setRequestActor } from '../audit/context.js';
 import { accessTokenFrom } from '../mfa/routes.js';
 import type { MfaService } from '../mfa/service.js';
-import type { DeviceService } from '../notifications/devices.js';
+import { DeviceRateLimitError, type DeviceService } from '../notifications/devices.js';
 import type { PreferencesService } from '../notifications/preferences.js';
 import type { MeService } from './service.js';
 
@@ -35,6 +35,7 @@ export type MeRoutesDeps = {
  *   GET    /devices              -> { devices: [{ deviceId, platform, appVersion?, locale?, status, createdAt, lastSeenAt }] }
  *   POST   /devices                { token: "ExponentPushToken[...]", platform: ios|android, appVersion?, locale? }
  *                                -> 201 (yeni / yeniden etkin / baska kullanicidan tasindi) | 200 (tazeleme) { device }
+ *                                   (yeni kayit gunde en fazla 20: 429 + Retry-After; tazeleme sayilmaz)
  *   DELETE /devices/:deviceId    -> { device } (pasife alir; oturum kapatmada; baska kullanicinin cihazi 404)
  * Tercih ve cihazlar kullanicinin kendisine aittir: kimlik JWT'den gelir, govdede kullanici kimligi yoktur.
  *
@@ -82,9 +83,15 @@ export function meRoutes({ identify, service, preferences, devices, mfa }: MeRou
     });
     r.post('/devices', async (c) => {
       const body = await c.req.json().catch(() => undefined);
-      const { device, created } = await devices.register(c.get('identity').userId, body);
       c.header('cache-control', 'no-store');
-      return c.json({ device }, created ? 201 : 200);
+      try {
+        const { device, created } = await devices.register(c.get('identity').userId, body);
+        return c.json({ device }, created ? 201 : 200);
+      } catch (err) {
+        if (!(err instanceof DeviceRateLimitError)) throw err;
+        c.header('retry-after', String(err.retryAfterSeconds));
+        return c.json({ error: 'rate_limited', message: err.message }, 429);
+      }
     });
     r.delete('/devices/:deviceId', async (c) => c.json(await devices.remove(c.get('identity').userId, c.req.param('deviceId'))));
   }

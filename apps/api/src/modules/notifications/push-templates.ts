@@ -3,13 +3,13 @@ import type { Notification, NotificationLine } from './notifier.js';
 import { formatDate, formatDateTime, formatPeriod, formatTL, ticketStatusText } from './templates.js';
 
 /**
- * Mobil bildirim (push) metinleri: kisa Turkce baslik + govde ve uygulama ici baglanti (`path`).
+ * Mobil bildirim (push) metinleri: kisa Turkce baslik + govde ve uygulama ici baglanti (`path`; mesajda `data.url`).
  *
  * Kilit ekraninda gorunebilir: e-postada olmayan hicbir kisisel veri eklenmez; serbest metin gerekceler
  * (ret / iptal gerekcesi, ihale yaniti, talep mesaji), firma, adres ve cevrim ici baglanti push'a
  * girmez. Guvenlik kapisi bildirimleri en az bilgiyle (bolum, firma, saat yok) gider; ayrinti uygulamada.
  *
- * Uygulama ici baglantilar (mobil uygulama bu yollari karsilar; `data.path`):
+ * Uygulama ici baglantilar (mobil uygulama bu yollari karsilar; mesajda `data.url`):
  *   /borclar                    aidat / tahsilat (tahakkuk, makbuz, tazminat, hatirlatma)
  *   /duyurular/<announcementId> duyuru
  *   /oylamalar/<pollId>         anket / oylama

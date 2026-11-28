@@ -50,8 +50,9 @@ describe('makbuz kontrolu', () => {
     const fake = createFakeDeviceRepo();
     const dead = deviceIdOf(token(1));
     const alive = deviceIdOf(token(2));
+    const earlier = '2026-11-27T00:00:00.000Z';
     for (const [id, t] of [[dead, token(1)], [alive, token(2)]] as const) {
-      fake.devices.set(`user-1|${id}`, { deviceId: id, userId: 'user-1', platform: 'ios', status: 'active', createdAt: NOW.toISOString(), lastSeenAt: NOW.toISOString(), token: t });
+      fake.devices.set(`user-1|${id}`, { deviceId: id, userId: 'user-1', platform: 'ios', status: 'active', createdAt: earlier, lastSeenAt: earlier, token: t });
     }
     const { store, state } = fakeStore(
       {
@@ -77,6 +78,23 @@ describe('makbuz kontrolu', () => {
     expect(JSON.parse(errors[0]!)).toMatchObject({ msg: 'push_receipt_errors', errors: { MessageTooBig: 1 } });
     // Ikinci calisma: yeni kova yok.
     expect(await checkPushReceipts({ store, client, devices: fake.repository, now: () => NOW, log: quiet })).toMatchObject({ buckets: 0, tickets: 0 });
+  });
+
+  it('gonderimden sonra yeniden kaydedilen (lastSeenAt daha yeni) cihaz pasife alinmaz', async () => {
+    const fake = createFakeDeviceRepo();
+    const reinstalled = deviceIdOf(token('r'));
+    const stale = deviceIdOf(token('s'));
+    fake.devices.set(`u|${reinstalled}`, { deviceId: reinstalled, userId: 'u', platform: 'ios', status: 'active', createdAt: NOW.toISOString(), lastSeenAt: '2026-11-28T07:45:00.000Z', token: token('r') });
+    fake.devices.set(`u|${stale}`, { deviceId: stale, userId: 'u', platform: 'ios', status: 'active', createdAt: NOW.toISOString(), lastSeenAt: '2026-11-28T07:05:00.000Z', token: token('s') });
+    const { store } = fakeStore(
+      { '2026-11-28T07': [{ id: 'r1', userId: 'u', deviceId: reinstalled, sentAt: '2026-11-28T07:30:00.000Z' }, { id: 'r2', userId: 'u', deviceId: stale, sentAt: '2026-11-28T07:30:00.000Z' }] },
+      '2026-11-28T06',
+    );
+    const dnr = { status: 'error', details: { error: 'DeviceNotRegistered' } } as ExpoReceipt;
+    const r = await checkPushReceipts({ store, client: { getReceipts: async () => ({ r1: dnr, r2: dnr }) }, devices: fake.repository, now: () => NOW, log: quiet });
+    expect(r.deactivated).toBe(1);
+    expect(await fake.repository.get('u', reinstalled)).toMatchObject({ status: 'active' });
+    expect(await fake.repository.get('u', stale)).toMatchObject({ status: 'inactive', deactivationReason: 'device_not_registered' });
   });
 
   it("1000'lik makbuz parcalari; gecici hata firlatilir ve imlec o kovada kalir", async () => {
@@ -118,9 +136,11 @@ describe('makbuz deposu (DynamoDB)', () => {
     expect(JSON.stringify(item)).not.toContain('ExponentPushToken');
 
     ddb.on(QueryCommand)
-      .resolvesOnce({ Items: [{ tickets: [{ id: 'r1', userId: 'u', deviceId: 'd1' }] }], LastEvaluatedKey: { PK: 'x', SK: 'y' } })
+      .resolvesOnce({ Items: [{ at: '2026-11-28T07:10:00.000Z', tickets: [{ id: 'r1', userId: 'u', deviceId: 'd1' }] }], LastEvaluatedKey: { PK: 'x', SK: 'y' } })
       .resolvesOnce({ Items: [{ tickets: [{ id: 'r2', userId: 'u', deviceId: 'd2' }, { id: '', userId: 'u', deviceId: 'd3' }] }] });
-    expect((await store.listBucket('2026-11-28T07')).map((t) => t.id)).toEqual(['r1', 'r2']);
+    const listed = await store.listBucket('2026-11-28T07');
+    expect(listed.map((t) => t.id)).toEqual(['r1', 'r2']);
+    expect(listed[0]).toEqual({ id: 'r1', userId: 'u', deviceId: 'd1', sentAt: '2026-11-28T07:10:00.000Z' });
     expect(ddb.commandCalls(QueryCommand)[0]!.args[0].input.ExpressionAttributeValues).toEqual({ ':pk': 'PUSHRCPT#2026-11-28T07' });
 
     ddb.on(GetCommand).resolves({ Item: { bucket: '2026-11-28T07' } });

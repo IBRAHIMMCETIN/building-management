@@ -15,7 +15,8 @@ import { EXPO_RECEIPTS_BATCH, type ExpoClient } from './expo.js';
  *
  * Zamanlanmis `push_receipts` isi (saatte bir) imlecten sonraki, kapanisindan en az 15 dk gecmis
  * kovalari sirayla isler (en fazla son 24 saat): makbuzlari 1000'lik parcalarla sorgular,
- * `DeviceNotRegistered` cihazlari pasife alir ve her kova bitince imleci ilerletir. Gecici Expo
+ * `DeviceNotRegistered` cihazlari (gonderimden sonra yeniden gorulmediyse: `lastSeenAt` ticket zamanindan
+ * eski) pasife alir ve her kova bitince imleci ilerletir. Gecici Expo
  * hatasi firlatilir (imlec ilerlemez, SQS tekrar dener); tekrar islemek zararsizdir.
  * Ham token bu kayitlarda YOKTUR (yalnizca cihaz kimligi = token ozeti).
  */
@@ -27,7 +28,8 @@ export const RECEIPT_DELAY_MS = 15 * 60_000;
 export const RECEIPT_LOOKBACK_MS = 24 * 3600_000;
 const HOUR_MS = 3600_000;
 
-export type ReceiptTicket = { id: string; userId: string; deviceId: string };
+/** `sentAt`: gonderim parcasinin zamani (kovadan okunurken doldurulur). */
+export type ReceiptTicket = { id: string; userId: string; deviceId: string; sentAt?: string };
 
 export const hourBucket = (d: Date) => d.toISOString().slice(0, 13);
 const nextBucket = (b: string) => hourBucket(new Date(Date.parse(`${b}:00:00.000Z`) + HOUR_MS));
@@ -79,13 +81,17 @@ export function createDynamoReceiptStore(now: () => Date = () => new Date()): Pu
               TableName: tableName,
               KeyConditionExpression: 'PK = :pk',
               ExpressionAttributeValues: { ':pk': receiptKeys.batch(bucket, 'x').PK },
-              ProjectionExpression: 'tickets',
+              ProjectionExpression: 'tickets, #at',
+              ExpressionAttributeNames: { '#at': 'at' },
               ...(start ? { ExclusiveStartKey: start } : {}),
             }),
           );
           for (const item of page.Items ?? []) {
+            const sentAt = typeof item.at === 'string' ? item.at : undefined;
             for (const t of (item.tickets as ReceiptTicket[] | undefined) ?? []) {
-              if (t && typeof t.id === 'string' && t.id && typeof t.userId === 'string' && typeof t.deviceId === 'string') out.push(t);
+              if (t && typeof t.id === 'string' && t.id && typeof t.userId === 'string' && typeof t.deviceId === 'string') {
+                out.push({ id: t.id, userId: t.userId, deviceId: t.deviceId, ...(sentAt ? { sentAt } : {}) });
+              }
             }
           }
           start = page.LastEvaluatedKey;
@@ -168,7 +174,9 @@ export async function checkPushReceipts(deps: ReceiptCheckDeps): Promise<Receipt
           const key = `${t.userId}|${t.deviceId}`;
           if (code === 'DeviceNotRegistered' && !done.has(key)) {
             done.add(key);
-            if (await deps.devices.deactivate(t.userId, t.deviceId, 'device_not_registered', deps.now().toISOString())) result.deactivated++;
+            // Gonderimden sonra yeniden kaydedilen (lastSeenAt daha yeni) cihaz pasife alinmaz.
+            const seenBefore = t.sentAt ?? `${bucket}:00:00.000Z`;
+            if (await deps.devices.deactivate(t.userId, t.deviceId, 'device_not_registered', deps.now().toISOString(), { seenBefore })) result.deactivated++;
           }
         }
       }

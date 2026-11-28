@@ -4,6 +4,7 @@
  * korumasi, DeviceNotRegistered, kismi hata yalnizca kalanlari tekrar dener) ve worker entegrasyonu.
  */
 import { DynamoDBDocumentClient, PutCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
+import { GetSecretValueCommand, ResourceNotFoundException, SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
 import { mockClient } from 'aws-sdk-client-mock';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { resetDynamoCache } from '../src/config/dynamodb.js';
@@ -11,7 +12,7 @@ import { type DomainEvent, buildEvent } from '../src/events/publisher.js';
 import type { Unit } from '../src/modules/core/types.js';
 import { type NotificationCategory, NOTIFICATION_CATEGORIES } from '../src/modules/notifications/categories.js';
 import { deviceIdOf } from '../src/modules/notifications/devices.js';
-import { type ExpoMessage, type ExpoTicket, PermanentPushError, TransientPushError, createExpoClient } from '../src/modules/notifications/expo.js';
+import { type ExpoMessage, type ExpoTicket, MixedProjectsError, PermanentPushError, TransientPushError, createExpoClient, secretsManagerAccessToken } from '../src/modules/notifications/expo.js';
 import type { Notification, NotificationTemplate, Notifier } from '../src/modules/notifications/notifier.js';
 import type { NotificationPreferences } from '../src/modules/notifications/preferences.js';
 import { type PushChannelDeps, type PushMarkerStore, createDynamoPushMarkers, createPushChannel, createPushChannelFromEnv, pushChannelMode } from '../src/modules/notifications/push.js';
@@ -138,12 +139,39 @@ describe('Expo istemcisi', () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it('gecici: ag, 429, 5xx, 401/403, sayi uyusmazligi; kalici: diger 4xx (hata kodu ile)', async () => {
+  it('gecici: ag, 429, 5xx, sayi uyusmazligi; kalici: 401/403 (auth) ve diger 4xx (hata kodu ile)', async () => {
     const send = (fetch: ReturnType<typeof respond>) => createExpoClient({ fetch }).send([msg(1)]);
     await expect(createExpoClient({ fetch: vi.fn(async () => Promise.reject(new TypeError('fetch failed'))) }).send([msg(1)])).rejects.toBeInstanceOf(TransientPushError);
-    for (const status of [429, 500, 503, 401, 403]) await expect(send(respond(status, {})), String(status)).rejects.toBeInstanceOf(TransientPushError);
+    for (const status of [429, 500, 503]) await expect(send(respond(status, {})), String(status)).rejects.toBeInstanceOf(TransientPushError);
+    for (const status of [401, 403]) await expect(send(respond(status, {})), String(status)).rejects.toMatchObject({ name: 'PermanentPushError', auth: true });
     await expect(send(respond(200, { data: [] }))).rejects.toBeInstanceOf(TransientPushError);
     await expect(send(respond(400, { errors: [{ code: 'PUSH_TOO_MANY_EXPERIENCE_IDS', message: 'x' }] }))).rejects.toMatchObject({ name: 'PermanentPushError', code: 'PUSH_TOO_MANY_EXPERIENCE_IDS' });
+    await expect(send(respond(400, { errors: [{ code: 'VALIDATION_ERROR', message: 'x' }] }))).rejects.toMatchObject({ code: 'VALIDATION_ERROR', auth: false });
+  });
+
+  it('karisik proje hatasi proje -> token gruplariyla doner', async () => {
+    const details = { '@yonesist/app': [token(1), token(2)], '@someone/other': [token(3)] };
+    const err = await createExpoClient({ fetch: respond(400, { errors: [{ code: 'PUSH_TOO_MANY_EXPERIENCE_IDS', message: 'x', details }] }) }).send([msg(1), msg(2), msg(3)]).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(MixedProjectsError);
+    expect((err as MixedProjectsError).groups).toEqual(details);
+  });
+
+  it('erisim anahtari Secrets Manager dan: duz metin / JSON, deger yoksa anahtarsiz, 5 dk bellekte', async () => {
+    const sm = mockClient(SecretsManagerClient);
+    sm.on(GetSecretValueCommand).resolvesOnce({ SecretString: ' tok_abc ' }).resolvesOnce({ SecretString: '{"accessToken":"tok_json"}' }).rejects(new ResourceNotFoundException({ message: 'no value', $metadata: {} }));
+    let t = 0;
+    const read = secretsManagerAccessToken('arn:aws:secretsmanager:eu-central-1:1:secret:x', { now: () => t });
+    expect(await read()).toBe('tok_abc');
+    expect(await read()).toBe('tok_abc');
+    t += 5 * 60_000 + 1;
+    expect(await read()).toBe('tok_json');
+    t += 5 * 60_000 + 1;
+    expect(await read()).toBeUndefined();
+    expect(sm.commandCalls(GetSecretValueCommand)).toHaveLength(3);
+    const fetch = respond(200, { data: [{ status: 'ok', id: 'r' }] });
+    await createExpoClient({ fetch, accessToken: async () => 'tok_fn' }).send([msg(1)]);
+    expect((fetch.mock.calls[0] as unknown as [string, { headers: Record<string, string> }])[1].headers.authorization).toBe('Bearer tok_fn');
+    sm.restore();
   });
 });
 
@@ -196,7 +224,7 @@ function channel(over: Partial<PushChannelDeps> & { prefs?: Record<string, Parti
   /** Kullaniciya n cihaz ekler (deviceId = token ozeti). */
   const addDevices = (userId: string, ...tokens: string[]) => {
     tokens.forEach((t, i) =>
-      devices.devices.set(`${userId}|${deviceIdOf(t)}`, { deviceId: deviceIdOf(t), userId, platform: i % 2 ? 'android' : 'ios', status: 'active', createdAt: NOW.toISOString(), lastSeenAt: new Date(NOW.getTime() - i * 1000).toISOString(), token: t }),
+      devices.seed({ deviceId: deviceIdOf(t), userId, platform: i % 2 ? 'android' : 'ios', status: 'active', createdAt: NOW.toISOString(), lastSeenAt: new Date(NOW.getTime() - i * 1000).toISOString(), token: t }),
     );
   };
   return { push, devices, markers, receipts, expo, prefReads, logs, addDevices };
@@ -333,6 +361,91 @@ describe('push kanali', () => {
     expect(await c.push.deliver(APT, 'EV1', forUsers('announcement_published', 'a'))).toMatchObject({ rejected: 1, sent: 0 });
     expect(await c.push.deliver(APT, 'EV1', forUsers('announcement_published', 'a'))).toMatchObject({ alreadySent: 1 });
     expect(expo.calls).toHaveLength(1);
+  });
+
+  describe('karisik Expo projeleri (PUSH_TOO_MANY_EXPERIENCE_IDS)', () => {
+    const OURS = '@yonesist/app';
+    /** Expo gibi: istekte birden fazla proje varsa 400; token -> proje eslemesi `projects`. */
+    const projectExpo = (projects: Record<string, string>) =>
+      fakeExpo((ms) => {
+        const groups: Record<string, string[]> = {};
+        for (const m of ms) (groups[projects[m.to] ?? OURS] ??= []).push(m.to);
+        if (Object.keys(groups).length > 1) throw new MixedProjectsError(groups);
+        return ms.map((m) => ({ status: 'ok' as const, id: `r-${m.to}` }));
+      });
+
+    it('yapilandirilan proje: yabanci token cihazi pasife, kalan parca yeniden gonderilir; tekrar teslimde gitmez', async () => {
+      const foreign = token('expo-go');
+      const expo = projectExpo({ [foreign]: '@someone/expo-go' });
+      const c = channel({ client: expo.client, projectId: OURS });
+      c.addDevices('a', token(1), token(2));
+      c.addDevices('hostile', foreign);
+      const out = await c.push.deliver(APT, 'EV1', forUsers('announcement_published', 'a', 'hostile'));
+      expect(expo.calls.map((m) => m.length)).toEqual([3, 2]);
+      expect(expo.calls[1]!.map((m) => m.to).sort()).toEqual([token(1), token(2)].sort());
+      expect(out).toMatchObject({ sent: 2, deactivated: 1, rejected: 0, retry: 0 });
+      expect(await c.devices.repository.get('hostile', deviceIdOf(foreign))).toMatchObject({ status: 'inactive', deactivationReason: 'foreign_project' });
+      expect(c.logs.join('\n')).not.toContain('ExponentPushToken');
+      await c.push.deliver(APT, 'EV1', forUsers('announcement_published', 'a', 'hostile'));
+      expect(expo.calls).toHaveLength(2);
+      // Sonraki olaylarda yabanci token artik parcayi bozmaz.
+      await c.push.deliver(APT, 'EV2', forUsers('announcement_published', 'a', 'hostile'));
+      expect(expo.calls.at(-1)!.map((m) => m.to).sort()).toEqual([token(1), token(2)].sort());
+    });
+
+    it('proje yapilandirilmamis: en buyuk grup once, diger gruplar kendi isteginde; kimse pasife alinmaz', async () => {
+      const expo = projectExpo({ [token('x1')]: '@someone/other' });
+      const c = channel({ client: expo.client });
+      c.addDevices('a', token(1), token(2));
+      c.addDevices('b', token('x1'));
+      const out = await c.push.deliver(APT, 'EV1', forUsers('announcement_published', 'a', 'b'));
+      expect(expo.calls.map((m) => m.map((x) => x.to).sort())).toEqual([[token(1), token(2), token('x1')].sort(), [token(1), token(2)].sort(), [token('x1')]]);
+      expect(out).toMatchObject({ sent: 3, deactivated: 0, rejected: 0 });
+    });
+
+    it('yapilandirilan proje parcada yoksa (yanlis EXPO_PROJECT_ID) toplu pasife alma yapilmaz', async () => {
+      const expo = projectExpo({ [token('x1')]: '@someone/other' });
+      const c = channel({ client: expo.client, projectId: '@typo/app' });
+      c.addDevices('a', token(1));
+      c.addDevices('b', token('x1'));
+      const out = await c.push.deliver(APT, 'EV1', forUsers('announcement_published', 'a', 'b'));
+      expect(out).toMatchObject({ sent: 2, deactivated: 0 });
+      expect(c.logs.some((l) => l.includes('push_project_mismatch'))).toBe(true);
+    });
+  });
+
+  it('401/403 (erisim anahtari): kalici, olay yeniden denenmez; PushRejected metrigi (alarm)', async () => {
+    const expo = fakeExpo(() => {
+      throw new PermanentPushError('HTTP_401', 'Expo yetkilendirme hatasi', { auth: true });
+    });
+    const emit = vi.fn();
+    const c = channel({ client: expo.client, metrics: { emit } });
+    c.addDevices('a', token(1), token(2));
+    expect(await c.push.deliver(APT, 'EV1', forUsers('announcement_published', 'a'))).toMatchObject({ rejected: 2, sent: 0, retry: 0 });
+    expect(emit).toHaveBeenCalledWith({ PushSent: 0, PushRejected: 2, PushRetried: 0, PushDeactivated: 0 }, expect.objectContaining({ msg: 'push_delivery' }));
+    expect(c.logs.some((l) => l.includes('push_rejected') && l.includes('"auth":true'))).toBe(true);
+  });
+
+  it('gonderim kaydi yazilamazsa: olu cihaz yine pasife alinir, makbuz yazilir, sonra hata firlatilir (parca tekrar gider)', async () => {
+    const expo = fakeExpo((ms) => ms.map((m): ExpoTicket => (m.to === token(2) ? { status: 'error', details: { error: 'DeviceNotRegistered' } } : { status: 'ok', id: 'r1' })));
+    const markers = fakeMarkers();
+    let failRecord = true;
+    const flaky: PushMarkerStore = {
+      doneDevices: markers.store.doneDevices,
+      record: async (...args) => {
+        if (failRecord) throw new Error('DynamoDB yazilamadi');
+        return markers.store.record(...args);
+      },
+    };
+    const c = channel({ client: expo.client, markers: flaky });
+    c.addDevices('a', token(1), token(2));
+    await expect(c.push.deliver(APT, 'EV1', forUsers('announcement_published', 'a'))).rejects.toThrow(/yazilamadi/);
+    expect(await c.devices.repository.get('a', deviceIdOf(token(2)))).toMatchObject({ status: 'inactive', deactivationReason: 'device_not_registered' });
+    expect(c.receipts).toHaveLength(1);
+    // En az bir kez: kayit olmadigi icin canli cihaza tekrar gider (olu cihaz artik listede yok).
+    failRecord = false;
+    await c.push.deliver(APT, 'EV1', forUsers('announcement_published', 'a'));
+    expect(expo.calls.map((m) => m.map((x) => x.to))).toEqual([[token(1), token(2)], [token(1)]]);
   });
 
   it('PUSH_CHANNEL: varsayilan off (kanal yok), expo, gecersiz deger hata', () => {

@@ -12,7 +12,10 @@ import { createMockAuthenticator, createMockIdentityResolver, encodeMockToken } 
 import { resetDynamoCache } from '../src/config/dynamodb.js';
 import { ValidationError } from '../src/modules/core/validation.js';
 import {
+  DeviceRateLimitError,
+  INACTIVE_TTL_SECONDS,
   MAX_ACTIVE_DEVICES,
+  MAX_REGISTRATIONS_PER_DAY,
   createDeviceService,
   createDynamoDeviceRepository,
   deviceIdOf,
@@ -101,7 +104,40 @@ describe('cihaz servisi', () => {
     expect(active[0]?.deviceId).toBe(deviceIdOf(token(99))); // en son gorulen once
     expect(await fake.repository.get('user-1', deviceIdOf(token(2)))).toMatchObject({ status: 'inactive', deactivationReason: 'limit' });
     expect(fake.devices.get(`user-1|${deviceIdOf(token(2))}`)).not.toHaveProperty('token');
-    expect(fake.audits.at(-1)?.details).toMatchObject({ deactivatedOldest: 1 });
+    // Ayni gun tekrarlanan yeni kayitlar denetim zincirini sisirmez: yalnizca gunun ilki.
+    expect(fake.audits.map((a) => a.action)).toEqual(['push_device.register']);
+  });
+
+  it(`gunluk sinir: ${MAX_REGISTRATIONS_PER_DAY} yeni kayittan sonra 429; tazeleme sayilmaz; ertesi gun yeniden denetlenir`, async () => {
+    const fake = createFakeDeviceRepo();
+    let t = NOW.getTime();
+    const service = createDeviceService({ repository: fake.repository, now: () => new Date((t += 1000)) });
+    await service.register('user-1', { token: token('keep'), platform: 'ios' });
+    for (let i = 0; i < 30; i++) await service.register('user-1', { token: token('keep'), platform: 'ios' }); // tazeleme
+    for (let i = 1; i < MAX_REGISTRATIONS_PER_DAY; i++) {
+      const r = await service.register('user-1', { token: token(i), platform: 'android' });
+      await service.remove('user-1', r.device.deviceId);
+    }
+    await expect(service.register('user-1', { token: token('over'), platform: 'ios' })).rejects.toBeInstanceOf(DeviceRateLimitError);
+    // Kayit / kaldirma dongusu: gunun ilk kaydi + kaldirmalar (kayitlarla sinirli) denetlenir.
+    expect(fake.audits.filter((a) => a.action === 'push_device.register')).toHaveLength(1);
+    expect(await service.register('user-2', { token: token('other'), platform: 'ios' })).toMatchObject({ created: true });
+    t += 24 * 3600_000;
+    await service.register('user-1', { token: token('next-day'), platform: 'ios' });
+    expect(fake.audits.filter((a) => a.action === 'push_device.register' && a.target.id === 'user-1')).toHaveLength(2);
+  });
+
+  it('pasife alinan cihaz ve bu kullaniciyi gosteren sahiplik kaydi TTL ile duser; yeniden kayit TTL i kaldirir', async () => {
+    const fake = createFakeDeviceRepo();
+    const service = createDeviceService({ repository: fake.repository, now: clock() });
+    const id = deviceIdOf(token(4));
+    await service.register('user-a', { token: token(4), platform: 'ios' });
+    await service.remove('user-a', id);
+    expect(fake.devices.get(`user-a|${id}`)?.ttl).toBeDefined();
+    expect(fake.ownerTtl.has(id)).toBe(true);
+    await service.register('user-a', { token: token(4), platform: 'ios' });
+    expect(fake.devices.get(`user-a|${id}`)).not.toHaveProperty('ttl');
+    expect(fake.ownerTtl.has(id)).toBe(false);
   });
 
   it('ortak telefon: ayni token baska kullaniciyla kaydedilince cihaz yeni kullaniciya gecer', async () => {
@@ -148,6 +184,36 @@ describe('cihaz servisi', () => {
     expect(r.created).toBe(true);
     expect(fake.owners.get(id)).toBe('user-a');
     expect(await fake.repository.get('user-x', id)).toMatchObject({ status: 'inactive', deactivationReason: 'moved' });
+  });
+
+  it('tazeleme / tasima yarisi: arada baska kullaniciya tasinan cihaz tazelemeyle dirilmez (tek aktif sahip)', async () => {
+    const fake = createFakeDeviceRepo();
+    const service = createDeviceService({ repository: fake.repository, now: clock() });
+    const id = deviceIdOf(token(6));
+    await service.register('user-a', { token: token(6), platform: 'ios' });
+    // A'nin tazelemesi okuduktan sonra, yazmadan once B ayni token'i aldi (A pasif, sahip B).
+    fake.hooks.beforeSave = () => {
+      const a = fake.devices.get(`user-a|${id}`)!;
+      fake.devices.set(`user-a|${id}`, { ...a, status: 'inactive', deactivationReason: 'moved' });
+      fake.devices.set(`user-b|${id}`, { ...a, userId: 'user-b', status: 'active', token: token(6) });
+      fake.owners.set(id, 'user-b');
+    };
+    const r = await service.register('user-a', { token: token(6), platform: 'ios' });
+    // Kosullu tazeleme iptal edildi, yeniden okundu: A token'i acikca yeniden kaydettigi icin tasima olarak yazildi.
+    expect(r.created).toBe(true);
+    const active = [...fake.devices.values()].filter((d) => d.deviceId === id && d.status === 'active');
+    expect(active.map((d) => d.userId)).toEqual(['user-a']);
+    expect(fake.owners.get(id)).toBe('user-a');
+    expect(await fake.repository.listActiveForPush('user-b')).toEqual([]);
+  });
+
+  it('worker ikinci savunma: sahiplik kaydi aliciyi gostermeyen aktif cihaza gonderilmez', async () => {
+    const fake = createFakeDeviceRepo();
+    const id = deviceIdOf(token(8));
+    fake.seed({ deviceId: id, userId: 'user-a', platform: 'ios', status: 'active', createdAt: NOW.toISOString(), lastSeenAt: NOW.toISOString(), token: token(8) });
+    expect(await fake.repository.listActiveForPush('user-a')).toHaveLength(1);
+    fake.owners.set(id, 'user-b');
+    expect(await fake.repository.listActiveForPush('user-a')).toEqual([]);
   });
 
   it('kaldirma: kendi cihazi pasife; baska kullanicinin cihazi 404; tekrar kaldirma zararsiz; gecersiz kimlik 400', async () => {
@@ -213,6 +279,15 @@ describe('/api/me/devices', () => {
     expect((await call('DELETE', '/abc', 'res-1')).status).toBe(400);
     expect(fake.devices.size).toBe(0);
   });
+
+  it('gunluk sinir asilinca 429 + Retry-After', async () => {
+    const { call, fake } = api();
+    fake.rate.set(`res-1|2026-11-28`, MAX_REGISTRATIONS_PER_DAY);
+    const res = await call('POST', '', 'res-1', { token: token(1), platform: 'ios' });
+    expect(res.status).toBe(429);
+    expect(Number(res.headers.get('retry-after'))).toBeGreaterThan(0);
+    expect(await res.json()).toMatchObject({ error: 'rate_limited' });
+  });
 });
 
 describe('DynamoDB cihaz deposu', () => {
@@ -238,6 +313,8 @@ describe('DynamoDB cihaz deposu', () => {
       ],
     });
     ddb.on(GetCommand).resolves({ Item: { deviceId: id, status: 'active' } });
+    ddb.on(GetCommand, { Key: deviceKeys.owner(id) }).resolves({ Item: { userId: 'user-b' } });
+    ddb.on(GetCommand, { Key: deviceKeys.owner(old) }).resolves({ Item: { userId: 'user-b' } });
     const repo = createDynamoDeviceRepository();
     await repo.listByUser('user-b');
     await repo.get('user-b', id);
@@ -249,23 +326,34 @@ describe('DynamoDB cihaz deposu', () => {
     const targets = await repo.listActiveForPush('user-b');
     expect(ddb.commandCalls(QueryCommand)[1]!.args[0].input.ProjectionExpression).toContain('#tok');
     expect(targets.map((t) => t.token)).toEqual([token(1), token(2)]);
+    // Sahiplik kaydi baska kullaniciyi gosteren cihaz atlanir.
+    ddb.on(GetCommand, { Key: deviceKeys.owner(old) }).resolves({ Item: { userId: 'user-x' } });
+    expect((await repo.listActiveForPush('user-b')).map((t) => t.token)).toEqual([token(1)]);
   });
 
-  it('tazeleme tek PutItem; tasima + sinir tek atomik yazim (sahiplik kosulu, pasife alinan kayitta REMOVE token)', async () => {
-    ddb.on(PutCommand).resolves({});
+  it('tazeleme kosullu atomik yazim (cihaz aktif + sahip hala bu kullanici); tasima + sinir tek atomik yazim', async () => {
     ddb.on(TransactWriteCommand).resolves({});
+    ddb.on(UpdateCommand).resolves({});
     const repo = createDynamoDeviceRepository();
-    await repo.save({ device: base, owner: undefined, evict: [] });
-    expect(ddb.commandCalls(PutCommand)[0]!.args[0].input.Item).toMatchObject({ PK: 'USER#user-b', SK: `PUSHDEV#${id}`, entityType: 'PUSH_DEVICE', token: token(1) });
-    expect(ddb.commandCalls(TransactWriteCommand)).toHaveLength(0);
+    await repo.save({ device: base, owner: { expected: 'user-b' }, refresh: true, evict: [] });
+    const refresh = ddb.commandCalls(TransactWriteCommand)[0]!.args[0].input.TransactItems!;
+    expect(refresh).toHaveLength(2);
+    expect(refresh[0]!.Put).toMatchObject({ Item: { PK: 'USER#user-b', SK: `PUSHDEV#${id}`, entityType: 'PUSH_DEVICE', token: token(1) }, ConditionExpression: 'attribute_exists(PK) AND #st = :active' });
+    expect(refresh[1]!.Update).toMatchObject({ Key: { PK: `PUSHTOKEN#${id}`, SK: 'OWNER' }, ConditionExpression: 'userId = :me', ExpressionAttributeValues: { ':me': 'user-b' } });
+    expect(refresh[1]!.Update!.UpdateExpression).toContain('REMOVE #ttl');
+    expect(ddb.commandCalls(PutCommand)).toHaveLength(0);
+    ddb.resetHistory();
 
     await repo.save({ device: base, owner: { expected: 'user-a' }, moveFrom: 'user-a', evict: [old], audit: { action: 'push_device.register', target: { type: 'user', id: 'user-b' } } });
     const items = ddb.commandCalls(TransactWriteCommand)[0]!.args[0].input.TransactItems!;
     expect(items).toHaveLength(4);
+    expect(items[0]!.Put).not.toHaveProperty('ConditionExpression');
     expect(items[1]!.Put).toMatchObject({ Item: { PK: `PUSHTOKEN#${id}`, SK: 'OWNER', userId: 'user-b' }, ConditionExpression: 'userId = :prev', ExpressionAttributeValues: { ':prev': 'user-a' } });
     expect(items[2]!.Update).toMatchObject({ Key: { PK: 'USER#user-a', SK: `PUSHDEV#${id}` }, ExpressionAttributeValues: { ':reason': 'moved' } });
     expect(items[2]!.Update!.UpdateExpression).toContain('REMOVE #tok');
     expect(items[3]!.Update).toMatchObject({ Key: { PK: 'USER#user-b', SK: `PUSHDEV#${old}` }, ConditionExpression: 'attribute_exists(PK) AND #st = :active', ExpressionAttributeValues: { ':reason': 'limit' } });
+    // Sinir yuzunden pasife alinan cihazin sahiplik kaydina (hala bu kullaniciysa) TTL.
+    expect(ddb.commandCalls(UpdateCommand)[0]!.args[0].input).toMatchObject({ Key: { PK: `PUSHTOKEN#${old}`, SK: 'OWNER' }, ConditionExpression: 'userId = :me' });
     // Ilk kayit: sahiplik kaydi yoksa yazilir.
     await repo.save({ device: base, owner: { expected: null }, evict: [] });
     expect(ddb.commandCalls(TransactWriteCommand)[1]!.args[0].input.TransactItems![1]!.Put!.ConditionExpression).toBe('attribute_not_exists(PK)');
@@ -278,9 +366,22 @@ describe('DynamoDB cihaz deposu', () => {
 
     ddb.on(UpdateCommand).rejectsOnce(new ConditionalCheckFailedException({ message: 'x', $metadata: {} })).resolves({});
     expect(await repo.deactivate('user-b', id, 'device_not_registered', NOW.toISOString())).toBe(false);
-    expect(await repo.deactivate('user-b', id, 'device_not_registered', NOW.toISOString())).toBe(true);
-    const update = ddb.commandCalls(UpdateCommand)[1]!.args[0].input;
-    expect(update.Key).toEqual({ PK: 'USER#user-b', SK: `PUSHDEV#${id}` });
-    expect(update.UpdateExpression).toBe('SET #st = :inactive, deactivatedAt = :at, deactivationReason = :reason, updatedAt = :at REMOVE #tok');
+    expect(await repo.deactivate('user-b', id, 'device_not_registered', NOW.toISOString(), { seenBefore: '2026-11-28T08:00:00.000Z' })).toBe(true);
+    const [, update, owner] = ddb.commandCalls(UpdateCommand).map((c) => c.args[0].input);
+    expect(update!.Key).toEqual({ PK: 'USER#user-b', SK: `PUSHDEV#${id}` });
+    expect(update!.UpdateExpression).toBe('SET #st = :inactive, deactivatedAt = :at, deactivationReason = :reason, updatedAt = :at, #ttl = :ttl REMOVE #tok');
+    expect(update!.ConditionExpression).toBe('attribute_exists(PK) AND #st = :active AND lastSeenAt < :seen');
+    expect(update!.ExpressionAttributeValues).toMatchObject({ ':ttl': Math.floor(NOW.getTime() / 1000) + INACTIVE_TTL_SECONDS, ':seen': '2026-11-28T08:00:00.000Z' });
+    // Sahiplik kaydi: yalnizca hala bu kullaniciyi gosteriyorsa TTL (baska kullaniciya gecmisse dokunulmaz).
+    expect(owner).toMatchObject({ Key: { PK: `PUSHTOKEN#${id}`, SK: 'OWNER' }, ConditionExpression: 'userId = :me', ExpressionAttributeValues: { ':me': 'user-b' } });
+  });
+
+  it('gunluk kayit sayaci: kosullu ADD, 2 gun TTL; sinirda DeviceRateLimitError', async () => {
+    ddb.on(UpdateCommand).resolvesOnce({ Attributes: { count: 3 } }).rejectsOnce(new ConditionalCheckFailedException({ message: 'x', $metadata: {} }));
+    const repo = createDynamoDeviceRepository();
+    expect(await repo.countRegistration('user-b', '2026-11-28', NOW)).toBe(3);
+    const input = ddb.commandCalls(UpdateCommand)[0]!.args[0].input;
+    expect(input).toMatchObject({ Key: { PK: 'USER#user-b', SK: 'PUSHRATE#2026-11-28' }, ConditionExpression: 'attribute_not_exists(#c) OR #c < :max', ExpressionAttributeValues: { ':max': MAX_REGISTRATIONS_PER_DAY } });
+    await expect(repo.countRegistration('user-b', '2026-11-28', NOW)).rejects.toBeInstanceOf(DeviceRateLimitError);
   });
 });
