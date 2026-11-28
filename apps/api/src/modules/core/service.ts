@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { DEFAULT_TICKET_SETTINGS, TICKET_PRIORITIES, type TicketSettings } from '../tickets/types.js';
+import { simpleModeFeatures } from '../features/catalog.js';
 import { type CoreRepository, coreKeys, coreRepository } from './repository.js';
 import {
   type Address,
@@ -255,6 +256,8 @@ function parseSettings(value: unknown, base: SiteSettings): SiteSettings {
       optInt(o, 'lateFeeMonthlyBasisPoints', 0, 10_000) ?? base.lateFeeMonthlyBasisPoints,
     monthlyDuesPlan,
     ...(tickets ? { tickets } : {}),
+    // Adim 1: ozellik anahtarlari yalnizca platform uclarindan yazilir; girdideki `features` yok sayilir.
+    ...(base.features ? { features: base.features } : {}),
     timezone: 'Europe/Istanbul',
     currency: 'TRY',
   };
@@ -471,10 +474,11 @@ export function createCoreService(overrides: Partial<CoreServiceDeps> = {}) {
       type: reqEnum(o, 'type', SITE_TYPES),
       address: parseAddress(o.address),
       fiscalYearStartMonth: optInt(o, 'fiscalYearStartMonth', 1, 12) ?? 1,
-      settings:
-        o.settings === undefined
-          ? defaultSiteSettings()
-          : parseSettings(o.settings, defaultSiteSettings()),
+      settings: {
+        ...(o.settings === undefined ? defaultSiteSettings() : parseSettings(o.settings, defaultSiteSettings())),
+        // Adim 1: yeni siteler sade modla baslar (gizlemeler kapali); platform istedigini acar.
+        features: simpleModeFeatures(),
+      },
     };
 
     await repo.createSite(site);

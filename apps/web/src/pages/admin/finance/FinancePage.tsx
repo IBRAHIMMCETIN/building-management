@@ -3,6 +3,9 @@ import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router';
 import { Alert, Button } from '@/components/ui';
 import { useFinancePermissions } from '@/hooks/useFinance';
+import { FeatureDisabledNotice } from '@/components/features/FeatureDisabledNotice';
+import { useSiteFeatures } from '@/context/SiteFeaturesContext';
+import type { FeatureKey } from '@/lib/features/catalog';
 import { cn } from '@/lib/cn';
 import { BankPanel } from './bank/BankPanel';
 import { ChargeDuesDialog } from './ChargeDuesDialog';
@@ -38,10 +41,22 @@ const TABS = [
 ] as const;
 type TabId = (typeof TABS)[number]['id'];
 
+/**
+ * Adim 1: sekmeler site ozelligine baglidir. Kapali sekme menude gorunmez; adresle (?tab=plans)
+ * gelinirse kapali ozellik gorunumu gosterilir.
+ */
+export const TAB_FEATURES: Partial<Record<TabId, FeatureKey>> = {
+  ownership: 'admin.sharedOwnership',
+  plans: 'admin.debtRestructure',
+};
+
 type Modal = { kind: 'payment'; preset?: PaymentPreset } | { kind: 'expense' } | { kind: 'charge' } | { kind: 'offset' } | { kind: 'restructure' } | null;
 
 export function FinancePage() {
   const { canRead, canWrite } = useFinancePermissions();
+  const { isEnabled } = useSiteFeatures();
+  const restructureOn = isEnabled('admin.debtRestructure');
+  const visibleTabs = TABS.filter((t) => !TAB_FEATURES[t.id] || isEnabled(TAB_FEATURES[t.id] as FeatureKey));
   const [params, setParams] = useSearchParams();
   const tab: TabId = TABS.find((t) => t.id === params.get('tab'))?.id ?? 'transactions';
   const [modal, setModal] = useState<Modal>(null);
@@ -63,7 +78,7 @@ export function FinancePage() {
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <h1 className="text-title font-bold">Finans</h1>
-          <p className="text-small text-muted">Kasa, banka, aidat tahakkuku, tahsilat, avans mahsubu ve borç yapılandırma.</p>
+          <p className="text-small text-muted">Kasa, banka, aidat tahakkuku, tahsilat ve avans mahsubu{restructureOn ? ' ile borç yapılandırma' : ''}.</p>
         </div>
         {canWrite && (
           <div className="flex flex-wrap gap-2">
@@ -75,10 +90,12 @@ export function FinancePage() {
               <ArrowLeftRight className="size-4" aria-hidden="true" />
               Avans mahsubu
             </Button>
-            <Button variant="secondary" onClick={() => setModal({ kind: 'restructure' })}>
-              <CalendarRange className="size-4" aria-hidden="true" />
-              Borç yapılandır
-            </Button>
+            {restructureOn && (
+              <Button variant="secondary" onClick={() => setModal({ kind: 'restructure' })}>
+                <CalendarRange className="size-4" aria-hidden="true" />
+                Borç yapılandır
+              </Button>
+            )}
             <Button variant="secondary" onClick={() => setModal({ kind: 'expense' })}>
               <Receipt className="size-4" aria-hidden="true" />
               Gider ekle
@@ -95,7 +112,7 @@ export function FinancePage() {
 
       <div className="flex flex-col gap-4">
         <ScrollableTabs activeId={tab}>
-          {TABS.map((t) => (
+          {visibleTabs.map((t) => (
             <button
               key={t.id}
               id={`tab-${t.id}`}
@@ -115,17 +132,23 @@ export function FinancePage() {
           ))}
         </ScrollableTabs>
         <div id={`panel-${tab}`} role="tabpanel" aria-labelledby={`tab-${tab}`}>
-          {tab === 'transactions' && <TransactionsPanel />}
-          {tab === 'dues' && <DuesPanel canWrite={canWrite} onCollect={(preset) => setModal({ kind: 'payment', preset })} />}
-          {tab === 'former' && <FormerAccountsPanel canWrite={canWrite} onCollect={(preset) => setModal({ kind: 'payment', preset })} />}
-          {tab === 'ownership' && <OwnershipPanel canWrite={canWrite} onCollect={(preset) => setModal({ kind: 'payment', preset })} />}
-          {tab === 'plans' && <PlansPanel canWrite={canWrite} />}
-          {tab === 'online' && <OnlinePaymentsPanel />}
-          {tab === 'bank' && <BankPanel canWrite={canWrite} />}
-          {tab === 'payables' && <PayablesPanel canWrite={canWrite} />}
-          {tab === 'reports' && <ReportsPanel />}
-          {tab === 'budget' && <BudgetPanel canWrite={canWrite} />}
-          {tab === 'closing' && <PeriodClosingPanel canWrite={canWrite} />}
+          {TAB_FEATURES[tab] && !isEnabled(TAB_FEATURES[tab] as FeatureKey) ? (
+            <FeatureDisabledNotice feature={TAB_FEATURES[tab] as FeatureKey} />
+          ) : (
+            <>
+              {tab === 'transactions' && <TransactionsPanel />}
+              {tab === 'dues' && <DuesPanel canWrite={canWrite} onCollect={(preset) => setModal({ kind: 'payment', preset })} />}
+              {tab === 'former' && <FormerAccountsPanel canWrite={canWrite} onCollect={(preset) => setModal({ kind: 'payment', preset })} />}
+              {tab === 'ownership' && <OwnershipPanel canWrite={canWrite} onCollect={(preset) => setModal({ kind: 'payment', preset })} />}
+              {tab === 'plans' && <PlansPanel canWrite={canWrite} />}
+              {tab === 'online' && <OnlinePaymentsPanel />}
+              {tab === 'bank' && <BankPanel canWrite={canWrite} />}
+              {tab === 'payables' && <PayablesPanel canWrite={canWrite} />}
+              {tab === 'reports' && <ReportsPanel />}
+              {tab === 'budget' && <BudgetPanel canWrite={canWrite} />}
+              {tab === 'closing' && <PeriodClosingPanel canWrite={canWrite} />}
+            </>
+          )}
         </div>
       </div>
 
@@ -135,7 +158,7 @@ export function FinancePage() {
           <ExpenseDialog open={modal?.kind === 'expense'} onClose={close} />
           <ChargeDuesDialog open={modal?.kind === 'charge'} onClose={close} />
           <OffsetDialog open={modal?.kind === 'offset'} onClose={close} />
-          <RestructureWizard open={modal?.kind === 'restructure'} onClose={close} />
+          {restructureOn && <RestructureWizard open={modal?.kind === 'restructure'} onClose={close} />}
         </>
       )}
     </div>

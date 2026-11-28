@@ -1,3 +1,4 @@
+import type { SiteFeatureSettings } from '../features/catalog.js';
 import type { TicketSettings } from '../tickets/types.js';
 /**
  * Faz 1 - Cekirdek modul veri modelleri.
@@ -185,6 +186,11 @@ export type SiteSettings = {
   monthlyDuesPlan?: MonthlyDuesPlan;
   /** Faz 3 (O1): ariza / talep ayarlari (SLA, gorevli havuzu, otomatik kapanis). Yoksa varsayilanlar. */
   tickets?: TicketSettings;
+  /**
+   * Adim 1: site bazli ozellik anahtarlari (modules/features/catalog.ts). Yoksa `legacy` profil
+   * (Adim 1 oncesi davranis). Yalnizca platform uclari yazar; site PATCH'i bu alani degistiremez.
+   */
+  features?: SiteFeatureSettings;
   timezone: 'Europe/Istanbul';
   currency: Currency;
 };

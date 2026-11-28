@@ -4,6 +4,7 @@ import { NavLink, Outlet, useLocation } from 'react-router';
 import { BrandMark } from '@/components/BrandMark';
 import { Dialog } from '@/components/ui';
 import { PortalUnitProvider } from '@/context/PortalUnitContext';
+import { SiteFeaturesProvider, useSiteFeatures } from '@/context/SiteFeaturesContext';
 import { useActiveApartmentName, useIsActiveOwner } from '@/hooks/useActiveContextLabel';
 import { BRAND_NAME } from '@/lib/brand';
 import { cn } from '@/lib/cn';
@@ -62,10 +63,21 @@ const DESKTOP_QUERY = '(min-width: 48rem)';
  * acilinca da rahat).
  */
 export function ResidentLayout() {
+  // Adim 1: menu, rota ve ekranlar aktif sitenin ozellik anahtarlarini bu saglayicidan okur.
+  return (
+    <SiteFeaturesProvider>
+      <ResidentShell />
+    </SiteFeaturesProvider>
+  );
+}
+
+function ResidentShell() {
   const [moreOpen, setMoreOpen] = useState(false);
   const { pathname } = useLocation();
+  const { isEnabled } = useSiteFeatures();
   // Genel Kurul yalnizca malik uyeligi olana (kiraciya menude gorunmez; API de 403 doner).
-  const items = residentNavFor(useIsActiveOwner());
+  // Adim 1: `feature` tasiyan oge yalnizca site ozelligi acikken gorunur.
+  const items = residentNavFor(useIsActiveOwner()).filter((i) => !i.feature || isEnabled(i.feature));
   const { primary, more } = splitResidentNav(items);
   const moreActive = isMoreActive(pathname, more);
 

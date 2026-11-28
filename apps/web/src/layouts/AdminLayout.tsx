@@ -9,6 +9,7 @@ import { Button, Dialog } from '@/components/ui';
 import { useActiveApartmentName } from '@/hooks/useActiveContextLabel';
 import { useAuth } from '@/hooks/useAuth';
 import { usePortfolioAccess } from '@/hooks/usePortfolio';
+import { SiteFeaturesProvider, useSiteFeatures } from '@/context/SiteFeaturesContext';
 import { ROLE_LABELS } from '@/types/roles';
 import { navItemsFor, panelTitleFor } from './adminNav';
 import { cn } from '@/lib/cn';
@@ -19,7 +20,8 @@ import { PageSuspense } from '@/router/lazyPage';
 function AdminNav({ onNavigate }: { onNavigate?: () => void }) {
   const { user } = useAuth();
   const { showInNav } = usePortfolioAccess();
-  const items = navItemsFor(user?.role, showInNav);
+  const { isEnabled } = useSiteFeatures();
+  const items = navItemsFor(user?.role, showInNav, isEnabled);
   return (
     <nav aria-label="Yönetim menüsü" className="flex flex-col gap-1">
       {items.map(({ to, label, icon: Icon, end }) => (
@@ -56,7 +58,16 @@ function Brand() {
 /** md (768px) ve ustu: kalici yan menu. Alti: hamburger + soldan cekmece. */
 const DESKTOP_QUERY = '(min-width: 48rem)';
 
+/** Adim 1: menu, rota ve ekranlar aktif sitenin ozellik anahtarlarini bu saglayicidan okur. */
 export function AdminLayout() {
+  return (
+    <SiteFeaturesProvider>
+      <AdminShell />
+    </SiteFeaturesProvider>
+  );
+}
+
+function AdminShell() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [switcherOpen, setSwitcherOpen] = useState(false);
   const { pathname } = useLocation();

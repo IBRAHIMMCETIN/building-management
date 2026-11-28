@@ -1,4 +1,4 @@
-import { Hono } from 'hono';
+import { Hono, type MiddlewareHandler } from 'hono';
 import type { AuthIdentity, IdentityResolver } from '../../auth/claims.js';
 import { handleError } from '../../http/helpers.js';
 import { setRequestActor } from '../audit/context.js';
@@ -7,6 +7,8 @@ import type { MfaService } from '../mfa/service.js';
 import { DeviceRateLimitError, type DeviceService } from '../notifications/devices.js';
 import type { PreferencesService } from '../notifications/preferences.js';
 import type { MeService } from './service.js';
+import { type SiteFeatureReader, featureAllowed, featureDisabledBody } from '../features/guard.js';
+import type { FeatureKey } from '../features/catalog.js';
 
 type MeEnv = { Variables: { identity: AuthIdentity } };
 
@@ -19,6 +21,11 @@ export type MeRoutesDeps = {
   devices?: DeviceService;
   /** TOTP kurulumu; verilmezse `/mfa` uclari yok (yalnizca eski testler). */
   mfa?: MfaService;
+  /**
+   * Adim 1: aktif baglami `resident` olan kullanicida `resident.notificationPrefs` / `resident.mfa`
+   * kapaliysa ilgili uclar 403 feature_disabled. Yonetim rolleri (zorunlu MFA dahil) etkilenmez.
+   */
+  features?: SiteFeatureReader;
 };
 
 /**
@@ -49,7 +56,7 @@ export type MeRoutesDeps = {
  * ister (yoksa Authorization'daki token denenir). Basarili kurulumdan sonra istemci token'i
  * yenilemelidir (`mfa_enabled` claim'i).
  */
-export function meRoutes({ identify, service, preferences, devices, mfa }: MeRoutesDeps) {
+export function meRoutes({ identify, service, preferences, devices, mfa, features }: MeRoutesDeps) {
   const r = new Hono<MeEnv>();
   r.onError(handleError);
   r.use('*', async (c, next) => {
@@ -60,12 +67,23 @@ export function meRoutes({ identify, service, preferences, devices, mfa }: MeRou
     await next();
   });
 
+  // Yalnizca sakin baglaminda uygulanir; secim yapilmamis / yonetim baglaminda kontrol yok.
+  const residentFeature = (key: FeatureKey): MiddlewareHandler<MeEnv> => async (c, next) => {
+    const claims = c.get('identity').claims;
+    if (claims?.role === 'resident' && !(await featureAllowed(features, claims, key))) {
+      c.header('cache-control', 'no-store');
+      return c.json(featureDisabledBody(key), 403);
+    }
+    await next();
+  };
+
   r.get('/contexts', async (c) => {
     c.header('cache-control', 'no-store');
     return c.json(await service.contexts(c.get('identity')));
   });
 
   if (preferences) {
+    r.use('/notification-preferences', residentFeature('resident.notificationPrefs'));
     r.get('/notification-preferences', async (c) => {
       c.header('cache-control', 'no-store');
       return c.json(await preferences.get(c.get('identity').userId));
@@ -97,6 +115,8 @@ export function meRoutes({ identify, service, preferences, devices, mfa }: MeRou
   }
 
   if (mfa) {
+    // Durum okuma (GET /mfa) acik kalir; sakinde kurulum uclari ozellige baglidir.
+    r.use('/mfa/totp/*', residentFeature('resident.mfa'));
     r.get('/mfa', async (c) => {
       c.header('cache-control', 'no-store');
       return c.json(await mfa.status(c.get('identity')));

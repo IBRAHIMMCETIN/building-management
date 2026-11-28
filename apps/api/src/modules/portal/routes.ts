@@ -4,6 +4,7 @@ import { type Env, authenticateWith, handleError, publicView, readJson, requireR
 import type { OffsetService } from '../finance/offsets.js';
 import type { PlanService } from '../finance/plans.js';
 import { PORTAL_ROLES, type PortalContext, type PortalService } from './service.js';
+import { type SiteFeatureReader, requireFeature } from '../features/guard.js';
 
 export type PortalRoutesDeps = {
   authenticate: Authenticator;
@@ -14,6 +15,8 @@ export type PortalRoutesDeps = {
   offsets?: Pick<OffsetService, 'portalOptions' | 'createRequest' | 'myRequests'>;
   /** Finans 2.2: aktif taksit planlari. */
   plans?: Pick<PlanService, 'portalPlans'>;
+  /** Adim 1: site ozellik anahtarlari (verilmezse kontrol yok). */
+  features?: SiteFeatureReader;
 };
 
 /**
@@ -30,7 +33,7 @@ export type PortalRoutesDeps = {
  *    eslestirilir; eslesmezse 403. Tek dairesi olan sakin parametre gondermez.
  *  - Kisisel finansal veri: yanitlar onbelleklenmez (`Cache-Control: no-store`).
  */
-export function portalRoutes({ authenticate, service, paymentReference, offsets, plans }: PortalRoutesDeps) {
+export function portalRoutes({ authenticate, service, paymentReference, offsets, plans, features }: PortalRoutesDeps) {
   const r = new Hono<Env>();
   r.onError(handleError);
 
@@ -76,10 +79,13 @@ export function portalRoutes({ authenticate, service, paymentReference, offsets,
   }
 
   if (plans) {
-    r.get('/my-plans', async (c) => c.json(await plans.portalPlans(ctx(c), unitId(c))));
+    r.get('/my-plans', requireFeature(features, 'resident.restructure'), async (c) => c.json(await plans.portalPlans(ctx(c), unitId(c))));
   }
 
   if (offsets) {
+    const offsetGate = requireFeature(features, 'resident.advanceOffset');
+    r.use('/offset-options', offsetGate);
+    r.use('/offset-requests', offsetGate);
     r.get('/offset-options', async (c) => c.json(await offsets.portalOptions(ctx(c), unitId(c))));
     r.get('/offset-requests', async (c) => c.json({ items: (await offsets.myRequests(ctx(c))).map(publicView) }));
     r.post('/offset-requests', async (c) => {

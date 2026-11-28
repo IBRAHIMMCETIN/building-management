@@ -6,6 +6,7 @@ import { type ChainVerification, createAuditReader, createDynamoCheckpointStore,
 import { type LedgerAuditor, createDynamoAuditSource, createLedgerAuditor } from '../modules/finance/audit.js';
 import { type MetricsEmitter, createEmfEmitterFromEnv } from '../observability/metrics.js';
 import { type CoreRepository, coreRepository } from '../modules/core/repository.js';
+import { type FeatureKey, resolveFeatures } from '../modules/features/catalog.js';
 import { type IsoDate, toKurus } from '../modules/core/types.js';
 import { previousPeriod } from '../modules/finance/lateFee.js';
 import { type PlanService, createPlanService } from '../modules/finance/plans.js';
@@ -85,6 +86,10 @@ import { type ReceiptCheckResult, checkPushReceipts, createDynamoReceiptStore } 
  *                  satirlarla aciklanamayan fark) `BankReconDiff` (kurus, mutlak toplam) ve
  *                  `BankReconAccountsOff` (farkli hesap sayisi) metrikleri.
  *
+ * Adim 1 - site ozellik anahtarlari: ise bagli ozellik sitede kapaliysa is URETILMEZ
+ * (`skipped: feature_disabled`). Su an: installment_plans <- `admin.debtRestructure`.
+ * payment_reconcile bilerek baglanmaz: yoldaki online odemeler ozellik kapansa da sonuclanmalidir.
+ *
  * Idempotency: her defter yazimi donem bazli anahtar kullanir (auto-dues-<YYYY-MM>,
  * lf-<YYYY-MM>-...), olay kimlikleri deterministiktir ve bildirim worker'i ayni olayi bir kez
  * isler. Bu yuzden mesajin tekrar islenmesi (SQS en az bir kez teslim) guvenlidir.
@@ -144,6 +149,11 @@ export function parseJobMessage(body: string): JobMessage {
 export function istanbulDate(iso: string): IsoDate {
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Istanbul' }).format(new Date(iso));
 }
+
+/** Ozellik anahtarina bagli isler (anahtar kapaliysa site icin is uretilmez). */
+export const JOB_FEATURES: Partial<Record<Job, FeatureKey>> = {
+  installment_plans: 'admin.debtRestructure',
+};
 
 export type SiteOutcome =
   | { apartmentId: string; status: 'done'; detail: Record<string, unknown> }
@@ -412,6 +422,10 @@ export function createSchedulerWorker(overrides: Partial<SchedulerDeps> = {}) {
     if (job === 'ledger_audit') return site ? runAudit(apartmentId) : { apartmentId, status: 'skipped', reason: 'site_missing' };
     if (!site || site.status !== 'active') return { apartmentId, status: 'skipped', reason: 'site_inactive' };
     const settings = site.settings;
+    const requiredFeature = JOB_FEATURES[job];
+    if (requiredFeature && !resolveFeatures(settings.features)[requiredFeature]) {
+      return { apartmentId, status: 'skipped', reason: 'feature_disabled' };
+    }
 
     switch (job) {
       case 'monthly_dues': {

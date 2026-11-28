@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router';
 import { Alert, Badge, Button, Card, CardTitle, Skeleton } from '@/components/ui';
 import { useActiveApartmentName } from '@/hooks/useActiveContextLabel';
 import { useAuth } from '@/hooks/useAuth';
+import { useFeature } from '@/context/SiteFeaturesContext';
 import { errorMessage } from '@/lib/api/errors';
 import { type MfaStatus, fetchMfaStatus } from '@/lib/api/mfa';
 import { MFA_SETUP_PATH } from '@/lib/auth/mfa';
@@ -27,7 +28,14 @@ export function AccountPage() {
   const { user } = useAuth();
   const apartmentName = useActiveApartmentName();
   const navigate = useNavigate();
-  const mfa = useQuery({ queryKey: ['me', 'mfa', user?.sub], queryFn: ({ signal }) => fetchMfaStatus(signal), enabled: !!user });
+  // Adim 1: sakin baglaminda bildirim tercihleri ve iki adimli dogrulama site ozelligine bagli.
+  // Yonetim rolleri (zorunlu MFA dahil) her zaman gorur.
+  const isResident = user?.role === 'resident';
+  const residentPrefsOn = useFeature('resident.notificationPrefs');
+  const residentMfaOn = useFeature('resident.mfa');
+  const showPrefs = !isResident || residentPrefsOn;
+  const showMfa = !isResident || residentMfaOn;
+  const mfa = useQuery({ queryKey: ['me', 'mfa', user?.sub], queryFn: ({ signal }) => fetchMfaStatus(signal), enabled: !!user && showMfa });
 
   if (!user) return null;
   const mfaMeta = mfa.data ? MFA_STATUS_META[mfa.data.status] : undefined;
@@ -52,38 +60,40 @@ export function AccountPage() {
         <p className="text-small text-muted">Ad ve e-posta değişikliği için apartman yönetiminize başvurun. Başka bir apartman/rol için üst menüdeki bağlam seçiciyi kullanın.</p>
       </Card>
 
-      <NotificationPreferencesCard />
+      {showPrefs && <NotificationPreferencesCard />}
 
-      <Card className="flex flex-col gap-3">
-        <CardTitle className="flex items-center gap-2">
-          <ShieldCheck className="size-5 text-muted" aria-hidden="true" />
-          İki adımlı doğrulama
-        </CardTitle>
-        {mfa.isPending && <Skeleton className="h-8" />}
-        {mfa.isError && <Alert tone="danger">{errorMessage(mfa.error)}</Alert>}
-        {mfa.data && mfaMeta && (
-          <>
-            <p className="flex flex-wrap items-center gap-2 text-small">
-              Durum: <Badge tone={mfaMeta.tone}>{mfaMeta.label}</Badge>
-              {mfa.data.roleRequiresMfa && <span className="text-muted">Bu rolde zorunludur.</span>}
-            </p>
-            {mfa.data.status === 'grace' && mfa.data.graceUntil && (
-              <p className="text-small text-warning">Son kurulum tarihi: {formatDateTime(mfa.data.graceUntil)}</p>
-            )}
-            {!mfa.data.enabled && (
-              <div>
-                <Button size="sm" onClick={() => navigate(MFA_SETUP_PATH)}>
-                  <ShieldCheck className="size-4" aria-hidden="true" />
-                  Doğrulayıcı uygulamayı kur
-                </Button>
-              </div>
-            )}
-            {mfa.data.enabled && (
-              <p className="text-small text-muted">Telefonunuzu kaybederseniz apartman yöneticiniz veya platform ekibi doğrulamanızı sıfırlayabilir.</p>
-            )}
-          </>
-        )}
-      </Card>
+      {showMfa && (
+        <Card className="flex flex-col gap-3">
+          <CardTitle className="flex items-center gap-2">
+            <ShieldCheck className="size-5 text-muted" aria-hidden="true" />
+            İki adımlı doğrulama
+          </CardTitle>
+          {mfa.isPending && <Skeleton className="h-8" />}
+          {mfa.isError && <Alert tone="danger">{errorMessage(mfa.error)}</Alert>}
+          {mfa.data && mfaMeta && (
+            <>
+              <p className="flex flex-wrap items-center gap-2 text-small">
+                Durum: <Badge tone={mfaMeta.tone}>{mfaMeta.label}</Badge>
+                {mfa.data.roleRequiresMfa && <span className="text-muted">Bu rolde zorunludur.</span>}
+              </p>
+              {mfa.data.status === 'grace' && mfa.data.graceUntil && (
+                <p className="text-small text-warning">Son kurulum tarihi: {formatDateTime(mfa.data.graceUntil)}</p>
+              )}
+              {!mfa.data.enabled && (
+                <div>
+                  <Button size="sm" onClick={() => navigate(MFA_SETUP_PATH)}>
+                    <ShieldCheck className="size-4" aria-hidden="true" />
+                    Doğrulayıcı uygulamayı kur
+                  </Button>
+                </div>
+              )}
+              {mfa.data.enabled && (
+                <p className="text-small text-muted">Telefonunuzu kaybederseniz apartman yöneticiniz veya platform ekibi doğrulamanızı sıfırlayabilir.</p>
+              )}
+            </>
+          )}
+        </Card>
+      )}
     </div>
   );
 }

@@ -4,6 +4,7 @@ import { Alert, Badge, Button, Card, Dialog, FormField, Skeleton, Textarea } fro
 import { useReverseClosure, useUnitClosures } from '@/hooks/useClosures';
 import { useFinancePermissions } from '@/hooks/useFinance';
 import { usePlans } from '@/hooks/useRestructure';
+import { useFeature } from '@/context/SiteFeaturesContext';
 import type { CariClosure } from '@/lib/api/closures';
 import { errorMessage } from '@/lib/api/errors';
 import { formatDate, formatDateTime } from '@/lib/dates';
@@ -126,6 +127,19 @@ function ClosureCard({
  */
 export function UnitPlansSection({ unitId, canWrite, onOffset, onRestructure }: { unitId: string; canWrite: boolean; onOffset: () => void; onRestructure: () => void }) {
   const plans = usePlans();
+  // Adim 1: borc yapilandirma kapaliysa yalnizca avans mahsubu kisayolu kalir.
+  const restructureOn = useFeature('admin.debtRestructure');
+  if (!restructureOn) {
+    return canWrite ? (
+      <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border p-3">
+        <p className="text-small font-medium">Avans mahsubu</p>
+        <Button size="sm" variant="ghost" onClick={onOffset}>
+          <ArrowLeftRight className="size-4" aria-hidden="true" />
+          Avans mahsubu
+        </Button>
+      </div>
+    ) : null;
+  }
   const open = (plans.data ?? []).filter((p) => p.unitId === unitId && (p.state.displayStatus === 'active' || p.state.displayStatus === 'accelerated'));
   return (
     <div className="flex flex-col gap-2 rounded-lg border border-border p-3">
@@ -178,6 +192,7 @@ export function UnitCariDialog({ row, names, startWithWizard, onClose, onInvite 
   const [mode, setMode] = useState<'history' | 'wizard'>('history');
   const [reversingId, setReversingId] = useState<string | null>(null);
   const [tool, setTool] = useState<'offset' | 'restructure' | null>(null);
+  const restructureOn = useFeature('admin.debtRestructure');
   // Sihirbaz her acilista sifirdan baslasin (key).
   const [wizardRun, setWizardRun] = useState(0);
 
@@ -268,7 +283,7 @@ export function UnitCariDialog({ row, names, startWithWizard, onClose, onInvite 
       {canWrite && row && (
         <>
           <OffsetDialog open={tool === 'offset'} onClose={() => setTool(null)} preset={{ unitId: row.unit.unitId }} />
-          <RestructureWizard open={tool === 'restructure'} onClose={() => setTool(null)} preset={{ unitId: row.unit.unitId }} />
+          {restructureOn && <RestructureWizard open={tool === 'restructure'} onClose={() => setTool(null)} preset={{ unitId: row.unit.unitId }} />}
         </>
       )}
     </>

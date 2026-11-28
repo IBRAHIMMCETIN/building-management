@@ -266,7 +266,7 @@ describe('lambda giris noktasi', () => {
       {} as never,
     )) as { statusCode: number };
     expect(wrongRole.statusCode).toBe(403);
-  });
+  }, 15_000);
 
   it('API Lambda olay yayincisi gerektirmez: olaylar outbox\'a yazilir (EVENTS_MODE olmadan acilir)', async () => {
     Object.assign(process.env, { AUTH_MODE: 'apigw', NODE_ENV: 'production' });

@@ -1,4 +1,5 @@
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useFeature } from '@/context/SiteFeaturesContext';
 import { useEffect, useRef, useState } from 'react';
 import { usePortalUnit } from '@/context/PortalUnitContext';
 import { ApiError } from '@/lib/api/errors';
@@ -35,10 +36,12 @@ export const paymentKeys = {
 /** Odenebilir kalemler ve online odemenin acik olup olmadigi. */
 export function usePaymentQuote() {
   const { apt, userId, unitId, enabled } = useResidentScope();
+  // Adim 1: online odeme sitede kapaliysa teklif istenmez (buton gizli, havale notu gorunur).
+  const online = useFeature('payments.online');
   return useQuery({
     queryKey: paymentKeys.quote(apt, userId, unitId),
     queryFn: ({ signal }) => paymentsApi.quote(unitId, signal),
-    enabled,
+    enabled: enabled && online,
     retry,
   });
 }

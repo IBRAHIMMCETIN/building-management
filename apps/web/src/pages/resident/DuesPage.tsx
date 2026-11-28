@@ -3,6 +3,7 @@ import { useMemo } from 'react';
 import { BankTransferCard } from '@/components/portal/BankTransferCard';
 import { InstallmentPlanCard } from '@/components/portal/InstallmentPlanCard';
 import { OffsetRequestCard } from '@/components/portal/OffsetRequestCard';
+import { useFeature } from '@/context/SiteFeaturesContext';
 import { ChangeUnitLink, PortalQueryState } from '@/components/portal/PortalQueryState';
 import { PayOnlineButton } from '@/components/portal/PayOnlineButton';
 import { PortalStatusBadge } from '@/components/portal/PortalStatusBadge';
@@ -234,13 +235,16 @@ function Movements() {
 }
 
 export function DuesPage() {
+  // Adim 1: sade modda yapilandirma ve mahsup kartlari sakinden kaldirilir (yonetici tarafinda kalir).
+  const restructureOn = useFeature('resident.restructure');
+  const offsetOn = useFeature('resident.advanceOffset');
   return (
     <div className="flex flex-col gap-6">
       <h1 className="text-title font-bold">Borçlarım</h1>
       <SummaryCard />
-      <InstallmentPlanCard />
+      {restructureOn && <InstallmentPlanCard />}
       <BankTransferCard />
-      <OffsetRequestCard />
+      {offsetOn && <OffsetRequestCard />}
       <Movements />
     </div>
   );

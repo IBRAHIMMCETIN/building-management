@@ -7,6 +7,7 @@ import { ForbiddenPage, NotFoundPage, RouteErrorPage } from '@/pages/errors/Erro
 import { ADMIN_ROLES, APARTMENT_ADMIN_ROLES, AUDIT_ROLES, EQUIPMENT_ROLES, GATE_ROLES, METER_READING_ROLES, METER_ROLES, MY_TASKS_ROLES, OFFICE_ROLES, PLATFORM_ROLES, PORTFOLIO_ROLES, RESIDENT_ROLES, SECURITY_ROLES, TEAM_ROLES, TICKET_ROLES } from '@/types/roles';
 import { RedirectIfAuthenticated, RequireRole, RequireSession, RootRedirect } from './guards';
 import { PageSuspense, lazyPage } from './lazyPage';
+import { RequireFeature } from './RequireFeature';
 
 // Sayfalar ayri parcalardir (giris ekrani ve hata sayfalari haric): rota acilinca indirilir.
 const AnnouncementsPage = lazyPage(() => import('@/pages/admin/announcements/AnnouncementsPage'), 'AnnouncementsPage');
@@ -201,7 +202,8 @@ export const router = createBrowserRouter([
               { path: 'rezervasyon', element: <MyReservationsPage /> },
               { path: 'ihale', element: <MyTendersPage /> },
               { path: 'ihale/:tenderId', element: <MyTenderDetailPage /> },
-              { path: 'odeme', element: <PaymentPage /> },
+              // Adim 1: online odeme baslatma `payments.online` ozelligine bagli; sonuc sayfasi her zaman acik.
+              { element: <RequireFeature feature="payments.online" title="Online ödeme" />, children: [{ path: 'odeme', element: <PaymentPage /> }] },
               { path: 'odeme/sonuc', element: <PaymentResultPage /> },
               { path: 'announcements', element: <ResidentAnnouncementsPage /> },
               // Y1: anket / oylama.

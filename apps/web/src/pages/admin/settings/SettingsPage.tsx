@@ -11,6 +11,7 @@ import { applyApiFieldError } from '@/lib/api/formErrors';
 import type { Site } from '@/lib/api/sites';
 import { formatTRY, parseTRYToKurus } from '@/lib/money';
 import { AccountChartCard } from './AccountChartCard';
+import { SiteFeaturesCard } from './SiteFeaturesCard';
 import {
   SETTINGS_FIELD_MAP,
   STATUTORY_LATE_FEE_BP,
@@ -47,7 +48,7 @@ export function SettingsPage() {
     <div className="flex max-w-3xl flex-col gap-6">
       <div>
         <h1 className="text-title font-bold">Ayarlar</h1>
-        <p className="text-small text-muted">Aidat vadesi, gecikme tazminatı, otomatik aylık aidat ve hesap planı.</p>
+        <p className="text-small text-muted">Aidat vadesi, gecikme tazminatı, otomatik aylık aidat, hesap planı ve site özellikleri.</p>
       </div>
       {site.isPending ? (
         <Card role="status" aria-label="Ayarlar yükleniyor" className="flex flex-col gap-3">
@@ -66,6 +67,7 @@ export function SettingsPage() {
         <SettingsFormView site={site.data} readOnly={!canWrite} />
       )}
       <AccountChartCard canWrite={canWrite} />
+      <SiteFeaturesCard />
     </div>
   );
 }
