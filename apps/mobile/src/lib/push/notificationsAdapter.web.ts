@@ -14,13 +14,15 @@ export const notificationsAdapter: NotificationsAdapter = {
   locale: () => undefined,
   getPermission: async () => ({ status: 'denied', canAskAgain: false }),
   requestPermission: async () => ({ status: 'denied', canAskAgain: false }),
-  getExpoToken: async () => {
+  getTokens: async () => {
     throw new Error('Web önizlemesinde mobil bildirim yok');
   },
   onTokenChange: none,
+  unregisterDevice: async () => undefined,
   configure: async () => undefined,
   onTap: none,
   lastTap: async () => null,
+  clearLastTap: () => undefined,
   onReceived: none,
   openSettings: async () => undefined,
 };

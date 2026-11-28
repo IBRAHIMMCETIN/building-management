@@ -46,13 +46,17 @@ const isResponse = (v: unknown): v is { status: number; body?: unknown } =>
 /** `fetch` yerine: "GET /api/portal/my-summary" -> govde (200), { status, body } veya bunlari donduren fonksiyon. */
 export function mockApi(routes: Routes) {
   const calls: ApiCall[] = [];
+  // Giden Authorization basligi (cagri nesnesinin esitlik karsilastirmasina girmez).
+  const auth = new WeakMap<ApiCall, string | undefined>();
   const fetchImpl = (async (input: string, init?: RequestInit) => {
     const [base = '', qs = ''] = input.replace('https://api.test', '').split('?');
     const query = Object.fromEntries(qs.split('&').filter(Boolean).map((p) => p.split('=').map(decodeURIComponent) as [string, string]));
     const method = (init?.method ?? 'GET').toUpperCase();
     // JSON govde ayristirilir; dosya (imzali linke PUT) oldugu gibi kaydedilir.
     const body = typeof init?.body === 'string' ? JSON.parse(init.body) : init?.body;
-    calls.push({ method, path: base, query, body });
+    const call: ApiCall = { method, path: base, query, body };
+    calls.push(call);
+    auth.set(call, (init?.headers as Record<string, string> | undefined)?.authorization);
     const handler = routes[`${method} ${base}`];
     let status = 200;
     let payload: unknown;
@@ -72,7 +76,7 @@ export function mockApi(routes: Routes) {
     const text = payload === undefined ? '' : JSON.stringify(payload);
     return { ok: status >= 200 && status < 300, status, text: async () => text } as unknown as Response;
   }) as unknown as typeof fetch;
-  return { fetchImpl, calls };
+  return { fetchImpl, calls, authOf: (call: ApiCall | undefined) => (call ? auth.get(call) : undefined) };
 }
 
 type Options = { email?: string | null; routes?: Routes; env?: Partial<AppEnv>; withUnit?: boolean; notifications?: NotificationsAdapter };

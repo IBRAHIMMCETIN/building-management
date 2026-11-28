@@ -1,6 +1,6 @@
 import type { MeContexts } from '@bm/shared/auth/contextsSchema';
 import { mockContextsFor } from '@bm/shared/auth/mockScenarios';
-import type { AuthAdapter, AuthSession } from '@bm/shared/auth/session';
+import { type AuthAdapter, type AuthSession, apiTokenFor } from '@bm/shared/auth/session';
 import { type ReactNode, createContext, use } from 'react';
 import type { AppEnv } from '@/config/env';
 import { type ApiClient, createApiClient } from '@/lib/api/createApiClient';
@@ -88,12 +88,16 @@ export function createServices(env: AppEnv, overrides: ServiceOverrides = {}): S
     storage: overrides.pushStorage ?? secureStorage,
     preferences,
     getSession: () => session.getSession(),
+    tokenFor: (s) => apiTokenFor(s, env.tokenUse),
     log: (message) => console.info(message),
   });
   session.setHooks({
     afterSignIn: (s) => push.onSignedIn(s),
-    beforeSignOut: () => push.unregister(),
+    // Giden oturumun token'i kancanin basinda alinir; silme kancanin 3 sn sinirindan sonra da dogrulanir.
+    beforeSignOut: (s) => push.beginSignOut(s),
   });
+  // Kullanici degisti / oturum dustu (401 dahil): izin aciklamasi ve kayit durumu sifirlanir.
+  session.onScopeChange((prev, next) => push.onSessionChange(prev, next));
   // Acilista geri yuklenen oturum: izin verilmisse yalnizca token degistiyse yeniden kayit (istem yok).
   void session.ready.then(() => {
     const restored = session.getSession();

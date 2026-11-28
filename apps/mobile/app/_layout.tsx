@@ -99,7 +99,7 @@ function App() {
   useReactQueryAppState();
   // Acilista: Android bildirim kanallari + on plan gosterim kurali (izin istemez) ve ekran yonu.
   useEffect(() => {
-    void services.notifications.configure();
+    void services.notifications.configure(services.push.shouldShow);
     void applyOrientationPolicy();
   }, [services]);
   const { scheme, colors } = useTheme();

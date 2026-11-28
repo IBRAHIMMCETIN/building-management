@@ -33,6 +33,10 @@ export function PushDeviceStatus() {
       </AppText>
     );
   }
+  if (snap.permission === 'granted' && !snap.registered && snap.error) {
+    // Kayit basarisiz / gunluk sinir: kendiliginden sonraki giriste veya 6 saat sonra yeniden denenir.
+    return <Alert tone="warning">{snap.error}</Alert>;
+  }
   if (snap.permission === 'granted') {
     return (
       <AppText variant="small" tone={snap.registered ? 'success' : 'muted'} accessibilityLiveRegion="polite">
