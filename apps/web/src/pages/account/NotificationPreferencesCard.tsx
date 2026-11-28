@@ -1,13 +1,25 @@
 import { BellRing } from 'lucide-react';
 import { useId } from 'react';
 import { Alert, Card, CardTitle, Skeleton } from '@/components/ui';
+import { useAuth } from '@/hooks/useAuth';
+import type { Role } from '@/types/roles';
 import { useNotificationPreferences, useSaveNotificationPreferences } from '@/hooks/useTeam';
 import { errorMessage } from '@/lib/api/errors';
-import { NOTIFICATION_CATEGORIES, NOTIFICATION_CATEGORY_META, categoryEnabled } from '@/lib/api/notificationPreferences';
+import {
+  type AnyNotificationCategory,
+  MANAGEMENT_NOTIFICATION_CATEGORIES,
+  NOTIFICATION_CATEGORIES,
+  NOTIFICATION_CATEGORY_META,
+  categoryEnabled,
+} from '@/lib/api/notificationPreferences';
+
+/** Abonelik / lisans bildirimleri (billing) yalnizca apartmani yoneten rollere gider. */
+const MANAGING_ROLES: readonly Role[] = ['apartment_manager', 'management_company'];
 
 /**
  * Hesabim - bildirim tercihleri (`/api/me/notification-preferences`): e-posta ana anahtari ve kategori
- * bazli e-posta (aidat / tahsilat, duyuru, ariza, ziyaretci / kurye, rezervasyon, anket, genel kurul). Tercih
+ * bazli e-posta (aidat / tahsilat, duyuru, ariza, ziyaretci / kurye, rezervasyon, anket, genel kurul, ihale; yonetici ve
+ * yonetim firmasina ayrica abonelik / faturalar). Tercih
  * kullanici genelidir (tum apartmanlar); her degisiklik YALNIZCA degisen alani gonderir, sunucu
  * digerlerine dokunmaz (iki cihaz / eski sekme birbirini ezmez). Yonetim paneli ve sakin portali ayni
  * karti kullanir. Erisilebilirlik: ad sarmalayan <label>'dan, aciklama `aria-describedby` ile.
@@ -16,7 +28,10 @@ export function NotificationPreferencesCard() {
   const prefs = useNotificationPreferences();
   const save = useSaveNotificationPreferences();
   const id = useId();
+  const { user } = useAuth();
   const emailEnabled = prefs.data?.email.enabled ?? true;
+  const categories: readonly AnyNotificationCategory[] =
+    user?.role && MANAGING_ROLES.includes(user.role) ? [...NOTIFICATION_CATEGORIES, ...MANAGEMENT_NOTIFICATION_CATEGORIES] : NOTIFICATION_CATEGORIES;
 
   return (
     <Card className="flex flex-col gap-3">
@@ -46,7 +61,7 @@ export function NotificationPreferencesCard() {
             </span>
           </label>
           <div role="group" aria-label="E-posta konuları" className={`flex flex-col gap-3 pl-6 ${emailEnabled ? '' : 'opacity-60'}`}>
-            {NOTIFICATION_CATEGORIES.map((category) => {
+            {categories.map((category) => {
               const meta = NOTIFICATION_CATEGORY_META[category];
               const descId = `${id}-${category}-desc`;
               return (

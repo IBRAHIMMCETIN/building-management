@@ -1,4 +1,4 @@
-import { ArrowLeftRight, Briefcase, Building, CalendarDays, ClipboardPen, Contact, CreditCard, DoorOpen, FileText, FileUp, Gauge, Landmark, LayoutDashboard, ListChecks, Megaphone, Scale, ScrollText, Settings, ShieldCheck, Tag, UserCog, Users, Vote, Wallet, Wrench } from 'lucide-react';
+import { ArrowLeftRight, BadgeCheck, Briefcase, Building, Layers, Receipt, CalendarDays, ClipboardPen, Contact, CreditCard, DoorOpen, FileText, FileUp, Gauge, Landmark, LayoutDashboard, ListChecks, Megaphone, Scale, ScrollText, Settings, ShieldCheck, Tag, UserCog, Users, Vote, Wallet, Wrench } from 'lucide-react';
 import type { ComponentType } from 'react';
 import type { FeatureKey } from '@/lib/features/catalog';
 import { AUDIT_ROLES, EQUIPMENT_ROLES, GATE_ROLES, METER_READING_ROLES, METER_ROLES, MY_TASKS_ROLES, OFFICE_ROLES, PORTFOLIO_ROLES, type Role, SECURITY_ROLES, TEAM_ROLES, TICKET_ROLES, isPlatformRole } from '@/types/roles';
@@ -24,22 +24,22 @@ export type NavItem = {
 /** Apartmana ozel yonetim menusu (aktif apartman baglami gerektirir). */
 export const APARTMENT_NAV: readonly NavItem[] = [
   // Apartmanlar arasi ozet: tek apartmanin menusunden once.
-  { to: '/admin/portfolio', label: 'Portföy', icon: Briefcase, roles: PORTFOLIO_ROLES, portfolioOnly: true },
+  { to: '/admin/portfolio', label: 'Portföy', icon: Briefcase, roles: PORTFOLIO_ROLES, portfolioOnly: true, feature: 'modules.portfolio' },
   { to: '/admin', label: 'Genel Bakış', icon: LayoutDashboard, end: true },
   { to: '/admin/my-tasks', label: 'İşlerim', icon: ListChecks, roles: MY_TASKS_ROLES },
-  { to: '/admin/gate', label: 'Güvenlik Kapısı', icon: DoorOpen, roles: GATE_ROLES },
+  { to: '/admin/gate', label: 'Güvenlik Kapısı', icon: DoorOpen, roles: GATE_ROLES, feature: 'modules.gate' },
   { to: '/admin/units', label: 'Daireler', icon: Users, roles: OFFICE_ROLES },
   { to: '/admin/finance', label: 'Finans', icon: Wallet, roles: OFFICE_ROLES },
   { to: '/admin/tickets', label: 'Arıza & Bakım', icon: Wrench, roles: TICKET_ROLES },
-  { to: '/admin/equipment', label: 'Ekipman', icon: Tag, roles: EQUIPMENT_ROLES },
-  { to: '/admin/reservations', label: 'Rezervasyonlar', icon: CalendarDays, roles: OFFICE_ROLES },
-  { to: '/admin/tenders', label: 'İhaleler', icon: Scale, roles: OFFICE_ROLES },
+  { to: '/admin/equipment', label: 'Ekipman', icon: Tag, roles: EQUIPMENT_ROLES, feature: 'modules.equipment' },
+  { to: '/admin/reservations', label: 'Rezervasyonlar', icon: CalendarDays, roles: OFFICE_ROLES, feature: 'modules.reservations' },
+  { to: '/admin/tenders', label: 'İhaleler', icon: Scale, roles: OFFICE_ROLES, feature: 'modules.tenders' },
   { to: '/admin/meters', label: 'Sayaç Dağıtımı', icon: Gauge, roles: METER_ROLES },
   { to: '/admin/meter-readings', label: 'Sayaç Okuma', icon: ClipboardPen, roles: METER_READING_ROLES },
   { to: '/admin/team', label: 'Ekip', icon: Contact, roles: TEAM_ROLES },
   { to: '/admin/announcements', label: 'Duyurular', icon: Megaphone, roles: OFFICE_ROLES },
-  { to: '/admin/polls', label: 'Oylamalar', icon: Vote, roles: OFFICE_ROLES },
-  { to: '/admin/assemblies', label: 'Genel Kurul', icon: Landmark, roles: OFFICE_ROLES },
+  { to: '/admin/polls', label: 'Oylamalar', icon: Vote, roles: OFFICE_ROLES, feature: 'modules.pollsAssemblies' },
+  { to: '/admin/assemblies', label: 'Genel Kurul', icon: Landmark, roles: OFFICE_ROLES, feature: 'modules.pollsAssemblies' },
   { to: '/admin/import', label: 'Toplu Aktarım', icon: FileUp, roles: OFFICE_ROLES },
   { to: '/admin/settings', label: 'Ayarlar', icon: Settings, roles: OFFICE_ROLES },
   { to: '/admin/audit', label: 'Denetim Günlüğü', icon: ScrollText, roles: AUDIT_ROLES },
@@ -52,6 +52,10 @@ export const PLATFORM_NAV: readonly NavItem[] = [
   { to: '/admin/payments', label: 'Ödeme Hesapları', icon: CreditCard, end: true },
   { to: '/admin/payments/transfers', label: 'Aktarımlar', icon: ArrowLeftRight },
   { to: '/admin/payments/invoices', label: 'Komisyon Faturaları', icon: FileText },
+  // Abonelik / lisans: apartman abonelikleri, plan katalogu, kullanim bedeli faturalari.
+  { to: '/admin/billing/subscriptions', label: 'Abonelikler', icon: BadgeCheck },
+  { to: '/admin/billing/plans', label: 'Abonelik Planları', icon: Layers },
+  { to: '/admin/billing/invoices', label: 'Abonelik Faturaları', icon: Receipt },
   { to: '/admin/users', label: 'Kullanıcılar', icon: UserCog },
   { to: '/admin/audit', label: 'Denetim Günlüğü', icon: ScrollText },
 ];

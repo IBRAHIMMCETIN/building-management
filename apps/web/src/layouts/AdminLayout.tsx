@@ -5,6 +5,7 @@ import { BrandMark } from '@/components/BrandMark';
 import { ContextSwitchDialog, useCanSwitchContext } from '@/components/context/ContextSwitcher';
 import { MfaGraceBanner } from '@/components/MfaGraceBanner';
 import { SupportBanner } from '@/components/support/SupportBanner';
+import { SubscriptionBanner } from '@/components/subscription/SubscriptionBanner';
 import { Button, Dialog } from '@/components/ui';
 import { useActiveApartmentName } from '@/hooks/useActiveContextLabel';
 import { useAuth } from '@/hooks/useAuth';
@@ -128,6 +129,7 @@ function AdminShell() {
         </header>
         <SupportBanner />
         <MfaGraceBanner />
+        <SubscriptionBanner />
         <main className="mx-auto w-full min-w-0 max-w-page flex-1 px-4 py-8 md:px-8">
           <PageSuspense>
             <Outlet />

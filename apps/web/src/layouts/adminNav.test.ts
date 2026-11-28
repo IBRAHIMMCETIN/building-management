@@ -12,6 +12,9 @@ describe('yonetim menusu: platform ve apartman ayrimi', () => {
       '/admin/payments',
       '/admin/payments/transfers',
       '/admin/payments/invoices',
+      '/admin/billing/subscriptions',
+      '/admin/billing/plans',
+      '/admin/billing/invoices',
       '/admin/users',
       '/admin/audit',
     ]);
@@ -32,7 +35,7 @@ describe('yonetim menusu: platform ve apartman ayrimi', () => {
     expect(navItemsFor('building_staff').map((n) => n.to)).not.toContain('/admin/audit');
     for (const role of APARTMENT_ADMIN_ROLES) {
       const paths = navItemsFor(role).map((n) => n.to);
-      for (const p of ['/admin/apartments', '/admin/payments', '/admin/payments/transfers', '/admin/payments/invoices', '/admin/users']) {
+      for (const p of ['/admin/apartments', '/admin/payments', '/admin/payments/transfers', '/admin/payments/invoices', '/admin/billing/subscriptions', '/admin/billing/plans', '/admin/billing/invoices', '/admin/users']) {
         expect(paths).not.toContain(p);
       }
       expect(panelTitleFor(role)).toBe('Yönetim Paneli');
@@ -115,6 +118,9 @@ describe('yonetim menusu: site ozellik anahtarlari (Adim 1)', () => {
     expect(filterNav(items, 'apartment_manager').map((n) => n.to)).toEqual(['/admin/a', '/admin/b']);
     expect(filterNav(items, 'apartment_manager', () => false).map((n) => n.to)).toEqual(['/admin/a']);
     expect(filterNav(items, 'observer', () => true).map((n) => n.to)).toEqual(['/admin/a']);
-    expect(navItemsFor('apartment_manager', false, () => false)).toEqual(navItemsFor('apartment_manager'));
+    // Abonelik plan modulleri (modules.*) menude anahtara bagli; anahtarlar acikken menu aynen.
+    expect(navItemsFor('apartment_manager', false, () => false)).toEqual(navItemsFor('apartment_manager').filter((n) => !n.feature));
+    expect(navItemsFor('apartment_manager', false, () => true)).toEqual(navItemsFor('apartment_manager'));
+    expect(APARTMENT_NAV.filter((n) => n.feature).every((n) => n.feature?.startsWith('modules.'))).toBe(true);
   });
 });

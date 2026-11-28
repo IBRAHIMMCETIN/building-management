@@ -36,7 +36,15 @@ export function SiteFeaturesCard() {
                     <p className="text-small text-muted">{def.description}</p>
                   </div>
                   <div className="flex shrink-0 flex-col items-start gap-2 sm:items-end">
-                    {def.upcoming ? <Badge>Yakında</Badge> : on ? <Badge tone="success">Açık</Badge> : <Badge>Kapalı</Badge>}
+                    {def.upcoming ? (
+                      <Badge>Yakında</Badge>
+                    ) : on ? (
+                      <Badge tone="success">Açık</Badge>
+                    ) : view.planRestricted?.includes(def.key) ? (
+                      <Badge tone="warning">Aboneliğinizde yok</Badge>
+                    ) : (
+                      <Badge>Kapalı</Badge>
+                    )}
                     {!on && !def.upcoming && <RequestFeatureButton feature={def.key} compact />}
                   </div>
                 </li>

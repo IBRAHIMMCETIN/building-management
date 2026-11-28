@@ -8,8 +8,10 @@ import { NotificationPreferencesCard } from './NotificationPreferencesCard';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-type State = { data?: NotificationPreferences; loadError?: Error; saving: boolean; saveError?: Error; mutate: ReturnType<typeof vi.fn> };
-const state: State = { saving: false, mutate: vi.fn() };
+type State = { data?: NotificationPreferences; loadError?: Error; saving: boolean; saveError?: Error; mutate: ReturnType<typeof vi.fn>; role: string };
+const state: State = { saving: false, mutate: vi.fn(), role: 'resident' };
+
+vi.mock('@/hooks/useAuth', () => ({ useAuth: () => ({ user: { role: state.role } }) }));
 
 vi.mock('@/hooks/useTeam', () => ({
   useNotificationPreferences: () => ({ data: state.data, isPending: !state.data && !state.loadError, isError: !!state.loadError, error: state.loadError ?? null }),
@@ -20,7 +22,7 @@ let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => {
   act(() => root?.unmount());
   document.body.innerHTML = '';
-  Object.assign(state, { data: undefined, loadError: undefined, saving: false, saveError: undefined, mutate: vi.fn() });
+  Object.assign(state, { data: undefined, loadError: undefined, saving: false, saveError: undefined, mutate: vi.fn(), role: 'resident' });
 });
 
 function render(over: Partial<State>) {
@@ -78,6 +80,25 @@ describe('bildirim tercihleri karti', () => {
     expect(inputs.length).toBe(1 + NOTIFICATION_CATEGORIES.length);
     expect(inputs.every((i) => i.disabled)).toBe(true);
     expect(el.textContent).toContain('Sunucuya ulaşılamadı');
+  });
+
+  it('abonelik / faturalar satiri yalnizca yonetici ve yonetim firmasina; ayni satir bicimiyle', () => {
+    expect(render({ data: { email: { enabled: true } } }).box('billing')).toBeNull();
+    act(() => root?.unmount());
+    document.body.innerHTML = '';
+    for (const role of ['observer', 'building_staff', 'platform_admin']) {
+      const r = render({ data: { email: { enabled: true } }, role });
+      expect(r.box('billing'), role).toBeNull();
+      act(() => root?.unmount());
+      document.body.innerHTML = '';
+    }
+    const { box, labelOf, descriptionOf } = render({ data: { email: { enabled: true, billing: false } }, role: 'apartment_manager' });
+    const billing = box('billing');
+    expect(billing?.checked).toBe(false);
+    expect(labelOf(billing)).toBe('Abonelik ve faturalar');
+    expect(descriptionOf(billing)).toContain('Yalnızca yönetime gönderilir');
+    act(() => billing?.click());
+    expect(state.mutate).toHaveBeenCalledWith({ email: { billing: true } });
   });
 
   it('tercih okunamazsa hata gosterilir, anahtar cizilmez', () => {
