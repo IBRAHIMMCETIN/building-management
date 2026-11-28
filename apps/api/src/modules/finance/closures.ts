@@ -623,7 +623,7 @@ export function createClosureService(overrides: Partial<ClosureServiceDeps> & Pi
         // bile daire listesinde "aktif kiraci" olarak kalmaz). Kapama kimligi geri alma icin tutulur.
         ...(change.change === 'ended'
           ? { endDate: !m.endDate || m.endDate > D ? D : m.endDate, status: 'inactive' as const, endedByClosureId: closureId }
-          : { residesInUnit: false }),
+          : { residesInUnit: false, residencyEndedByClosureId: closureId }),
         updatedAt: ts,
         updatedBy: ctx.userId,
         version: m.version + 1,
@@ -744,7 +744,8 @@ export function createClosureService(overrides: Partial<ClosureServiceDeps> & Pi
       } else {
         const resides = change.previousResidesInUnit ?? true;
         if (m.residesInUnit === resides) continue;
-        next = { ...m, residesInUnit: resides };
+        const { residencyEndedByClosureId: _r, ...kept } = m;
+        next = { ...kept, residesInUnit: resides };
       }
       next = { ...next, updatedAt: ts, updatedBy: userId, version: m.version + 1 };
       out.push({ item: { ...next, ...membershipGsi1(next) }, expectedVersion: m.version, label: `membership:${m.userId}` });

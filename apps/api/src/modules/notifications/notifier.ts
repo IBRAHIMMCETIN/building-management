@@ -35,6 +35,8 @@ export type NotificationTemplate =
   | 'tender_decided'
   | 'tender_cancelled'
   | 'tender_replied'
+  /** Bildirim devami: arka plan toplu isinin bitis ozeti (isi baslatan yonetici). */
+  | 'bulk_job_summary'
   | `dues_reminder_${'upcoming' | 'overdue_1' | 'overdue_7' | 'plan_default'}`;
 
 /** Ozet bildirimlerdeki kalem satiri (kisisel veri yok). */
@@ -59,7 +61,8 @@ export type Notification = {
   data: NotificationData;
 };
 
-export type SkipReason = 'already_sent' | 'opted_out' | 'no_email' | 'email_unverified' | 'rejected' | 'no_template';
+/** `suppressed`: alici SES geri donus / sikayet nedeniyle engelli (suppressions.ts). */
+export type SkipReason = 'already_sent' | 'opted_out' | 'no_email' | 'email_unverified' | 'rejected' | 'no_template' | 'suppressed';
 
 export type DeliveryResult = { status: 'sent' } | { status: 'skipped'; reason: SkipReason };
 

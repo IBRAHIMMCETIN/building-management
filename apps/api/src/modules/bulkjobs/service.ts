@@ -20,6 +20,8 @@
  */
 import { createHash, randomUUID } from 'node:crypto';
 import { DataAccessError } from '../../config/dynamodb.js';
+import { type BulkJobFinishedPayload, type DomainEvent, buildEvent } from '../../events/publisher.js';
+import { SYSTEM_ACTOR } from '../finance/service.js';
 import { contentionBackoffMs } from '../audit/log.js';
 import { mapLimit } from '../core/concurrency.js';
 import { ValidationError } from '../core/validation.js';
@@ -38,10 +40,15 @@ import {
   JOB_TTL_DAYS,
   LINE_CHUNK,
   MAX_FAILURE_SAMPLES,
+  type MeterCalcJobParams,
   type MeterJobParams,
   type MeterReversalJobParams,
+  OUTPUT_CHUNK_CHARS,
   isTerminal,
 } from './types.js';
+
+/** Onizleme isinin kayit suresi (cikti buyuk, kisa omurlu; onaydan once yeniden hesaplanir). */
+const CALC_JOB_TTL_DAYS = 7;
 
 export type BulkJobContext = { apartmentId: string; userId: string; role?: Role };
 
@@ -86,7 +93,7 @@ export type BulkJobDeps = {
   queue: BulkJobQueue;
   finance: Pick<FinanceService, 'planBulkJob' | 'postBulkLine' | 'prepareBulkPosting' | 'recordDuesBatchSummary'> &
     Partial<Pick<FinanceService, 'refreshSummaries'>>;
-  meters?: Pick<MeterPostingService, 'prepareApproval' | 'postStep' | 'finalizePosting' | 'getPeriod'>;
+  meters?: Pick<MeterPostingService, 'prepareApproval' | 'postStep' | 'finalizePosting' | 'getPeriod'> & Partial<Pick<MeterPostingService, 'calculate'>>;
   /** P1-b: buyuk sayac doneminin toplu geri alinmasi. */
   meterReversal?: Pick<MeterReversalService, 'beginReversal' | 'reverseStep' | 'finalizeReversal' | 'getPeriod' | 'parseReverseBody'>;
   now?: () => Date;
@@ -94,6 +101,20 @@ export type BulkJobDeps = {
   options?: Partial<BulkJobOptions>;
   log?: Pick<Console, 'info' | 'error'>;
 };
+
+/**
+ * Metni en fazla `size` kod noktasi (UTF-16 birimi degil) parcalara boler: vekil ciftler (emoji,
+ * BMP disi karakterler) parca sinirinda bolunmez; parcalarin birlesimi metnin kendisidir.
+ */
+export function splitCodePoints(text: string, size: number): string[] {
+  const points = Array.from(text);
+  const out: string[] = [];
+  for (let i = 0; i < points.length; i += size) out.push(points.slice(i, i + size).join(''));
+  return out;
+}
+
+/** Bitisinde baslatana ozet bildirimi giden is turleri (defter yazan isler). */
+export const NOTIFY_KINDS: readonly BulkJob['kind'][] = ['dues_bulk', 'meter_posting', 'meter_reversal'];
 
 /** Worker'in kalan suresi (Lambda `context.getRemainingTimeInMillis`). */
 export type Budget = { remainingMs(): number };
@@ -181,6 +202,38 @@ export function createBulkJobService(deps: BulkJobDeps) {
       version: 1,
       ttl: ttl(),
     };
+  }
+
+  /**
+   * `BULK_JOB_FINISHED` (bitis ozeti): kimlik is surumunden (yeniden denenen is yeniden bildirir,
+   * ayni bitis iki kez yazilamaz). Sistemin baslattigi is (aylik otomatik aidat) icin olay yok.
+   */
+  function finishedEvent(job: BulkJob): DomainEvent | undefined {
+    if (!isTerminal(job.status) || !NOTIFY_KINDS.includes(job.kind) || !job.createdBy || job.createdBy === SYSTEM_ACTOR) return undefined;
+    const p = jobView(job).params as { periodId?: string; periodName?: string; description?: string };
+    const label = (p.periodName ?? p.description)?.slice(0, 120);
+    return buildEvent(
+      {
+        eventId: `BULK_JOB_FINISHED:${job.jobId}:${job.version}`,
+        type: 'BULK_JOB_FINISHED',
+        apartmentId: job.apartmentId,
+        actorId: SYSTEM_ACTOR,
+        payload: {
+          jobId: job.jobId,
+          kind: job.kind,
+          status: job.status as BulkJobFinishedPayload['status'],
+          startedBy: job.createdBy,
+          total: job.total,
+          succeeded: job.succeeded,
+          failed: job.failed,
+          written: job.written,
+          ...(p.periodId ? { periodId: p.periodId } : {}),
+          ...(label ? { label } : {}),
+          ...(job.status === 'failed' && job.error?.message ? { errorMessage: job.error.message.slice(0, 200) } : {}),
+        },
+      },
+      now,
+    );
   }
 
   async function enqueue(job: BulkJob, seq = 0) {
@@ -366,8 +419,11 @@ export function createBulkJobService(deps: BulkJobDeps) {
       const next: BulkJob = { ...job, ...patch, finishedAt: stamp(), updatedAt: stamp(), version: job.version + 1 };
       delete next.leaseUntil;
       delete next.leaseToken;
+      // Bildirim devami: bitis ozeti baslatana (is kaydiyla ayni atomik yazimda; sistem baslattiysa yok).
+      const summary = finishedEvent(next);
       try {
-        await repo.update(next, job.version);
+        if (summary) await repo.update(next, job.version, { outbox: [summary] });
+        else await repo.update(next, job.version);
       } catch (err) {
         if (err instanceof DataAccessError && err.code === 'conflict') throw new LeaseLostError();
         throw err;
@@ -378,14 +434,14 @@ export function createBulkJobService(deps: BulkJobDeps) {
     const shouldStop = () => handled >= opt.maxUnitsPerInvocation || budget.remainingMs() < opt.safetyMs;
 
     try {
-      const run = job.kind === 'dues_bulk' ? runDues : job.kind === 'meter_reversal' ? runMeterReversal : runMeter;
+      const run = job.kind === 'dues_bulk' ? runDues : job.kind === 'meter_reversal' ? runMeterReversal : job.kind === 'meter_calculation' ? runMeterCalculation : runMeter;
       const done = await run(() => job, save, finish, shouldStop, (n) => (handled += n));
       if (done) {
         log.info(JSON.stringify({ msg: 'bulk_job_done', jobId: job.jobId, apartmentId: job.apartmentId, kind: job.kind, status: job.status, total: job.total, failed: job.failed, invocations: job.invocations }));
         // P1-a: toplu tahakkuk tum alt carilerin surumunu artirdi; ozetleri worker'da tazele ki
         // ilk Genel Bakis / dues-status istegi yuzlerce hesabi yeniden okumasin. En iyi caba:
         // hata veya sure azligi sonucu degistirmez (istek yolu bayat ozeti kendisi uretir).
-        if (deps.finance.refreshSummaries && budget.remainingMs() > opt.safetyMs + 30_000) {
+        if (job.kind !== 'meter_calculation' && deps.finance.refreshSummaries && budget.remainingMs() > opt.safetyMs + 30_000) {
           try {
             const stats = await deps.finance.refreshSummaries(job.apartmentId);
             log.info(JSON.stringify({ msg: 'finance_summary_refreshed', jobId: job.jobId, apartmentId: job.apartmentId, ...stats }));
@@ -648,6 +704,99 @@ export function createBulkJobService(deps: BulkJobDeps) {
     return true;
   }
 
+  // -------------------------------------------------------------------------
+  // Performans: buyuk donemin dagitim onizlemesi (`/calculate`, 1.000+ bolum)
+  // -------------------------------------------------------------------------
+
+  const calcJobPrefix = (periodId: string) => `mc-${periodId}-`;
+
+  /**
+   * Onizleme isi (202). Donemin suren onizleme isi varsa o doner (cift tiklama / yenileme); yoksa her
+   * baslatma yeni is acar: senkron yol gibi her istekte yeniden hesaplanir (uyelik / kapama gibi
+   * donem disi girdiler de degismis olabilir). Hesabin kendisi worker'da `posting.calculate`.
+   */
+  async function startMeterCalculation(ctx: BulkJobContext & { role: Role }, periodId: string, unitCount: number) {
+    if (!deps.meters?.calculate) throw new BulkJobError('unprocessable', 'Sayac onizleme isi bu ortamda acik degil');
+    const period = await deps.meters.getPeriod(ctx, periodId);
+    if (period.status !== 'draft' && period.status !== 'calculated') {
+      throw new MeterError('unprocessable', 'Yalnızca taslak dönem hesaplanabilir; onaylı dönemin satırları için /lines kullanın');
+    }
+    const existing = repo.listByPrefix ? await repo.listByPrefix(ctx.apartmentId, calcJobPrefix(periodId)) : [];
+    const running = existing.filter((j) => !isTerminal(j.status) && !isStale(j)).sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+    if (running) return { job: running, created: false };
+    // Kimlik donem surumu + o surumdeki is sirasindan: es zamanli iki baslatma ayni kimligi uretir,
+    // biri kosullu yazimda kaybeder ve kazananin isini doner (cift is yok). Ayni surumde yeniden
+    // hesaplama (or. engeller donem disinda giderildi) sirayla yeni is acar.
+    const seq = existing.filter((j) => (j.params as MeterCalcJobParams).periodVersion === period.version).length;
+    const jobId = `${calcJobPrefix(periodId)}v${period.version}-${seq}`;
+    const params: MeterCalcJobParams = { periodId, periodVersion: period.version, unitCount, ...(period.name ? { periodName: period.name } : {}) };
+    const job: BulkJob = { ...baseJob(ctx, jobId, 'meter_calculation', params, unitCount, fingerprintOf({ periodId, jobId })), ttl: Math.floor(now().getTime() / 1000) + CALC_JOB_TTL_DAYS * 86_400 };
+    delete job.phase;
+    try {
+      await repo.create(job, []);
+    } catch (err) {
+      if (err instanceof DataAccessError && err.code === 'conflict') {
+        const raced = await repo.get(ctx.apartmentId, jobId);
+        if (raced) return { job: raced, created: false };
+      }
+      throw err;
+    }
+    await enqueue(job);
+    return { job, created: true };
+  }
+
+  /** Donemin suren onizleme isi (onay, hesap bitmeden baslatilamaz). */
+  async function activeMeterCalculation(ctx: BulkJobContext, periodId: string): Promise<BulkJob | undefined> {
+    if (!repo.listByPrefix) return undefined;
+    return (await repo.listByPrefix(ctx.apartmentId, calcJobPrefix(periodId))).find((j) => !isTerminal(j.status) && !isStale(j));
+  }
+
+  async function runMeterCalculation(job: Get, _save: Save, finish: Save, _shouldStop: () => boolean, count: (n: number) => void): Promise<boolean> {
+    const calculate = deps.meters?.calculate;
+    if (!calculate || !repo.putOutput) throw new BulkJobError('unprocessable', 'Sayac onizleme isi bu ortamda acik degil');
+    const j = job();
+    const params = j.params as MeterCalcJobParams;
+    const ctx = { apartmentId: j.apartmentId, userId: j.createdBy, role: j.createdByRole ?? ('apartment_manager' as Role) };
+    // Senkron yolla ayni fonksiyon: ayni girdiyle ayni cetvel ve calcHash.
+    const out = await calculate(ctx, params.periodId);
+    const { period: _p, ...rest } = out;
+    const chunks = splitCodePoints(JSON.stringify(rest), OUTPUT_CHUNK_CHARS);
+    await repo.putOutput(j.apartmentId, j.jobId, chunks, j.ttl);
+    const units = out.ok ? out.lines.length : params.unitCount;
+    count(units);
+    await finish({
+      status: 'completed',
+      total: units,
+      processed: units,
+      succeeded: units,
+      result: {
+        ok: out.ok,
+        unitCount: units,
+        outputChunks: chunks.length,
+        ...(out.ok ? { calcHash: out.calcHash, chargeCount: out.totals.chargeCount } : { blockerCount: out.blockers.length }),
+      },
+    });
+    return true;
+  }
+
+  /**
+   * Biten onizleme isinin ciktisi (senkron `/calculate` yanitiyla ayni govde; donem guncel kayittan).
+   * Hesap yapildiysa donem hala o hesapta olmali (`calculated` + ayni `calcHash`); degilse 409.
+   */
+  async function meterCalculationOutput(ctx: BulkJobContext & { role: Role }, periodId: string, jobId: string) {
+    if (!deps.meters || !repo.getOutput) throw new BulkJobError('unprocessable', 'Sayac onizleme isi bu ortamda acik degil');
+    const job = await get(ctx, jobId);
+    const params = job.params as MeterCalcJobParams;
+    if (job.kind !== 'meter_calculation' || params.periodId !== periodId) throw new BulkJobError('not_found', 'Önizleme işi bulunamadı');
+    if (job.status !== 'completed' || !job.result?.outputChunks) throw new BulkJobError('conflict', 'Önizleme henüz hazır değil');
+    const [period, parts] = await Promise.all([deps.meters.getPeriod(ctx, periodId), repo.getOutput(ctx.apartmentId, jobId, job.result.outputChunks)]);
+    const output = JSON.parse(parts.join('')) as Record<string, unknown>;
+    if (job.result.ok && (period.status !== 'calculated' || period.calc?.hash !== job.result.calcHash)) {
+      throw new MeterError('conflict', 'Önizlemeden sonra okumalar, şablon veya tutar değişti; yeniden önizleyin', period.calc?.hash ? { calcHash: period.calc.hash } : undefined);
+    }
+    return { output, period };
+  }
+
   /**
    * P1-b: sayac doneminin suren (veya son) arka plan isi. Sayfa yenilendiginde istemci donemin
    * durumundan isi bulur ve ilerlemeyi kaldigi yerden izler. Is kimligi deterministik oldugu icin
@@ -672,10 +821,18 @@ export function createBulkJobService(deps: BulkJobDeps) {
       const job = await repo.get(ctx.apartmentId, id);
       if (job) return job;
     }
+    // Performans: taslak / hesaplanmis donemin onizleme isi. Suren is ya da (sayfa yenilendiyse
+    // onizleme geri yuklensin diye) donemin guncel hesabini ureten son tamamlanmis is.
+    if ((period.status === 'draft' || period.status === 'calculated') && repo.listByPrefix) {
+      const calcs = (await repo.listByPrefix(ctx.apartmentId, calcJobPrefix(period.periodId))).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      const latest = calcs[0];
+      const restores = period.status === 'calculated' && latest?.status === 'completed' && latest.result?.ok && latest.result.calcHash === period.calc?.hash;
+      if (latest && (!isTerminal(latest.status) || restores)) return latest;
+    }
     return undefined;
   }
 
-  return { startDues, startMeterPosting, startMeterReversal, findMeterJob, get, retry, handle };
+  return { startDues, startMeterPosting, startMeterReversal, startMeterCalculation, activeMeterCalculation, meterCalculationOutput, findMeterJob, get, retry, handle };
 }
 
 export type BulkJobService = ReturnType<typeof createBulkJobService>;

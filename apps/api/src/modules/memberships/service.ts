@@ -17,6 +17,8 @@ import {
 import { type UnitMembership, type UnitRelation, visibleParties } from '../portal/types.js';
 import { type MembershipRepository, membershipKeys, membershipRepository } from './repository.js';
 import type { OwnershipReader } from '../ownership/reader.js';
+import { type DomainEvent, buildEvent } from '../../events/publisher.js';
+import { endsResidency } from '../gate/departures.js';
 
 /**
  * Yonetici tarafi daire uyeligi yonetimi (malik / kiraci atama, giris-cikis tarihleri).
@@ -185,6 +187,30 @@ export function createMembershipService(overrides: Partial<MembershipServiceDeps
     return err;
   }
 
+  /**
+   * Kapi devami: degisiklik sonrasi kullanici bugun bolumde oturmuyorsa (bitis gecmis, iptal, artik
+   * oturmayan malik) ayni yazimda `MEMBERSHIP_ENDED`; worker gecis / araclari gece taramasinin
+   * kuraliyla hemen pasife alir. Bitis bugun veya ileri tarihliyse olay yok (gece taramasi).
+   */
+  async function write(ctx: MembershipContext, current: UnitMembership, next: UnitMembership): Promise<void> {
+    const outbox: DomainEvent[] = endsResidency(current, next, today())
+      ? [
+          buildEvent(
+            {
+              eventId: `MEMBERSHIP_ENDED:${next.userId}:${next.unitId}:${next.version}`,
+              type: 'MEMBERSHIP_ENDED',
+              apartmentId: ctx.apartmentId,
+              actorId: ctx.userId,
+              payload: { userId: next.userId, unitId: next.unitId, source: 'membership', ...(next.endDate ? { endDate: next.endDate } : {}) },
+            },
+            deps.now,
+          ),
+        ]
+      : [];
+    if (outbox.length) await repo.update(next, current.version, { outbox });
+    else await repo.update(next, current.version);
+  }
+
   // ----- Olustur -----
 
   async function create(ctx: MembershipContext, body: unknown): Promise<MembershipView> {
@@ -301,6 +327,8 @@ export function createMembershipService(overrides: Partial<MembershipServiceDeps
       updatedBy: ctx.userId,
       version: current.version + 1,
     };
+    // Malik yeniden oturuyor: oturan malik kapamasinin kapi isareti (geri alma payi) artik gecersiz.
+    if (next.residesInUnit) delete next.residencyEndedByClosureId;
     assertShape(next);
     const shareChanged =
       (current.ownershipShare?.numerator ?? 0) !== (next.ownershipShare?.numerator ?? 0) ||
@@ -309,7 +337,7 @@ export function createMembershipService(overrides: Partial<MembershipServiceDeps
     await checkConflicts(ctx, next);
 
     try {
-      await repo.update(next, current.version);
+      await write(ctx, current, next);
     } catch (err) {
       throw mapWriteError(err, 'Kayit baska bir islemle degistirildi (surum uyusmazligi)');
     }
@@ -329,7 +357,7 @@ export function createMembershipService(overrides: Partial<MembershipServiceDeps
       version: current.version + 1,
     };
     try {
-      await repo.update(next, current.version);
+      await write(ctx, current, next);
     } catch (err) {
       throw mapWriteError(err, 'Kayit baska bir islemle degistirildi (surum uyusmazligi)');
     }

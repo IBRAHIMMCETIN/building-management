@@ -1,6 +1,6 @@
 import { type NotificationCategory, categoryOfTemplate } from './categories.js';
 import type { Notification, NotificationLine } from './notifier.js';
-import { formatDate, formatDateTime, formatPeriod, formatTL, ticketStatusText } from './templates.js';
+import { BULK_JOB_KIND_TEXT, formatDate, formatDateTime, formatPeriod, formatTL, ticketStatusText } from './templates.js';
 
 /**
  * Mobil bildirim (push) metinleri: kisa Turkce baslik + govde ve uygulama ici baglanti (`path`; mesajda `data.url`).
@@ -18,6 +18,8 @@ import { formatDate, formatDateTime, formatPeriod, formatTL, ticketStatusText } 
  *   /rezervasyonlar             ortak alan rezervasyonu
  *   /genel-kurul/<assemblyId>   kat malikleri kurulu cagrisi
  *   /ihaleler/<tenderId>        ihale
+ *   /islemler/<jobId>           yonetim: arka plan toplu isinin bitis ozeti (mobilde ekrani yok;
+ *                               bilinmeyen yol uygulamanin acilis ekranina duser)
  *
  * Android bildirim kanallari (uygulama acilista olusturmali; olmayan kanaldaki bildirim gosterilmez):
  *   `default` (Genel bildirimler) ve `gate` (Kapı ve kurye, yuksek onem).
@@ -144,6 +146,12 @@ function spec(n: Notification, now: Date): Spec | undefined {
       return { title: 'İhale iptal edildi', body: str(d.title), path: withId('/ihaleler', d.tenderId) };
     case 'tender_replied':
       return { title: 'Sorunuz yanıtlandı', body: str(d.title), path: withId('/ihaleler', d.tenderId) };
+    case 'bulk_job_summary': {
+      const kind = BULK_JOB_KIND_TEXT[str(d.kind)] ?? 'Toplu işlem';
+      const fmt = (v: unknown) => num(v).toLocaleString('tr-TR');
+      const title = d.status === 'failed' ? 'Toplu işlem tamamlanamadı' : d.status === 'completed_with_errors' ? 'Toplu işlem hatalarla bitti' : 'Toplu işlem tamamlandı';
+      return { title, body: `${kind}${str(d.label) ? ` (${str(d.label)})` : ''}: ${fmt(d.succeeded)} başarılı, ${fmt(d.failed)} hatalı`, path: withId('/islemler', d.jobId) };
+    }
     default:
       return undefined;
   }

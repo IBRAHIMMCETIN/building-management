@@ -228,3 +228,60 @@ describe('aday secimi', () => {
     expect(at('2026-11-30', [m({ userId: 'closed', updatedAt: '2026-11-28T08:00:00.000Z' })])).toEqual([]);
   });
 });
+
+describe('aninda adim (MEMBERSHIP_ENDED -> releaseNow)', () => {
+  const trigger = { trigger: 'membership_ended' as const, eventId: 'MEMBERSHIP_ENDED:tenant-u1:u1:2' };
+  const target = { userId: 'tenant-u1', unitId: 'u1' };
+
+  it('bitis gecmis: gece taramasini beklemeden ayni kuralla pasife alir; denetimde tetikleyici; tekrar zararsiz', async () => {
+    const { w, departures } = setup();
+    const s = await seed(w);
+    w.moveOut('tenant-u1', 'u1', '2026-11-26');
+    const r = await departures.releaseNow(APT, target, DAY, SYSTEM, trigger);
+    expect(r).toMatchObject({ status: 'released', vehicleIds: [s.vehicle.vehicleId] });
+    expect(r.status === 'released' && [...r.passIds].sort()).toEqual([s.p1.passId, s.p2.passId, s.todayOnly.passId].sort());
+    expect(w.fake.byPrefix(APT, `VEH#${s.vehicle.vehicleId}`)[0]).toMatchObject({ status: 'inactive', inactiveReason: DEPARTURE_REASON });
+    expect(w.fake.byPrefix(APT, 'VPLATE#321CBA43')[0]).toMatchObject({ status: 'inactive' });
+    expect(w.fake.audits.filter((a) => a.action === 'gate.departure_release').at(-1)).toMatchObject({ actorId: SYSTEM, details: { userId: 'tenant-u1', unitId: 'u1', ...trigger } });
+    // Ayni bolumdeki diger sakin ve baska bolum etkilenmez.
+    expect(passOf(w, APT, s.co.passId)).toMatchObject({ status: 'active' });
+    expect(passOf(w, APT, s.other.passId)).toMatchObject({ status: 'active' });
+    // SQS tekrar teslimi ve gece taramasi: yazim yok.
+    const writes = w.fake.writes.length;
+    expect(await departures.releaseNow(APT, target, DAY, SYSTEM, trigger)).toEqual({ status: 'released', passIds: [], vehicleIds: [] });
+    expect(await departures.sweep(APT, DAY, SYSTEM)).toMatchObject({ passesRevoked: 0, vehiclesDeactivated: 0 });
+    expect(w.fake.writes).toHaveLength(writes);
+  });
+
+  it('sonuc gece taramasiyla ayni (ayni baslangic, iki ayri dunya)', async () => {
+    const a = setup();
+    const b = setup();
+    await seed(a.w);
+    await seed(b.w);
+    a.w.moveOut('tenant-u1', 'u1', '2026-11-26');
+    b.w.moveOut('tenant-u1', 'u1', '2026-11-26');
+    const now = await a.departures.releaseNow(APT, target, DAY, SYSTEM);
+    const swept = await b.departures.sweep(APT, DAY, SYSTEM);
+    expect(now.status === 'released' ? [now.passIds.length, now.vehicleIds.length] : []).toEqual([swept.passesRevoked, swept.vehiclesDeactivated]);
+    const statuses = (w: typeof a.w) =>
+      w.fake.byPrefix(APT, '').flatMap((i) => {
+        const x = i as { entityType?: string; status?: string; guestName?: string; plate?: string; unitId?: string; createdBy?: string };
+        return x.entityType === 'GATE_PASS' || x.entityType === 'GATE_VEHICLE' ? [`${x.entityType}|${x.unitId}|${x.createdBy ?? ''}|${x.plate ?? ''}|${x.status}`] : [];
+      }).sort();
+    expect(statuses(a.w)).toEqual(statuses(b.w));
+  });
+
+  it('bitis bugun (hala oturur) ve cari kapama payi: yazmaz, nedeni doner; baska apartmanla cagrida bulamaz', async () => {
+    const { w, departures } = setup();
+    await seed(w);
+    w.endsOn('tenant-u1', 'u1', DAY);
+    const writes = w.fake.writes.length;
+    expect(await departures.releaseNow(APT, target, DAY, SYSTEM)).toEqual({ status: 'skipped', reason: 'resides' });
+    for (const m of w.memberships) if (m.userId === 'tenant-u1') Object.assign(m, { status: 'inactive', endDate: '2026-11-26', endedByClosureId: 'cl-1', updatedAt: '2026-11-27T08:00:00.000Z' });
+    expect(await departures.releaseNow(APT, target, DAY, SYSTEM)).toEqual({ status: 'skipped', reason: 'closure_grace' });
+    expect(await departures.releaseNow(APT2, target, DAY, SYSTEM)).toEqual({ status: 'skipped', reason: 'not_departed' });
+    expect(w.fake.writes).toHaveLength(writes);
+    // Pay dolunca gece taramasi birakir (kural ayni).
+    expect((await departures.sweep(APT, '2026-12-01', SYSTEM)).candidates).toBe(1);
+  });
+});

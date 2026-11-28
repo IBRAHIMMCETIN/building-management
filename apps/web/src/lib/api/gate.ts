@@ -82,12 +82,21 @@ export const managerPassSchema = myPassSchema
   .extend({ revokeReason: z.string().optional() });
 export type ManagerPass = z.infer<typeof managerPassSchema>;
 
+/**
+ * Yonetim arac listesi: sistemin koydugu pasif nedeni de okunur (`taşınma`: sahibi tasindi, kayit
+ * otomatik pasife alindi). Sakin semasi (ortak paket, gateParity.test.ts) bu alani tasimaz.
+ */
+export const managerVehicleSchema = vehicleSchema.extend({ inactiveReason: z.string().optional() });
+export type ManagerVehicle = z.infer<typeof managerVehicleSchema>;
+
 /** `ownerUserId`: yonetici kaydinda zorunlu (bolumde oturan uye); sakinde kendisi. */
 export type CreateVehicleInput = { unitId: string; plate: string; note?: string; ownerUserId?: string };
 
 const enc = encodeURIComponent;
 const G = '/api/gate';
 const P = '/api/portal/gate';
+const managerVehicleOne = z.object({ vehicle: managerVehicleSchema });
+const managerVehicleList = z.object({ items: z.array(managerVehicleSchema), maxPerUnit: z.number() });
 const logQuery = (f: GateLogFilter) => Object.fromEntries(Object.entries(f).filter(([, v]) => v)) as Record<string, string>;
 
 /** Yonetim + guvenlik gorevlisi. */
@@ -95,9 +104,9 @@ export const gateDeskApi = {
   units: (q: string, signal?: AbortSignal) => apiClient.get(`${G}/units`, { query: q ? { q } : undefined, signal, schema: unitOptionListSchema }),
   unitResidents: (unitId: string, signal?: AbortSignal) => apiClient.get(`${G}/units/${enc(unitId)}/residents`, { signal, schema: z.object({ items: z.array(z.object({ userId: z.string(), name: z.string() })) }) }),
   lookupPlate: (q: string, signal?: AbortSignal) => apiClient.get(`${G}/plates`, { query: { q }, signal, schema: plateLookupSchema }),
-  vehicles: (signal?: AbortSignal) => apiClient.get(`${G}/vehicles`, { signal, schema: vehicleListSchema }),
-  createVehicle: (input: CreateVehicleInput) => apiClient.post(`${G}/vehicles`, input, { schema: vehicleOneSchema }),
-  updateVehicle: (id: string, input: UpdateVehicleInput) => apiClient.patch(`${G}/vehicles/${enc(id)}`, input, { schema: vehicleOneSchema }),
+  vehicles: (signal?: AbortSignal) => apiClient.get(`${G}/vehicles`, { signal, schema: managerVehicleList }),
+  createVehicle: (input: CreateVehicleInput) => apiClient.post(`${G}/vehicles`, input, { schema: managerVehicleOne }),
+  updateVehicle: (id: string, input: UpdateVehicleInput) => apiClient.patch(`${G}/vehicles/${enc(id)}`, input, { schema: managerVehicleOne }),
   passes: (status: string, signal?: AbortSignal) => apiClient.get(`${G}/passes`, { query: status ? { status } : undefined, signal, schema: z.object({ items: z.array(managerPassSchema) }) }),
   revokePass: (id: string, version: number) => apiClient.post(`${G}/passes/${enc(id)}/revoke`, { version }, { schema: z.object({ pass: managerPassSchema }) }),
   verifyPass: (input: { token: string } | { code: string }) => apiClient.post(`${G}/passes/verify`, input, { schema: verifyResultSchema }),
