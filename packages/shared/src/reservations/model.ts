@@ -107,6 +107,14 @@ export function durationOptions(slots: readonly AvailabilitySlot[], startIndex: 
   return out;
 }
 
+/** Istege bagli kisi sayisi: bos gecerli; doluysa 1..kapasite tam sayi. Hata metni veya `undefined`. */
+export function partySizeError(input: string, capacity: number): string | undefined {
+  const raw = input.trim();
+  if (!raw) return undefined;
+  const n = Number(raw);
+  return Number.isInteger(n) && n >= 1 && n <= capacity ? undefined : `1–${capacity} arasında olmalı`;
+}
+
 /** "SS:DD" + dakika -> bitis "SS:DD" (gun icinde). */
 export function addClock(clock: string, minutes: number): string {
   const [h, m] = clock.split(':').map(Number) as [number, number];

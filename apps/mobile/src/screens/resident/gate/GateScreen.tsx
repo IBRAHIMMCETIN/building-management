@@ -117,7 +117,7 @@ function CourierPrompt({ c }: { c: Courier }) {
 
   return (
     <Card style={[styles.courier, { borderColor: withAlpha(colors.warning, 0.5) }]}>
-      <CardTitle icon={<Package size={22} color={colors.warning} aria-hidden />}>Kapıda kurye var</CardTitle>
+      <CardTitle icon={<Package size={20} color={colors.warning} aria-hidden />}>Kapıda kurye var</CardTitle>
       <AppText>
         <AppText weight="semibold">{c.company ?? 'Kurye'}</AppText>
         {` · ${c.unitLabel} · ${timeOf(c.createdAt)}`}
@@ -242,7 +242,7 @@ function VehicleRow({ v, showUnit, pending, onToggle }: { v: Vehicle; showUnit: 
   const detail = [showUnit ? v.unitLabel : null, v.note].filter(Boolean).join(' · ');
   return (
     <View style={[styles.row, styles.rowInline, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-      <Car size={24} color={active ? colors.accent : colors.muted} aria-hidden />
+      <Car size={20} color={active ? colors.accent : colors.muted} aria-hidden />
       <View style={styles.flex}>
         <AppText weight="semibold" style={styles.mono}>
           {v.plateDisplay}
@@ -292,7 +292,7 @@ function MyVehicles({ units, max }: { units: GateUnit[]; max: number }) {
         <AppText variant="small" tone="muted">
           {`Güvenlik plakayı sorguladığında yalnızca dairenizi ve aracın notunu görür. Bir daireye en fazla ${max} aktif araç kaydedilir.`}
         </AppText>
-        {units.length > 1 && <FilterChips label="Daire" value={unitId} onChange={setUnitId} options={units.map((u) => ({ value: u.unitId, label: u.label }))} />}
+        {units.length > 1 && <UnitChips units={units} value={unitId} onChange={setUnitId} />}
         <View style={styles.field}>
           <TextField label="Plaka" value={plate} onChangeText={(t) => setPlate(t.toUpperCase())} error={plateMsg} accessibilityHint={plateMsg ?? 'Örnek: 34 ABC 123'} maxLength={14} autoCapitalize="characters" />
           {!plateMsg && (
@@ -339,6 +339,18 @@ function MyVehicles({ units, max }: { units: GateUnit[]; max: number }) {
   );
 }
 
+/** Birden fazla dairede daire secimi: gorunur "Daire" etiketi + hap dugmeler (NewPassSheet ve rezervasyonla ayni). */
+function UnitChips({ units, value, onChange }: { units: GateUnit[]; value: string; onChange: (unitId: string) => void }) {
+  return (
+    <View style={styles.field}>
+      <AppText variant="small" weight="medium">
+        Daire
+      </AppText>
+      <FilterChips label="Daire" value={value} onChange={onChange} options={units.map((u) => ({ value: u.unitId, label: u.label }))} />
+    </View>
+  );
+}
+
 function LogRow({ e }: { e: GateLogEntry }) {
   const { colors } = useTheme();
   const Icon = e.direction === 'entry' ? LogIn : LogOut;
@@ -381,7 +393,7 @@ function History({ units }: { units: GateUnit[] }) {
   const items = log.data?.pages.flatMap((p) => p.items) ?? [];
   return (
     <View style={styles.gap3}>
-      {units.length > 1 && <FilterChips label="Daire" value={unitId} onChange={setUnitId} options={units.map((u) => ({ value: u.unitId, label: u.label }))} />}
+      {units.length > 1 && <UnitChips units={units} value={unitId} onChange={setUnitId} />}
       <AppText variant="small" tone="muted">
         Dairenize gelen misafir, kurye ve ziyaretçilerin son 7 günlük giriş / çıkış kayıtları.
       </AppText>

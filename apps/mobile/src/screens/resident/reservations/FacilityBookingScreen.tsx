@@ -2,7 +2,7 @@ import { errorMessage } from '@bm/shared/api/errors';
 import type { PortalFacility, PortalUnit, SlotState } from '@bm/shared/api/reservations';
 import { formatDate } from '@bm/shared/dates';
 import { formatTRY } from '@bm/shared/money';
-import { addClock, addDays, dayLabel, durationOptions, formatMinutes, hoursSummary } from '@bm/shared/reservations/model';
+import { addClock, addDays, dayLabel, durationOptions, formatMinutes, hoursSummary, partySizeError } from '@bm/shared/reservations/model';
 import { useRouter } from 'expo-router';
 import { useEffect, useMemo, useState } from 'react';
 import { Platform, Pressable, StyleSheet, View } from 'react-native';
@@ -98,12 +98,10 @@ function SlotPicker({ facility, units, today }: { facility: PortalFacility; unit
 
   const submit = async () => {
     if (!start || !chosenMinutes) return;
+    const problem = partySizeError(partySize, facility.capacity);
+    setPartyError(problem);
+    if (problem) return;
     const party = partySize.trim() ? Number(partySize) : undefined;
-    if (party !== undefined && (!Number.isInteger(party) || party < 1 || party > facility.capacity)) {
-      setPartyError(`1–${facility.capacity} arasında olmalı`);
-      return;
-    }
-    setPartyError(undefined);
     try {
       const r = await create.mutateAsync({
         idempotencyKey: key,

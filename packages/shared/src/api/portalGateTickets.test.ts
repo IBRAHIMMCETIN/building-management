@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { formatShortCode, normalizePlate, passFormError, passLink, plateError, validityText } from './portalGate';
-import { MAX_PHOTO_BYTES, newTicketTextSchema, photoError, reopenNoteSchema, ticketEventAuthor, ticketEventTitle } from './portalTickets';
+import { partySizeError } from '../reservations/model';
+import { formatShortCode, normalizePlate, passFormError, passFormIssue, passLink, plateError, validityText } from './portalGate';
+import { MAX_PHOTO_BYTES, newTicketTextSchema, photoError, reopenNoteSchema, ticketCommentSchema, ticketEventAuthor, ticketEventTitle } from './portalTickets';
 
 describe('sakin kapisi yardimcilari (web lib/gate ile ayni kurallar)', () => {
   it('plaka: normallestirme ve Turkiye bicimi', () => {
@@ -19,6 +20,18 @@ describe('sakin kapisi yardimcilari (web lib/gate ile ayni kurallar)', () => {
     expect(passFormError({ ...base, validFrom: '2027-03-01' })).toBe('Geçiş en fazla 90 gün sonrası için oluşturulabilir.');
     expect(passFormError({ ...base, validUntil: '2026-11-27' })).toBe('Son gün geliş tarihinden önce olamaz.');
     expect(passFormError({ ...base, validUntil: '2026-12-29' })).toBe('Bir geçiş en fazla 31 gün geçerli olabilir.');
+    // Mobil hatayi ait oldugu alanin altinda gosterir.
+    expect(passFormIssue({ ...base, guestName: '' })?.field).toBe('guestName');
+    expect(passFormIssue({ ...base, validFrom: '2026-11-27' })?.field).toBe('validFrom');
+    expect(passFormIssue({ ...base, validUntil: '2026-11-27' })?.field).toBe('validUntil');
+  });
+
+  it('kisi sayisi: bos gecerli, 1..kapasite tam sayi', () => {
+    expect(partySizeError('', 10)).toBeUndefined();
+    expect(partySizeError(' 8 ', 10)).toBeUndefined();
+    expect(partySizeError('0', 10)).toBe('1–10 arasında olmalı');
+    expect(partySizeError('2.5', 10)).toBe('1–10 arasında olmalı');
+    expect(partySizeError('11', 10)).toBe('1–10 arasında olmalı');
   });
 
   it('paylasim: kisa kod, baglanti (kod # icinde), gecerlilik', () => {
@@ -51,5 +64,6 @@ describe('sakin talep yardimcilari', () => {
     expect(newTicketTextSchema.safeParse({ title: 'Su kaçağı', description: '  ' }).success).toBe(false);
     expect(newTicketTextSchema.safeParse({ title: 'Su kaçağı', description: 'Banyoda' }).success).toBe(true);
     expect(reopenNoteSchema.safeParse(' ok ').success).toBe(false);
+    expect(ticketCommentSchema.safeParse('   ').success).toBe(false);
   });
 });

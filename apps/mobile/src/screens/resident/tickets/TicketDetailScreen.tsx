@@ -1,5 +1,5 @@
 import { ApiError, errorMessage } from '@bm/shared/api/errors';
-import { type TicketEvent, reopenNoteSchema } from '@bm/shared/api/portalTickets';
+import { type TicketEvent, reopenNoteSchema, ticketCommentSchema } from '@bm/shared/api/portalTickets';
 import type { Ticket } from '@bm/shared/api/tickets';
 import { formatDateTime } from '@bm/shared/dates';
 import { CATEGORY_LABELS, RATING_LABELS } from '@bm/shared/tickets/model';
@@ -121,7 +121,7 @@ export function RatingInput({ value, onChange }: { value: number | null; onChang
               onPress={() => onChange(n)}
               style={({ pressed }) => [styles.star, pressed && { backgroundColor: colors.surfaceMuted }]}
             >
-              <Star size={26} color={on ? colors.warning : colors.muted} fill={on ? colors.warning : 'transparent'} aria-hidden />
+              <Star size={24} color={on ? colors.warning : colors.muted} fill={on ? colors.warning : 'transparent'} aria-hidden />
             </Pressable>
           );
         })}
@@ -198,16 +198,14 @@ function CommentCard({ ticket }: { ticket: Ticket }) {
   const [error, setError] = useState<string | null>(null);
 
   const submit = async () => {
-    if (!body.trim()) {
-      setFieldError('Mesajınızı yazın.');
-      return;
-    }
-    setFieldError(undefined);
+    const parsed = ticketCommentSchema.safeParse(body);
+    setFieldError(parsed.success ? undefined : parsed.error.issues[0]?.message);
+    if (!parsed.success) return;
     setBusy(true);
     setError(null);
     try {
       const ids = await uploadPhotos(photos, upload);
-      await act.comment.mutateAsync({ body: body.trim(), ...(ids.length ? { photos: ids } : {}) });
+      await act.comment.mutateAsync({ body: parsed.data, ...(ids.length ? { photos: ids } : {}) });
       setBody('');
       setPhotos([]);
     } catch (err) {

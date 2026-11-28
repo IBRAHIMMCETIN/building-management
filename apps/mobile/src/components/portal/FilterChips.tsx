@@ -23,7 +23,7 @@ type Props<T extends string> = {
 export function FilterChips<T extends string>({ label, value, options, onChange, disabled }: Props<T>) {
   const { colors } = useTheme();
   return (
-    <View role="group" aria-label={label} style={styles.row}>
+    <View accessibilityLabel={label} style={styles.row}>
       {options.map((o) => {
         const selected = o.value === value;
         return (

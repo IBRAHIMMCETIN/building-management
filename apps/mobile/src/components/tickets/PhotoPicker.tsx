@@ -1,7 +1,7 @@
 import { useState } from 'react';
-import { ActivityIndicator, Image, Platform, Pressable, StyleSheet, View } from 'react-native';
+import { Image, Platform, Pressable, StyleSheet, View } from 'react-native';
 import { Camera, ImagePlus, X } from '@/components/icons';
-import { AppText, Button } from '@/components/ui';
+import { Alert, AppText, Button, Spinner } from '@/components/ui';
 import { MAX_PHOTOS, type PreparedPhoto, photoErrorMessage, pickFromLibrary, takePhoto } from '@/lib/photos';
 import { radii, space } from '@/theme/tokens';
 import { useTheme } from '@/theme/useTheme';
@@ -59,9 +59,9 @@ export function PhotoPicker({ label = 'Fotoğraflar (isteğe bağlı)', photos, 
                   onChange(photos.filter((_, j) => j !== i));
                   setError(null);
                 }}
-                style={[styles.remove, { backgroundColor: colors.scrim }]}
+                style={[styles.remove, { backgroundColor: colors.surface, borderColor: colors.borderStrong }]}
               >
-                <X size={14} color="#ffffff" aria-hidden />
+                <X size={14} color={colors.text} aria-hidden />
               </Pressable>
             </View>
           ))}
@@ -71,14 +71,10 @@ export function PhotoPicker({ label = 'Fotoğraflar (isteğe bağlı)', photos, 
         <View style={styles.actions}>
           {Platform.OS !== 'web' && <Button variant="secondary" icon={Camera} label="Fotoğraf çek" disabled={disabled || busy} onPress={() => void add('camera')} />}
           <Button variant="secondary" icon={ImagePlus} label="Galeriden seç" disabled={disabled || busy} onPress={() => void add('library')} />
-          {busy && <ActivityIndicator color={colors.accent} accessibilityLabel="Fotoğraf hazırlanıyor" />}
+          {busy && <Spinner label="Fotoğraf hazırlanıyor" />}
         </View>
       )}
-      {error && (
-        <AppText variant="small" tone="danger" accessibilityRole="alert" accessibilityLiveRegion="polite">
-          {error}
-        </AppText>
-      )}
+      {error && <Alert tone="danger">{error}</Alert>}
     </View>
   );
 }
@@ -88,6 +84,6 @@ const styles = StyleSheet.create({
   thumbs: { flexDirection: 'row', flexWrap: 'wrap', gap: space(2) },
   thumb: { width: THUMB, height: THUMB, borderRadius: radii.md, borderWidth: StyleSheet.hairlineWidth * 2, overflow: 'hidden' },
   image: { width: '100%', height: '100%' },
-  remove: { position: 'absolute', top: space(1), right: space(1), width: space(5), height: space(5), borderRadius: radii.full, alignItems: 'center', justifyContent: 'center' },
+  remove: { position: 'absolute', top: space(1), right: space(1), width: space(5), height: space(5), borderRadius: radii.full, borderWidth: StyleSheet.hairlineWidth * 2, alignItems: 'center', justifyContent: 'center' },
   actions: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: space(2) },
 });

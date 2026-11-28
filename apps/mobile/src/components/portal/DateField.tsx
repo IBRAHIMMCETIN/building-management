@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
 import { CalendarDays, ChevronLeft, ChevronRight } from '@/components/icons';
 import { AppText, Button } from '@/components/ui';
-import { MIN_TOUCH, radii, space, typeScale } from '@/theme/tokens';
+import { MIN_TOUCH, radii, space, withAlpha } from '@/theme/tokens';
 import { useTheme } from '@/theme/useTheme';
 import { Sheet } from './Sheet';
 
@@ -73,7 +73,7 @@ export function DateField({ label, value, onChange, min, max, onClear, placehold
         }}
         style={({ pressed }) => [styles.input, { borderColor, backgroundColor: pressed ? colors.surfaceMuted : colors.surface }]}
       >
-        <AppText style={[styles.flex, typeScale.body]} tone={value ? 'text' : 'muted'}>
+        <AppText style={styles.flex} tone={value ? 'text' : 'muted'}>
           {value ? formatDate(value) : placeholder}
         </AppText>
         <CalendarDays size={20} color={colors.muted} aria-hidden />
@@ -98,7 +98,7 @@ export function DateField({ label, value, onChange, min, max, onClear, placehold
             onPress={() => setMonth(shiftMonth(month, -1))}
             style={[styles.nav, !canPrev && styles.dim]}
           >
-            <ChevronLeft size={22} color={colors.text} aria-hidden />
+            <ChevronLeft size={20} color={colors.text} aria-hidden />
           </Pressable>
           <AppText weight="semibold" style={styles.monthTitle} accessibilityRole="header">
             {monthTitle(month)}
@@ -111,7 +111,7 @@ export function DateField({ label, value, onChange, min, max, onClear, placehold
             onPress={() => setMonth(shiftMonth(month, 1))}
             style={[styles.nav, !canNext && styles.dim]}
           >
-            <ChevronRight size={22} color={colors.text} aria-hidden />
+            <ChevronRight size={20} color={colors.text} aria-hidden />
           </Pressable>
         </View>
         <View style={styles.grid}>
@@ -137,11 +137,11 @@ export function DateField({ label, value, onChange, min, max, onClear, placehold
                 style={({ pressed }) => [
                   styles.cell,
                   styles.day,
-                  d === value ? { backgroundColor: colors.accent } : pressed ? { backgroundColor: colors.surfaceMuted } : null,
+                  d === value ? { backgroundColor: withAlpha(colors.accent, 0.1), borderColor: withAlpha(colors.accent, 0.3) } : pressed ? { backgroundColor: colors.surfaceMuted } : null,
                   disabled(d) && styles.dim,
                 ]}
               >
-                <AppText variant="small" weight={d === value ? 'semibold' : 'regular'} tabular style={d === value ? { color: colors.onAccent } : undefined}>
+                <AppText variant="small" weight={d === value ? 'semibold' : 'regular'} tone={d === value ? 'accent' : 'text'} tabular>
                   {String(Number(d.slice(8)))}
                 </AppText>
               </Pressable>
@@ -175,9 +175,9 @@ const styles = StyleSheet.create({
   monthRow: { flexDirection: 'row', alignItems: 'center', gap: space(2) },
   monthTitle: { flex: 1, textAlign: 'center' },
   nav: { width: MIN_TOUCH, height: MIN_TOUCH, alignItems: 'center', justifyContent: 'center', borderRadius: radii.full },
-  dim: { opacity: 0.35 },
+  dim: { opacity: 0.5 },
   grid: { flexDirection: 'row', flexWrap: 'wrap' },
   cell: { width: `${100 / 7}%`, height: MIN_TOUCH, alignItems: 'center', justifyContent: 'center' },
-  day: { borderRadius: radii.full },
+  day: { borderRadius: radii.full, borderWidth: StyleSheet.hairlineWidth * 2, borderColor: 'transparent' },
   actions: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'flex-end', gap: space(2) },
 });

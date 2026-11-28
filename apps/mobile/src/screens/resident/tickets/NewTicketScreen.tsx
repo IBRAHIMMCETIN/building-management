@@ -20,6 +20,9 @@ import { useTheme } from '@/theme/useTheme';
 
 type Where = { kind: 'unit'; unitId: string; label: string } | { kind: 'common'; area: string };
 const STEPS = ['Konum', 'Kategori', 'Açıklama'] as const;
+const TITLE_HINT = "Kısa ve açık: örn. 'Banyo tavanından su damlıyor'";
+const DESCRIPTION_HINT = 'Ne zamandan beri, nerede, ne gözlemlediniz?';
+const AREA_HINT = 'Örn. B blok asansörü, otopark girişi';
 
 /**
  * Adim adim yeni talep (web: pages/resident/tickets/NewTicketWizard.tsx): 1) daire ici (birden fazla
@@ -86,29 +89,33 @@ export function NewTicketScreen() {
       {step === 2 && (
         <Card>
           <CardTitle>Sorunu anlatın</CardTitle>
-          <TextField label="Başlık" value={title} onChangeText={setTitle} error={errors.title} accessibilityHint={errors.title ?? "Kısa ve açık: örn. 'Banyo tavanından su damlıyor'"} maxLength={120} editable={!busy} />
-          {!errors.title && (
-            <AppText variant="small" tone="muted" style={styles.hint}>
-              Kısa ve açık: örn. ‘Banyo tavanından su damlıyor’
-            </AppText>
-          )}
-          <TextField
-            label="Açıklama"
-            value={description}
-            onChangeText={setDescription}
-            error={errors.description}
-            accessibilityHint={errors.description ?? 'Ne zamandan beri, nerede, ne gözlemlediniz?'}
-            maxLength={4000}
-            multiline
-            numberOfLines={5}
-            textAlignVertical="top"
-            editable={!busy}
-          />
-          {!errors.description && (
-            <AppText variant="small" tone="muted" style={styles.hint}>
-              Ne zamandan beri, nerede, ne gözlemlediniz?
-            </AppText>
-          )}
+          <View style={styles.field}>
+            <TextField label="Başlık" value={title} onChangeText={setTitle} error={errors.title} accessibilityHint={errors.title ?? TITLE_HINT} maxLength={120} editable={!busy} />
+            {!errors.title && (
+              <AppText variant="small" tone="muted">
+                {TITLE_HINT}
+              </AppText>
+            )}
+          </View>
+          <View style={styles.field}>
+            <TextField
+              label="Açıklama"
+              value={description}
+              onChangeText={setDescription}
+              error={errors.description}
+              accessibilityHint={errors.description ?? DESCRIPTION_HINT}
+              maxLength={4000}
+              multiline
+              numberOfLines={5}
+              textAlignVertical="top"
+              editable={!busy}
+            />
+            {!errors.description && (
+              <AppText variant="small" tone="muted">
+                {DESCRIPTION_HINT}
+              </AppText>
+            )}
+          </View>
           <PhotoPicker photos={photos} onChange={setPhotos} disabled={busy} />
           {error && <Alert tone="danger">{error}</Alert>}
           <Button label="Talebi gönder" block loading={busy} onPress={() => void submit()} />
@@ -172,40 +179,43 @@ function LocationStep({ value, onChange, onNext }: { value: Where | null; onChan
           <Skeleton height={56} />
         </View>
       ) : (
-        <View style={styles.choices}>
-          {units.map((u) => {
-            const selected = value?.kind === 'unit' && value.unitId === u.unitId;
-            return (
-              <ListRow
-                key={u.unitId}
-                icon={House}
-                title={`Daire içi · ${u.label}`}
-                subtitle="Dairenizdeki tesisat, ısınma, elektrik vb."
-                selected={selected}
-                trailing={mark(selected)}
-                onPress={() => {
-                  onChange({ kind: 'unit', unitId: u.unitId, label: u.label });
-                  setError(undefined);
-                  if (choices) selectUnit(u.unitId);
-                }}
-              />
-            );
-          })}
-          <ListRow
-            icon={Building2}
-            title="Ortak alan"
-            subtitle="Asansör, merdiven, otopark, bahçe vb."
-            selected={common}
-            trailing={mark(common)}
-            onPress={() => {
-              onChange({ kind: 'common', area });
-              setError(undefined);
-            }}
-          />
+        <View style={styles.field}>
+          <View style={styles.choices}>
+            {units.map((u) => {
+              const selected = value?.kind === 'unit' && value.unitId === u.unitId;
+              return (
+                <ListRow
+                  key={u.unitId}
+                  icon={House}
+                  title={`Daire içi · ${u.label}`}
+                  subtitle="Dairenizdeki tesisat, ısınma, elektrik vb."
+                  selected={selected}
+                  trailing={mark(selected)}
+                  onPress={() => {
+                    onChange({ kind: 'unit', unitId: u.unitId, label: u.label });
+                    setError(undefined);
+                    if (choices) selectUnit(u.unitId);
+                  }}
+                />
+              );
+            })}
+            <ListRow
+              icon={Building2}
+              title="Ortak alan"
+              subtitle="Asansör, merdiven, otopark, bahçe vb."
+              selected={common}
+              trailing={mark(common)}
+              onPress={() => {
+                onChange({ kind: 'common', area });
+                setError(undefined);
+              }}
+            />
+          </View>
+          {error && !common && <ChoiceError message={error} />}
         </View>
       )}
       {common && (
-        <>
+        <View style={styles.field}>
           <TextField
             label="Alan"
             value={area}
@@ -214,17 +224,16 @@ function LocationStep({ value, onChange, onNext }: { value: Where | null; onChan
               onChange({ kind: 'common', area: t });
             }}
             error={error}
-            accessibilityHint={error ?? 'Örn. B blok asansörü, otopark girişi'}
+            accessibilityHint={error ?? AREA_HINT}
             maxLength={80}
           />
           {!error && (
-            <AppText variant="small" tone="muted" style={styles.hint}>
-              Örn. B blok asansörü, otopark girişi
+            <AppText variant="small" tone="muted">
+              {AREA_HINT}
             </AppText>
           )}
-        </>
+        </View>
       )}
-      {error && !common && <Alert tone="danger">{error}</Alert>}
       <Button label="Devam" block onPress={next} />
     </Card>
   );
@@ -239,15 +248,18 @@ function CategoryStep({ where, value, onChange, onNext }: { where: Where; value:
   return (
     <Card>
       <CardTitle>Ne tür bir sorun?</CardTitle>
-      <FilterChips
-        label="Kategori"
-        value={value ?? undefined}
-        onChange={(c) => {
-          onChange(c);
-          setError(undefined);
-        }}
-        options={categoriesForLocation(where.kind).map((c) => ({ value: c, label: categoryLabelFor(c, where.kind) }))}
-      />
+      <View style={styles.field}>
+        <FilterChips
+          label="Kategori"
+          value={value ?? undefined}
+          onChange={(c) => {
+            onChange(c);
+            setError(undefined);
+          }}
+          options={categoriesForLocation(where.kind).map((c) => ({ value: c, label: categoryLabelFor(c, where.kind) }))}
+        />
+        {error && <ChoiceError message={error} />}
+      </View>
       {others.length > 0 && (
         <View accessibilityRole="summary" style={[styles.similar, { backgroundColor: withAlpha(colors.warning, 0.05), borderColor: withAlpha(colors.warning, 0.3) }]}>
           <View style={styles.similarHead}>
@@ -272,7 +284,6 @@ function CategoryStep({ where, value, onChange, onNext }: { where: Where; value:
           </AppText>
         </View>
       )}
-      {error && <Alert tone="danger">{error}</Alert>}
       <Button
         label="Devam"
         block
@@ -285,11 +296,20 @@ function CategoryStep({ where, value, onChange, onNext }: { where: Where; value:
   );
 }
 
+/** Secim grubunun hatasi, grubun altinda (TextField hatasiyla ayni yazim). */
+function ChoiceError({ message }: { message: string }) {
+  return (
+    <AppText variant="small" tone="danger" accessibilityLiveRegion="polite">
+      {message}
+    </AppText>
+  );
+}
+
 const styles = StyleSheet.create({
   steps: { flexDirection: 'row', gap: space(2) },
   pill: { flex: 1, alignItems: 'center', borderRadius: radii.full, borderWidth: StyleSheet.hairlineWidth * 2, paddingHorizontal: space(2), paddingVertical: space(1) },
   choices: { gap: space(2) },
-  hint: { marginTop: -space(2) },
+  field: { gap: space(1.5) },
   similar: { gap: space(2), borderRadius: radii.lg, borderWidth: StyleSheet.hairlineWidth * 2, padding: space(3) },
   similarHead: { flexDirection: 'row', alignItems: 'center', gap: space(2) },
   similarRow: { flexDirection: 'row', alignItems: 'center', gap: space(2) },

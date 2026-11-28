@@ -1,5 +1,5 @@
 import { errorMessage } from '@bm/shared/api/errors';
-import { type GateUnit, type MyPass, normalizePlate, passFormError } from '@bm/shared/api/portalGate';
+import { type GateUnit, type MyPass, type PassFormIssue, normalizePlate, passFormIssue } from '@bm/shared/api/portalGate';
 import { addDays, istanbulToday } from '@bm/shared/reservations/model';
 import { useState } from 'react';
 import { StyleSheet, View } from 'react-native';
@@ -34,7 +34,7 @@ export function NewPassSheet({ open, onClose, units, limits, onCreated }: Props)
   const [entryMode, setEntryMode] = useState<'single' | 'multi'>('single');
   const [plate, setPlate] = useState('');
   const [note, setNote] = useState('');
-  const [formError, setFormError] = useState<string>();
+  const [formError, setFormError] = useState<PassFormIssue>();
   const [error, setError] = useState<string | null>(null);
 
   const reset = () => {
@@ -53,7 +53,7 @@ export function NewPassSheet({ open, onClose, units, limits, onCreated }: Props)
   };
   const submit = () => {
     setError(null);
-    const problem = passFormError({ guestName, validFrom, validUntil, today, ...limits });
+    const problem = passFormIssue({ guestName, validFrom, validUntil, today, ...limits });
     setFormError(problem);
     if (problem) return;
     const p = normalizePlate(plate);
@@ -79,8 +79,8 @@ export function NewPassSheet({ open, onClose, units, limits, onCreated }: Props)
       },
     );
   };
-  const nameError = formError?.startsWith('Misafirin adını') ? formError : undefined;
-  const dateError = formError && !nameError ? formError : undefined;
+  const errorOf = (field: PassFormIssue['field']) => (formError?.field === field ? formError.message : undefined);
+  const nameError = errorOf('guestName');
 
   return (
     <Sheet open={open} title="Misafir geçişi oluştur" onClose={close}>
@@ -109,7 +109,7 @@ export function NewPassSheet({ open, onClose, units, limits, onCreated }: Props)
           setValidFrom(d);
           if (validUntil && validUntil < d) setValidUntil('');
         }}
-        error={dateError}
+        error={errorOf('validFrom')}
       />
       <DateField
         label="Son gün (isteğe bağlı)"
@@ -118,10 +118,11 @@ export function NewPassSheet({ open, onClose, units, limits, onCreated }: Props)
         max={addDays(validFrom, limits.maxPassDays - 1)}
         onChange={setValidUntil}
         onClear={() => setValidUntil('')}
+        error={errorOf('validUntil')}
         placeholder="Yalnızca geliş günü"
       />
       <View style={styles.group}>
-        <AppText variant="small" weight="medium" accessibilityRole="header">
+        <AppText variant="small" weight="medium">
           Giriş hakkı
         </AppText>
         {ENTRY_MODES.map((m) => (

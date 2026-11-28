@@ -98,5 +98,7 @@ export const newTicketTextSchema = z.object({
   description: z.string().trim().min(1, 'Sorunu kısaca anlatın.').max(4000, 'Açıklama en fazla 4000 karakter olabilir.'),
 });
 export const commonAreaSchema = z.string().trim().min(2, 'Alanı yazın (en az 2 karakter).').max(80, 'Alan en fazla 80 karakter olabilir.');
+/** Talebe mesaj (yorum): 1-2000 karakter. */
+export const ticketCommentSchema = z.string().trim().min(1, 'Mesajınızı yazın.').max(2000, 'Mesaj en fazla 2000 karakter olabilir.');
 /** Yeniden acma gerekcesi (web: en az 3 karakter yazilmadan dugme kapali). */
 export const reopenNoteSchema = z.string().trim().min(3, 'Sorunun neden devam ettiğini yazın (en az 3 karakter).').max(2000, 'Not en fazla 2000 karakter olabilir.');

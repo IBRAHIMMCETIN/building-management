@@ -221,13 +221,18 @@ export type PassFormInput = {
   maxPassLeadDays: number;
 };
 
-/** Ilk hata metni; gecerliyse `undefined`. */
-export function passFormError(f: PassFormInput): string | undefined {
-  if (f.guestName.trim().length < 2) return 'Misafirin adını yazın (en az 2 karakter).';
-  if (!f.validFrom) return 'Geliş tarihini seçin.';
-  if (f.validFrom < f.today) return 'Geçiş bugünden önce başlayamaz.';
-  if (daySpan(f.today, f.validFrom) - 1 > f.maxPassLeadDays) return `Geçiş en fazla ${f.maxPassLeadDays} gün sonrası için oluşturulabilir.`;
-  if (f.validUntil && f.validUntil < f.validFrom) return 'Son gün geliş tarihinden önce olamaz.';
-  if (f.validUntil && daySpan(f.validFrom, f.validUntil) > f.maxPassDays) return `Bir geçiş en fazla ${f.maxPassDays} gün geçerli olabilir.`;
+export type PassFormIssue = { field: 'guestName' | 'validFrom' | 'validUntil'; message: string };
+
+/** Ilk hata ve ait oldugu alan (mobil hatayi alanin altinda gosterir); gecerliyse `undefined`. */
+export function passFormIssue(f: PassFormInput): PassFormIssue | undefined {
+  if (f.guestName.trim().length < 2) return { field: 'guestName', message: 'Misafirin adını yazın (en az 2 karakter).' };
+  if (!f.validFrom) return { field: 'validFrom', message: 'Geliş tarihini seçin.' };
+  if (f.validFrom < f.today) return { field: 'validFrom', message: 'Geçiş bugünden önce başlayamaz.' };
+  if (daySpan(f.today, f.validFrom) - 1 > f.maxPassLeadDays) return { field: 'validFrom', message: `Geçiş en fazla ${f.maxPassLeadDays} gün sonrası için oluşturulabilir.` };
+  if (f.validUntil && f.validUntil < f.validFrom) return { field: 'validUntil', message: 'Son gün geliş tarihinden önce olamaz.' };
+  if (f.validUntil && daySpan(f.validFrom, f.validUntil) > f.maxPassDays) return { field: 'validUntil', message: `Bir geçiş en fazla ${f.maxPassDays} gün geçerli olabilir.` };
   return undefined;
 }
+
+/** Ilk hata metni; gecerliyse `undefined` (web lib/gate/pass.ts ile ayni). */
+export const passFormError = (f: PassFormInput): string | undefined => passFormIssue(f)?.message;
