@@ -1,3 +1,4 @@
+import { quoteSchema } from '@bm/shared/api/payments';
 import { z } from 'zod';
 import { apiClient } from './client';
 
@@ -28,46 +29,8 @@ export type IntentStatus = (typeof INTENT_STATUSES)[number];
 
 // ----- Sakin -----
 
-const openDue = z.object({
-  transactionId: z.string(),
-  liableParty: party,
-  description: z.string(),
-  date: z.string(),
-  dueDate: z.string(),
-  amount: kurus,
-  paid: kurus,
-  remaining: kurus,
-  overdue: z.boolean(),
-  daysOverdue: z.number().int(),
-  lateFee: z.boolean().optional(),
-});
-export type OpenDue = z.infer<typeof openDue>;
-
-const partyQuote = z.object({
-  liableParty: party,
-  balance: kurus,
-  debt: kurus,
-  advance: kurus,
-  accruedLateFee: kurus,
-  totalDue: kurus,
-  /** Secilebilir anapara kalemleri, en eski vade once (yalnizca bastan kesintisiz secilir). */
-  items: z.array(openDue),
-  /** Deftere yazilmis acik tazminat kalemleri: yalnizca toplam odemede kapanir. */
-  postedLateFees: z.array(openDue),
-});
-export type PartyQuote = z.infer<typeof partyQuote>;
-
-export const quoteSchema = z.object({
-  unitId: z.string(),
-  currency: z.literal('TRY'),
-  onlinePaymentEnabled: z.boolean(),
-  requiresGsmNumber: z.boolean().default(false),
-  asOf: z.string(),
-  lateFeeMonthlyBasisPoints: z.number().int(),
-  parties: z.array(partyQuote),
-  totalDue: kurus,
-});
-export type PaymentQuote = z.infer<typeof quoteSchema>;
+// Teklif semalari (acik kalemler, cari bazli teklif) web + mobil ortak: packages/shared/src/api/payments.ts.
+export { type OpenDue, type PartyQuote, type PaymentQuote, quoteSchema } from '@bm/shared/api/payments';
 
 export const intentSchema = z.object({
   intentId: z.string(),

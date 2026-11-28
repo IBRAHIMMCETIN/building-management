@@ -39,9 +39,5 @@ export const portalTicketsApi = {
   photo: (id: string, photoId: string) => apiClient.get(`${P}/${enc(id)}/photos/${enc(photoId)}`, { schema: signedDownloadSchema }),
 };
 
-/** Sakin listesi: acik (cozum bekleyen + onay bekleyen) ve kapanan. */
-export const PORTAL_OPEN_STATUSES = 'open,assigned,in_progress,on_hold,resolved';
-export const PORTAL_CLOSED_STATUSES = 'closed,cancelled';
-
-/** Onayini bekleyen talep: cozuldu ve sakin onaylayabilir. */
-export const awaitsMyConfirmation = (t: { status: string; actions: readonly string[] }) => t.status === 'resolved' && t.actions.includes('confirm');
+/** Sakin listesi durum filtreleri ve onay bekleyen talep kurali: web + mobil ortak (packages/shared/src/api/tickets.ts). */
+export { PORTAL_CLOSED_STATUSES, PORTAL_OPEN_STATUSES, awaitsMyConfirmation } from '@bm/shared/api/tickets';

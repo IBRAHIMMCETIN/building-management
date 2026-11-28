@@ -1,8 +1,6 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { ApiError } from './errors';
 import { isNoMembership, mergeStatement, type MyStatement, unitChoicesFrom } from './portal';
-
-vi.mock('./client', () => ({ apiClient: {} }));
 
 const row = (date: string, id: string, over: Partial<MyStatement['accounts'][number]['entries'][number]> = {}) => ({
   date,
