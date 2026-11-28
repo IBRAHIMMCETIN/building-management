@@ -1,14 +1,14 @@
 import type { SignedDownload } from '@bm/shared/api/documents';
 import * as WebBrowser from 'expo-web-browser';
-import { Linking } from 'react-native';
+import { Linking, Platform } from 'react-native';
 import { palettes } from '@/theme/tokens';
 
 /*
  * Uygulama disi icerik (web karsiligi: openExternal.web.ts).
  *  - Web uygulamasi sayfalari (mobilde henuz olmayan ekranlar, online odeme): uygulama ici tarayici
  *    (iOS SFSafariViewController, Android Custom Tabs). Kart bilgisi uygulamaya hic girmez.
- *  - Makbuz PDF'i: API'nin 5 dakikalik imzali linki istenir ve sistem goruntuleyicisinde acilir;
- *    link saklanmaz.
+ *  - Belge PDF'leri (makbuz, tutanak, dokum, teklif): API'nin 5 dakikalik imzali linki istenir;
+ *    iOS'ta sistem goruntuleyicisinde, Android'de uygulama ici tarayicida acilir; link saklanmaz.
  */
 
 /**
@@ -27,7 +27,10 @@ export async function openInAppBrowser(url: string): Promise<'closed' | 'opened'
 
 export async function openDocument(load: () => Promise<SignedDownload>): Promise<void> {
   const { url } = await load();
-  await Linking.openURL(url);
+  // Android: varsayilan tarayiciya verilen PDF linki sessizce indirilebilir (Indirilenler); uygulama
+  // ici tarayici (Custom Tabs) kullaniciya ne oldugunu gosterir. iOS sistem goruntuleyicisinde acar.
+  if (Platform.OS === 'android') await openInAppBrowser(url);
+  else await Linking.openURL(url);
 }
 
 /** Web uygulamasindaki bir sayfanin tam adresi (`EXPO_PUBLIC_WEB_URL` bossa null). */

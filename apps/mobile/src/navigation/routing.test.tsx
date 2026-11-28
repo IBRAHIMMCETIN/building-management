@@ -48,8 +48,16 @@ describe('korumali ekranlar ve bildirim baglantilari', () => {
     await expectPath(result, '/resident/dues');
 
     await act(() => router.push('/oylamalar/p-1'));
-    await expectPath(result, '/resident/web/oylamalar');
-    expect(result.getSearchParams()).toMatchObject({ id: 'p-1' });
+    await expectPath(result, '/resident/polls/p-1');
+    expect(await screen.findByRole('header', { name: 'Bahçeye çocuk oyun alanı yapılsın mı?' }, { timeout: 5000 })).toBeTruthy();
+
+    await act(() => router.push('/genel-kurul/as-2'));
+    await expectPath(result, '/resident/assemblies/as-2');
+    expect(await screen.findByText('3. Yönetici seçimi', {}, { timeout: 5000 })).toBeTruthy();
+
+    await act(() => router.push('/ihaleler/t-1'));
+    await expectPath(result, '/resident/tenders/t-1');
+    expect(await screen.findByText('Cephe Pro İnşaat', {}, { timeout: 5000 })).toBeTruthy();
   });
 
   it('guvenlik: Kapı alani; sakin ekranlari kapali, baglantilar Kapı\'ya', async () => {

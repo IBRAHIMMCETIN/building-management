@@ -1,6 +1,10 @@
 import type { NotificationPreferences } from '@bm/shared/api/notificationPreferences';
 import { mockContextsFor } from '@bm/shared/auth/mockScenarios';
-import { decodeClaims } from '@bm/shared/auth/session';
+import { type SessionClaims, decodeClaims } from '@bm/shared/auth/session';
+import { createAssembliesDemo } from './demoAssemblies';
+import { createConsumptionDemo } from './demoConsumption';
+import { createPollsDemo } from './demoPolls';
+import { createTendersDemo } from './demoTenders';
 
 /*
  * DEMO veri (EXPO_PUBLIC_API_MODE=demo, yalnizca mock kimlikle): API calismadan web onizlemesinde
@@ -140,9 +144,15 @@ function quote(now: Date) {
 
 export type DemoFetchOptions = { now?: () => Date };
 
-/** `fetch` yerine gecer: yalnizca M1 uclarini yanitlar, digerleri 404. */
+/** Alan bazli demo yanitlayici (ayri dosyalar: demoPolls.ts ...): ucu tanimiyorsa undefined. */
+export type DemoRequest = { method: string; path: string; query: Record<string, string>; body: unknown; now: Date; claims: SessionClaims };
+export type DemoReply = { status: number; body?: unknown };
+export type DemoHandler = (req: DemoRequest) => DemoReply | undefined;
+
+/** `fetch` yerine gecer: M1 uclari burada, sonraki alanlar kendi dosyalarinda (`domains`); digerleri 404. */
 export function createDemoFetch({ now = () => new Date() }: DemoFetchOptions = {}): typeof fetch {
   let prefs: NotificationPreferences = { email: { enabled: true }, push: { enabled: true } };
+  const domains: DemoHandler[] = [createPollsDemo(), createAssembliesDemo(), createConsumptionDemo(), createTendersDemo()];
 
   return (async (input: string | URL | Request, init?: RequestInit) => {
     const raw = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
@@ -198,6 +208,11 @@ export function createDemoFetch({ now = () => new Date() }: DemoFetchOptions = {
     if (path.startsWith('/api/documents/my-receipts/')) {
       return respond(404, { error: 'not_found', message: 'Demo modunda makbuz PDF’i yok; gerçek API’de makbuz burada açılır.' });
     }
+    const body = init?.body ? (JSON.parse(String(init.body)) as unknown) : undefined;
+    for (const handle of domains) {
+      const reply = handle({ method, path, query: Object.fromEntries(new URLSearchParamsLite(qs).entries()), body, now: t, claims });
+      if (reply) return respond(reply.status, reply.body);
+    }
     return respond(404, { error: 'not_found', message: 'Demo modunda bu veri yok.' });
   }) as typeof fetch;
 }
@@ -214,5 +229,8 @@ class URLSearchParamsLite {
   }
   get(key: string) {
     return this.map.get(key);
+  }
+  entries() {
+    return this.map.entries();
   }
 }

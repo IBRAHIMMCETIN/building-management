@@ -9,6 +9,7 @@ import { ActivityIndicator, FlatList, Platform, Pressable, RefreshControl, Style
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { PayOnlineButton } from '@/components/portal/PayOnlineButton';
 import { PortalQueryState } from '@/components/portal/PortalQueryState';
+import { RefetchErrorBanner } from '@/components/portal/RefetchErrorBanner';
 import { PortalStatusBadge } from '@/components/portal/PortalStatusBadge';
 import { Alert, AppText, Badge, Button, Card, EmptyState, LoadingBlock, Skeleton } from '@/components/ui';
 import { useAuth } from '@/context/AuthProvider';
@@ -37,11 +38,12 @@ function SummaryCard() {
   const summary = useMySummary();
   const { colors } = useTheme();
   if (summary.isPending) return <LoadingBlock label="Borç durumu yükleniyor" lines={4} />;
-  if (summary.isError) return <PortalQueryState error={summary.error} onRetry={() => void summary.refetch()} />;
+  if (!summary.data) return <PortalQueryState error={summary.error} onRetry={() => void summary.refetch()} />;
   const s = summary.data;
 
   return (
     <Card>
+      {summary.isError && <RefetchErrorBanner error={summary.error} onRetry={() => void summary.refetch()} />}
       <View style={styles.between}>
         <View style={styles.flex}>
           <AppText variant="small" tone="muted">
@@ -162,7 +164,8 @@ function MovementRow({ row, onReceipt, receiptPending }: { row: StatementRow; on
 export function DuesScreen() {
   const statement = useMyStatement();
   // Ozet de hataliysa (ayni sebep: daire secimi, uyelik yok) hata ozet kartinda bir kez gosterilir.
-  const summaryFailed = useMySummary().isError;
+  const summaryQuery = useMySummary();
+  const summaryFailed = summaryQuery.isError && !summaryQuery.data;
   const { api } = useServices();
   const { unitId } = usePortalUnit();
   const { user } = useAuth();
@@ -208,26 +211,27 @@ export function DuesScreen() {
             <Skeleton key={i} height={64} />
           ))}
         </View>
-      ) : statement.isError ? (
+      ) : !statement.data ? (
         summaryFailed ? null : <PortalQueryState error={statement.error} onRetry={() => void statement.refetch()} />
-      ) : statement.isSuccess && rows.length === 0 ? (
+      ) : rows.length === 0 ? (
         <EmptyState icon={ReceiptText} title="Henüz hesap hareketi yok" description="Aidat tahakkukları ve ödemeleriniz burada listelenecek." />
-      ) : statement.isSuccess ? (
+      ) : (
         <View style={styles.gap2}>
           <AppText variant="heading" weight="semibold" accessibilityRole="header">
             Hesap hareketleri
           </AppText>
           <AppText variant="small" tone="muted">{`${rows.length} hareket, en yeni önce`}</AppText>
+          {statement.isError && !summaryQuery.isError && <RefetchErrorBanner error={statement.error} onRetry={() => void statement.refetch()} />}
           {docError && <Alert tone="danger">{docError}</Alert>}
         </View>
-      ) : null}
+      )}
     </View>
   );
 
   return (
     <SafeAreaView edges={['bottom', 'left', 'right']} style={[styles.root, { backgroundColor: colors.bg }]}>
       <FlatList
-        data={statement.isSuccess ? shown : []}
+        data={statement.data ? shown : []}
         keyExtractor={rowKey}
         renderItem={({ item }) => <MovementRow row={item} onReceipt={openReceipt} receiptPending={pendingReceipt === item.paymentId} />}
         ListHeaderComponent={header}
