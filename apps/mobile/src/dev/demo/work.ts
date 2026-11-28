@@ -1,5 +1,6 @@
 import { addDays, istanbulDay } from '@bm/shared/gate/plate';
-import { type DemoHandler, demoUploadUrl, fail, ok } from './types';
+import type { DemoHandler } from '../demoApi';
+import { bodyOf, demoUploadUrl, fail, ok } from './types';
 
 /*
  * DEMO: bina gorevlisi (building_staff) İşlerim + sayac okuma. Atanan iki talep (biri acil), havuzda bir
@@ -59,7 +60,8 @@ export function createWorkDemo(): DemoHandler {
   };
   const push = (id: string, e: Json, now: Date) => (timeline[id] ??= []).push({ eventId: `ev-${++seq}`, visibility: 'public', at: now.toISOString(), by: STAFF_ID, byRole: 'building_staff', mine: true, ...e });
 
-  return ({ method, path, query, body, claims, now }) => {
+  return ({ method, path, query, body: raw, claims, now }) => {
+    const body = bodyOf(raw);
     const domain = path.startsWith('/api/tickets') || path.startsWith('/api/maintenance') || path.startsWith('/api/meter-readings') || path.startsWith('/api/sites/');
     if (!domain) return undefined;
     if (claims.role !== 'building_staff') return fail(403, 'forbidden', 'Bu işlem için yetkiniz yok.');
@@ -78,7 +80,7 @@ export function createWorkDemo(): DemoHandler {
       return ok({ uploadId: id, uploadUrl: demoUploadUrl(id), headers: { 'Content-Type': String(body.contentType ?? 'image/jpeg') } });
     }
     if (path === '/api/tickets' && method === 'GET') {
-      const assignee = query('assignee');
+      const assignee = query.assignee;
       const items = ts.filter((t) => ['open', 'assigned', 'in_progress', 'on_hold'].includes(String(t.status)) && (assignee === 'me' ? t.assigneeId === STAFF_ID : assignee === 'none' ? !t.assigneeId : true));
       return ok({ items, total: items.length });
     }
@@ -114,7 +116,7 @@ export function createWorkDemo(): DemoHandler {
 
     // --- Bakim
     if (path === '/api/maintenance/tasks' && method === 'GET') {
-      const assignee = query('assignee');
+      const assignee = query.assignee;
       return ok({ items: ks.filter((k) => ['scheduled', 'in_progress'].includes(String(k.status)) && (assignee === 'me' ? k.assigneeId === STAFF_ID : assignee === 'none' ? !k.assigneeId : true)) });
     }
     const mt = /^\/api\/maintenance\/tasks\/([^/]+)(?:\/(start|complete|skip|assign|estimate|ticket))?$/.exec(path);

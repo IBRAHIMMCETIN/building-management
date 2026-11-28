@@ -1,5 +1,6 @@
 import { addDays, istanbulDay } from '@bm/shared/gate/plate';
-import { type DemoHandler, fail, ok } from './types';
+import type { DemoHandler } from '../demoApi';
+import { bodyOf, fail, ok } from './types';
 
 /*
  * DEMO: guvenlik kapisi (security_guard). Kisa kodlar: K7M2-PQ4X gecerli (tek giris), ABCD-2345
@@ -70,16 +71,17 @@ export function createGateDemo(): DemoHandler {
     }
   };
 
-  return ({ method, path, query, body, claims, now }) => {
+  return ({ method, path, query, body: raw, claims, now }) => {
+    const body = bodyOf(raw);
     if (!path.startsWith('/api/gate')) return undefined;
     if (claims.role !== 'security_guard') return fail(403, 'forbidden', 'Bu işlem için yetkiniz yok.');
 
     if (path === '/api/gate/units') {
-      const q = (query('q') ?? '').toLocaleLowerCase('tr-TR');
+      const q = (query.q ?? '').toLocaleLowerCase('tr-TR');
       return ok({ items: UNITS.filter((u) => !q || u.label.toLocaleLowerCase('tr-TR').includes(q)) });
     }
     if (path === '/api/gate/plates') {
-      const q = query('q') ?? '';
+      const q = query.q ?? '';
       const items = PLATES.filter((p) => p.plate === q || p.plate.endsWith(q)).map((p) => ({ ...p, exact: p.plate === q }));
       return ok({ query: q, queryDisplay: q, items });
     }
@@ -109,7 +111,7 @@ export function createGateDemo(): DemoHandler {
 
     if (path === '/api/gate/couriers' && method === 'GET') {
       tick(now);
-      const open = query('status') !== 'all';
+      const open = query.status !== 'all';
       return ok({ items: couriers.filter((c) => !open || (!c.exitedAt && c.status !== 'cancelled' && c.status !== 'declined')), pollSeconds: 15 });
     }
     if (path === '/api/gate/couriers' && method === 'POST') {
@@ -142,7 +144,7 @@ export function createGateDemo(): DemoHandler {
       return { status: 201, body: { log: entry, replayed: false } };
     }
     if (path === '/api/gate/log' && method === 'GET') {
-      const kind = query('kind');
+      const kind = query.kind;
       const seed = [
         { logId: 'log-s2', at: new Date(now.getTime() - 50 * 60_000).toISOString(), direction: 'exit', kind: 'courier', unitId: 'u-a-2', unitLabel: 'A Blok · Daire 2', company: 'Trendyol', recordedByName: 'Gece görevlisi' },
         { logId: 'log-s1', at: new Date(now.getTime() - 55 * 60_000).toISOString(), direction: 'entry', kind: 'courier', unitId: 'u-a-2', unitLabel: 'A Blok · Daire 2', company: 'Trendyol', recordedByName: 'Gece görevlisi' },

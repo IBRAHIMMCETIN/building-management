@@ -27,9 +27,9 @@ export const accountKeys = {
 };
 
 /** Daire secimi / uyelik yok gibi "beklenen" 4xx'ler tekrar denenmez (ekran secici gosterir). */
-const retry = (count: number, err: unknown) => !(err instanceof ApiError && err.status < 500) && count < 2;
+export const retry = (count: number, err: unknown) => !(err instanceof ApiError && err.status < 500) && count < 2;
 
-function useScope() {
+export function useScope() {
   const { user } = useAuth();
   const { unitId, ready } = usePortalUnit();
   const { api } = useServices();

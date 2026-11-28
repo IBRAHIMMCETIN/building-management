@@ -1,4 +1,4 @@
-import { screen } from '@testing-library/react-native';
+import { fireEvent, screen } from '@testing-library/react-native';
 import { TabButton } from '@/navigation/TabButton';
 import { renderApp } from '@/test/renderApp';
 import { Text } from 'react-native';
@@ -6,7 +6,8 @@ import { createDemoFetch } from '@/dev/demoApi';
 import { issueMockToken } from '@bm/shared/auth/mockScenarios';
 import { MoreScreen } from './MoreScreen';
 
-jest.mock('expo-router', () => ({ useRouter: () => ({ push: jest.fn() }) }));
+const mockPush = jest.fn();
+jest.mock('expo-router', () => ({ useRouter: () => ({ push: mockPush }) }));
 
 const contexts = (relation: 'owner' | 'tenant') => ({
   userId: 'mock-resident',
@@ -27,6 +28,15 @@ describe('Diğer', () => {
     await renderApp(<MoreScreen />, { env: { apiMode: 'demo' }, routes: { 'GET /api/me/contexts': contexts('tenant') } });
     expect(await screen.findByRole('button', { name: /^Tüketimim,/ })).toBeTruthy();
     expect(screen.queryByRole('button', { name: /^Genel Kurul,/ })).toBeNull();
+  });
+
+  it('yerel ekrani olanlar uygulama icinde, digerleri yer tutucuda acilir', async () => {
+    await renderApp(<MoreScreen />, { env: { apiMode: 'demo' }, routes: { 'GET /api/me/contexts': contexts('owner') } });
+    await fireEvent.press(await screen.findByRole('button', { name: /^Oylamalar,/ }));
+    await fireEvent.press(screen.getByRole('button', { name: /^Genel Kurul,/ }));
+    await fireEvent.press(screen.getByRole('button', { name: /^Tüketimim,/ }));
+    await fireEvent.press(screen.getByRole('button', { name: /^İhaleler,/ }));
+    expect(mockPush.mock.calls.map((c) => c[0])).toEqual(['/resident/polls', '/resident/assemblies', '/resident/consumption', '/resident/tenders']);
   });
 
   it('demo veri: sakin baglami ozetteki dairenin maliki (Ana Sayfa "Malik" ile tutarli)', async () => {

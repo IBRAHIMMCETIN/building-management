@@ -3,7 +3,6 @@ import { mockContextsFor } from '@bm/shared/auth/mockScenarios';
 import type { AuthAdapter, AuthSession } from '@bm/shared/auth/session';
 import { type ReactNode, createContext, use } from 'react';
 import type { AppEnv } from '@/config/env';
-import { createDemoFetch } from '@/dev/demoApi';
 import { type ApiClient, createApiClient } from '@/lib/api/createApiClient';
 import { endpoints } from '@/lib/api/endpoints';
 import { createAuthAdapter } from '@/lib/auth/adapter';
@@ -44,9 +43,22 @@ export type ServiceOverrides = {
   pushStorage?: KeyValueStorage;
 };
 
+/**
+ * Demo verisi yalnizca gelistirme paketinde yuklenir: demo modu mock kimlik ister, mock kimlik de
+ * yalnizca `__DEV__` paketinde gecerlidir (config/env.ts). Uretim paketinde Metro `__DEV__`'i
+ * `false` yapar ve bu dal sabit katlamayla silinir; demo dosyalari (ornek veri) pakete girmez.
+ */
+function demoFetch(env: AppEnv): typeof fetch | undefined {
+  if (__DEV__ && env.apiMode === 'demo') {
+    const { createDemoFetch } = require('./dev/demoApi') as typeof import('./dev/demoApi');
+    return createDemoFetch();
+  }
+  return undefined;
+}
+
 export function createServices(env: AppEnv, overrides: ServiceOverrides = {}): Services {
   const session = new SessionManager(overrides.adapter ?? createAuthAdapter(env), env.tokenUse);
-  const fetchImpl = overrides.fetchImpl ?? (env.apiMode === 'demo' ? createDemoFetch() : undefined);
+  const fetchImpl = overrides.fetchImpl ?? demoFetch(env);
   const api = createApiClient({
     baseUrl: env.apiMode === 'demo' ? '' : env.apiUrl,
     getToken: (options) => session.getApiToken(options),
