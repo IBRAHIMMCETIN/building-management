@@ -46,7 +46,7 @@ export function HeroVisual({ className }: { className?: string }) {
   return (
     <figure className={cn('relative', className)}>
       <div aria-hidden="true" className="flex flex-col gap-3">
-        <Card className="flex flex-col gap-5 bg-surface shadow-md lg:pb-16">
+        <Card className="flex flex-col gap-5 lg:pb-16">
           <div className="flex items-start justify-between gap-3">
             <div>
               <p className="font-semibold text-text">Örnek Sitesi</p>
@@ -93,7 +93,7 @@ export function HeroVisual({ className }: { className?: string }) {
         </Card>
 
         <div className="grid gap-3 sm:grid-cols-2 lg:-mt-14 lg:gap-4 lg:px-5">
-          <Card className="flex items-start gap-3 bg-surface p-4 shadow-md md:p-4">
+          <Card className="flex items-start gap-3 p-4 md:p-4">
             <Wrench className="mt-0.5 size-5 shrink-0 text-accent" />
             <div className="flex min-w-0 flex-col gap-1">
               <p className="text-small font-medium text-text">Asansör arızası, B Blok</p>
@@ -103,7 +103,7 @@ export function HeroVisual({ className }: { className?: string }) {
               </Badge>
             </div>
           </Card>
-          <Card className="flex items-start gap-3 bg-surface p-4 shadow-md md:p-4">
+          <Card className="flex items-start gap-3 p-4 md:p-4">
             <DoorOpen className="mt-0.5 size-5 shrink-0 text-accent" />
             <div className="flex min-w-0 flex-col gap-1">
               <p className="text-small font-medium text-text">Kurye kapıda, C Blok 12</p>

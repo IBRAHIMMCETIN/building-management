@@ -69,7 +69,7 @@ export function DemoRequestsPage() {
               </div>
             </div>
             {r.message && <p className="text-small whitespace-pre-line text-text-secondary">{r.message}</p>}
-            <p className="text-xs text-muted">
+            <p className="text-small text-muted">
               KVKK onayı: aydınlatma metni {r.kvkkVersion}
               {r.ipMasked ? ` · IP ${r.ipMasked}` : ''}
             </p>

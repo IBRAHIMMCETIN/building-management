@@ -1,10 +1,10 @@
 import { Check, ChevronDown, LogIn } from 'lucide-react';
 import type { ReactNode } from 'react';
-import { Badge } from '@/components/ui';
+import { Card } from '@/components/ui';
 import { cn } from '@/lib/cn';
 import { ctaClass } from '../cta';
 import { PublicFooter } from '../PublicFooter';
-import { PublicHeader } from '../PublicHeader';
+import { PublicHeader, SkipLink } from '../PublicHeader';
 import { AUDIENCES, CONTACT, FAQS, HERO, MOBILE, MODULE_GROUPS, NAV_LINKS, PRICING, SECTION_IDS, TRUST_ITEMS } from './content';
 import { DemoRequestForm } from './DemoRequestForm';
 import { HeroVisual } from './HeroVisual';
@@ -133,9 +133,8 @@ function Mobile() {
     <Section id={id} className="border-y border-border bg-surface">
       <div className="grid items-center gap-12 lg:grid-cols-2">
         <div className="flex flex-col gap-6">
-          <Badge tone="accent" className="self-start">
-            Yakında App Store ve Google Play’de
-          </Badge>
+          {/* Duz metin: paylasilan Badge'in vurgu tonu 12 px'de acik temada 4.5:1'in hemen altinda. */}
+          <p className="text-small font-semibold text-accent">Yakında App Store ve Google Play’de</p>
           <SectionHeading id={id} title={MOBILE.title} lead={MOBILE.lead} />
           <dl className="flex flex-col gap-4">
             {MOBILE.roles.map((r) => (
@@ -211,18 +210,12 @@ function Pricing() {
   return (
     <section id={id} aria-labelledby={`${id}-baslik`} className="scroll-mt-16 pt-16 lg:pt-24">
       <div className={CONTAINER}>
-        <div className="flex flex-col gap-6 rounded-xl border border-border bg-surface p-6 shadow-sm md:p-8 lg:flex-row lg:items-center lg:justify-between">
-          <div className="flex max-w-2xl flex-col gap-2">
-            <h2 id={`${id}-baslik`} className="text-title font-bold tracking-tight text-text">
-              Fiyatlandırma
-            </h2>
-            <p className="text-lg font-medium text-text">{PRICING.title}</p>
-            <p className="text-small text-text-secondary">{PRICING.text}</p>
-          </div>
+        <Card className="flex flex-col gap-6 md:p-8 lg:flex-row lg:items-center lg:justify-between">
+          <SectionHeading id={id} title={PRICING.title} lead={PRICING.text} />
           <a href={`#${SECTION_IDS.contact}`} className={ctaClass('primary', 'lg', 'shrink-0')}>
             Teklif alın
           </a>
-        </div>
+        </Card>
       </div>
     </section>
   );
@@ -263,12 +256,7 @@ function Contact() {
 export function LandingPage() {
   return (
     <div className="flex min-h-dvh flex-col bg-bg">
-      <a
-        href="#ana-icerik"
-        className="sr-only focus:not-sr-only focus:fixed focus:top-3 focus:left-3 focus:z-50 focus:rounded-md focus:bg-surface focus:px-4 focus:py-2 focus:text-small focus:font-medium focus:shadow-md focus:outline-2 focus:outline-accent"
-      >
-        İçeriğe geç
-      </a>
+      <SkipLink />
       <PublicHeader links={NAV_LINKS} />
       <main id="ana-icerik" tabIndex={-1} className="flex-1 focus:outline-none">
         <Hero />

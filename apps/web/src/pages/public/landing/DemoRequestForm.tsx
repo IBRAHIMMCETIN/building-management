@@ -55,7 +55,7 @@ export function DemoRequestForm({ submit = submitDemoRequest }: { submit?: Submi
 
   if (done) {
     return (
-      <Card className="flex flex-col items-start gap-3 bg-surface">
+      <Card className="flex flex-col items-start gap-3">
         <div ref={doneRef} tabIndex={-1} role="status" className="flex flex-col gap-2 focus:outline-none">
           <p className="flex items-center gap-2 text-heading font-semibold text-success">
             <CircleCheck className="size-6 shrink-0" aria-hidden="true" />
@@ -71,7 +71,7 @@ export function DemoRequestForm({ submit = submitDemoRequest }: { submit?: Submi
   }
 
   return (
-    <Card className="bg-surface">
+    <Card>
       <form className="flex flex-col gap-4" noValidate onSubmit={onSubmit} aria-label="Demo talep formu">
         <div className="grid gap-4 sm:grid-cols-2">
           <FormField label="Ad soyad" error={errors.fullName?.message}>

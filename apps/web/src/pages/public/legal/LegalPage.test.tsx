@@ -22,17 +22,19 @@ async function render(node: React.ReactNode) {
 }
 
 describe('hukuki metin sayfalari (taslak)', () => {
-  it.each(LEGAL_DOCUMENT_ORDER)('%s: taslak uyarisi, baslik, surum, bolumler ve diger metinlere baglanti', async (key) => {
+  it.each(LEGAL_DOCUMENT_ORDER)('%s: taslak uyarisi, baslik, surum, bolumler, alt bilgide hukuki metinler', async (key) => {
     const doc = LEGAL_DOCUMENTS[key];
     await render(<LegalPage docKey={key} />);
-    const note = container.querySelector('[role="note"]')!;
+    const note = container.querySelector('article [role="status"]')!;
     expect(note.textContent).toContain('Taslak');
     expect(note.textContent).toContain(LEGAL_DRAFT_NOTICE);
+    expect(container.querySelectorAll('h1')).toHaveLength(1);
     expect(container.querySelector('h1')!.textContent).toBe(doc.title);
     expect(container.textContent).toContain(doc.version);
     expect([...container.querySelectorAll('article h2')].map((h) => h.textContent)).toEqual(doc.sections.map((s) => s.heading));
-    const others = [...container.querySelectorAll('nav[aria-label="Diğer hukuki metinler"] a')].map((a) => a.getAttribute('href'));
-    expect(others).toEqual(LEGAL_DOCUMENT_ORDER.filter((k) => k !== key).map((k) => LEGAL_DOCUMENTS[k].path));
+    const legal = [...container.querySelectorAll('footer nav[aria-label="Hukuki metinler"] a')].map((a) => a.getAttribute('href'));
+    expect(legal).toEqual(LEGAL_DOCUMENT_ORDER.map((k) => LEGAL_DOCUMENTS[k].path));
+    expect(container.querySelector('a')!.getAttribute('href')).toBe('#ana-icerik');
     expect(document.title).toContain(doc.title);
   });
 

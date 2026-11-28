@@ -120,7 +120,7 @@ export const MODULE_GROUPS: readonly ModuleGroup[] = [
       },
       {
         title: 'Duyurular ve bildirimler',
-        text: 'Blok bazında duyuru, yayın onayı ve arşiv. Duyurular sakin portalında ve mobil uygulamada görünür.',
+        text: 'Blok bazında duyuru, yayın onayı ve arşiv. Duyurular sakin portalında görünür.',
       },
     ],
   },
@@ -166,7 +166,7 @@ export const AUDIENCES: readonly Audience[] = [
   },
   {
     title: 'Kat maliki ve kiracı',
-    where: 'Sakin portalı, web ve mobil',
+    where: 'Sakin portalı, web (mobil uygulama yakında)',
     icon: UserRound,
     points: [
       'Borcunuzu, son ödeme gününü ve makbuzlarınızı görün.',
@@ -176,7 +176,7 @@ export const AUDIENCES: readonly Audience[] = [
   },
   {
     title: 'Bina görevlisi ve güvenlik',
-    where: 'Saha ekranları, mobil',
+    where: 'Saha ekranları, web (mobil uygulama yakında)',
     icon: Users,
     points: [
       'Görevli: size atanan talepler ve bakım görevleri, fotoğraflı tamamlama, sayaç okuma.',
@@ -271,7 +271,7 @@ export const FAQS: readonly Faq[] = [
 ];
 
 export const PRICING = {
-  title: 'Sitenizin büyüklüğüne göre teklif',
+  title: 'Fiyatlandırma: sitenizin büyüklüğüne göre teklif',
   text: 'Liste fiyatı yok: ücret, bağımsız bölüm sayısına ve kullanacağınız modüllere göre belirlenir. Pilot dönemde kurulum ve deneme ücretsizdir.',
 } as const;
 

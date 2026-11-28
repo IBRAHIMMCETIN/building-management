@@ -138,15 +138,15 @@ export const PRIVACY_POLICY: LegalDocument = {
   key: 'privacy',
   path: '/gizlilik',
   title: 'Gizlilik Politikası',
-  version: '2026-11-28-taslak-1',
+  version: '2026-11-28-taslak-2',
   updatedAt: '2026-11-28',
   status: 'draft',
-  summary: 'YÖNESİST web sitesi, web uygulaması ve mobil uygulamasında verilerinizin nasıl korunduğu ve kullanıldığı.',
+  summary: 'YÖNESİST web sitesinde, web uygulamasında ve yayımlandığında mobil uygulamasında verilerinizin nasıl korunduğu ve kullanıldığı.',
   sections: [
     {
       heading: 'Kapsam',
       paragraphs: [
-        'Bu politika; tanıtım sitesini, yönetim paneli ve sakin portalından oluşan web uygulamasını ve mobil uygulamayı kapsar. Kişisel verilerin işlenmesine ilişkin ayrıntılar KVKK Aydınlatma Metni’ndedir.',
+        'Bu politika; tanıtım sitesini, yönetim paneli ve sakin portalından oluşan web uygulamasını ve yayımlandığında mobil uygulamayı kapsar. Kişisel verilerin işlenmesine ilişkin ayrıntılar KVKK Aydınlatma Metni’ndedir.',
       ],
     },
     {
@@ -159,7 +159,7 @@ export const PRIVACY_POLICY: LegalDocument = {
       heading: 'Güvenlik önlemleri',
       items: [
         'Tüm bağlantılar şifrelidir (HTTPS).',
-        'Yönetici ve denetçi hesaplarında iki adımlı doğrulama (TOTP) zorunludur.',
+        'Yönetici, yönetim firması ve denetçi hesaplarında iki adımlı doğrulama (TOTP) zorunludur.',
         'Her site yalnızca kendi verisine erişir; yetki kontrolü sunucu tarafında, oturum bilgisindeki apartman ve rol üzerinden yapılır.',
         'Finansal defter yalnızca eklemeye açıktır: kayıtlar değiştirilmez veya silinmez, düzeltmeler ters kayıtla yapılır.',
         'Hassas işlemler, her kaydı bir öncekine SHA-256 özetiyle bağlanan ve değiştirilemeyen bir denetim günlüğüne yazılır.',
@@ -175,7 +175,7 @@ export const PRIVACY_POLICY: LegalDocument = {
     {
       heading: 'Mobil uygulama izinleri',
       paragraphs: [
-        'Kamera yalnızca misafir QR kodunu okutmak ve arıza fotoğrafı çekmek için, fotoğraf kitaplığı yalnızca seçtiğiniz fotoğrafı yüklemek için, bildirim izni duyuru ve kapı bildirimleri için istenir. İzinleri dilediğiniz zaman cihaz ayarlarından kapatabilirsiniz.',
+        'Mobil uygulama mağazalarda yayımlandığında, kamera yalnızca misafir QR kodunu okutmak ve arıza fotoğrafı çekmek için, fotoğraf kitaplığı yalnızca seçtiğiniz fotoğrafı yüklemek için, bildirim izni duyuru ve kapı bildirimleri için istenir. İzinleri dilediğiniz zaman cihaz ayarlarından kapatabilirsiniz.',
       ],
     },
     {

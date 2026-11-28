@@ -117,9 +117,19 @@ describe('tanitim sayfasi', () => {
     await act(async () => panel.querySelector<HTMLAnchorElement>('a[href="#sss"]')!.click());
     expect(panel.hidden).toBe(true);
     await act(async () => button.click());
+    panel.querySelector<HTMLAnchorElement>('a[href="#sss"]')!.focus();
     await act(async () => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })));
     expect(panel.hidden).toBe(true);
     expect(button.textContent).toContain('Menüyü aç');
+    // Odak gizlenen panelde kalmaz.
+    expect(document.activeElement).toBe(button);
+    // Odak panelin disindaysa (ornegin formda) Escape onu yerinden oynatmaz.
+    const name = container.querySelector<HTMLInputElement>('#iletisim input')!;
+    await act(async () => button.click());
+    name.focus();
+    await act(async () => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })));
+    expect(panel.hidden).toBe(true);
+    expect(document.activeElement).toBe(name);
   });
 
   it('SSS: yerel details/summary; fiyat sorusu teklif istemeye yonlendirir, canli olmayan ozellikler "henuz" der', async () => {

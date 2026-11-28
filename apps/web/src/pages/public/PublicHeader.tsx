@@ -1,11 +1,23 @@
 import { LogIn, Menu, X } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { BrandMark, BrandWordmark } from '@/components/BrandMark';
 import { BRAND_NAME } from '@/lib/brand';
 import { cn } from '@/lib/cn';
 import { ctaClass, textLinkClass } from './cta';
 
 type NavLink = { href: string; label: string };
+
+/** "İçeriğe geç": klavyeyle ilk odaklanan oge; `main#ana-icerik`'e atlar. */
+export function SkipLink() {
+  return (
+    <a
+      href="#ana-icerik"
+      className="sr-only focus:not-sr-only focus:fixed focus:top-3 focus:left-3 focus:z-50 focus:rounded-md focus:bg-surface focus:px-4 focus:py-2 focus:text-small focus:font-medium focus:shadow-sm focus:outline-2 focus:outline-accent"
+    >
+      İçeriğe geç
+    </a>
+  );
+}
 
 /**
  * Tanitim ve hukuki sayfalarin ust cubugu: logo (ana sayfaya), sayfa ici baglantilar, "Giriş yap"
@@ -15,12 +27,17 @@ type NavLink = { href: string; label: string };
  */
 export function PublicHeader({ links = [], demoHref = '#iletisim', homeHref = '/' }: { links?: readonly NavLink[]; demoHref?: string; homeHref?: string }) {
   const [open, setOpen] = useState(false);
+  const toggleRef = useRef<HTMLButtonElement>(null);
   const hasLinks = links.length > 0;
 
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setOpen(false);
+      if (e.key !== 'Escape') return;
+      // Odak gizlenecek paneldeyse menu dugmesine doner; baska yerdeyse (ornegin formda) yerinde kalir.
+      const inPanel = document.getElementById('public-menu')?.contains(document.activeElement) ?? false;
+      setOpen(false);
+      if (inPanel) toggleRef.current?.focus();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -63,6 +80,7 @@ export function PublicHeader({ links = [], demoHref = '#iletisim', homeHref = '/
         </div>
 
         <button
+          ref={toggleRef}
           type="button"
           className={cn(
             'inline-flex size-10 items-center justify-center rounded-md text-text hover:bg-surface-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
